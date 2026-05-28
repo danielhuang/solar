@@ -1,0 +1,4 @@
+fn main() {
+  let x: Int = 5;
+  x();
+}

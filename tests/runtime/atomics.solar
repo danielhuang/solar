@@ -1,0 +1,51 @@
+fn main() {
+    // atomic load/store on Int
+    let x = 42;
+    x&.atomic_store(99);
+    print_int(x&.atomic_load());
+
+    // atomic load/store on Bool
+    let b = false;
+    b&.atomic_store(true);
+    if b&.atomic_load() {
+        print_int(1);
+    }
+
+    // atomic load/store on Uint
+    let u = 0u;
+    u&.atomic_store(77u);
+    print_int(u&.atomic_load());
+
+    // atomic load/store on ref
+    let inner = 10;
+    let r: &Int = inner&;
+    let r2 = r;
+    r2&.atomic_store(inner&);
+    print_int(r2&.atomic_load()@);
+
+    // atomic_compare_exchange success: returns old value, swap happens
+    let c = 5;
+    let prev = c&.atomic_compare_exchange(5, 99);
+    print_int(prev);
+    print_int(c&.atomic_load());
+
+    // atomic_compare_exchange failure: returns current value, no swap
+    let prev2 = c&.atomic_compare_exchange(0, 7);
+    print_int(prev2);
+    print_int(c&.atomic_load());
+
+    // atomic_compare_exchange on a smaller type
+    let small = 0u32;
+    small&.atomic_store(1u32);
+    let p3 = small&.atomic_compare_exchange(1u32, 2u32);
+    print_int(Int(p3));
+    print_int(Int(small&.atomic_load()));
+
+    // atomic_compare_exchange on a 16-byte type (function value)
+    let f1: fn() = \ { print_int(100); };
+    let f2: fn() = \ { print_int(200); };
+    let g = f1;
+    let prev_f = g&.atomic_compare_exchange(f1, f2);
+    prev_f();
+    g();
+}

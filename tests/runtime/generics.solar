@@ -1,0 +1,58 @@
+struct Box#[T] {
+  value: T,
+}
+
+enum Option#[T] {
+  Some(T),
+  None,
+}
+
+fn unwrap_or(opt: Option#[Int], default: Int) -> Int {
+  match opt {
+    Option#[Int]::Some(v) => v,
+    Option#[Int]::None => default,
+  }
+}
+
+fn main() {
+  // generic struct with Int
+  let b: Box#[Int] = Box#[Int] { value: 42 };
+  print_int(b.value);                          // 42
+
+  // generic struct with Bool (different monomorphization)
+  let bb: Box#[Bool] = Box#[Bool] { value: true };
+  print_int(if bb.value { 1 } else { 0 });     // 1
+
+  // generic enum Some
+  let s: Option#[Int] = Option#[Int]::Some(99);
+  let r1 = match s {
+    Option#[Int]::Some(v) => v,
+    Option#[Int]::None => 0,
+  };
+  print_int(r1);                                // 99
+
+  // generic enum None
+  let n: Option#[Int] = Option#[Int]::None;
+  let r2 = match n {
+    Option#[Int]::Some(v) => v,
+    Option#[Int]::None => 0,
+  };
+  print_int(r2);                                // 0
+
+  // generic function using generic types
+  print_int(unwrap_or(Option#[Int]::Some(77), 0));  // 77
+  print_int(unwrap_or(Option#[Int]::None, 5));      // 5
+
+  // nested generics: Box#[Box#[Int]]
+  let nested: Box#[Box#[Int]] = Box#[Box#[Int]] { value: Box#[Int] { value: 123 } };
+  print_int(nested.value.value);                // 123
+
+  // generic enum with ref type arg
+  let rval = 55;
+  let ref_opt: Option#[&Int] = Option#[&Int]::Some(rval&);
+  let r3 = match ref_opt {
+    Option#[&Int]::Some(r) => r@,
+    Option#[&Int]::None => 0,
+  };
+  print_int(r3);                                // 55
+}

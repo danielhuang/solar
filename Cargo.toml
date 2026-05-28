@@ -1,0 +1,25 @@
+[workspace]
+members = ["tree-sitter-solar", "solar-system", "test-utils"]
+
+[workspace.dependencies]
+tree-sitter-solar = { path = "tree-sitter-solar" }
+
+[package]
+name = "solar"
+version = "0.1.0"
+edition = "2024"
+default-run = "solar"
+
+[dependencies]
+annotate-snippets = "0.12.12"
+rand = "0.9"
+tree-sitter = "0.25"
+tree-sitter-solar = { workspace = true }
+
+[dev-dependencies]
+test-utils = { path = "test-utils" }
+
+[profile.release]
+lto = "fat"
+opt-level = 3
+debug = true

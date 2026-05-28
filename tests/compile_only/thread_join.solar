@@ -1,0 +1,8 @@
+fn main() {
+    let x = 0;
+    let t = thread::spawn(\ {
+        x&.atomic_store(42);
+    });
+    t.join();
+    print_int(x&.atomic_load());
+}

@@ -1,0 +1,60 @@
+// Basic type alias
+type Num = Int;
+
+// Struct alias
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+type P = Point;
+
+// Generic target: alias to a concrete generic
+enum Option#[T] {
+    Some(T),
+    None,
+}
+
+type OptInt = Option#[Int];
+
+// Generic alias
+type Opt#[T] = Option#[T];
+
+// Chained aliases
+type A = Num;
+
+fn main() {
+    // Basic alias
+    let n: Num = 42;
+    print_int(n);                     // 42
+
+    // Struct alias in type annotation and struct literal
+    let p: P = Point { x: 10, y: 20 };
+    print_int(p.x);                   // 10
+    print_int(p.y);                   // 20
+
+    // Struct literal using alias name
+    let p2: P = P { x: 30, y: 40 };
+    print_int(p2.x);                  // 30
+    print_int(p2.y);                  // 40
+
+    // Generic target alias
+    let some_val: OptInt = OptInt::Some(99);
+    let r1 = match some_val {
+        OptInt::Some(v) => v,
+        OptInt::None => 0,
+    };
+    print_int(r1);                    // 99
+
+    // Generic alias
+    let some_val2: Opt#[Int] = Opt#[Int]::Some(77);
+    let r2 = match some_val2 {
+        Opt#[Int]::Some(v) => v,
+        Opt#[Int]::None => 0,
+    };
+    print_int(r2);                    // 77
+
+    // Chained alias
+    let a: A = 55;
+    print_int(a);                     // 55
+}

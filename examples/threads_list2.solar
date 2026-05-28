@@ -1,0 +1,30 @@
+enum ListOpt {
+    Some(&Node),
+    None,
+}
+
+struct Node {
+    value: Int,
+    next: ListOpt,
+}
+
+fn main() {
+    let sentinel = (Node { value: 0, next: ListOpt::None })&;
+    let root = sentinel;
+    let is_done = false;
+    for _ in 0..16 {
+        thread::spawn(\ {
+            for iter in 0..1000 {
+                let head = sentinel;
+                for j in 0..100000 {
+                    head = (Node { value: j, next: ListOpt::Some(head) })&;
+                }
+                root&.atomic_store(head);
+            }
+            is_done&.atomic_store(true);
+        });
+    }
+    while is_done&.atomic_load() == false {}
+    print_int(root@.value);
+    println("done"&);
+}

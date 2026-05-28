@@ -1,0 +1,52 @@
+fn apply(f: fn(Int) -> Int, val: Int) -> Int { f(val) }
+
+fn main() {
+  // Basic nested function with capture
+  let offset = 10;
+  fn add_offset(x: Int) -> Int { offset + x }
+  print_int(add_offset(5));           // 15
+
+  // Zero-capture nested function
+  fn double(x: Int) -> Int { x * 2 }
+  print_int(double(7));               // 14
+
+  // Nested function with explicit return type
+  fn negate(x: Int) -> Int { 0 - x }
+  print_int(negate(42));              // -42
+
+  // Multiple captures
+  let a = 100;
+  let b = 200;
+  fn sum_ab(x: Int) -> Int { a + b + x }
+  print_int(sum_ab(5));               // 305
+
+  // Nested function passed to higher-order function
+  let scale = 3;
+  fn mul_scale(x: Int) -> Int { x * scale }
+  print_int(apply(mul_scale, 10));    // 30
+
+  // Nested functions calling other nested functions
+  fn inc(x: Int) -> Int { x + 1 }
+  fn double_inc(x: Int) -> Int { inc(inc(x)) }
+  print_int(double_inc(5));           // 7
+
+  // Multi-level nesting (nested inside nested)
+  fn outer(x: Int) -> Int {
+    let y = 10;
+    fn inner(z: Int) -> Int { z + y }
+    inner(x)
+  }
+  print_int(outer(5));                // 15
+
+  // Generic nested function
+  fn identity#[T](x: T) -> T { x }
+  print_int(identity#[Int](42));      // 42
+
+  // Overloaded nested function
+  fn process(x: Int) -> Int { x + 1 }
+  fn process(x: Bool) -> Int {
+    if x { 100 } else { 0 }
+  }
+  print_int(process(9));              // 10
+  print_int(process(true));           // 100
+}

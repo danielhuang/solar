@@ -1,0 +1,217 @@
+use std::alloc::Layout;
+use std::cell::Cell;
+use std::ptr::null_mut;
+use std::sync::atomic::Ordering;
+
+use crate::gc::{
+    BigAllocLocal, DISABLE_GC, ENABLE_ALLOC_PRINTS, MY_SLOT, TOTAL_LIVE_SIZE, ThreadAllocState,
+    run_gc, self_suspend,
+};
+use crate::heap;
+
+const MIN_SIZE_UNTIL_GC: usize = 1 << 20;
+
+pub type MarkFn = unsafe extern "C" fn(*mut u8, *mut u8, u64);
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -> *mut u8 {
+    if DISABLE_GC.load(Ordering::Relaxed) {
+        return unsafe { bump_forever(size, align) };
+    }
+
+    // Per-thread slot (stable across GC).
+    let slot_ptr = MY_SLOT.get();
+    assert!(
+        !slot_ptr.is_null(),
+        "sol_alloc called on unregistered thread"
+    );
+    let slot = unsafe { &*slot_ptr };
+
+    // GC trigger check — read per-thread counters via raw pointer so that no
+    // &mut to alloc state exists across run_gc() (run_gc mutates it).
+    let alloc_ptr = slot.alloc.get();
+    let new_size = unsafe { (*alloc_ptr).new_size_since_last_gc };
+    let total_live = TOTAL_LIVE_SIZE.load(Ordering::Relaxed) + new_size;
+    if new_size * 2 > total_live && total_live > MIN_SIZE_UNTIL_GC {
+        unsafe { run_gc() };
+    }
+
+    if ENABLE_ALLOC_PRINTS.load(Ordering::Relaxed) {
+        eprintln!(
+            "allocating new object: {size} bytes (align={align}), prev total {total_live} bytes"
+        );
+    }
+
+    // Set in_alloc before touching per-thread structures so the GC signal
+    // handler defers rather than interrupting mid-update.
+    slot.in_alloc.store(true, Ordering::Relaxed);
+    std::sync::atomic::compiler_fence(Ordering::SeqCst);
+
+    let ptr = match heap::size_class(size, align) {
+        Some(class) => unsafe { arena_allocate(&mut *alloc_ptr, class, size, mark_fn) },
+        None => unsafe { big_allocate(&mut *alloc_ptr, size, align, mark_fn) },
+    };
+
+    std::sync::atomic::compiler_fence(Ordering::SeqCst);
+    slot.in_alloc.store(false, Ordering::Release);
+    std::sync::atomic::compiler_fence(Ordering::SeqCst);
+
+    // If the signal handler fired while we were in_alloc, it deferred by
+    // storing the epoch; handle it now that our structures are consistent.
+    // `gc_pending_epoch` is only written by this thread's own GC signal handler
+    // (and only while `in_alloc` is true), so a plain load + reset suffices — no
+    // atomic RMW. But this load MUST stay ordered *after* the `in_alloc` store
+    // above; the `compiler_fence` is what enforces that. Without it the compiler
+    // may hoist the load before the store, opening a window where a signal sees
+    // `in_alloc == true`, defers into `gc_pending_epoch`, and this load misses
+    // it — so the thread never acks the GC and the collector hangs forever. The
+    // handler runs on this same thread, so a compiler fence is enough.
+    let pending_epoch = slot.gc_pending_epoch.load(Ordering::Acquire);
+    if pending_epoch != 0 {
+        slot.gc_pending_epoch.store(0, Ordering::Relaxed);
+        unsafe { self_suspend(slot, pending_epoch) };
+    }
+
+    ptr
+}
+
+/// Allocate `size` bytes (rounded up to a power-of-2 size class) from the
+/// arena. Returns a pointer to zeroed, correctly-aligned memory.
+unsafe fn arena_allocate(
+    state: &mut ThreadAllocState,
+    class: usize,
+    size: usize,
+    mark_fn: MarkFn,
+) -> *mut u8 {
+    // Find a free slot in the current claim; claim a fresh run when exhausted.
+    let slot = 'find: loop {
+        let cs = &mut state.classes[class];
+        while cs.cur < cs.end {
+            let s = cs.cur as usize;
+            cs.cur += 1;
+            if !unsafe { heap::is_allocated(class, s) } {
+                break 'find s;
+            }
+        }
+        let (s, e) = heap::claim_run(class);
+        cs.cur = s;
+        cs.end = e;
+    };
+
+    let rbase = heap::region_base(class);
+    let addr = heap::slot_addr(rbase, slot, class);
+    let ssz = heap::slot_size(class);
+
+    // Slots are recycled; codegen relies on `sol_alloc` returning zeroed
+    // memory (it's stamped `allockind(zeroed)`).
+    unsafe { std::ptr::write_bytes(addr as *mut u8, 0, ssz) };
+
+    // Write metadata before publishing the allocated bit so any GC scan that
+    // sees the slot as allocated also sees valid metadata.
+    if class >= heap::META_MIN_CLASS {
+        let m = unsafe { &mut *heap::meta_entry(class, slot) };
+        m.mark_fn = mark_fn as usize;
+        m.size = size as u64;
+    }
+    unsafe { heap::set_allocated(class, slot) };
+
+    state.new_size_since_last_gc += ssz;
+    state.total_allocations += 1;
+    addr as *mut u8
+}
+
+/// Allocate a >1 GiB object via the system allocator and record it in the
+/// thread-local big-alloc list (merged into the global registry at the next
+/// STW). Returns zeroed memory.
+unsafe fn big_allocate(
+    state: &mut ThreadAllocState,
+    size: usize,
+    align: usize,
+    mark_fn: MarkFn,
+) -> *mut u8 {
+    let layout = Layout::from_size_align(size.max(1), align.max(1)).unwrap();
+    let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+    assert!(!ptr.is_null(), "big allocation of {size} bytes failed");
+    state.big_allocs.push(BigAllocLocal {
+        base: ptr as usize,
+        size,
+        align,
+        mark_fn: mark_fn as usize,
+    });
+    state.new_size_since_last_gc += size;
+    state.total_allocations += 1;
+    ptr
+}
+
+/// `SOLAR_DISABLE_GC` path: a thread-local, never-freed bump arena.
+unsafe fn bump_forever(size: usize, align: usize) -> *mut u8 {
+    thread_local! {
+        static REGION: Cell<(*mut u8, *mut u8)> = const { Cell::new((null_mut(), null_mut())) };
+        static MMAP_SIZE: Cell<usize> = const { Cell::new(1 << 20) };
+    }
+
+    let slot_ptr = MY_SLOT.get();
+    if !slot_ptr.is_null() {
+        unsafe { &mut *(*slot_ptr).alloc.get() }.total_allocations += 1;
+    }
+    let enable_stat_prints = crate::gc::ENABLE_STAT_PRINTS.load(Ordering::Relaxed);
+
+    loop {
+        let (start, end) = REGION.get();
+        let start = start.with_addr((start as usize).next_multiple_of(align.max(1)));
+        let space_left = unsafe { end.byte_offset_from_unsigned(start) };
+        if size <= space_left {
+            REGION.set((unsafe { start.add(size) }, end));
+            return start;
+        }
+        if enable_stat_prints {
+            eprintln!("mapping more memory ({} bytes)", MMAP_SIZE.get());
+        }
+        let chunk = MMAP_SIZE.get().max(size);
+        let new_start = Box::leak(vec![0u8; chunk].into_boxed_slice()).as_mut_ptr();
+        REGION.set((new_start, unsafe { new_start.byte_add(chunk) }));
+        MMAP_SIZE.set(MMAP_SIZE.get() * 2);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sol_memcpy(dst: *mut u8, src: *const u8, size: usize) {
+    unsafe { std::ptr::copy_nonoverlapping(src, dst, size) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sol_slice_range(
+    base: *const u8,
+    start: u64,
+    end: u64,
+    len: u64,
+    elem_size: u64,
+) -> *const u8 {
+    assert!(start <= end, "slice start ({start}) > end ({end})");
+    assert!(end <= len, "slice end ({end}) > length ({len})");
+    let offset = start.checked_mul(elem_size).expect("slice offset overflow");
+    unsafe { base.add(offset as usize) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sol_slice_index(
+    base: *const u8,
+    index: u64,
+    len: u64,
+    elem_size: u64,
+) -> *const u8 {
+    assert!(
+        index < len,
+        "index out of bounds: index is {index} but length is {len}"
+    );
+    let offset = index.checked_mul(elem_size).expect("index overflow");
+    unsafe { base.add(offset as usize) }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn sol_assert_array_len(actual: u64, expected: u64) {
+    assert!(
+        actual == expected,
+        "array destructure: expected {expected} elements, got {actual}"
+    );
+}

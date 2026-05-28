@@ -1,0 +1,12 @@
+fn foo() -> Int {
+  42
+}
+
+fn main() {
+  // Call function before shadowing
+  print_int(foo());       // 42
+
+  // Declare variable with same name as function
+  let foo: Int = 99;
+  print_int(foo);         // 99 (variable shadows function)
+}

@@ -1,0 +1,19 @@
+fn while_fn(cond: fn() -> Bool, body: fn()) {
+    while cond() {
+        body();
+    }
+}
+
+fn apply(f: fn(&Int), x: [&Int; 1]) {
+    f(x[0u]);
+}
+
+fn main() {
+    let i: Int = 0;
+    while_fn(\ i < 1000000000, \ {
+        if i % 10000 == 0 {
+            print_int(i);
+        }
+        apply(\x: &Int { x@ = x@ + 1; }, [i&]);
+    });
+}

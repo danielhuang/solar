@@ -1,0 +1,40 @@
+fn print_bool(b: Bool) {
+  if b {
+    print_int(1);
+  }
+  if b == false {
+    print_int(0);
+  }
+}
+
+// Side-effecting functions that return Bool — used to test short-circuiting
+fn true_with_effect() -> Bool {
+  print_int(88);
+  true
+}
+
+fn false_with_effect() -> Bool {
+  print_int(99);
+  false
+}
+
+fn main() {
+  print_bool(true && true);    // 1
+  print_bool(true && false);   // 0
+  print_bool(false && true);   // 0
+  print_bool(false || true);   // 1
+  print_bool(false || false);  // 0
+  print_bool(true || false);   // 1
+
+  // short-circuit: false && X should NOT evaluate X
+  print_bool(false && true_with_effect());   // 0  (no 88)
+
+  // short-circuit: true && X SHOULD evaluate X
+  print_bool(true && true_with_effect());    // 88 then 1
+
+  // short-circuit: true || X should NOT evaluate X
+  print_bool(true || false_with_effect());   // 1  (no 99)
+
+  // short-circuit: false || X SHOULD evaluate X
+  print_bool(false || false_with_effect());  // 99 then 0
+}

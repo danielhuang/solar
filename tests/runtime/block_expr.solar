@@ -1,0 +1,97 @@
+fn takes_int(x: Int) -> Int {
+  x + 1
+}
+
+fn main() {
+  // basic block expression in let binding
+  let a: Int = {
+    let tmp: Int = 10;
+    tmp + 5
+  };
+  print_int(a);  // 15
+
+  // block expression as function argument
+  print_int({
+    let x: Int = 3;
+    x * 7
+  });  // 21
+
+  // shadowing: outer variable retains value after block
+  let outer: Int = 42;
+  let b: Int = {
+    let outer: Int = 99;
+    outer
+  };
+  print_int(b);      // 99
+  print_int(outer);  // 42
+
+  // nested blocks
+  let c: Int = {
+    let x: Int = {
+      let y: Int = 2;
+      y + 3
+    };
+    x * 10
+  };
+  print_int(c);  // 50
+
+  // block in assignment
+  let d: Int = 0;
+  d = {
+    let tmp: Int = 7;
+    tmp + 3
+  };
+  print_int(d);  // 10
+
+  // block in if condition value position
+  let e: Int = if true {
+    {
+      let x: Int = 100;
+      x
+    }
+  } else { 0 };
+  print_int(e);  // 100
+
+  // block expression wrapped in parens for use in binary expr
+  let i: Int = 0;
+  let sum: Int = 0;
+  while i < 3 {
+    sum = sum + ({
+      let inc: Int = i + 1;
+      inc
+    });
+    i = i + 1;
+  }
+  print_int(sum);  // 6 (1+2+3)
+
+  // block in while loop condition (via parens)
+  let j: Int = 0;
+  while ({
+    let limit: Int = 3;
+    j < limit
+  }) {
+    j = j + 1;
+  }
+  print_int(j);  // 3
+
+  // block in if statement condition (via parens)
+  let val: Int = 10;
+  if ({
+    let threshold: Int = 5;
+    val > threshold
+  }) {
+    print_int(1);  // 1
+  } else {
+    print_int(0);
+  }
+
+  // block in if statement condition — false branch
+  if ({
+    let threshold: Int = 20;
+    val > threshold
+  }) {
+    print_int(0);
+  } else {
+    print_int(2);  // 2
+  }
+}

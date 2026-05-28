@@ -1,0 +1,11 @@
+fn foo(x: Int) -> Int {
+  x
+}
+
+fn foo(x: Bool) -> Int {
+  0
+}
+
+fn main() {
+  let f = foo;
+}

@@ -1,0 +1,18 @@
+fn main() {
+    // if-else as tail expression in for-loop body (no semicolon)
+    for i in 0..5 {
+        if i % 2 == 0 {
+            print_int(i);
+        } else {
+            print_int(i + 100);
+        }
+    }
+
+    // if-else chain as tail expression in block
+    let x = 10;
+    if x == 10 {
+        print_int(99);
+    } else {
+        print_int(0);
+    }
+}

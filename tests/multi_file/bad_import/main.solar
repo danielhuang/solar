@@ -1,0 +1,4 @@
+// "bad" does not exist
+import { bad } from "a.solar";
+
+fn main() {}

@@ -1,0 +1,9 @@
+fn main() {
+    let is_done = false;
+    thread::spawn(\ {
+        println("hello from thread"&);
+        is_done&.atomic_store(true);
+    });
+    while is_done&.atomic_load() == false {}
+    println("hello from main"&);
+}

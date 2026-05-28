@@ -1,0 +1,7 @@
+import lib from "lib.solar";
+
+fn main() {
+    let p: lib::Point = lib::origin();
+    print_int(p.x);
+    print_int(p.y);
+}

@@ -1,0 +1,4 @@
+fn main() {
+  let x: Int = 42;
+  let y: Int = x[0u];
+}

@@ -1,0 +1,13 @@
+pub struct Point {
+    pub x: Int,
+    pub y: Int,
+}
+
+pub type P = Point;
+
+pub enum Option#[T] {
+    Some(T),
+    None,
+}
+
+pub type OptInt = Option#[Int];

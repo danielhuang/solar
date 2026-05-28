@@ -1,0 +1,9 @@
+fn bad(x: Int) -> Int {
+  if x < 0 {
+    return true;
+  }
+  x
+}
+
+fn main() {
+}

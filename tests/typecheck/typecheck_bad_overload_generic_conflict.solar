@@ -1,0 +1,10 @@
+fn foo#[T](x: T) -> T {
+  x
+}
+
+fn foo#[U](x: U) -> U {
+  x
+}
+
+fn main() {
+}

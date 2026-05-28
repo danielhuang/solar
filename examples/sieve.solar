@@ -1,0 +1,18 @@
+fn main() {
+    let limit = 100000000u;
+    let prime = [true; limit];
+    prime[0u] = false;
+    prime[1u] = false;
+    let primes = 0;
+    for n in 0u..limit {
+        if prime[n] {
+            let i = n * 2u;
+            while i < limit {
+                prime[i] = false;
+                i = i + n;
+            }
+            primes = primes + 1;
+        }
+    }
+    print_int(primes);
+}

@@ -1,0 +1,7 @@
+pub fn public_fn() -> Int {
+    42
+}
+
+fn private_fn() -> Int {
+    99
+}

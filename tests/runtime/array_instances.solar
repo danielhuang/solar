@@ -1,0 +1,9 @@
+fn main() {
+    let a: [Int] = [0];
+    let b: [Int] = a;
+    
+    a[0u] = 1;
+    
+    print_int(a[0u]); // 1
+    print_int(b[0u]); // 0
+}

@@ -1,0 +1,6 @@
+fn bad() -> Int {
+  true
+}
+
+fn main() {
+}

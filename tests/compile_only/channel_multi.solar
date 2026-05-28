@@ -1,0 +1,15 @@
+fn main() {
+    let ch = sync::Channel#[Int]();
+    let sum = 0;
+
+    thread::spawn(\ {
+        ch&.send(10);
+        ch&.send(20);
+        ch&.send(30);
+    });
+
+    sum = sum + ch&.recv();
+    sum = sum + ch&.recv();
+    sum = sum + ch&.recv();
+    print_int(sum);
+}

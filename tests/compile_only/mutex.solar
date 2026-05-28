@@ -1,0 +1,14 @@
+fn main() {
+    let m = sync::Mutex();
+    let counter = 0;
+    thread::spawn(\ {
+        m&.lock();
+        counter = counter + 1;
+        m&.unlock();
+    });
+    m&.lock();
+    counter = counter + 1;
+    m&.unlock();
+    while counter&.atomic_load() < 2 {}
+    print_int(counter);
+}

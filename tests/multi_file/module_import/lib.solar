@@ -1,0 +1,8 @@
+pub struct Point {
+    pub x: Int,
+    pub y: Int,
+}
+
+pub fn origin() -> Point {
+    Point { x: 0, y: 0 }
+}

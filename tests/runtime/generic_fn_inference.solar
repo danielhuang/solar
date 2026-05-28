@@ -1,0 +1,70 @@
+// Generic function type argument inference tests
+// Reuses the same generic definitions as generic_functions.solar
+
+fn identity#[T](x: T) -> T {
+  x
+}
+
+fn second#[A, B](a: A, b: B) -> B {
+  b
+}
+
+struct Box#[T] {
+  value: T,
+}
+
+fn make_box#[T](v: T) -> Box#[T] {
+  Box#[T] { value: v }
+}
+
+fn apply#[T, R](f: fn(T) -> R, x: T) -> R {
+  f(x)
+}
+
+fn double(x: Int) -> Int {
+  x * 2
+}
+
+enum Option#[T] {
+  Some(T),
+  None,
+}
+
+fn unwrap_or#[T](opt: Option#[T], default: T) -> T {
+  match opt {
+    Option#[T]::Some(v) => v,
+    Option#[T]::None => default,
+  }
+}
+
+fn wrap_ref#[T](x: &T) -> &T {
+  x
+}
+
+fn main() {
+  // simple identity — infer T = Int
+  print_int(identity(42));                        // 42
+
+  // identity with Bool — infer T = Bool
+  let b = identity(true);
+  print_int(if b { 1 } else { 0 });              // 1
+
+  // multi-param generic — infer A = Bool, B = Int
+  print_int(second(true, 99));                    // 99
+
+  // generic function returning struct — infer T = Int
+  let bx = make_box(77);
+  print_int(bx.value);                           // 77
+
+  // higher-order generic — infer T = Int, R = Int
+  print_int(apply(double, 5));                    // 10
+
+  // generic function with enum — infer T = Int
+  print_int(unwrap_or(Option#[Int]::Some(123), 0));  // 123
+  print_int(unwrap_or(Option#[Int]::None, 55));      // 55
+
+  // reference parameter — infer T = Int
+  let v = 42;
+  let r = wrap_ref(v&);
+  print_int(r@);                                  // 42
+}

@@ -1,0 +1,120 @@
+enum Shape {
+  Circle(Int),
+  Square(Int),
+  Point,
+}
+
+struct Wrapper {
+  shape: Shape,
+  tag: Int,
+}
+
+enum Inner {
+  A,
+  B(Int),
+}
+
+enum Outer {
+  X(Inner),
+  Y,
+}
+
+fn describe_shape(s: Shape) -> Int {
+  match s {
+    Shape::Circle(r) => r,
+    Shape::Square(side) => side * side,
+    Shape::Point => 0,
+  }
+}
+
+fn main() {
+  // Basic unit variant
+  let p: Shape = Shape::Point;
+  print_int(describe_shape(p));           // 0
+
+  // Data variant
+  let c: Shape = Shape::Circle(5);
+  print_int(describe_shape(c));           // 5
+
+  // Another data variant
+  let sq: Shape = Shape::Square(4);
+  print_int(describe_shape(sq));          // 16
+
+  // Match returning values
+  let x: Shape = Shape::Circle(10);
+  let val = match x {
+    Shape::Circle(r) => r + 1,
+    Shape::Square(s) => s,
+    Shape::Point => 0,
+  };
+  print_int(val);                         // 11
+
+  // Wildcard pattern
+  let y: Shape = Shape::Square(7);
+  let w = match y {
+    Shape::Point => 0,
+    other => 1,
+  };
+  print_int(w);                           // 1
+
+  // Match bindings are places: assign to binding
+  let e: Shape = Shape::Circle(100);
+  match e {
+    Shape::Circle(r) => {
+      r = 200;
+    },
+    Shape::Square(s) => {},
+    Shape::Point => {},
+  };
+  // e should now have Circle(200) because binding was a place
+  let check = match e {
+    Shape::Circle(r) => r,
+    Shape::Square(s) => s,
+    Shape::Point => 0,
+  };
+  print_int(check);                       // 200
+
+  // Match bindings are places: take reference to binding
+  let e2: Shape = Shape::Circle(50);
+  match e2 {
+    Shape::Circle(r) => {
+      let ref_r: &Int = r&;
+      ref_r@ = 99;
+    },
+    Shape::Square(s) => {},
+    Shape::Point => {},
+  };
+  let check2 = match e2 {
+    Shape::Circle(r) => r,
+    Shape::Square(s) => s,
+    Shape::Point => 0,
+  };
+  print_int(check2);                      // 99
+
+  // Enums inside structs
+  let wrapped = Wrapper {
+    shape: Shape::Circle(42),
+    tag: 7,
+  };
+  print_int(wrapped.tag);                 // 7
+  let inner_val = match wrapped.shape {
+    Shape::Circle(r) => r,
+    Shape::Square(s) => s,
+    Shape::Point => 0,
+  };
+  print_int(inner_val);                   // 42
+
+  // Structs inside enums (enum variant wraps a struct)
+  // Not directly — but we can nest enums
+  let nested: Outer = Outer::X(Inner::B(77));
+  let result = match nested {
+    Outer::X(inner) => {
+      match inner {
+        Inner::A => 0,
+        Inner::B(n) => n,
+      }
+    },
+    Outer::Y => 0,
+  };
+  print_int(result);                      // 77
+}

@@ -1,0 +1,63 @@
+enum NodePtr {
+    Some(&Node),
+    None,
+}
+
+struct Node {
+    value: Int,
+    left: NodePtr,
+    right: NodePtr,
+}
+
+fn add(x: &Int, dx: Int) {
+    x@ = x@ + dx;
+}
+
+fn left(node: &Node) -> &Node {
+    match node@.left {
+        NodePtr::Some(left) => left,
+        NodePtr::None => {
+            let new_node = Node { value: 0, left: NodePtr::None, right: NodePtr::Some(node) };
+            node@.left = NodePtr::Some(new_node&);
+            new_node&
+        }
+    }
+}
+
+fn right(node: &Node) -> &Node {
+    match node@.right {
+        NodePtr::Some(right) => right,
+        NodePtr::None => {
+            let new_node = Node { value: 0, left: NodePtr::Some(node), right: NodePtr::None };
+            node@.right = NodePtr::Some(new_node&);
+            new_node&
+        }
+    }
+}
+
+fn main() {
+    let node = (Node { value: 6, left: NodePtr::None, right: NodePtr::None })&;
+    print_int(node@.value);
+    node = left(node);
+    node = left(node);
+    node = left(node);
+    node = left(node);
+    node = left(node);
+    node = left(node);
+    node@.value = 1;
+    print_int(node@.value);
+    node = right(node);
+    print_int(node@.value);
+    node = right(node);
+    print_int(node@.value);
+    node = right(node);
+    print_int(node@.value);
+    node = right(node);
+    print_int(node@.value);
+    node = right(node);
+    print_int(node@.value);
+    node = right(node);
+    print_int(node@.value);
+    node = right(node);
+    print_int(node@.value);
+}

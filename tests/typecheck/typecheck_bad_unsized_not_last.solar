@@ -1,0 +1,7 @@
+struct Bad {
+  xs: [Int],
+  y: Int,
+}
+
+fn main() {
+}

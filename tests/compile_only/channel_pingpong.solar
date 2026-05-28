@@ -1,0 +1,13 @@
+fn main() {
+    let ch1 = sync::Channel#[Int]();
+    let ch2 = sync::Channel#[Int]();
+
+    thread::spawn(\ {
+        let val = ch1&.recv();
+        ch2&.send(val + 1);
+    });
+
+    ch1&.send(10);
+    let result = ch2&.recv();
+    print_int(result);
+}

@@ -1,0 +1,9 @@
+import { Point, make_point, add_points } from "math.solar";
+
+fn main() {
+    let p1 = make_point(1, 2);
+    let p2 = make_point(3, 4);
+    let p3 = add_points(p1, p2);
+    print_int(p3.x);
+    print_int(p3.y);
+}

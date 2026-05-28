@@ -1,0 +1,6 @@
+fn foo#[T](x: Int) -> Int {
+  x
+}
+
+fn main() {
+}

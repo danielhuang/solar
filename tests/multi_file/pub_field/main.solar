@@ -1,0 +1,7 @@
+import { Pair, make_pair } from "lib.solar";
+
+fn main() {
+    let p = make_pair(10, 20);
+    print_int(p.first);
+    print_int(p.second);
+}

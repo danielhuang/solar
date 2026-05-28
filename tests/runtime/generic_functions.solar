@@ -1,0 +1,63 @@
+// generic identity function
+fn identity#[T](x: T) -> T {
+  x
+}
+
+// generic function with multiple type params
+fn second#[A, B](a: A, b: B) -> B {
+  b
+}
+
+// generic function returning a struct
+struct Box#[T] {
+  value: T,
+}
+
+fn make_box#[T](v: T) -> Box#[T] {
+  Box#[T] { value: v }
+}
+
+// generic function taking a function parameter
+fn apply#[T, R](f: fn(T) -> R, x: T) -> R {
+  f(x)
+}
+
+fn double(x: Int) -> Int {
+  x * 2
+}
+
+// generic function with enum
+enum Option#[T] {
+  Some(T),
+  None,
+}
+
+fn unwrap_or#[T](opt: Option#[T], default: T) -> T {
+  match opt {
+    Option#[T]::Some(v) => v,
+    Option#[T]::None => default,
+  }
+}
+
+fn main() {
+  // identity with Int
+  print_int(identity#[Int](42));           // 42
+
+  // identity with Bool (different monomorphization)
+  let b = identity#[Bool](true);
+  print_int(if b { 1 } else { 0 });       // 1
+
+  // multi-param generic
+  print_int(second#[Bool, Int](true, 99)); // 99
+
+  // generic function returning struct
+  let bx = make_box#[Int](77);
+  print_int(bx.value);                    // 77
+
+  // higher-order generic function
+  print_int(apply#[Int, Int](double, 5)); // 10
+
+  // generic function with enum
+  print_int(unwrap_or#[Int](Option#[Int]::Some(123), 0));  // 123
+  print_int(unwrap_or#[Int](Option#[Int]::None, 55));      // 55
+}

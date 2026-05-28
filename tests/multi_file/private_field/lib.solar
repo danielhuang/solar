@@ -1,0 +1,7 @@
+pub struct Secret {
+    hidden: Int,
+}
+
+pub fn make_secret(x: Int) -> Secret {
+    Secret { hidden: x }
+}

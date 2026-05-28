@@ -1,0 +1,4 @@
+fn main() {
+  let a = 0;
+  (if true { a } else { 5 }) = 3;
+}

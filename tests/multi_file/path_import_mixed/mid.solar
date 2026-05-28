@@ -1,0 +1,5 @@
+pub import inner from "inner.solar";
+
+pub fn add(a: Int, b: Int) -> Int {
+    a + b
+}

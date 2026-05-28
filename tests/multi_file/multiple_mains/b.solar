@@ -1,0 +1,11 @@
+import { a } from "a.solar";
+
+pub fn b() {
+    4
+}
+
+pub fn main() {
+    print_int(2);
+    print_int(a());
+    print_int(b());
+}

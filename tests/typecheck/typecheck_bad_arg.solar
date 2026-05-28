@@ -1,0 +1,13 @@
+struct Foo {
+  x: Int,
+}
+
+fn takes_int(n: Int) {
+}
+
+fn main() {
+  let f: Foo = Foo {
+    x: 1,
+  };
+  takes_int(f);
+}

@@ -1,0 +1,21 @@
+import intrinsics from "@intrinsics";
+
+pub struct Thread {
+    done: &Uint32,
+}
+
+pub fn spawn(f: fn()) -> Thread {
+    let done = 0u32;
+    intrinsics::thread_spawn(\ {
+        f();
+        done&.atomic_store(1u32);
+        done&.futex_wake();
+    });
+    Thread { done: done& }
+}
+
+pub method join(self: Thread) {
+    while self.done.atomic_load() == 0u32 {
+        self.done.futex_wait(0u32);
+    }
+}

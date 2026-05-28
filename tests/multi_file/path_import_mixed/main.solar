@@ -1,0 +1,6 @@
+import { inner::Point, add } from "mid.solar";
+
+fn main() {
+    let p: Point = Point { x: 3, y: 7 };
+    print_int(add(p.x, p.y));
+}

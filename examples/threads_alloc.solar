@@ -1,0 +1,15 @@
+fn main() {
+    let ref = 0&;
+    let is_done = false;
+    for _ in 0..16 {
+        thread::spawn(\ {
+            for i in 0..1000000 {
+                ref&.atomic_store(i&);
+            }
+            is_done&.atomic_store(true);
+        });
+    }
+    while is_done&.atomic_load() == false {}
+    print_int(ref@);
+    println("done"&);
+}

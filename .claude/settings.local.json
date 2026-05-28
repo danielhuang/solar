@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(cargo fmt:*)",
+      "Bash(git add:*)",
+      "Bash(git push:*)",
+      "Bash(cargo run:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo test:*)",
+      "Bash(grep \\\\\\\\:*)",
+      "Bash(git --no-pager diff --no-ext-diff src/typed_ast.rs)",
+      "Bash(git --no-pager diff --no-ext-diff --stat)",
+      "Bash(grep:*)",
+      "Bash(wc:*)",
+      "Bash(find:*)",
+      "Bash(xargs ls:*)",
+      "Bash(ls:*)"
+    ]
+  }
+}

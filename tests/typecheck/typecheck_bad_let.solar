@@ -1,0 +1,7 @@
+struct Foo {
+  x: Int,
+}
+
+fn main() {
+  let f: Foo = 5;
+}

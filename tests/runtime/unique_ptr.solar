@@ -1,0 +1,55 @@
+// Basic unique pointer: deep-copy on copy
+fn main() {
+  // Simple unique pointer
+  let a: ^Int = 42^;
+  print_int(a@);                  // 42
+
+  // Copy creates independent value
+  let b = a;
+  a@ = 100;
+  print_int(a@);                  // 100
+  print_int(b@);                  // 42 — not aliased
+
+  // Struct containing a unique pointer
+  let s1 = Wrapper { data: 10^ };
+  let s2 = s1;                    // deep copy: s2.data is a separate ^Int
+  s1.data@ = 999;
+  print_int(s1.data@);            // 999
+  print_int(s2.data@);            // 10 — independent
+
+  // Unique pointer to array (unsized)
+  let arr: ^[Int] = [1, 2, 3]^;
+  let arr2 = arr;                 // deep copy
+  arr@[0u] = 99;
+  print_int(arr@[0u]);            // 99
+  print_int(arr2@[0u]);           // 1 — independent
+
+  // Nested unique pointers: ^(struct with ^[Int])
+  let inner: ^[Int] = [10, 20, 30]^;
+  let outer = Container { items: inner };
+  let outer2 = outer;             // deep copy of entire tree
+  outer.items@[1u] = 999;
+  print_int(outer.items@[1u]);    // 999
+  print_int(outer2.items@[1u]);   // 20 — fully independent
+
+  // Unique pointer to a place: does not alias the original variable
+  let original = 77;
+  let uptr: ^Int = original^;
+  uptr@ = 0;
+  print_int(original);            // 77 — original unchanged
+  print_int(uptr@);               // 0
+
+  // Contrast with &T: shared reference copies alias
+  let shared: &Int = 42&;
+  let shared2 = shared;
+  shared@ = 100;
+  print_int(shared2@);            // 100 — aliased (as expected for &T)
+}
+
+struct Wrapper {
+  data: ^Int,
+}
+
+struct Container {
+  items: ^[Int],
+}

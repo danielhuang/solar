@@ -1,0 +1,37 @@
+fn main() {
+  // if true executes
+  if true {
+    print_int(1);
+  }
+
+  // if false does not execute
+  if false {
+    print_int(2);
+  }
+
+  // while with flag set to false in body
+  let go: Bool = true;
+  while go {
+    print_int(3);
+    go = false;
+  }
+
+  // nested if inside while
+  let go2: Bool = true;
+  while go2 {
+    if true {
+      print_int(4);
+    }
+    if false {
+      print_int(5);
+    }
+    go2 = false;
+  }
+
+  // while false never executes
+  while false {
+    print_int(6);
+  }
+
+  print_int(7);
+}

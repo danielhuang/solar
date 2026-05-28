@@ -1,0 +1,45 @@
+struct A {
+    value: Int,
+}
+
+struct B {
+    value: Int,
+}
+
+enum Test {
+    A(A),
+    B(B),
+}
+
+struct Wrapper {
+    inner: Test,
+}
+
+fn main() {
+    // Test 1: reassign to different variant — ref into old variant stays intact
+    let test = Test::A(A { value: 0 });
+    let ref = match test {
+        Test::A(a) => a.value&,
+        Test::B(b) => b.value&,
+    };
+    test = Test::B(B { value: 3 });
+    print_int(ref@); // 0
+
+    // Test 2: reassign same variant — ref sees updated value
+    let test2 = Test::A(A { value: 10 });
+    let ref2 = match test2 {
+        Test::A(a) => a.value&,
+        Test::B(b) => b.value&,
+    };
+    test2 = Test::A(A { value: 20 });
+    print_int(ref2@); // 20
+
+    // Test 3: struct containing enum — ref into variant survives reassignment to different variant
+    let wrap = Wrapper { inner: Test::A(A { value: 42 }) };
+    let ref3 = match wrap.inner {
+        Test::A(a) => a.value&,
+        Test::B(b) => b.value&,
+    };
+    wrap = Wrapper { inner: Test::B(B { value: 99 }) };
+    print_int(ref3@); // 42
+}

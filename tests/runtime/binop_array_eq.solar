@@ -1,0 +1,21 @@
+fn print_bool(b: Bool) {
+  if b {
+    print_int(1);
+  }
+  if b == false {
+    print_int(0);
+  }
+}
+
+fn main() {
+  let a: [Int] = [1, 2, 3];
+  let b: [Int] = [1, 2, 3];
+  let c: [Int] = [1, 2, 4];
+  let d: [Int] = [1, 2];
+
+  print_bool(a == b);  // 1
+  print_bool(a != b);  // 0
+  print_bool(a == c);  // 0
+  print_bool(a != c);  // 1
+  print_bool(a == d);  // 0 (different length)
+}

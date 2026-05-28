@@ -1,0 +1,55 @@
+enum Color {
+  Red,
+  Green,
+  Blue,
+  Custom(Int),
+}
+
+fn main() {
+  // if-as-place: true branch
+  let a = 0;
+  let b = 0;
+  (if true { a } else { b }) = 5;
+  print_int(a);  // 5
+  print_int(b);  // 0
+
+  // if-as-place: false branch
+  let c = 0;
+  let d = 0;
+  (if false { c } else { d }) = 10;
+  print_int(c);  // 0
+  print_int(d);  // 10
+
+  // match-as-place with enum
+  let x = 0;
+  let y = 0;
+  let color: Color = Color::Red;
+  (match color {
+    Color::Red => x,
+    Color::Green => y,
+    other => y,
+  }) = 42;
+  print_int(x);  // 42
+  print_int(y);  // 0
+
+  // match-as-place with different variant
+  let p = 0;
+  let q = 0;
+  let color2: Color = Color::Green;
+  (match color2 {
+    Color::Red => p,
+    Color::Green => q,
+    other => p,
+  }) = 77;
+  print_int(p);  // 0
+  print_int(q);  // 77
+
+  // nested if-as-place
+  let m = 0;
+  let n = 0;
+  let o = 0;
+  (if true { if false { m } else { n } } else { o }) = 99;
+  print_int(m);  // 0
+  print_int(n);  // 99
+  print_int(o);  // 0
+}

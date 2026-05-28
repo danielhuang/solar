@@ -1,0 +1,10 @@
+fn add(x: Int) -> fn(Int) -> Int {
+    \y: Int x + y
+}
+
+fn main() {
+    print_int(add(1)(2)); // 3
+    
+    let adder5 = add(5);
+    print_int(adder5(4)); // 9
+}

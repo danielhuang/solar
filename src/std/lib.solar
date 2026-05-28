@@ -1,0 +1,26 @@
+import intrinsics from "@intrinsics";
+pub import vec from "vec.solar";
+pub import sync from "sync.solar";
+pub import thread from "thread.solar";
+
+pub fn print_int(x: Int) {
+  intrinsics::print_int(x);
+}
+
+pub fn print_int(x: Uint) {
+  intrinsics::print_int(x);
+}
+
+pub fn write_stdout(s: &[Uint8]) {
+  intrinsics::write_stdout(s);
+}
+
+pub fn println(s: &[Uint8]) {
+    write_stdout(s);
+    write_stdout("\n"&);
+}
+
+pub fn panic(s: &[Uint8]) {
+    intrinsics::panic(s);
+}
+

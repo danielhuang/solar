@@ -1,0 +1,9 @@
+import { from_a } from "a.solar";
+import { from_b } from "b.solar";
+
+fn main() {
+    let a = from_a();
+    let b = from_b();
+    print_int(a.n);
+    print_int(b.n);
+}

@@ -1,0 +1,4 @@
+fn main() {
+  let a: [Int] = [1, 2, 3];
+  let x: Int = a[0];
+}

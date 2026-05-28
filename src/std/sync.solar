@@ -1,0 +1,96 @@
+import { atomic_load, atomic_store, atomic_exchange, atomic_compare_exchange, futex_wait, futex_wake, panic } from "@intrinsics";
+
+pub method atomic_load#[T](self: &T) -> T {
+    atomic_load(self)
+}
+
+pub method atomic_store#[T](self: &T, val: T) {
+    atomic_store(self, val);
+}
+
+pub method atomic_exchange#[T](self: &T, val: T) -> T {
+    atomic_exchange(self, val)
+}
+
+pub method atomic_compare_exchange#[T](self: &T, expected: T, new: T) -> T {
+    atomic_compare_exchange(self, expected, new)
+}
+
+pub method futex_wait(self: &Uint32, expected: Uint32) {
+    futex_wait(self, expected);
+}
+
+pub method futex_wake(self: &Uint32, count: Uint32) {
+    futex_wake(self, count);
+}
+
+pub method futex_wake(self: &Uint32) {
+    futex_wake(self, 2147483647u32);
+}
+
+pub struct Mutex {
+    pub locked: Uint32,
+}
+
+pub fn Mutex() -> Mutex {
+    Mutex { locked: 0u32 }
+}
+
+pub method lock(self: &Mutex) {
+    while self@.locked&.atomic_exchange(1u32) != 0u32 {
+        self@.locked&.futex_wait(1u32);
+    }
+}
+
+pub method unlock(self: &Mutex) {
+    self@.locked&.atomic_store(0u32);
+    self@.locked&.futex_wake(1u32);
+}
+
+enum ChannelSlot#[T] {
+    Empty,
+    Full(T),
+}
+
+pub struct Channel#[T] {
+    send_lock: Mutex,
+    recv_lock: Mutex,
+    state: Uint32,
+    data: ChannelSlot#[T],
+}
+
+pub fn Channel#[T]() -> Channel#[T] {
+    Channel#[T] {
+        send_lock: Mutex(),
+        recv_lock: Mutex(),
+        state: 0u32,
+        data: ChannelSlot#[T]::Empty,
+    }
+}
+
+pub method send#[T](self: &Channel#[T], value: T) {
+    self@.send_lock&.lock();
+    self@.data = ChannelSlot#[T]::Full(value);
+    self@.state&.atomic_store(1u32);
+    self@.state&.futex_wake(1u32);
+    while self@.state&.atomic_load() != 0u32 {
+        self@.state&.futex_wait(1u32);
+    }
+    self@.send_lock&.unlock();
+}
+
+pub method recv#[T](self: &Channel#[T]) -> T {
+    self@.recv_lock&.lock();
+    while self@.state&.atomic_load() == 0u32 {
+        self@.state&.futex_wait(0u32);
+    }
+    let slot = self@.data;
+    self@.data = ChannelSlot#[T]::Empty;
+    self@.state&.atomic_store(0u32);
+    self@.state&.futex_wake(1u32);
+    self@.recv_lock&.unlock();
+    match slot {
+        ChannelSlot#[T]::Full(v) => v,
+        ChannelSlot#[T]::Empty => panic("recv on empty channel"&),
+    }
+}

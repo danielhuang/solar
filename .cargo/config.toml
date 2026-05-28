@@ -1,0 +1,10 @@
+[target.x86_64-unknown-linux-gnu]
+rustflags = [
+    "-Ctarget-cpu=native",
+    "-Clinker-plugin-lto",
+    # "-Clinker=clang",
+    # "-Clink-arg=-fuse-ld=lld",
+    # "-Clto=fat",
+    # "-Cembed-bitcode=yes",
+    # "-Zdylib-lto"
+]

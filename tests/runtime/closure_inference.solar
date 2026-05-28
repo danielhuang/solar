@@ -1,0 +1,48 @@
+// Non-generic function with known param types
+fn apply_fn(f: fn(Int) -> Int, x: Int) -> Int { f(x) }
+
+// Generic function
+fn apply#[T, R](f: fn(T) -> R, x: T) -> R { f(x) }
+
+// Generic function with multiple params
+fn apply2#[T, U, R](f: fn(T, U) -> R, x: T, y: U) -> R { f(x, y) }
+
+struct Box#[T] {
+  value: T,
+}
+
+// Generic method: self type uses concrete Int, R is inferred
+method map#[R](self: Box#[Int], f: fn(Int) -> R) -> R {
+  f(self.value)
+}
+
+fn main() {
+  // 1. Non-generic function: param types known from signature
+  let r1 = apply_fn(\x x + 1, 10);
+  print_int(r1); // 11
+
+  // 2. Generic function: T=Int inferred from second arg, R inferred from closure body
+  let r2 = apply(\x x * 2, 5);
+  print_int(r2); // 10
+
+  // 3. Generic method: T=Int from receiver, R inferred from closure body
+  let b = Box#[Int] { value: 42 };
+  let r3 = b.map(\x x + 8);
+  print_int(r3); // 50
+
+  // 4. Let binding with type annotation
+  let f: fn(Int) -> Int = \x x + 100;
+  print_int(f(1)); // 101
+
+  // 5. Multi-param closure in generic function
+  let r5 = apply2(\x, y x + y, 3, 4);
+  print_int(r5); // 7
+
+  // 6. Indirect call through function-typed variable
+  let g: fn(Int) -> Int = \x x * 3;
+  print_int(g(9)); // 27
+
+  // 7. Mixed: some params typed, some inferred
+  let r7 = apply(\x: Int x + 5, 10);
+  print_int(r7); // 15
+}

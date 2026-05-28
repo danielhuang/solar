@@ -1,0 +1,24 @@
+fn print_bool(b: Bool) {
+  if b {
+    print_int(1);
+  }
+  if b == false {
+    print_int(0);
+  }
+}
+
+fn main() {
+  let s: [Uint8] = "Hello";
+  let manual: [Uint8] = [72u8, 101u8, 108u8, 108u8, 111u8];
+
+  print_bool(s == manual);       // 1
+  print_bool(s != manual);       // 0
+
+  let escaped: [Uint8] = "\t\n";
+  let escaped_manual: [Uint8] = [9u8, 10u8];
+  print_bool(escaped == escaped_manual);  // 1
+
+  // Print a string literal
+  write_stdout(s&);
+  write_stdout("\n"&);
+}

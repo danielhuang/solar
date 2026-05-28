@@ -1,0 +1,30 @@
+import { array_len, panic } from "@intrinsics";
+
+pub struct Vec#[T] {
+    len: Uint,
+    inner: ^[T],
+}
+
+pub fn Vec#[T](src: &[T]) -> Vec#[T] {
+    Vec#[T] {
+        len: array_len(src@),
+        inner: src@^,
+    }
+}
+
+pub method push#[T](self: &Vec#[T], value: T) {
+    let cap = array_len(self@.inner@);
+    if self@.len >= cap {
+        // Double capacity by concatenating inner with itself
+        self@.inner = (self@.inner@ + self@.inner@)^;
+    }
+    self@.inner@[self@.len] = value;
+    self@.len = self@.len + 1u;
+}
+
+pub method at#[T](self: &Vec#[T], index: Uint) -> &T {
+    if index >= self@.len {
+        panic("Vec.at: index out of bounds"&);
+    }
+    self@.inner@[index]&
+}

@@ -1,0 +1,9 @@
+fn main() {
+    let i: Int = 0;
+    while i < 100000000 {
+        if i % 10000 == 0 {
+            print_int(i);
+        }
+        i = i + 1;
+    }
+}

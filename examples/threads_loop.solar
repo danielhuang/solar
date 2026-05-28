@@ -1,0 +1,12 @@
+fn test() {
+  while true {
+    thread::spawn(\ {}).join();
+  }
+}
+
+fn main() {
+  let threads = [32u; \i thread::spawn(test)];
+  for t in threads {
+    t.join();
+  }
+}

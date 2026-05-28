@@ -1,0 +1,10 @@
+struct Foo {
+    x: Int,
+}
+
+struct Foo {
+    y: Int,
+}
+
+fn main() {
+}

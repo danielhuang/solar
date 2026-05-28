@@ -1,0 +1,15 @@
+fn main() {
+    let a = 5^;
+    
+    // references allowed to alias unique pointers
+    let a_ref = a@&;
+    
+    a_ref@ = 6;
+    print_int(a@); // 6
+    
+    // unique pointers cannot alias each other
+    let a2 = a@^;
+    a2@ = 7;
+    print_int(a@); // 6
+    print_int(a2@); // 7
+}

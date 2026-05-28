@@ -1,0 +1,12 @@
+fn test() {    
+    let a: [Int] = [1, 2, 3];
+    let x: Int = a[5u];
+}
+
+fn test2() {
+    test();
+}
+
+fn main() {
+    test2();
+}

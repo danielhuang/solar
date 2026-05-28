@@ -1,0 +1,27 @@
+fn main() {
+    // Create a Vec from a source slice
+    let v = vec::Vec#[Int]([10, 20, 30]&);
+
+    // Use .at for bounds-checked access
+    print_int(v&.at(0u)@);              // 10
+    print_int(v&.at(1u)@);              // 20
+    print_int(v&.at(2u)@);              // 30
+
+    // Push elements (triggers realloc when capacity exceeded)
+    let v2 = vec::Vec#[Int]([1, 2]&);
+    v2&.push(3);                         // len=3, cap was 2 -> doubles to 4
+    v2&.push(4);                         // len=4, cap=4
+    v2&.push(5);                         // len=5, cap was 4 -> doubles to 8
+
+    print_int(v2&.at(0u)@);             // 1
+    print_int(v2&.at(1u)@);             // 2
+    print_int(v2&.at(2u)@);             // 3
+    print_int(v2&.at(3u)@);             // 4
+    print_int(v2&.at(4u)@);             // 5
+
+    // Mutate through .at reference
+    let v3 = vec::Vec#[Int]([100, 200]&);
+    v3&.at(0u)@ = 999;
+    print_int(v3&.at(0u)@);             // 999
+    print_int(v3&.at(1u)@);             // 200
+}

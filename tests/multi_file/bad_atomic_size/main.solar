@@ -1,0 +1,10 @@
+struct Bad {
+    a: Uint8,
+    b: Uint8,
+    c: Uint8,
+}
+
+fn main() {
+    let x = Bad { a: 0u8, b: 0u8, c: 0u8 };
+    x&.atomic_compare_exchange(Bad { a: 0u8, b: 0u8, c: 0u8 }, Bad { a: 1u8, b: 1u8, c: 1u8 });
+}

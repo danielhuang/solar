@@ -1,0 +1,16 @@
+pub struct Point {
+    pub x: Int,
+    pub y: Int,
+}
+
+pub fn make_point(x: Int, y: Int) -> Point {
+    Point { x: x, y: y }
+}
+
+pub fn add_points(a: Point, b: Point) -> Point {
+    Point { x: a.x + b.x, y: a.y + b.y }
+}
+
+fn secret() -> Int {
+    42
+}

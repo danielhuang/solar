@@ -1,0 +1,28 @@
+struct Pair {
+  val: Int,
+  ref_val: &Int,
+}
+
+fn main() {
+  let original: Pair = Pair {
+    val: 10,
+    ref_val: 20&,
+  };
+
+  // deep copy: val is copied by value, ref_val shares the reference
+  let copy: Pair = original;
+
+  // mutate original's value field
+  original.val = 99;
+
+  // mutate through the shared reference
+  original.ref_val@ = 42;
+
+  // val: copy keeps old value (10), original has new value (99)
+  print_int(original.val);
+  print_int(copy.val);
+
+  // ref_val: both see the mutation (42)
+  print_int(original.ref_val@);
+  print_int(copy.ref_val@);
+}

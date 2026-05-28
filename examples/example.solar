@@ -1,0 +1,338 @@
+// built-in types:
+//   integers: Int8, Int16, Int32, Int64, Int, Uint8, Uint16, Uint32, Uint64, Uint
+//     Int and Uint are pointer-sized
+//     any integer literals are always Int
+//   floats: Float32, Float64
+//   boolean: Bool
+//     keywords are `true` and `false`
+//   owned non-resizable slice: [T]
+//   fixed-size array: [T; N] (N is a compile-time integer)
+//   references (pointers for interior mutability): &T
+//     note that references are always mutable unlike rust
+//   unique pointers (deep-copy on copy): ^T
+//     unlike &T which aliases on copy, ^T deep-clones the pointee
+
+// built-in io (via stdlib wrappers):
+//   write_stdout(s: &[Uint8])
+//   println(s: &[Uint8])
+//   print_int(x: Int), print_int(x: Uint)
+//
+// intrinsics are accessed via: import intrinsics from "@intrinsics"
+//   intrinsics::print_int, intrinsics::write_stdout, intrinsics::read_stdin
+//   numeric casts are generated as constructor functions: Int(x), Uint8(x), etc.
+//     any overflow will crash
+//     same behavior as rust's `x as T`
+
+pub struct String {
+  // the struct owns a non-resizable slice of bytes
+  pub utf8: [Uint8],
+}
+
+struct TestStruct {
+  a: Int,
+  c: &Int,
+  b: String,
+}
+
+// unlike rust, references always have mutable access
+fn print_test_struct(x: &TestStruct) {
+  // print impl is todo
+}
+
+// return type can be inferred from the tail expression
+pub fn add(a: Int, b: Int) {
+  a + b
+}
+
+// or via explicit return type annotation
+fn abs(x: Int) -> Int {
+  if x < 0 {
+    return 0 - x;
+  }
+  x
+}
+
+enum Color {
+  Red,
+  Green,
+  Blue,
+  Custom(Int),
+}
+
+// generic struct
+struct Box#[T] {
+  value: T,
+}
+
+// generic enum
+enum Option#[T] {
+  Some(T),
+  None,
+}
+
+// type aliases
+type Num = Int;
+type OptInt = Option#[Int];
+
+fn main() {
+  // comments look like this
+
+  let test_struct: TestStruct = TestStruct {
+    a: 1,
+    c: 5&,
+    b: String {
+      utf8: [1u8, 2u8, 3u8],
+    },
+  };
+
+  // deep copy
+  let test_struct_2: TestStruct = test_struct;
+
+  test_struct.a = 3;
+
+  if true {
+    // postfix @ for dereferencing
+    test_struct.c@ = 2;
+  }
+
+  print_int(test_struct.c@);    // 2
+  print_int(test_struct_2.c@);  // also 2 — deep copy shares &T references
+  print_int(test_struct_2.a);   // 1 — non-reference fields are copied by value
+
+  while false {
+    // do nothing
+  }
+
+  // type annotations on let bindings are optional
+  let x = 2 + 3 * 4;            // 14 (inferred as Int)
+  print_int(x);
+
+  let sum = x + 6;              // 20 (inferred as Int)
+  print_int(sum);
+
+  let cmp = x > 10 && x < 20;   // inferred as Bool
+  if cmp {
+    print_int(1);                // 1
+  }
+
+  // array indexing
+  let arr: [Int] = [10, 20, 30];
+  print_int(arr[0u]);            // 10
+  print_int(arr[2u]);            // 30
+  arr[1u] = 99;
+  print_int(arr[1u]);            // 99
+
+  // return values
+  print_int(add(10, 20));        // 30
+  print_int(abs(0 - 5));         // 5
+  print_int(abs(7));             // 7
+
+  // if-else statement
+  if x > 100 {
+    print_int(0);
+  } else {
+    print_int(1);                // 1
+  }
+
+  // if-expression (both branches required)
+  let val = if x > 10 { 100 } else { 200 };
+  print_int(val);                // 100
+
+  // string literals desugar to [Uint8]
+  let msg = "Hello";
+
+  // block expressions
+  let block_val = {
+    let tmp = 10;
+    tmp + 5
+  };
+  print_int(block_val);              // 15
+
+  // array repeat: [value; count]
+  let zeros: [Int] = [0; 5u];
+  print_int(zeros[3u]);              // 0
+
+  // fixed-size array type: [T; N]
+  let fixed: [Int; 3] = [1, 2, 3];
+  print_int(fixed[1u]);              // 2
+
+  // fixed arrays can be concatenated (result is [T])
+  let a: [Int; 2] = [10, 20];
+  let b: [Int; 2] = [30, 40];
+  let c: [Int; 4] = a + b;
+  print_int(c[2u]);                  // 30
+
+  // first-class functions
+  let f: fn(Int, Int) -> Int = add;
+  print_int(f(3, 4));               // 7
+
+  // closures
+  let offset = 10;
+  let add_offset = \x: Int offset + x;
+  print_int(add_offset(5));          // 15
+  print_int(add_offset(20));         // 30
+
+  // closure parameter type inference — types inferred from context
+  let typed_fn: fn(Int) -> Int = \x x + 1;
+  print_int(typed_fn(9));            // 10
+  let b2 = Box#[Int] { value: 7 };
+  print_int(b2.map(\x x * 3));      // 21
+
+  // slice syntax: a[i..j]
+  let s: [Int] = [10, 20, 30, 40, 50];
+  print_int(s[1u..3u][0u]);          // 20
+  print_int(s[1u..3u][1u]);          // 30
+  s[1u..3u] = s[3u..5u];             // copy [40,50] into positions [1,2]
+  print_int(s[1u]);                   // 40
+  let r: &[Int] = s[0u..2u]&;
+  r@[0u] = 99;
+  print_int(s[0u]);                   // 99
+
+  // enums
+  let c: Color = Color::Custom(42);
+  let result = match c {
+    Color::Red => 0,
+    Color::Green => 1,
+    Color::Blue => 2,
+    Color::Custom(n) => n,
+  };
+  print_int(result);                  // 42
+
+  let d: Color = Color::Red;
+  let name = match d {
+    Color::Red => 10,
+    other => 0,
+  };
+  print_int(name);                    // 10
+
+  // if/match as place (lvalue)
+  let lhs_a = 0;
+  let lhs_b = 0;
+  (if true { lhs_a } else { lhs_b }) = 42;
+  print_int(lhs_a);                   // 42
+  print_int(lhs_b);                   // 0
+
+  // generic struct
+  let b: Box#[Int] = Box#[Int] { value: 77 };
+  print_int(b.value);                  // 77
+
+  // generic enum
+  let some_val: Option#[Int] = Option#[Int]::Some(99);
+  let none_val: Option#[Int] = Option#[Int]::None;
+  let r1 = match some_val {
+    Option#[Int]::Some(v) => v,
+    Option#[Int]::None => 0,
+  };
+  print_int(r1);                       // 99
+
+  let r2 = match none_val {
+    Option#[Int]::Some(v) => v,
+    Option#[Int]::None => 0,
+  };
+  print_int(r2);                       // 0
+
+  // different monomorphization
+  let b2: Box#[Bool] = Box#[Bool] { value: true };
+
+  // generic functions
+  let id_val = identity#[Int](42);
+  print_int(id_val);                   // 42
+  print_int(second#[Bool, Int](true, 7)); // 7
+
+  // methods
+  let doubled = 21.double();
+  print_int(doubled);                    // 42
+
+  // generic method
+  let bm: Box#[Int] = Box#[Int] { value: 10 };
+  print_int(bm.map#[Int](abs));          // 10
+
+  // tuples
+  let t: (Int, Bool) = (42, true);
+  print_int(t.0);                         // 42
+  let t2 = (1, 2, 3);
+  print_int(t2.1);                        // 2
+
+  // destructuring
+  let (da, db) = (100, 200);
+  print_int(da);                          // 100
+  print_int(db);                          // 200
+
+  let TestStruct { a: sa, c: sc, b: sb } = test_struct;
+  print_int(sa);                          // 3
+
+  let [ea, eb, ec]: [Int; 3] = [7, 8, 9];
+  print_int(ea);                          // 7
+
+  // nested destructuring
+  let ((na, nb), nc) = ((10, 20), 30);
+  print_int(nc);                          // 30
+
+  // function overloading
+  print_int(negate(5));                   // -5
+  print_int(negate(true));                // 0
+
+  // for loops
+  for i in 0..3 {
+    print_int(i);                         // 0, 1, 2
+  }
+
+  let items = [10, 20, 30];
+  for x in items {
+    print_int(x);                         // 10, 20, 30
+  }
+
+  // array init: [count; fn(Uint) -> T]
+  let indices = [5u; \i: Uint i];
+  print_int(indices[2u]);                 // 2
+  print_int(indices[4u]);                 // 4
+
+  // unique pointers (^T): deep-copy on copy
+  let uptr: ^Int = 42^;
+  print_int(uptr@);                      // 42
+  let uptr2 = uptr;                      // deep copy: uptr2 points to separate memory
+  uptr@  = 100;
+  print_int(uptr@);                      // 100
+  print_int(uptr2@);                     // 42 — not aliased
+
+  // nested functions (closures with fn syntax)
+  let base = 1000;
+  fn add_base(x: Int) -> Int { base + x }
+  print_int(add_base(23));                // 1023
+
+  // Vec (from stdlib via vec module)
+  let v = vec::Vec#[Int]([10, 20]&);
+  v&.push(30);
+  print_int(v&.at(0u)@);                 // 10
+  print_int(v&.at(2u)@);                 // 30
+}
+
+// generic function: identity
+fn identity#[T](x: T) -> T {
+  x
+}
+
+// generic function: return second argument
+fn second#[A, B](a: A, b: B) -> B {
+  b
+}
+
+// method on Int
+method double(self: Int) -> Int {
+  self * 2
+}
+
+// generic method
+method map#[R](self: Box#[Int], f: fn(Int) -> R) -> R {
+  f(self.value)
+}
+
+// function overloading: same name, different param types
+fn negate(x: Int) -> Int {
+  0 - x
+}
+
+fn negate(x: Bool) -> Int {
+  if x { return 0; }
+  1
+}

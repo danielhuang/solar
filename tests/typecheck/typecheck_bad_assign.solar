@@ -1,0 +1,12 @@
+struct Foo {
+  x: Int,
+}
+
+fn main() {
+  let f: Foo = Foo {
+    x: 1,
+  };
+  f.x = Foo {
+    x: 2,
+  };
+}

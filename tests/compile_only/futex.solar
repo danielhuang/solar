@@ -1,0 +1,11 @@
+fn main() {
+    let flag = 0u32;
+    thread::spawn(\ {
+        flag&.atomic_store(1u32);
+        flag&.futex_wake(1u32);
+    });
+    while flag&.atomic_load() == 0u32 {
+        flag&.futex_wait(0u32);
+    }
+    print_int(Int(flag&.atomic_load()));
+}

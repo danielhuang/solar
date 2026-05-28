@@ -1,0 +1,28 @@
+struct Test {
+  a: Int,
+  b: &Int,
+}
+
+fn main() {
+  let c: Int = 1;
+  let test: Test = Test {
+    a: 5,
+    b: c&,
+  };
+  c = 2;
+  print_int(test.b@); // 2
+  test.b@ = 3;
+  print_int(c); // 3
+  
+  test.b = test.a&;
+  print_int(test.b@); // 5
+  print_int(test.a); // 5
+  
+  test.a = 6;
+  print_int(test.b@); // 6
+  print_int(test.a); // 6
+  
+  test.b@ = 7;
+  print_int(test.b@); // 7
+  print_int(test.a); // 7
+}

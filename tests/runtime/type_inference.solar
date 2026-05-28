@@ -1,0 +1,27 @@
+fn double(x: Int) {
+  x * 2
+}
+
+fn main() {
+  // inferred let bindings
+  let a = 10;
+  print_int(a);              // 10
+
+  let b = a + 5;
+  print_int(b);              // 15
+
+  let c = true;
+  if c {
+    print_int(1);            // 1
+  }
+
+  let arr = [1, 2, 3];
+  print_int(arr[0u]);        // 1
+
+  // inferred function return type
+  print_int(double(7));      // 14
+
+  // explicit annotations still work
+  let d: Int = 42;
+  print_int(d);              // 42
+}

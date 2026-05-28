@@ -1,0 +1,51 @@
+// tail expression (no semicolon)
+fn double(x: Int) -> Int {
+  x * 2
+}
+
+// tail expression (with semicolon — same AST)
+fn triple(x: Int) -> Int {
+  x * 3;
+}
+
+// explicit return
+fn abs(x: Int) -> Int {
+  if x < 0 {
+    return 0 - x;
+  }
+  x
+}
+
+// nested calls
+fn add(a: Int, b: Int) -> Int {
+  a + b
+}
+
+// return in non-last position
+fn clamp(x: Int, lo: Int, hi: Int) -> Int {
+  if x < lo {
+    return lo;
+  }
+  if x > hi {
+    return hi;
+  }
+  x
+}
+
+// unit-returning function can still have expressions
+fn side_effect(x: Int) {
+  print_int(x);
+}
+
+fn main() {
+  print_int(double(5));       // 10
+  print_int(triple(3));       // 9
+  print_int(abs(0 - 7));      // 7
+  print_int(abs(7));          // 7
+  print_int(add(10, 20));     // 30
+  print_int(add(double(3), triple(2)));  // 12
+  print_int(clamp(0 - 5, 0, 100));  // 0
+  print_int(clamp(50, 0, 100));     // 50
+  print_int(clamp(200, 0, 100));    // 100
+  side_effect(42);            // 42
+}

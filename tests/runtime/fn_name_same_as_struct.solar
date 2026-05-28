@@ -1,0 +1,14 @@
+// A function is allowed to have the same name as a struct
+
+struct Foo {
+  x: Int,
+}
+
+fn Foo(x: Int) -> Foo {
+  Foo { x: x }
+}
+
+fn main() {
+  let f = Foo(42);
+  print_int(f.x);
+}

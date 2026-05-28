@@ -1,0 +1,22 @@
+// Many threads churn large, reference-free blobs and publish a shared reference to
+// the latest one. Each blob is a [Int] array — no references inside — so the GC's
+// precise heap-mark for it is _mark_noop: the collector never scans the blob's bytes,
+// only accounts for its size. GC pauses stay short despite heavy allocation pressure.
+// (Contrast: threads_list.solar, where each allocation holds a &Node and IS walked.)
+
+fn main() {
+    let blob = [0; 1u]&;
+    let is_done = false;
+    for _ in 0..16 {
+        thread::spawn(\ {
+            // 8388608 Ints * 8 bytes = 64 MiB per blob
+            for i in 0..64 {
+                blob&.atomic_store([i; 8388608u]&);
+            }
+            is_done&.atomic_store(true);
+        });
+    }
+    while is_done&.atomic_load() == false {}
+    print_int(blob&.atomic_load()@[0u]);
+    println("done"&);
+}

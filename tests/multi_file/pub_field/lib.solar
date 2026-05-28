@@ -1,0 +1,8 @@
+pub struct Pair {
+    pub first: Int,
+    pub second: Int,
+}
+
+pub fn make_pair(a: Int, b: Int) -> Pair {
+    Pair { first: a, second: b }
+}

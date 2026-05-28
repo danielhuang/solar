@@ -1,0 +1,6 @@
+import { Secret, make_secret } from "lib.solar";
+
+fn main() {
+    let s = make_secret(42);
+    print_int(s.hidden);
+}

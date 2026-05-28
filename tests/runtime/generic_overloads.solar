@@ -1,0 +1,56 @@
+struct Wrapper#[T] {
+  value: T,
+}
+
+// Generic + concrete same name: concrete wins for exact type
+fn process(x: Int) -> Int {
+  x * 10
+}
+
+fn process#[T](x: T) -> T {
+  x
+}
+
+// Two generic overloads with different specificity:
+// Wrapper#[T] is partially generic, T is fully generic
+fn handle#[T](x: Wrapper#[T]) -> Int {
+  1
+}
+
+fn handle#[T](x: T) -> Int {
+  0
+}
+
+// Lexicographic param ordering
+fn pick#[T](a: Int, b: T) -> Int {
+  a + 1
+}
+
+fn pick#[T](a: T, b: Int) -> Int {
+  b + 2
+}
+
+fn main() {
+  // concrete wins for exact Int arg
+  print_int(process(5));
+
+  // generic handles Bool
+  let b: Bool = process(true);
+  if b {
+    print_int(1);
+  }
+
+  // Wrapper-specific overload wins over fully generic
+  let w: Wrapper#[Int] = Wrapper#[Int] { value: 42 };
+  print_int(handle(w));
+
+  // fully generic handles Int
+  print_int(handle(99));
+
+  // lexicographic: first param wins
+  // pick(Int, Bool) -> matches first overload (a: Int, b: T)
+  print_int(pick(10, true));
+
+  // pick(Bool, Int) -> matches second overload (a: T, b: Int)
+  print_int(pick(true, 20));
+}

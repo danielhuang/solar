@@ -1,0 +1,22 @@
+// Overloaded functions: same name, different param types
+
+fn describe(x: Int) -> Int {
+  1
+}
+
+fn describe(x: Bool) -> Int {
+  2
+}
+
+fn describe(x: Int, y: Int) -> Int {
+  3
+}
+
+fn main() {
+  // Different types
+  print_int(describe(42));       // 1
+  print_int(describe(true));     // 2
+
+  // Different arity
+  print_int(describe(10, 20));   // 3
+}

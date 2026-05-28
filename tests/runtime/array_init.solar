@@ -1,0 +1,30 @@
+fn make_index(i: Uint) -> Uint {
+  i
+}
+
+fn main() {
+  // basic array init with closure: [5u; \i: Uint i]
+  let arr = [5u; \i: Uint i];
+  print_int(arr[0u]);  // 0
+  print_int(arr[1u]);  // 1
+  print_int(arr[4u]);  // 4
+
+  // array init with expression body
+  let squares = [4u; \i: Uint i * i];
+  print_int(squares[0u]);  // 0
+  print_int(squares[1u]);  // 1
+  print_int(squares[2u]);  // 4
+  print_int(squares[3u]);  // 9
+
+  // array init with capture
+  let offset = 10u;
+  let arr2 = [3u; \i: Uint i + offset];
+  print_int(arr2[0u]);  // 10
+  print_int(arr2[1u]);  // 11
+  print_int(arr2[2u]);  // 12
+
+  // array init with a function reference
+  let arr3 = [3u; make_index];
+  print_int(arr3[0u]);  // 0
+  print_int(arr3[2u]);  // 2
+}

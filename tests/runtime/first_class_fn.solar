@@ -1,0 +1,36 @@
+fn double(x: Int) -> Int { x * 2 }
+fn triple(x: Int) -> Int { x * 3 }
+fn add(a: Int, b: Int) -> Int { a + b }
+fn apply(f: fn(x: Int) -> Int, val: Int) -> Int { f(val) }
+fn get_fn(flag: Bool) -> fn(Int) -> Int {
+  if flag { double } else { triple }
+}
+
+fn main() {
+  // Store function in variable
+  let f: fn(Int) -> Int = double;
+  print_int(f(5));                // 10
+
+  // Pass function as argument
+  print_int(apply(double, 7));    // 14
+  print_int(apply(triple, 7));    // 21
+
+  // Return function from function
+  let g = get_fn(true);
+  print_int(g(4));                // 8
+  let h = get_fn(false);
+  print_int(h(4));                // 12
+
+  // Reassign function variable
+  let f2: fn(Int) -> Int = double;
+  print_int(f2(3));               // 6
+  f2 = triple;
+  print_int(f2(3));               // 9
+
+  // Two-argument function type
+  let a: fn(Int, Int) -> Int = add;
+  print_int(a(10, 20));           // 30
+
+  // Function reference used directly (no variable)
+  print_int(apply(double, 100));  // 200
+}

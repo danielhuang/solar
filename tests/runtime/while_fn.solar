@@ -1,0 +1,13 @@
+fn while_fn(cond: fn() -> Bool, body: fn()) {
+    while cond() {
+        body();
+    }
+}
+
+fn main() {
+    let i: Int = 0;
+    while_fn(\ i < 5, \ {
+        print_int(i);
+        i = i + 1;
+    });
+}

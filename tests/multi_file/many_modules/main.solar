@@ -1,0 +1,9 @@
+import d from "d.solar";
+
+fn main() {
+    let value = d::c::b::a::Enum::Variant(1);
+    
+    match value {
+        d::c::b::a::Enum::Variant(n) => print_int(n),
+    }
+}
