@@ -368,6 +368,20 @@ fn match_reflect() {
 }
 
 #[test]
+fn reflect_fields() {
+    let output = run(&fixture("reflect_fields.solar"), "reflect_fields");
+    assert_eq!(
+        output,
+        "x\n10\ny\n20\ncount\n7\n\
+         x\n10\ny\n20\ncount\n7\n\
+         not a struct\n\
+         value\n99\n\
+         10\n20\n\
+         x\n10\ny\n20\n"
+    );
+}
+
+#[test]
 fn atomics() {
     let output = run(&fixture("atomics.solar"), "atomics");
     assert_eq!(output, "99\n1\n77\n10\n5\n99\n99\n99\n1\n2\n100\n200\n");

@@ -1,0 +1,58 @@
+struct Point {
+    x: Int,
+    y: Int,
+    count: Uint,
+}
+
+struct Box#[T] {
+    value: T,
+}
+
+struct Vec2 {
+    x: Int,
+    y: Int,
+}
+
+// Generic use: the loop sits inside match.reflect's "struct" branch, so this
+// compiles for every instantiation — the loop is erased for non-structs.
+fn print_fields#[T](o: &T) {
+    match.reflect T {
+        "struct" => {
+            for.reflect_fields f in o {
+                println(f.0);
+                print_int(f.1@);
+            }
+        },
+        _ => { println("not a struct"&); },
+    };
+}
+
+fn main() {
+    let p = Point { x: 10, y: 20, count: 7u };
+
+    // bare use with a known struct: f is (&[Uint8], &F) per field
+    for.reflect_fields f in p& {
+        println(f.0);
+        print_int(f.1@);
+    }
+
+    // generic use via match.reflect guard
+    print_fields(p&);
+    print_fields(42&);
+    let b = Box#[Int] { value: 99 };
+    print_fields(b&);
+
+    // the field reference aliases the struct: writes are visible after
+    let v = Vec2 { x: 1, y: 2 };
+    for.reflect_fields f in v& {
+        f.1@ = f.1@ * 10;
+    }
+    print_int(v.x);
+    print_int(v.y);
+
+    // tuple destructuring of the loop variable
+    for.reflect_fields (name, value) in v& {
+        println(name);
+        print_int(value@);
+    }
+}

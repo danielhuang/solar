@@ -819,6 +819,16 @@ fn rewrite_statement(stmt: &mut Statement, ctx: &RewriteCtx, locals: &mut HashSe
             rewrite_expr(iterable, ctx, locals);
             rewrite_statements(body, ctx, locals);
         }
+        StatementKind::ForReflectFields {
+            pattern,
+            object,
+            body,
+        } => {
+            collect_pattern_names(pattern, locals);
+            rewrite_destructure_pattern(pattern, ctx.rename_map, ctx.module_aliases);
+            rewrite_expr(object, ctx, locals);
+            rewrite_statements(body, ctx, locals);
+        }
         StatementKind::Expression(expr) => {
             rewrite_expr(expr, ctx, locals);
         }

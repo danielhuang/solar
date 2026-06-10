@@ -1438,6 +1438,16 @@ impl<'a> Codegen<'a> {
 
     /// Emit C code writing value directly into `dst`.
     fn emit_into(&mut self, nodes: &[Node], id: NodeId, dst: &str) {
+        // Unit values are zero-sized and have no destination to write — skip.
+        // (Unit-typed blocks produce a dummy literal node as their value.)
+        if matches!(nodes[id.0].ty, Type::Unit | Type::Never)
+            && matches!(
+                nodes[id.0].kind,
+                NodeKind::BooleanLiteral(_) | NodeKind::IntegerLiteral(_)
+            )
+        {
+            return;
+        }
         match &nodes[id.0].kind {
             NodeKind::Local(_)
             | NodeKind::FieldAccess { .. }

@@ -1,0 +1,6 @@
+struct P { a: Int, }
+fn main() {
+    let p = P { a: 1 };
+    for.reflect_fields f in p {
+    }
+}

@@ -179,6 +179,11 @@ pub enum StatementKind {
         iterable: Expr,
         body: Vec<Statement>,
     },
+    ForReflectFields {
+        pattern: DestructurePattern,
+        object: Expr,
+        body: Vec<Statement>,
+    },
     Expression(Expr),
     Return(Expr),
     NestedFunction(FunctionDef),

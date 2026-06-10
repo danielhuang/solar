@@ -311,6 +311,14 @@ fn main() {
   print_int(match.reflect TestStruct { "struct" => 1, "enum" => 2, _ => 0 }); // 1
   print_int(kind_of(Color::Red));         // 2
   print_int(kind_of(42));                  // 0
+
+  // compile-time field iteration: unrolls per field of the struct behind
+  // the reference; f is (&[Uint8], &F) — field name and value reference
+  let boxed = Box#[Int] { value: 5 };
+  for.reflect_fields f in boxed& {
+    println(f.0);                          // value
+    print_int(f.1@);                       // 5
+  }
 }
 
 // works with generics: each instantiation takes its own branch

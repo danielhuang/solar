@@ -106,7 +106,7 @@ module.exports = grammar({
 
     // ── Statements ──────────────────────────────────────────
     _statement: ($) =>
-      choice($.let_statement, $.assignment_statement, $.expression_statement, $.if_statement, $.while_statement, $.for_statement, $.return_statement, $.function_def),
+      choice($.let_statement, $.assignment_statement, $.expression_statement, $.if_statement, $.while_statement, $.for_statement, $.reflect_fields_statement, $.return_statement, $.function_def),
 
     return_statement: ($) =>
       seq("return", field("value", $._expression_with_struct), ";"),
@@ -302,6 +302,13 @@ module.exports = grammar({
     reflect_match_expression: ($) =>
       seq("match", ".", "reflect", field("type", $._type), "{",
         optional($.reflect_match_arm_list), "}"),
+
+    // for.reflect_fields x in o { ... } — unrolls over the fields of the
+    // struct behind the reference `o`; x is ([Uint8]&, F&) per field
+    // and may be destructured: for.reflect_fields (name, value) in o { ... }
+    reflect_fields_statement: ($) =>
+      seq("for", ".", "reflect_fields", field("variable", $._destructure_target), "in",
+        field("object", $._expression), field("body", $.block)),
 
     reflect_match_arm_list: ($) =>
       seq($.reflect_match_arm, repeat(seq(",", $.reflect_match_arm)), optional(",")),

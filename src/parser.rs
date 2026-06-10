@@ -448,6 +448,9 @@ fn convert_block(node: tree_sitter::Node, source: &str) -> Vec<Statement> {
             "if_statement" => stmts.push(convert_if_statement(child, source)),
             "while_statement" => stmts.push(convert_while_statement(child, source)),
             "for_statement" => stmts.push(convert_for_statement(child, source)),
+            "reflect_fields_statement" => {
+                stmts.push(convert_reflect_fields_statement(child, source))
+            }
             "return_statement" => stmts.push(convert_return_statement(child, source)),
             "function_def" => {
                 let span = source_span(child);
@@ -559,6 +562,22 @@ fn convert_for_statement(node: tree_sitter::Node, source: &str) -> Statement {
             },
             span,
         }
+    }
+}
+
+fn convert_reflect_fields_statement(node: tree_sitter::Node, source: &str) -> Statement {
+    let span = source_span(node);
+    let pattern =
+        convert_destructure_pattern(node.child_by_field_name("variable").unwrap(), source);
+    let object = convert_expr(node.child_by_field_name("object").unwrap(), source);
+    let body = convert_block(node.child_by_field_name("body").unwrap(), source);
+    Statement {
+        kind: StatementKind::ForReflectFields {
+            pattern,
+            object,
+            body,
+        },
+        span,
     }
 }
 

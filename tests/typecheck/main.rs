@@ -265,3 +265,15 @@ fn bad_literal_overflow_int() {
 fn bad_literal_overflow_uint() {
     compile(&fixture("typecheck_bad_literal_overflow_uint.solar"));
 }
+
+#[test]
+#[should_panic(expected = "for.reflect_fields requires &T where T is a struct, got &Int")]
+fn bad_reflect_fields_not_struct() {
+    compile(&fixture("typecheck_bad_reflect_fields_not_struct.solar"));
+}
+
+#[test]
+#[should_panic(expected = "for.reflect_fields requires &T where T is a struct, got P")]
+fn bad_reflect_fields_not_ref() {
+    compile(&fixture("typecheck_bad_reflect_fields_not_ref.solar"));
+}
