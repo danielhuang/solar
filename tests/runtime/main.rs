@@ -347,6 +347,15 @@ fn vec() {
 }
 
 #[test]
+fn match_reflect() {
+    let output = run(&fixture("match_reflect.solar"), "match_reflect");
+    assert_eq!(
+        output,
+        "1\n2\n0\n0\n0\n0\n0\n1\n8\n42\n-1\n10\n20\n30\n100\n"
+    );
+}
+
+#[test]
 fn atomics() {
     let output = run(&fixture("atomics.solar"), "atomics");
     assert_eq!(output, "99\n1\n77\n10\n5\n99\n99\n99\n1\n2\n100\n200\n");

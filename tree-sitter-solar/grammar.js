@@ -161,6 +161,7 @@ module.exports = grammar({
         $.closure_expr,
         $.path_expr,
         $.match_expression,
+        $.reflect_match_expression,
         $._postfix_expression,
       ),
 
@@ -295,6 +296,18 @@ module.exports = grammar({
       seq(field("pattern", $.match_pattern), "=>", field("body", $._expression_with_struct)),
 
     match_pattern: ($) => choice($.variant_pattern, $.unit_variant_pattern, $.wildcard_pattern),
+
+    // ── Compile-time reflection ─────────────────────────────
+    // match.reflect Type { "struct" => ..., "enum" => ..., _ => ... }
+    reflect_match_expression: ($) =>
+      seq("match", ".", "reflect", field("type", $._type), "{",
+        optional($.reflect_match_arm_list), "}"),
+
+    reflect_match_arm_list: ($) =>
+      seq($.reflect_match_arm, repeat(seq(",", $.reflect_match_arm)), optional(",")),
+
+    reflect_match_arm: ($) =>
+      seq(field("pattern", choice($.string_literal, "_")), "=>", field("body", $._expression_with_struct)),
 
     // Enum::Variant(binding) or mod::...::Enum::Variant(binding)
     variant_pattern: ($) =>

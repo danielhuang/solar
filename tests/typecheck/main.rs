@@ -219,3 +219,29 @@ fn bad_unused_type_param() {
 fn bad_closure_infer_no_context() {
     compile(&fixture("typecheck_bad_closure_infer_no_context.solar"));
 }
+
+#[test]
+#[should_panic(
+    expected = "unknown match.reflect kind \"primitive\" (expected \"struct\" or \"enum\")"
+)]
+fn bad_reflect_unknown_kind() {
+    compile(&fixture("typecheck_bad_reflect_unknown_kind.solar"));
+}
+
+#[test]
+#[should_panic(expected = "non-exhaustive match.reflect: no `_` arm for type Int")]
+fn bad_reflect_no_match() {
+    compile(&fixture("typecheck_bad_reflect_no_match.solar"));
+}
+
+#[test]
+#[should_panic(expected = "undefined type in match.reflect: Missing")]
+fn bad_reflect_undefined_type() {
+    compile(&fixture("typecheck_bad_reflect_undefined_type.solar"));
+}
+
+#[test]
+#[should_panic(expected = "duplicate match.reflect arm for \"struct\"")]
+fn bad_reflect_duplicate_kind() {
+    compile(&fixture("typecheck_bad_reflect_duplicate_kind.solar"));
+}

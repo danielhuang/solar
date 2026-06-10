@@ -1,0 +1,7 @@
+fn main() {
+    let x = match.reflect Int {
+        "struct" => 1,
+        "struct" => 2,
+        _ => 0,
+    };
+}

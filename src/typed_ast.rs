@@ -422,6 +422,16 @@ fn apply_subst_to_ast_expr(expr: &ast::Expr, subst: &HashMap<String, ast::Type>)
                 })
                 .collect(),
         },
+        ast::ExprKind::MatchReflect { ty, arms } => ast::ExprKind::MatchReflect {
+            ty: apply_subst_to_ast_type(ty, subst),
+            arms: arms
+                .iter()
+                .map(|arm| ast::ReflectArm {
+                    pattern: arm.pattern.clone(),
+                    body: apply_subst_to_ast_expr(&arm.body, subst),
+                })
+                .collect(),
+        },
         ast::ExprKind::MethodCall {
             receiver,
             method,
@@ -3382,6 +3392,9 @@ impl<'a> Lowerer<'a> {
             ast::ExprKind::Match { scrutinee, arms } => {
                 self.lower_match(expr.span, scrutinee, arms)
             }
+            ast::ExprKind::MatchReflect { ty, arms } => {
+                self.lower_match_reflect(expr.span, ty, arms)
+            }
             ast::ExprKind::Call {
                 function,
                 type_args,
@@ -4437,6 +4450,85 @@ impl<'a> Lowerer<'a> {
             },
             span,
         })
+    }
+
+    /// Compile-time reflection: classify the inspected type, pick the first matching
+    /// arm, and lower only that arm's body. The match.reflect itself is erased — the
+    /// typed AST contains just the taken branch, and other branches are never
+    /// type-checked.
+    fn lower_match_reflect(
+        &mut self,
+        span: ast::SourceSpan,
+        ty: &ast::Type,
+        arms: &[ast::ReflectArm],
+    ) -> Result<Expr, CompileError> {
+        let resolved = self.resolve_ast_type(ty)?;
+        let kind = match &resolved {
+            Type::Enum(_) => Some("enum"),
+            Type::Struct(name) => {
+                if !(self.structs.contains_key(name.as_str())
+                    || self.lowered_structs.contains_key(name))
+                {
+                    return Err(CompileError::new(
+                        format!("undefined type in match.reflect: {name}"),
+                        span,
+                    ));
+                }
+                Some("struct")
+            }
+            _ => None,
+        };
+
+        let mut selected: Option<&ast::ReflectArm> = None;
+        let mut seen_kinds: HashSet<String> = HashSet::new();
+        let mut has_wildcard = false;
+        for arm in arms {
+            match &arm.pattern {
+                ast::ReflectPattern::Kind(k) => {
+                    if !matches!(k.as_str(), "struct" | "enum") {
+                        return Err(CompileError::new(
+                            format!(
+                                "unknown match.reflect kind \"{k}\" (expected \"struct\" or \"enum\")"
+                            ),
+                            span,
+                        ));
+                    }
+                    if !seen_kinds.insert(k.clone()) {
+                        return Err(CompileError::new(
+                            format!("duplicate match.reflect arm for \"{k}\""),
+                            span,
+                        ));
+                    }
+                    if selected.is_none() && kind == Some(k.as_str()) {
+                        selected = Some(arm);
+                    }
+                }
+                ast::ReflectPattern::Wildcard => {
+                    if has_wildcard {
+                        return Err(CompileError::new(
+                            "duplicate wildcard pattern in match.reflect".to_string(),
+                            span,
+                        ));
+                    }
+                    has_wildcard = true;
+                    if selected.is_none() {
+                        selected = Some(arm);
+                    }
+                }
+            }
+        }
+
+        let Some(arm) = selected else {
+            let needed = match kind {
+                Some(k) => format!("\"{k}\""),
+                None => "`_`".to_string(),
+            };
+            return Err(CompileError::new(
+                format!("non-exhaustive match.reflect: no {needed} arm for type {resolved}"),
+                span,
+            ));
+        };
+        self.lower_expr(&arm.body)
     }
 
     fn lower_closure(

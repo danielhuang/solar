@@ -1020,6 +1020,12 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<String>) {
                 rewrite_expr(&mut arm.body, ctx, locals);
             }
         }
+        ExprKind::MatchReflect { ty, arms } => {
+            *ty = rewrite_type(ty, ctx.rename_map, ctx.module_aliases, ctx.type_params);
+            for arm in arms {
+                rewrite_expr(&mut arm.body, ctx, locals);
+            }
+        }
         ExprKind::MethodCall {
             receiver,
             type_args,

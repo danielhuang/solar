@@ -305,6 +305,21 @@ fn main() {
   v&.push(30);
   print_int(v&.at(0u)@);                 // 10
   print_int(v&.at(2u)@);                 // 30
+
+  // compile-time reflection: the type kind is resolved during type checking
+  // and only the taken branch is compiled — the others are erased unchecked
+  print_int(match.reflect TestStruct { "struct" => 1, "enum" => 2, _ => 0 }); // 1
+  print_int(kind_of(Color::Red));         // 2
+  print_int(kind_of(42));                  // 0
+}
+
+// works with generics: each instantiation takes its own branch
+fn kind_of#[T](value: T) -> Int {
+  match.reflect T {
+    "struct" => 1,
+    "enum" => 2,
+    _ => 0,
+  }
 }
 
 // generic function: identity

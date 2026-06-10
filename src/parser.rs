@@ -869,6 +869,19 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                 arms,
             }
         }
+        "reflect_match_expression" => {
+            let ty = convert_type(node.child_by_field_name("type").unwrap(), source);
+            let mut arms = Vec::new();
+            if let Some(arm_list) = named_child_by_kind(node, "reflect_match_arm_list") {
+                let mut cursor = arm_list.walk();
+                for child in arm_list.named_children(&mut cursor) {
+                    if child.kind() == "reflect_match_arm" {
+                        arms.push(convert_reflect_arm(child, source));
+                    }
+                }
+            }
+            ExprKind::MatchReflect { ty, arms }
+        }
         "generic_method_call" => {
             let receiver = convert_expr(node.child_by_field_name("receiver").unwrap(), source);
             let method = node_text(node.child_by_field_name("method").unwrap(), source).to_string();
@@ -955,6 +968,20 @@ fn convert_match_arm(node: tree_sitter::Node, source: &str) -> MatchArm {
     let pattern = convert_pattern(node.child_by_field_name("pattern").unwrap(), source);
     let body = convert_expr(node.child_by_field_name("body").unwrap(), source);
     MatchArm { pattern, body }
+}
+
+fn convert_reflect_arm(node: tree_sitter::Node, source: &str) -> ReflectArm {
+    let pattern_node = node.child_by_field_name("pattern").unwrap();
+    // String literal patterns are special-cased: they stay strings instead of
+    // desugaring to byte array literals like string literal expressions do.
+    let pattern = if pattern_node.kind() == "string_literal" {
+        let text = node_text(pattern_node, source);
+        ReflectPattern::Kind(text[1..text.len() - 1].to_string())
+    } else {
+        ReflectPattern::Wildcard
+    };
+    let body = convert_expr(node.child_by_field_name("body").unwrap(), source);
+    ReflectArm { pattern, body }
 }
 
 fn convert_pattern(node: tree_sitter::Node, source: &str) -> Pattern {

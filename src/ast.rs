@@ -270,6 +270,10 @@ pub enum ExprKind {
         scrutinee: Box<Expr>,
         arms: Vec<MatchArm>,
     },
+    MatchReflect {
+        ty: Type,
+        arms: Vec<ReflectArm>,
+    },
     MethodCall {
         receiver: Box<Expr>,
         method: String,
@@ -401,6 +405,18 @@ fn parse_cast_type_names(suffix: &str) -> Option<Intrinsic> {
 pub struct MatchArm {
     pub pattern: Pattern,
     pub body: Expr,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReflectArm {
+    pub pattern: ReflectPattern,
+    pub body: Expr,
+}
+
+#[derive(Debug, Clone)]
+pub enum ReflectPattern {
+    Kind(String),
+    Wildcard,
 }
 
 #[derive(Debug, Clone)]

@@ -1,0 +1,6 @@
+fn main() {
+    let x = match.reflect Missing {
+        "struct" => 1,
+        _ => 0,
+    };
+}
