@@ -76,6 +76,13 @@ impl Type {
         self.is_integer() || matches!(self, Type::Float32 | Type::Float64)
     }
 
+    pub fn is_unsigned(&self) -> bool {
+        matches!(
+            self,
+            Type::Uint8 | Type::Uint16 | Type::Uint32 | Type::Uint64 | Type::Uint
+        )
+    }
+
     pub fn is_sized(&self, structs: &HashMap<String, StructDef>) -> bool {
         match self {
             Type::Array(_) => false,
@@ -3243,8 +3250,8 @@ impl<'a> Lowerer<'a> {
                     ))
                 }
             }
-            ast::ExprKind::IntegerLiteral(n, int_ty) => Ok(Expr {
-                ty: match int_ty {
+            ast::ExprKind::IntegerLiteral(n, int_ty) => {
+                let ty = match int_ty {
                     ast::IntegerType::Int8 => Type::Int8,
                     ast::IntegerType::Int16 => Type::Int16,
                     ast::IntegerType::Int32 => Type::Int32,
@@ -3255,10 +3262,22 @@ impl<'a> Lowerer<'a> {
                     ast::IntegerType::Uint32 => Type::Uint32,
                     ast::IntegerType::Uint64 => Type::Uint64,
                     ast::IntegerType::Uint => Type::Uint,
-                },
-                kind: ExprKind::IntegerLiteral(*n),
-                span: expr.span,
-            }),
+                };
+                let (min, max) = int_ty.bounds();
+                if *n < min || *n > max {
+                    return Err(CompileError::new(
+                        format!("integer literal out of range for {ty} ({min}..={max})"),
+                        expr.span,
+                    ));
+                }
+                Ok(Expr {
+                    ty,
+                    // Stored as the 64-bit two's-complement bit pattern; unsigned
+                    // consumers reinterpret as u64.
+                    kind: ExprKind::IntegerLiteral(*n as i64),
+                    span: expr.span,
+                })
+            }
             ast::ExprKind::BooleanLiteral(b) => Ok(Expr {
                 ty: Type::Bool,
                 kind: ExprKind::BooleanLiteral(*b),
@@ -5460,14 +5479,6 @@ impl<'a> Lowerer<'a> {
                         ));
                     }
                 }
-                ParamRequirement::IsInteger => {
-                    if !arg.ty.is_integer() {
-                        return Err(CompileError::new(
-                            format!("{name}: expected integer type, got {}", arg.ty),
-                            span,
-                        ));
-                    }
-                }
                 ParamRequirement::IsArray => {
                     if !matches!(arg.ty, Type::Array(_) | Type::FixedArray(_, _)) {
                         return Err(CompileError::new(
@@ -5535,7 +5546,6 @@ impl<'a> Lowerer<'a> {
 
 enum ParamRequirement {
     Exact(Type),
-    IsInteger,
     IsArray,
     RefToAtomic,
     MatchesRefInner,
@@ -5570,10 +5580,6 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
     };
 
     match intrinsic {
-        ast::Intrinsic::PrintInt => IntrinsicSpec {
-            params: vec![IsInteger],
-            ret: Fixed(Type::Unit),
-        },
         ast::Intrinsic::WriteStdout => IntrinsicSpec {
             params: vec![byte_slice()],
             ret: Fixed(Type::Unit),

@@ -615,7 +615,10 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
         "integer_literal" => {
             let text = node_text(node, source);
             let (num_str, int_ty) = parse_integer_suffix(text);
-            ExprKind::IntegerLiteral(num_str.parse().unwrap(), int_ty)
+            // The grammar guarantees digits only, so the sole possible parse error
+            // is overflow; saturate and let the type checker report out-of-range.
+            let value: i128 = num_str.parse().unwrap_or(i128::MAX);
+            ExprKind::IntegerLiteral(value, int_ty)
         }
         "boolean_literal" => {
             let text = node_text(node, source);
@@ -629,7 +632,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                 bytes
                     .into_iter()
                     .map(|b| Expr {
-                        kind: ExprKind::IntegerLiteral(b as i64, IntegerType::Uint8),
+                        kind: ExprKind::IntegerLiteral(b as i128, IntegerType::Uint8),
                         span,
                     })
                     .collect(),

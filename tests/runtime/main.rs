@@ -347,6 +347,18 @@ fn vec() {
 }
 
 #[test]
+fn print_int_edge() {
+    let output = run(&fixture("print_int_edge.solar"), "print_int_edge");
+    assert_eq!(
+        output,
+        "0\n7\n-7\n42\n-42\n1000000\n0\n9\n123456789\n\
+         -9223372036854775808\n9223372036854775807\n\
+         18446744073709551615\n12345678901234567890\n\
+         1844674407370955161\n1\n9223372036854775808\n1\n1\n1\n"
+    );
+}
+
+#[test]
 fn match_reflect() {
     let output = run(&fixture("match_reflect.solar"), "match_reflect");
     assert_eq!(

@@ -1,20 +1,41 @@
-use std::io::{Read, Write};
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn sol_print_int(val: i64) {
-    let _ = writeln!(std::io::stdout(), "{val}");
-}
+use crate::panic::sol_panic_internal;
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_write_stdout(ptr: *const u8, len: usize) {
-    let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
-    let mut out = std::io::stdout();
-    out.write_all(slice).unwrap();
-    out.flush().unwrap();
+    let mut written = 0usize;
+    while written < len {
+        let n = unsafe {
+            libc::write(
+                libc::STDOUT_FILENO,
+                ptr.add(written) as *const libc::c_void,
+                len - written,
+            )
+        };
+        if n < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            sol_panic_internal(&format!("write_stdout failed: {err}"));
+        }
+        if n == 0 {
+            sol_panic_internal("write_stdout failed: wrote 0 bytes");
+        }
+        written += n as usize;
+    }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_read_stdin(ptr: *mut u8, len: usize) -> usize {
-    let slice = unsafe { std::slice::from_raw_parts_mut(ptr, len) };
-    std::io::stdin().read(slice).unwrap_or(0)
+    loop {
+        let n = unsafe { libc::read(libc::STDIN_FILENO, ptr as *mut libc::c_void, len) };
+        if n >= 0 {
+            return n as usize;
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        sol_panic_internal(&format!("read_stdin failed: {err}"));
+    }
 }

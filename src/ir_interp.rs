@@ -573,7 +573,7 @@ impl<'a, W: Write> Interpreter<'a, W> {
                     self.eval_load(nodes, right)
                 }
             }
-            _ => {
+            _ if is_signed(&nodes[left.0].ty) => {
                 let a = self.eval_load(nodes, left) as i64;
                 let b = self.eval_load(nodes, right) as i64;
                 match op {
@@ -597,48 +597,41 @@ impl<'a, W: Write> Interpreter<'a, W> {
                         .checked_rem(b)
                         .unwrap_or_else(|| panic!("division by zero"))
                         as u64,
-                    BinOp::Eq => {
-                        if a == b {
-                            1
-                        } else {
-                            0
-                        }
-                    }
-                    BinOp::Ne => {
-                        if a != b {
-                            1
-                        } else {
-                            0
-                        }
-                    }
-                    BinOp::Lt => {
-                        if a < b {
-                            1
-                        } else {
-                            0
-                        }
-                    }
-                    BinOp::Le => {
-                        if a <= b {
-                            1
-                        } else {
-                            0
-                        }
-                    }
-                    BinOp::Gt => {
-                        if a > b {
-                            1
-                        } else {
-                            0
-                        }
-                    }
-                    BinOp::Ge => {
-                        if a >= b {
-                            1
-                        } else {
-                            0
-                        }
-                    }
+                    BinOp::Eq => (a == b) as u64,
+                    BinOp::Ne => (a != b) as u64,
+                    BinOp::Lt => (a < b) as u64,
+                    BinOp::Le => (a <= b) as u64,
+                    BinOp::Gt => (a > b) as u64,
+                    BinOp::Ge => (a >= b) as u64,
+                    BinOp::And | BinOp::Or => unreachable!(),
+                }
+            }
+            _ => {
+                // Unsigned (and Bool) operands: full-range u64 semantics
+                let a = self.eval_load(nodes, left);
+                let b = self.eval_load(nodes, right);
+                match op {
+                    BinOp::Add => a
+                        .checked_add(b)
+                        .unwrap_or_else(|| panic!("integer overflow")),
+                    BinOp::Sub => a
+                        .checked_sub(b)
+                        .unwrap_or_else(|| panic!("integer overflow")),
+                    BinOp::Mul => a
+                        .checked_mul(b)
+                        .unwrap_or_else(|| panic!("integer overflow")),
+                    BinOp::Div => a
+                        .checked_div(b)
+                        .unwrap_or_else(|| panic!("division by zero")),
+                    BinOp::Mod => a
+                        .checked_rem(b)
+                        .unwrap_or_else(|| panic!("division by zero")),
+                    BinOp::Eq => (a == b) as u64,
+                    BinOp::Ne => (a != b) as u64,
+                    BinOp::Lt => (a < b) as u64,
+                    BinOp::Le => (a <= b) as u64,
+                    BinOp::Gt => (a > b) as u64,
+                    BinOp::Ge => (a >= b) as u64,
                     BinOp::And | BinOp::Or => unreachable!(),
                 }
             }
@@ -1064,11 +1057,6 @@ impl<'a, W: Write> Interpreter<'a, W> {
         dst: usize,
     ) {
         match intrinsic {
-            Intrinsic::PrintInt => {
-                assert_eq!(*result_ty, Type::Unit);
-                let n = self.eval_load(nodes, args[0]) as i64;
-                writeln!(self.stdout, "{n}").unwrap();
-            }
             Intrinsic::WriteStdout => {
                 assert_eq!(*result_ty, Type::Unit);
                 let (ref_addr, _) = self.eval_place(nodes, args[0]);

@@ -18,7 +18,7 @@
 //   print_int(x: Int), print_int(x: Uint)
 //
 // intrinsics are accessed via: import intrinsics from "@intrinsics"
-//   intrinsics::print_int, intrinsics::write_stdout, intrinsics::read_stdin
+//   intrinsics::write_stdout, intrinsics::read_stdin
 //   numeric casts are generated as constructor functions: Int(x), Uint8(x), etc.
 //     any overflow will crash
 //     same behavior as rust's `x as T`

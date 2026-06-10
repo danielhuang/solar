@@ -523,9 +523,40 @@ impl<'a, W: Write> Interpreter<'a, W> {
                         }
                     }
                     _ => {
+                        let unsigned = left.ty.is_unsigned();
                         let lv = self.eval_expr(left);
                         let rv = self.eval_expr(right);
                         match (&lv, &rv) {
+                            (Value::Int(a), Value::Int(b)) if unsigned => {
+                                // Unsigned operands are stored as u64 bit patterns in i64
+                                let a = *a as u64;
+                                let b = *b as u64;
+                                let int = |v: u64| Value::Int(v as i64);
+                                match op {
+                                    BinOp::Add => int(a
+                                        .checked_add(b)
+                                        .unwrap_or_else(|| panic!("integer overflow"))),
+                                    BinOp::Sub => int(a
+                                        .checked_sub(b)
+                                        .unwrap_or_else(|| panic!("integer overflow"))),
+                                    BinOp::Mul => int(a
+                                        .checked_mul(b)
+                                        .unwrap_or_else(|| panic!("integer overflow"))),
+                                    BinOp::Div => int(a
+                                        .checked_div(b)
+                                        .unwrap_or_else(|| panic!("division by zero"))),
+                                    BinOp::Mod => int(a
+                                        .checked_rem(b)
+                                        .unwrap_or_else(|| panic!("division by zero"))),
+                                    BinOp::Eq => Value::Int((a == b) as i64),
+                                    BinOp::Ne => Value::Int((a != b) as i64),
+                                    BinOp::Lt => Value::Int((a < b) as i64),
+                                    BinOp::Le => Value::Int((a <= b) as i64),
+                                    BinOp::Gt => Value::Int((a > b) as i64),
+                                    BinOp::Ge => Value::Int((a >= b) as i64),
+                                    BinOp::And | BinOp::Or => unreachable!(),
+                                }
+                            }
                             (Value::Int(a), Value::Int(b)) => {
                                 let a = *a;
                                 let b = *b;
@@ -757,14 +788,6 @@ impl<'a, W: Write> Interpreter<'a, W> {
         result_ty: &Type,
     ) -> Value {
         match intrinsic {
-            Intrinsic::PrintInt => {
-                let val = self.eval_expr(&arguments[0]);
-                match val {
-                    Value::Int(n) => writeln!(self.stdout, "{n}").unwrap(),
-                    _ => unreachable!(),
-                }
-                Value::Unit
-            }
             Intrinsic::WriteStdout => {
                 let val = self.eval_expr(&arguments[0]);
                 match &val {

@@ -3,12 +3,45 @@ pub import vec from "vec.solar";
 pub import sync from "sync.solar";
 pub import thread from "thread.solar";
 
+// Prints the decimal representation of x followed by a newline.
+// Digits are extracted in the negative domain so Int's minimum value
+// (which has no positive counterpart) needs no special case.
 pub fn print_int(x: Int) {
-  intrinsics::print_int(x);
+  // longest output: -9223372036854775808 + newline = 21 bytes
+  let buf: [Uint8] = [0u8; 21u];
+  buf[20u] = 10u8; // '\n'
+  let i = 20u;
+  let n = if x > 0 { 0 - x } else { x };
+  i = i - 1u;
+  buf[i] = Uint8(48 - n % 10);
+  n = n / 10;
+  while n != 0 {
+    i = i - 1u;
+    buf[i] = Uint8(48 - n % 10);
+    n = n / 10;
+  }
+  if x < 0 {
+    i = i - 1u;
+    buf[i] = 45u8; // '-'
+  }
+  write_stdout(buf[i..21u]&);
 }
 
 pub fn print_int(x: Uint) {
-  intrinsics::print_int(x);
+  // longest output: 18446744073709551615 + newline = 21 bytes
+  let buf: [Uint8] = [0u8; 21u];
+  buf[20u] = 10u8; // '\n'
+  let i = 20u;
+  let n = x;
+  i = i - 1u;
+  buf[i] = Uint8(48u + n % 10u);
+  n = n / 10u;
+  while n != 0u {
+    i = i - 1u;
+    buf[i] = Uint8(48u + n % 10u);
+    n = n / 10u;
+  }
+  write_stdout(buf[i..21u]&);
 }
 
 pub fn write_stdout(s: &[Uint8]) {

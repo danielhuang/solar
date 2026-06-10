@@ -484,7 +484,6 @@ impl<'a> Codegen<'a> {
         self.line("extern uint8_t* sol_alloc(size_t size, size_t align, sol_mark_fn_t mark_fn);");
         self.line("extern void sol_gc_mark(void* ctx, uint8_t* ptr);");
         self.line("extern void sol_memcpy(uint8_t* dst, const uint8_t* src, size_t size);");
-        self.line("extern void sol_print_int(int64_t val);");
         self.line("extern void sol_write_stdout(const uint8_t* ptr, size_t len);");
         self.line("extern void sol_panic(const uint8_t* ptr, size_t len);");
         self.line("extern size_t sol_read_stdin(uint8_t* ptr, size_t len);");
@@ -493,6 +492,11 @@ impl<'a> Codegen<'a> {
         self.line("extern int64_t sol_checked_mul_int(int64_t a, int64_t b);");
         self.line("extern int64_t sol_checked_div_int(int64_t a, int64_t b);");
         self.line("extern int64_t sol_checked_mod_int(int64_t a, int64_t b);");
+        self.line("extern uint64_t sol_checked_add_uint(uint64_t a, uint64_t b);");
+        self.line("extern uint64_t sol_checked_sub_uint(uint64_t a, uint64_t b);");
+        self.line("extern uint64_t sol_checked_mul_uint(uint64_t a, uint64_t b);");
+        self.line("extern uint64_t sol_checked_div_uint(uint64_t a, uint64_t b);");
+        self.line("extern uint64_t sol_checked_mod_uint(uint64_t a, uint64_t b);");
         self.line("extern uint8_t* sol_slice_index(uint8_t* base, uint64_t index, uint64_t len, uint64_t elem_size);");
         self.line("extern uint8_t* sol_slice_range(uint8_t* base, uint64_t start, uint64_t end, uint64_t len, uint64_t elem_size);");
         self.line("extern void sol_assert_array_len(uint64_t actual, uint64_t expected);");
@@ -1001,12 +1005,11 @@ impl<'a> Codegen<'a> {
             NodeKind::IntegerLiteral(n) => {
                 let n = *n;
                 let ty = &nodes[id.0].ty;
-                match ty {
-                    Type::Uint8 | Type::Uint16 | Type::Uint32 | Type::Uint64 | Type::Uint => {
-                        let c_ty = self.c_int_type(ty);
-                        format!("({c_ty}){n}u")
-                    }
-                    _ => format!("{n}"),
+                if ty.is_unsigned() {
+                    let c_ty = self.c_int_type(ty);
+                    format!("({c_ty}){}u", n as u64)
+                } else {
+                    format!("{n}")
                 }
             }
             NodeKind::BooleanLiteral(b) => {
@@ -1159,16 +1162,29 @@ impl<'a> Codegen<'a> {
                 let result = self.fresh_tmp();
                 match op {
                     BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                        let func = match op {
-                            BinOp::Add => "sol_checked_add_int",
-                            BinOp::Sub => "sol_checked_sub_int",
-                            BinOp::Mul => "sol_checked_mul_int",
-                            BinOp::Div => "sol_checked_div_int",
-                            BinOp::Mod => "sol_checked_mod_int",
-                            _ => unreachable!(),
+                        let (func, wide_ty) = if left_ty.is_unsigned() {
+                            let func = match op {
+                                BinOp::Add => "sol_checked_add_uint",
+                                BinOp::Sub => "sol_checked_sub_uint",
+                                BinOp::Mul => "sol_checked_mul_uint",
+                                BinOp::Div => "sol_checked_div_uint",
+                                BinOp::Mod => "sol_checked_mod_uint",
+                                _ => unreachable!(),
+                            };
+                            (func, "uint64_t")
+                        } else {
+                            let func = match op {
+                                BinOp::Add => "sol_checked_add_int",
+                                BinOp::Sub => "sol_checked_sub_int",
+                                BinOp::Mul => "sol_checked_mul_int",
+                                BinOp::Div => "sol_checked_div_int",
+                                BinOp::Mod => "sol_checked_mod_int",
+                                _ => unreachable!(),
+                            };
+                            (func, "int64_t")
                         };
                         self.linef(format!(
-                            "{result_c_ty} {result} = ({result_c_ty}){func}((int64_t)({load_ty}){la}, (int64_t)({load_ty}){ra});"
+                            "{result_c_ty} {result} = ({result_c_ty}){func}(({wide_ty})({load_ty}){la}, ({wide_ty})({load_ty}){ra});"
                         ));
                     }
                     BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
@@ -1443,11 +1459,10 @@ impl<'a> Codegen<'a> {
                 let n = *n;
                 let ty = &nodes[id.0].ty;
                 let c_ty = self.c_int_type(ty);
-                let literal = match ty {
-                    Type::Uint8 | Type::Uint16 | Type::Uint32 | Type::Uint64 | Type::Uint => {
-                        format!("({c_ty}){n}u")
-                    }
-                    _ => format!("{n}"),
+                let literal = if ty.is_unsigned() {
+                    format!("({c_ty}){}u", n as u64)
+                } else {
+                    format!("{n}")
                 };
                 self.linef(format!("*({c_ty}*){dst} = {literal};"));
             }
@@ -1962,10 +1977,6 @@ impl<'a> Codegen<'a> {
         dst: &str,
     ) {
         match intrinsic {
-            Intrinsic::PrintInt => {
-                let val = self.emit_load(nodes, args[0]);
-                self.linef(format!("sol_print_int((int64_t){val});"));
-            }
             Intrinsic::WriteStdout => {
                 // arg is RefUnsized([Uint8]) — fat pointer (16 bytes: ptr + len)
                 let (ref_place, _) = self.emit_place(nodes, args[0]);

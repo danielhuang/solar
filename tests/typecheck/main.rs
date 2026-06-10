@@ -245,3 +245,23 @@ fn bad_reflect_undefined_type() {
 fn bad_reflect_duplicate_kind() {
     compile(&fixture("typecheck_bad_reflect_duplicate_kind.solar"));
 }
+
+#[test]
+#[should_panic(expected = "integer literal out of range for Uint8 (0..=255)")]
+fn bad_literal_overflow_u8() {
+    compile(&fixture("typecheck_bad_literal_overflow_u8.solar"));
+}
+
+#[test]
+#[should_panic(
+    expected = "integer literal out of range for Int (-9223372036854775808..=9223372036854775807)"
+)]
+fn bad_literal_overflow_int() {
+    compile(&fixture("typecheck_bad_literal_overflow_int.solar"));
+}
+
+#[test]
+#[should_panic(expected = "integer literal out of range for Uint (0..=18446744073709551615)")]
+fn bad_literal_overflow_uint() {
+    compile(&fixture("typecheck_bad_literal_overflow_uint.solar"));
+}
