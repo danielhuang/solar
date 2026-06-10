@@ -319,6 +319,14 @@ fn main() {
     println(f.0);                          // value
     print_int(f.1@);                       // 5
   }
+
+  // compile-time variant dispatch: desugars to a match over the enum with
+  // the body duplicated per arm; variant is the &[Uint8] name, val the
+  // payload (only bound in data-variant arms)
+  let col = Color::Blue;
+  match.reflect_variant (variant, val) in col& {
+    println(variant);                      // Blue
+  }
 }
 
 // works with generics: each instantiation takes its own branch

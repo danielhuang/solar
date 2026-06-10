@@ -553,6 +553,18 @@ fn apply_subst_to_ast_statement(
                 .map(|s| apply_subst_to_ast_statement(s, subst))
                 .collect(),
         },
+        ast::StatementKind::MatchReflectVariant {
+            pattern,
+            object,
+            body,
+        } => ast::StatementKind::MatchReflectVariant {
+            pattern: pattern.clone(),
+            object: apply_subst_to_ast_expr(object, subst),
+            body: body
+                .iter()
+                .map(|s| apply_subst_to_ast_statement(s, subst))
+                .collect(),
+        },
         ast::StatementKind::Expression(expr) => {
             ast::StatementKind::Expression(apply_subst_to_ast_expr(expr, subst))
         }
@@ -2939,6 +2951,11 @@ impl<'a> Lowerer<'a> {
                 object,
                 body,
             } => self.lower_reflect_fields(stmt.span, pattern, object, body),
+            ast::StatementKind::MatchReflectVariant {
+                pattern,
+                object,
+                body,
+            } => self.lower_match_reflect_variant(stmt.span, pattern, object, body),
             ast::StatementKind::ForIn {
                 variable,
                 iterable,
@@ -4676,6 +4693,183 @@ impl<'a> Lowerer<'a> {
             });
         }
 
+        self.lower_statement(&ast::Statement {
+            kind: ast::StatementKind::Expression(ast::Expr {
+                kind: ast::ExprKind::Block(outer_stmts),
+                span,
+            }),
+            span,
+        })
+    }
+
+    /// Compile-time variant dispatch: desugars into a real `match` over the
+    /// enum behind the `&T` object, with the body duplicated in every arm.
+    /// In data-variant arms the pattern is bound against the tuple
+    /// `(&[Uint8], Payload)` — variant name and payload by value — so a bare
+    /// name binds the whole tuple and `(variant, val)` destructures it. Unit
+    /// variants have no payload (and unit-typed tuple elements are not
+    /// supported), so their arms bind only the name part of a `(variant, val)`
+    /// pattern and nothing for other pattern shapes; bodies that use the
+    /// payload only compile when every variant carries data.
+    fn lower_match_reflect_variant(
+        &mut self,
+        span: ast::SourceSpan,
+        pattern: &ast::DestructurePattern,
+        object: &ast::Expr,
+        body: &[ast::Statement],
+    ) -> Result<Vec<Statement>, CompileError> {
+        // Probe the object's type; the probe result is discarded — the emitted
+        // code evaluates the object exactly once via the generated `let`.
+        let probe = self.lower_expr(object)?;
+        let enum_name = match &probe.ty {
+            Type::Ref(inner) | Type::RefUnsized(inner) => match inner.as_ref() {
+                Type::Enum(name) => name.clone(),
+                _ => {
+                    return Err(CompileError::new(
+                        format!(
+                            "match.reflect_variant requires &T where T is an enum, got {}",
+                            probe.ty
+                        ),
+                        span,
+                    ));
+                }
+            },
+            _ => {
+                return Err(CompileError::new(
+                    format!(
+                        "match.reflect_variant requires &T where T is an enum, got {}",
+                        probe.ty
+                    ),
+                    span,
+                ));
+            }
+        };
+        let variants: Vec<(String, bool)> = self.lowered_enums[&enum_name]
+            .variants
+            .iter()
+            .map(|v| (v.name.clone(), v.inner_type.is_some()))
+            .collect();
+
+        let n = self.destructure_counter;
+        self.destructure_counter += 1;
+        let tmp_name = format!("__reflect_variant_{n}");
+        let binding_name = format!("__reflect_variant_binding_{n}");
+
+        // { let tmp = object;
+        //   match tmp@ {
+        //     E::Unit => { let variant = "Unit"&; body },
+        //     E::Data(b) => { let variant = "Data"&; let val = b; body },
+        //   }; }
+        let mut arms = Vec::new();
+        for (vname, has_data) in variants {
+            let name_bytes: Vec<ast::Expr> = vname
+                .bytes()
+                .map(|b| ast::Expr {
+                    kind: ast::ExprKind::IntegerLiteral(b as i128, ast::IntegerType::Uint8),
+                    span,
+                })
+                .collect();
+            let name_ref = ast::Expr {
+                kind: ast::ExprKind::Reference(Box::new(ast::Expr {
+                    kind: ast::ExprKind::ArrayLiteral(name_bytes),
+                    span,
+                })),
+                span,
+            };
+            let mut arm_stmts = Vec::new();
+            match (pattern, has_data) {
+                // (variant, val) destructure: bind the parts separately so no
+                // tuple value needs to be constructed
+                (ast::DestructurePattern::Tuple(parts), _) if parts.len() == 2 => {
+                    arm_stmts.push(ast::Statement {
+                        kind: ast::StatementKind::Let {
+                            pattern: parts[0].clone(),
+                            ty: None,
+                            value: name_ref,
+                        },
+                        span,
+                    });
+                    if has_data {
+                        arm_stmts.push(ast::Statement {
+                            kind: ast::StatementKind::Let {
+                                pattern: parts[1].clone(),
+                                ty: None,
+                                value: ast::Expr {
+                                    kind: ast::ExprKind::Identifier(binding_name.clone()),
+                                    span,
+                                },
+                            },
+                            span,
+                        });
+                    }
+                }
+                // any other pattern binds the (name, payload) tuple itself
+                (_, true) => {
+                    let tuple = ast::Expr {
+                        kind: ast::ExprKind::TupleLiteral(vec![
+                            name_ref,
+                            ast::Expr {
+                                kind: ast::ExprKind::Identifier(binding_name.clone()),
+                                span,
+                            },
+                        ]),
+                        span,
+                    };
+                    arm_stmts.push(ast::Statement {
+                        kind: ast::StatementKind::Let {
+                            pattern: pattern.clone(),
+                            ty: None,
+                            value: tuple,
+                        },
+                        span,
+                    });
+                }
+                // unit variant: no payload, so there is no tuple to bind
+                (_, false) => {}
+            }
+            arm_stmts.extend(body.iter().cloned());
+            arms.push(ast::MatchArm {
+                pattern: ast::Pattern::Variant {
+                    module_path: vec![],
+                    enum_name: enum_name.clone(),
+                    type_args: vec![],
+                    variant_name: vname,
+                    binding: has_data.then(|| binding_name.clone()),
+                },
+                body: ast::Expr {
+                    kind: ast::ExprKind::Block(arm_stmts),
+                    span,
+                },
+            });
+        }
+
+        let match_stmt = ast::Statement {
+            kind: ast::StatementKind::Expression(ast::Expr {
+                kind: ast::ExprKind::Match {
+                    scrutinee: Box::new(ast::Expr {
+                        kind: ast::ExprKind::Deref(Box::new(ast::Expr {
+                            kind: ast::ExprKind::Identifier(tmp_name.clone()),
+                            span,
+                        })),
+                        span,
+                    }),
+                    arms,
+                },
+                span,
+            }),
+            span,
+        };
+        let outer_stmts = vec![
+            ast::Statement {
+                kind: ast::StatementKind::Let {
+                    pattern: ast::DestructurePattern::Name(tmp_name),
+                    ty: None,
+                    value: object.clone(),
+                },
+                span,
+            },
+            match_stmt,
+        ];
         self.lower_statement(&ast::Statement {
             kind: ast::StatementKind::Expression(ast::Expr {
                 kind: ast::ExprKind::Block(outer_stmts),

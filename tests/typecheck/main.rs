@@ -277,3 +277,23 @@ fn bad_reflect_fields_not_struct() {
 fn bad_reflect_fields_not_ref() {
     compile(&fixture("typecheck_bad_reflect_fields_not_ref.solar"));
 }
+
+#[test]
+#[should_panic(expected = "match.reflect_variant requires &T where T is an enum, got &Int")]
+fn bad_reflect_variant_not_enum() {
+    compile(&fixture("typecheck_bad_reflect_variant_not_enum.solar"));
+}
+
+#[test]
+#[should_panic(expected = "match.reflect_variant requires &T where T is an enum, got E")]
+fn bad_reflect_variant_not_ref() {
+    compile(&fixture("typecheck_bad_reflect_variant_not_ref.solar"));
+}
+
+// `val` is only bound in data-variant arms; using it with a unit variant
+// present is a compile error.
+#[test]
+#[should_panic(expected = "undefined variable: val")]
+fn bad_reflect_variant_unit_val() {
+    compile(&fixture("typecheck_bad_reflect_variant_unit_val.solar"));
+}

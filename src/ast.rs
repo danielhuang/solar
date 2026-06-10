@@ -184,6 +184,11 @@ pub enum StatementKind {
         object: Expr,
         body: Vec<Statement>,
     },
+    MatchReflectVariant {
+        pattern: DestructurePattern,
+        object: Expr,
+        body: Vec<Statement>,
+    },
     Expression(Expr),
     Return(Expr),
     NestedFunction(FunctionDef),

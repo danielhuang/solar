@@ -382,6 +382,19 @@ fn reflect_fields() {
 }
 
 #[test]
+fn reflect_variant() {
+    let output = run(&fixture("reflect_variant.solar"), "reflect_variant");
+    assert_eq!(
+        output,
+        "Custom\nRed\n\
+         Big\n99\nSmall\n3\n\
+         Big\n99\n123\n\
+         Custom\nRed\nnot an enum\n\
+         Some\nNone\n"
+    );
+}
+
+#[test]
 fn atomics() {
     let output = run(&fixture("atomics.solar"), "atomics");
     assert_eq!(output, "99\n1\n77\n10\n5\n99\n99\n99\n1\n2\n100\n200\n");

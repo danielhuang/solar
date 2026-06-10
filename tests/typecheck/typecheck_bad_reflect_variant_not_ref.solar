@@ -1,0 +1,6 @@
+enum E { A, }
+fn main() {
+    let e = E::A;
+    match.reflect_variant (v, w) in e {
+    }
+}

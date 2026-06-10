@@ -106,7 +106,7 @@ module.exports = grammar({
 
     // ── Statements ──────────────────────────────────────────
     _statement: ($) =>
-      choice($.let_statement, $.assignment_statement, $.expression_statement, $.if_statement, $.while_statement, $.for_statement, $.reflect_fields_statement, $.return_statement, $.function_def),
+      choice($.let_statement, $.assignment_statement, $.expression_statement, $.if_statement, $.while_statement, $.for_statement, $.reflect_fields_statement, $.reflect_variant_statement, $.return_statement, $.function_def),
 
     return_statement: ($) =>
       seq("return", field("value", $._expression_with_struct), ";"),
@@ -308,6 +308,14 @@ module.exports = grammar({
     // and may be destructured: for.reflect_fields (name, value) in o { ... }
     reflect_fields_statement: ($) =>
       seq("for", ".", "reflect_fields", field("variable", $._destructure_target), "in",
+        field("object", $._expression), field("body", $.block)),
+
+    // match.reflect_variant (variant, val) in o { ... } — desugars to a match
+    // over the enum behind `o` with the body duplicated in every arm; binds
+    // the ([Uint8]&, Payload) tuple of variant name and payload (a bare name
+    // binds the whole tuple; unit variants bind only the name part)
+    reflect_variant_statement: ($) =>
+      seq("match", ".", "reflect_variant", field("pattern", $._destructure_target), "in",
         field("object", $._expression), field("body", $.block)),
 
     reflect_match_arm_list: ($) =>

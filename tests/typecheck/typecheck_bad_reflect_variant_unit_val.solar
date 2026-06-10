@@ -1,0 +1,7 @@
+enum E { A, B(Int), }
+fn main() {
+    let e = E::A;
+    match.reflect_variant (v, val) in e& {
+        let y = val + 1;
+    }
+}

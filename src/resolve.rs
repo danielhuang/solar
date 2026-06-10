@@ -823,6 +823,11 @@ fn rewrite_statement(stmt: &mut Statement, ctx: &RewriteCtx, locals: &mut HashSe
             pattern,
             object,
             body,
+        }
+        | StatementKind::MatchReflectVariant {
+            pattern,
+            object,
+            body,
         } => {
             collect_pattern_names(pattern, locals);
             rewrite_destructure_pattern(pattern, ctx.rename_map, ctx.module_aliases);
