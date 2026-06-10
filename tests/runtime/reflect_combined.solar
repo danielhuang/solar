@@ -1,0 +1,59 @@
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+struct Box#[T] {
+    value: T,
+}
+
+enum Shape {
+    Circle(Int),
+    Square(Int),
+    Empty,
+}
+
+enum Option#[T] {
+    Some(T),
+    None,
+}
+
+// One generic function exercising both reflection forms: structs take the
+// for.reflect_fields branch, enums the match.reflect_variant branch, and
+// everything else falls through — every instantiation compiles.
+fn describe#[T](o: &T) {
+    match.reflect T {
+        "struct" => {
+            println("struct:"&);
+            for.reflect_fields (name, value) in o {
+                println(name);
+                print_int(value@);
+            }
+        },
+        "enum" => {
+            println("enum:"&);
+            match.reflect_variant (variant, val) in o {
+                println(variant);
+            }
+        },
+        _ => { println("other"&); },
+    };
+}
+
+fn main() {
+    let p = Point { x: 1, y: 2 };
+    describe(p&);
+
+    let s = Shape::Square(5);
+    describe(s&);
+    let e = Shape::Empty;
+    describe(e&);
+
+    describe(7&);
+
+    // monomorphized generic struct and enum take their respective branches
+    let b = Box#[Int] { value: 99 };
+    describe(b&);
+    let o = Option#[Int]::Some(3);
+    describe(o&);
+}

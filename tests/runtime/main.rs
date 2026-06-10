@@ -395,6 +395,20 @@ fn reflect_variant() {
 }
 
 #[test]
+fn reflect_combined() {
+    let output = run(&fixture("reflect_combined.solar"), "reflect_combined");
+    assert_eq!(
+        output,
+        "struct:\nx\n1\ny\n2\n\
+         enum:\nSquare\n\
+         enum:\nEmpty\n\
+         other\n\
+         struct:\nvalue\n99\n\
+         enum:\nSome\n"
+    );
+}
+
+#[test]
 fn atomics() {
     let output = run(&fixture("atomics.solar"), "atomics");
     assert_eq!(output, "99\n1\n77\n10\n5\n99\n99\n99\n1\n2\n100\n200\n");
