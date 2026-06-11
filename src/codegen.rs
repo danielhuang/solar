@@ -817,8 +817,13 @@ impl<'a> Codegen<'a> {
                     self.emit_into(nodes, scrutinee, &tmp);
                     tmp
                 };
+                // Acquire pairs with the release store of the discriminant in
+                // variant construction/copy: observing the tag also observes
+                // the payload it describes.
                 let disc = self.fresh_tmp();
-                self.linef(format!("uint64_t {disc} = *(uint64_t*){enum_base};"));
+                self.linef(format!(
+                    "uint64_t {disc} = __atomic_load_n((uint64_t*){enum_base}, __ATOMIC_ACQUIRE);"
+                ));
                 let ptr_tmp = self.fresh_tmp();
                 let has_meta = !self.is_sized(&nodes[id.0].ty);
                 let meta_tmp = if has_meta {
@@ -1345,7 +1350,6 @@ impl<'a> Codegen<'a> {
                 let variant_map: Vec<_> = dt.variant_map.as_ref().unwrap().clone();
                 let disc_tmp = self.fresh_tmp();
                 self.linef(format!("uint64_t {disc_tmp} = *(uint64_t*){src};"));
-                self.linef(format!("*(uint64_t*){dst} = {disc_tmp};"));
                 let mut first = true;
                 for (i, vm_entry) in variant_map.iter().enumerate() {
                     if let Some(field_name) = vm_entry {
@@ -1371,6 +1375,13 @@ impl<'a> Codegen<'a> {
                     }
                     // Unit variants: no data to copy
                 }
+                // Store the destination's discriminant last, with release
+                // ordering, so a concurrent reader that observes the tag also
+                // observes the payload it describes (same as variant
+                // construction).
+                self.linef(format!(
+                    "__atomic_store_n((uint64_t*){dst}, {disc_tmp}, __ATOMIC_RELEASE);"
+                ));
             }
             Type::Struct(name) => {
                 let fields: Vec<_> = self.module.datatypes[name.as_str()]
@@ -1712,9 +1723,7 @@ impl<'a> Codegen<'a> {
                 let variant_name = variant_name.clone();
                 let variant_index = *variant_index;
                 let value = *value;
-                // Write discriminant
-                self.linef(format!("*(uint64_t*){dst} = {variant_index}u;"));
-                // Write value if present
+                // Write the payload first, if present
                 if let Some(val_id) = value {
                     let dt = &self.module.datatypes[enum_name.as_str()];
                     let fl = dt.fields.iter().find(|f| f.name == variant_name).unwrap();
@@ -1725,6 +1734,12 @@ impl<'a> Codegen<'a> {
                         self.emit_into(nodes, val_id, &format!("({dst} + {offset})"));
                     }
                 }
+                // Write the discriminant last, with release ordering, so a
+                // concurrent reader (e.g. the GC marker) that observes the
+                // tag also observes the payload it describes.
+                self.linef(format!(
+                    "__atomic_store_n((uint64_t*){dst}, {variant_index}u, __ATOMIC_RELEASE);"
+                ));
             }
             NodeKind::Match { scrutinee, arms } => {
                 let scrutinee = *scrutinee;
@@ -1747,9 +1762,12 @@ impl<'a> Codegen<'a> {
                     self.emit_into(nodes, scrutinee, &tmp);
                     tmp
                 };
-                // Load discriminant
+                // Load discriminant with acquire ordering (pairs with the
+                // release store in variant construction/copy)
                 let disc = self.fresh_tmp();
-                self.linef(format!("uint64_t {disc} = *(uint64_t*){enum_base};"));
+                self.linef(format!(
+                    "uint64_t {disc} = __atomic_load_n((uint64_t*){enum_base}, __ATOMIC_ACQUIRE);"
+                ));
                 // Emit if-else chain
                 for (i, arm) in arms.iter().enumerate() {
                     let is_wildcard = matches!(arm.pattern, MatchPattern::Wildcard(_, _));
