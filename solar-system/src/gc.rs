@@ -1109,9 +1109,10 @@ pub unsafe extern "C" fn sol_gc_memcpy_barrier(dst: *mut u8, size: usize) {
     }
 }
 
-/// Conservatively shade a region just copied by `sol_memcpy` while marking is
-/// active: every pointer-aligned word that could be a heap pointer is enqueued.
-/// Closes the aggregate-copy hole the per-store barrier can't see.
+/// Conservatively shade a just-copied region while marking is active: every
+/// pointer-aligned word that could be a heap pointer is enqueued. Closes the
+/// aggregate-copy hole the per-store barrier can't see; the `solar-write-barriers`
+/// pass inserts a `sol_gc_memcpy_barrier` call after each instrumented copy.
 #[inline]
 pub(crate) unsafe fn memcpy_barrier(dst: *mut u8, size: usize) {
     let slot = MY_SLOT.get();

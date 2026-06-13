@@ -5,8 +5,8 @@ use std::sync::atomic::Ordering;
 
 use crate::gc::{
     ALLOC_FLUSH_CHUNK, ALLOCATED_SINCE_GC, BigAllocLocal, DISABLE_GC, ENABLE_ALLOC_PRINTS, MY_SLOT,
-    SOL_CONCURRENT_MARKING, TOTAL_LIVE_SIZE, ThreadAllocState, alloc_hard_cap, memcpy_barrier,
-    request_gc, self_suspend, stall_for_gc,
+    SOL_CONCURRENT_MARKING, TOTAL_LIVE_SIZE, ThreadAllocState, alloc_hard_cap, request_gc,
+    self_suspend, stall_for_gc,
 };
 use crate::heap;
 
@@ -208,12 +208,14 @@ unsafe fn bump_forever(size: usize, align: usize) -> *mut u8 {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_memcpy(dst: *mut u8, src: *const u8, size: usize) {
+    // A plain copy with no GC side effects: keeping the body free of global
+    // reads/writes is what lets the optimizer prove sol_memcpy doesn't capture
+    // or escape its arguments, so freshly-allocated objects initialized through
+    // it can still be SROA'd / elided. The aggregate-copy write barrier (shading
+    // the copied region's pointers) is re-added by the `solar-write-barriers`
+    // pass, which instruments the memcpy *after* optimization — exactly like the
+    // per-store barriers — so the barrier never blocks allocation elision.
     unsafe { std::ptr::copy_nonoverlapping(src, dst, size) };
-    // Aggregate copies bypass the per-store write barrier, so conservatively
-    // shade any pointers in the copied region while marking is active.
-    if SOL_CONCURRENT_MARKING.load(Ordering::Relaxed) {
-        unsafe { memcpy_barrier(dst, size) };
-    }
 }
 
 #[unsafe(no_mangle)]
