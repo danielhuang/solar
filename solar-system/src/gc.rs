@@ -35,6 +35,11 @@ pub struct ThreadAllocState {
     pub classes: [ThreadClassState; heap::NUM_CLASSES],
     pub big_allocs: Vec<BigAllocLocal>,
     pub new_size_since_last_gc: usize,
+    /// Bytes allocated since this thread last flushed into `ALLOCATED_SINCE_GC`.
+    /// Batches the global counter update off the hot path (flush every
+    /// `ALLOC_FLUSH_CHUNK`) so back-pressure accounting costs ~nothing per
+    /// allocation.
+    pub unflushed_alloc: usize,
     pub total_allocations: usize,
 }
 
@@ -50,6 +55,7 @@ impl ThreadAllocState {
             classes: std::array::from_fn(|_| ThreadClassState { cur: 0, end: 0 }),
             big_allocs: Vec::new(),
             new_size_since_last_gc: 0,
+            unflushed_alloc: 0,
             total_allocations: 0,
         }
     }
@@ -70,6 +76,26 @@ impl ThreadAllocState {
 /// Total live size (in slot bytes + big-alloc bytes), recomputed by the GC at
 /// the end of each cycle. Read by allocating threads for the trigger heuristic.
 pub(crate) static TOTAL_LIVE_SIZE: AtomicUsize = AtomicUsize::new(0);
+
+/// Bytes allocated (across all threads) since the last completed GC cycle,
+/// updated in batches from per-thread `unflushed_alloc`. Drives allocation
+/// back-pressure: when it exceeds `alloc_hard_cap()` a thread stalls until a
+/// cycle reclaims space, bounding floating garbage so a fast allocator can't
+/// outrun the collector and exhaust memory. Reset to 0 at the end of a cycle.
+pub(crate) static ALLOCATED_SINCE_GC: AtomicUsize = AtomicUsize::new(0);
+/// `ALLOCATED_SINCE_GC` snapshot taken when marking turned on, so the cycle can
+/// estimate how much was allocated (born black) during the mark window.
+static ALLOC_AT_MARK_START: AtomicUsize = AtomicUsize::new(0);
+/// Estimated *traced* live bytes from the last cycle — the live set excluding
+/// the float born black during marking. The back-pressure cap scales off this
+/// (not the raw live total, which includes float) so the cap can't feed back
+/// into ever-larger float. Reset/updated each cycle.
+static TRACED_LIVE_SIZE: AtomicUsize = AtomicUsize::new(0);
+/// Per-thread allocation that accrues before flushing into `ALLOCATED_SINCE_GC`.
+pub(crate) const ALLOC_FLUSH_CHUNK: usize = 1 << 20;
+/// Floor for the back-pressure cap, so small heaps never stall.
+const GC_STALL_FLOOR: usize = 512 << 20;
+
 pub(crate) static ENABLE_STAT_PRINTS: AtomicBool = AtomicBool::new(false);
 pub(crate) static ENABLE_ALLOC_PRINTS: AtomicBool = AtomicBool::new(false);
 pub(crate) static DISABLE_GC: AtomicBool = AtomicBool::new(false);
@@ -84,13 +110,19 @@ pub(crate) static DISABLE_GC: AtomicBool = AtomicBool::new(false);
 // per-thread buffers); it is drained by the GC thread's marker.
 // ---------------------------------------------------------------------------
 
-/// Global gray queue. Mutators append (in batches, via `gray_enqueue`) only
-/// while `SOL_CONCURRENT_MARKING` is set; the GC thread drains it.
-pub(crate) static GRAY: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+/// Number of gray-queue shards. Sized ≥ typical core count so producers
+/// (mutators flushing) and consumers (mark workers) rarely hit the same shard.
+const GRAY_SHARDS: usize = 16;
 
-/// Per-thread gray buffer capacity. The buffer is pre-reserved to this size at
-/// thread registration and flushed to `GRAY` on reaching it, so the barrier
-/// never reallocates on the hot path.
+/// Sharded gray queue. Each shard is a flat `Vec` of pointer values behind its
+/// own lock; producers copy items in, consumers swap a whole shard into their
+/// local worklist in O(1) (no element copy). `GRAY_LEN` (maintained under the
+/// shard locks) is the total pending count for a cheap "any work?" check.
+static GRAY: [Mutex<Vec<usize>>; GRAY_SHARDS] = [const { Mutex::new(Vec::new()) }; GRAY_SHARDS];
+static GRAY_LEN: AtomicUsize = AtomicUsize::new(0);
+
+/// Per-thread gray buffer capacity. Pre-reserved at thread registration and
+/// flushed to a shard on reaching it, so the barrier never reallocates.
 pub(crate) const GRAY_BUF_CAP: usize = 512;
 
 /// True while the current marking cycle has any big (>1 GiB) allocation. The
@@ -98,17 +130,66 @@ pub(crate) const GRAY_BUF_CAP: usize = 512;
 /// big-alloc pointer worth enqueuing.
 pub(crate) static MARKING_HAS_BIG: AtomicBool = AtomicBool::new(false);
 
-/// Append `v` to this thread's gray buffer, flushing to `GRAY` at capacity.
+/// Copy `items` into shard `bucket` (mod GRAY_SHARDS), updating the length
+/// under the shard lock so the count never races below zero.
+fn gray_push(bucket: usize, items: &[usize]) {
+    if items.is_empty() {
+        return;
+    }
+    let mut g = GRAY[bucket % GRAY_SHARDS].lock().unwrap();
+    g.extend_from_slice(items);
+    GRAY_LEN.fetch_add(items.len(), Ordering::Relaxed);
+}
+
+/// Seed the queue with root values, spread across shards for balanced draining.
+fn gray_seed(items: &[usize]) {
+    if items.is_empty() {
+        return;
+    }
+    let per = items.len().div_ceil(GRAY_SHARDS);
+    for (i, chunk) in items.chunks(per).enumerate() {
+        gray_push(i, chunk);
+    }
+}
+
+/// Swap a non-empty shard's contents into `out` (which must be empty), scanning
+/// from `start`. O(1) per shard — no element copy. Returns whether work was
+/// taken.
+fn gray_take(start: usize, out: &mut Vec<usize>) -> bool {
+    debug_assert!(out.is_empty());
+    for i in 0..GRAY_SHARDS {
+        let mut g = GRAY[(start + i) % GRAY_SHARDS].lock().unwrap();
+        if !g.is_empty() {
+            GRAY_LEN.fetch_sub(g.len(), Ordering::Relaxed);
+            std::mem::swap(&mut *g, out);
+            return true;
+        }
+    }
+    false
+}
+
+#[inline]
+fn gray_nonempty() -> bool {
+    GRAY_LEN.load(Ordering::Relaxed) > 0
+}
+
+/// Pick a stable shard for `slot` so a thread's flushes spread across shards.
+#[inline]
+fn slot_bucket(slot: &ThreadSlot) -> usize {
+    (slot as *const ThreadSlot as usize) >> 7
+}
+
+/// Append `v` to this thread's gray buffer, flushing to a shard at capacity.
 /// Caller must own `slot` (single producer) and must run inside
-/// `with_signal_deferred` — the flush takes the `GRAY` lock, and the GC thread
-/// also takes it during a pause, so being parked here would deadlock. (The
+/// `with_signal_deferred` — the flush takes a shard lock that the GC thread
+/// also takes during a pause, so being parked here would deadlock. (The
 /// pre-reserved buffer never reallocates: we flush when it reaches capacity.)
 #[inline]
 unsafe fn gray_enqueue_raw(slot: &ThreadSlot, v: usize) {
     let buf = unsafe { &mut *slot.gray_buf.get() };
     buf.push(v);
     if buf.len() >= GRAY_BUF_CAP {
-        GRAY.lock().unwrap().extend_from_slice(buf);
+        gray_push(slot_bucket(slot), buf);
         buf.clear();
     }
 }
@@ -138,7 +219,7 @@ unsafe fn with_signal_deferred(slot: &ThreadSlot, f: impl FnOnce()) {
 pub(crate) unsafe fn flush_gray_buf(slot: &ThreadSlot) {
     let buf = unsafe { &mut *slot.gray_buf.get() };
     if !buf.is_empty() {
-        GRAY.lock().unwrap().extend_from_slice(buf);
+        gray_push(slot_bucket(slot), buf);
         buf.clear();
     }
 }
@@ -402,6 +483,44 @@ pub(crate) fn request_gc() {
     }
 }
 
+/// Allocation allowed (across all threads) between cycles before allocators
+/// stall. Scales with the *traced* live set (objects that survived by being
+/// reachable, NOT this cycle's born-black float) so it tracks real working-set
+/// growth without the float→cap→float feedback that using the raw live total
+/// would create. Floor keeps small heaps from stalling.
+#[inline]
+pub(crate) fn alloc_hard_cap() -> usize {
+    GC_STALL_FLOOR.max(TRACED_LIVE_SIZE.load(Ordering::Relaxed))
+}
+
+/// Block until a GC cycle reclaims space, throttling the mutator to the
+/// collector's pace when it would otherwise outrun it. Runs as a GC *safepoint*
+/// (caller must NOT hold `in_alloc`): if the STW signal arrives mid-stall, the
+/// handler parks this thread and the cycle proceeds, so this never deadlocks
+/// the collector. The end of a cycle resets `ALLOCATED_SINCE_GC` and bumps
+/// `GC_EPOCH`, waking us to re-check.
+pub(crate) unsafe fn stall_for_gc() {
+    request_gc();
+    loop {
+        // Read the epoch BEFORE the counter: a cycle end resets the counter and
+        // then bumps the epoch, so capturing the epoch first means any reset we
+        // miss is guaranteed to make the wait below return immediately.
+        let e = GC_EPOCH.load(Ordering::Acquire);
+        if ALLOCATED_SINCE_GC.load(Ordering::Relaxed) <= alloc_hard_cap() {
+            return;
+        }
+        unsafe {
+            libc::syscall(
+                libc::SYS_futex,
+                &GC_EPOCH as *const AtomicU64,
+                libc::FUTEX_WAIT,
+                e as u32,
+                std::ptr::null::<libc::timespec>(),
+            );
+        }
+    }
+}
+
 /// Spawn the dedicated collector thread. It blocks the GC signal (it is never a
 /// mutator and must not stop itself) and is never entered into THREAD_REGISTRY,
 /// so the stop-the-world signal sweep never targets it.
@@ -605,29 +724,57 @@ unsafe fn scan_thread_roots(
     }
 }
 
-/// Drain the global gray queue to empty on the calling thread, following heap
-/// edges. Used both for concurrent marking (mutators concurrently append) and
-/// for the pause-2 remark drain (world stopped).
-unsafe fn drain_gray(big_snapshot: &Arc<Vec<BigSnap>>) {
+/// Drain the gray queue to quiescence using the thread pool. Used for the
+/// concurrent phase (mutators concurrently produce into the queue) and for the
+/// pause-2 remark drain (world stopped). Returns once every worker is idle and
+/// the queue is empty.
+unsafe fn parallel_mark(big_snapshot: &Arc<Vec<BigSnap>>) {
+    let pool = &*crate::thread_pool::THREAD_POOL;
+    let n = pool.size().max(1);
+    // `active` counts workers that still hold or might produce work. A worker
+    // returns only when it is idle, all others are idle (`active == 0`), and the
+    // queue is empty — true global quiescence.
+    let active = Arc::new(AtomicUsize::new(n));
+    for w in 0..n {
+        let snap = big_snapshot.clone();
+        let active = active.clone();
+        pool.submit(move || unsafe { mark_worker(w, &snap, &active) });
+    }
+    pool.wait_for_all();
+}
+
+/// One parallel mark worker: pull a shard of gray work, drain its closure
+/// (overflowing excess back to the shared queue so idle workers can steal),
+/// repeat until quiescence.
+unsafe fn mark_worker(w: usize, big_snapshot: &Arc<Vec<BigSnap>>, active: &AtomicUsize) {
     let arena_base = heap::arena_base();
-    let big_len = big_snapshot.len();
+    let mut worklist: Vec<usize> = Vec::new();
+    let mut ctx = MarkContext {
+        big_ptr: big_snapshot.as_ptr(),
+        big_len: big_snapshot.len(),
+        worklist: &mut worklist,
+        shard: w,
+        accum_class: u32::MAX,
+        accum_word: 0,
+        accum_bits: 0,
+    };
     loop {
-        let mut batch = {
-            let mut g = GRAY.lock().unwrap();
-            if g.is_empty() {
+        if gray_nonempty() && gray_take(w, unsafe { &mut *ctx.worklist }) {
+            unsafe { drain(&mut ctx, arena_base) };
+            continue;
+        }
+        // No work right now: go idle and wait for work or global quiescence.
+        active.fetch_sub(1, Ordering::AcqRel);
+        loop {
+            if gray_nonempty() {
+                active.fetch_add(1, Ordering::AcqRel);
                 break;
             }
-            std::mem::take(&mut *g)
-        };
-        let mut ctx = MarkContext {
-            big_ptr: big_snapshot.as_ptr(),
-            big_len,
-            worklist: &mut batch,
-            accum_class: u32::MAX,
-            accum_word: 0,
-            accum_bits: 0,
-        };
-        unsafe { drain(&mut ctx, arena_base) };
+            if active.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            std::thread::yield_now();
+        }
     }
 }
 
@@ -742,14 +889,21 @@ unsafe fn run_gc_cycle() {
         big_snapshot = unsafe { snapshot_big_allocs(&registry) };
         let big_len = big_snapshot.len();
 
-        // Materialize root pointer *values* into GRAY while threads are stopped.
+        // Materialize root pointer *values* into the gray queue while threads
+        // are stopped (spread across shards for balanced parallel draining).
         let mut roots: Vec<usize> = Vec::new();
         for slot in registry.values() {
             unsafe { scan_thread_roots(slot, arena_base, big_len, &mut roots) };
         }
-        GRAY.lock().unwrap().extend_from_slice(&roots);
+        gray_seed(&roots);
 
         // Turn the barrier on before resuming so no later store is missed.
+        // Snapshot the allocation counter so pause 2 can estimate how much was
+        // born black during the mark window.
+        ALLOC_AT_MARK_START.store(
+            ALLOCATED_SINCE_GC.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
         MARKING_HAS_BIG.store(big_len != 0, Ordering::Release);
         SOL_CONCURRENT_MARKING.store(true, Ordering::Release);
 
@@ -757,9 +911,9 @@ unsafe fn run_gc_cycle() {
     }
     let pause1_elapsed = pause1_start.elapsed();
 
-    // ===== Concurrent mark: drain GRAY while mutators run. =====
+    // ===== Concurrent mark: drain the gray queue (pool) while mutators run. ===
     let mark_start = std::time::Instant::now();
-    unsafe { drain_gray(&big_snapshot) };
+    unsafe { parallel_mark(&big_snapshot) };
     let mark_elapsed = mark_start.elapsed();
 
     // ===== STW pause 2: disable barrier, remark, sweep. =====
@@ -786,8 +940,8 @@ unsafe fn run_gc_cycle() {
             remark.append(buf);
             unsafe { scan_thread_roots(slot, arena_base, big_snapshot.len(), &mut remark) };
         }
-        GRAY.lock().unwrap().extend_from_slice(&remark);
-        unsafe { drain_gray(&big_snapshot) };
+        gray_seed(&remark);
+        unsafe { parallel_mark(&big_snapshot) };
 
         // Sweep (still parallel under STW).
         let sweep_start = std::time::Instant::now();
@@ -801,9 +955,27 @@ unsafe fn run_gc_cycle() {
         for slot in registry.values() {
             let st = unsafe { &mut *slot.alloc.get() };
             st.new_size_since_last_gc = 0;
+            st.unflushed_alloc = 0;
             st.reset_claims();
         }
         TOTAL_LIVE_SIZE.store(new_total_live_size, Ordering::Release);
+
+        // Estimate traced live = total marked − bytes born black during the mark
+        // window (allocation between mark-start and now). This excludes float
+        // from the back-pressure cap basis, breaking the runaway feedback where
+        // float inflates "live", which would inflate the cap, which permits more
+        // float. Saturating: born-black can exceed marked when most float died.
+        let born_black = ALLOCATED_SINCE_GC
+            .load(Ordering::Relaxed)
+            .saturating_sub(ALLOC_AT_MARK_START.load(Ordering::Relaxed));
+        TRACED_LIVE_SIZE.store(
+            new_total_live_size.saturating_sub(born_black),
+            Ordering::Release,
+        );
+
+        // Reset back-pressure accounting last: stalled allocators re-check this
+        // after `resume_world` bumps the epoch.
+        ALLOCATED_SINCE_GC.store(0, Ordering::Release);
 
         unsafe { resume_world(epoch2) };
     }
@@ -841,6 +1013,9 @@ pub(crate) struct MarkContext {
     /// Pending pointers to scan. Owned by the job closure; marking runs until
     /// it drains. Replaces the old unbounded recursion through `mark_atomic`.
     pub worklist: *mut Vec<usize>,
+    /// Shard this worker overflows excess worklist into (rotated each overflow
+    /// so donated work spreads across shards for idle workers to steal).
+    pub shard: usize,
     // --- Batched mark-bit accumulator ---
     // Marking a slot only flips a bit in the mark bitmap. Consecutive marks of
     // a physically-sequential structure (e.g. a linked list whose nodes were
@@ -902,11 +1077,17 @@ unsafe fn write_barrier_slow(_dst: *mut u8, val: *mut u8) {
     if v == 0 {
         return;
     }
-    // Cheap filter: enqueue only values that could point into the arena (or any
-    // value if big allocations exist this cycle). The marker rejects the rest
-    // via `lookup_arena` / `mark_big`.
-    let in_arena = v.wrapping_sub(heap::arena_base()) < heap::ARENA_SIZE;
-    if !in_arena && !MARKING_HAS_BIG.load(Ordering::Relaxed) {
+    // White-only shading: an already-marked (black/gray) target is in the mark
+    // set already, so it needs no shading. Skipping it is the standard Dijkstra
+    // optimization and, crucially here, stops the barrier from flooding the gray
+    // queue with already-live pointers (e.g. freshly born-black objects, which
+    // dominate a fast allocator's stores). Big-alloc pointers (rare) skip the
+    // check and are enqueued for the marker to resolve.
+    if v.wrapping_sub(heap::arena_base()) < heap::ARENA_SIZE {
+        if unsafe { heap::is_marked_addr(v) } {
+            return;
+        }
+    } else if !MARKING_HAS_BIG.load(Ordering::Relaxed) {
         return;
     }
     let slot = MY_SLOT.get();
@@ -946,8 +1127,15 @@ pub(crate) unsafe fn memcpy_barrier(dst: *mut u8, size: usize) {
             let end = (dst as *const u8).add(size & !7) as *const usize;
             while w < end {
                 let v = *w;
-                if v != 0 && (v.wrapping_sub(arena_base) < heap::ARENA_SIZE || has_big) {
-                    gray_enqueue_raw(slot, v);
+                if v != 0 {
+                    if v.wrapping_sub(arena_base) < heap::ARENA_SIZE {
+                        // White-only shading (see `write_barrier_slow`).
+                        if !heap::is_marked_addr(v) {
+                            gray_enqueue_raw(slot, v);
+                        }
+                    } else if has_big {
+                        gray_enqueue_raw(slot, v);
+                    }
                 }
                 w = w.add(1);
             }
@@ -1032,12 +1220,26 @@ unsafe fn mark_big(ctx: &mut MarkContext, p: usize) {
     };
 }
 
+/// Worklist length at which a parallel worker donates its excess to the shared
+/// queue, and the length it keeps after donating. Lets idle workers steal from
+/// a worker sitting on a deep subtree.
+const OVERFLOW_HI: usize = 8192;
+const OVERFLOW_LO: usize = 4096;
+
 /// Drain the worklist: mark each reachable object and enqueue its children.
 /// A physically-linear chain (one child per object) is followed in place via
 /// the inner loop, so the worklist stays empty and no work is pushed/popped.
+/// When the local worklist grows past `OVERFLOW_HI`, the excess is donated to
+/// the shared gray queue for other workers to pick up.
 unsafe fn drain(ctx: &mut MarkContext, arena_base: usize) {
     let big_len = ctx.big_len;
     while let Some(start) = unsafe { (*ctx.worklist).pop() } {
+        let wl = unsafe { &mut *ctx.worklist };
+        if wl.len() > OVERFLOW_HI {
+            gray_push(ctx.shard, &wl[OVERFLOW_LO..]);
+            wl.truncate(OVERFLOW_LO);
+            ctx.shard = ctx.shard.wrapping_add(1);
+        }
         let mut p = start;
         loop {
             let Some((class, slot, base, kind)) = (unsafe { heap::lookup_arena(p) }) else {

@@ -11,8 +11,15 @@
 //! The barrier is Dijkstra-style (insertion): after each store of a pointer
 //! value into a potentially-heap destination, `sol_write_barrier(dst, val)`
 //! is called so concurrent marking can shade `val`. The runtime fast path is
-//! a single flag check and is currently always a no-op (the GC is still
-//! stop-the-world).
+//! a single flag check (`SOL_CONCURRENT_MARKING`); it does real work only
+//! while a concurrent mark is in progress.
+//!
+//! Inserted calls carry the `!dbg` location of the store/intrinsic they
+//! follow (see `dbg_suffix`). This is load-bearing, not cosmetic: the final
+//! `clang -O3` inlines the barrier, and LLVM requires an inlinable call inside
+//! a debug-info function to have a `!dbg` location — without it, codegen
+//! strips debug info module-wide (dropping DWARF for the runtime too, so
+//! profilers like samply lose source).
 //!
 //! What gets instrumented:
 //! - only function bodies of generated Solar code (`@solar_*` and `@main`);
@@ -101,6 +108,22 @@ pub fn insert_write_barriers(ll: &str) -> (String, Stats) {
     (out, stats)
 }
 
+/// Extracts the `!dbg !N` attachment from an instruction line as `, !dbg !N`
+/// (ready to append to another instruction), or `""` if the line has none.
+/// LLVM debug locations are `!dbg !<number>`; the number runs to the next
+/// non-digit.
+fn dbg_suffix(line: &str) -> String {
+    let Some(pos) = line.find("!dbg !") else {
+        return String::new();
+    };
+    let num = &line[pos + "!dbg !".len()..];
+    let end = num.find(|c: char| !c.is_ascii_digit()).unwrap_or(num.len());
+    if end == 0 {
+        return String::new();
+    }
+    format!(", !dbg !{}", &num[..end])
+}
+
 /// Returns the function name (without `@`) if this line opens a definition.
 fn define_name(line: &str) -> Option<&str> {
     let rest = line.strip_prefix("define ")?;
@@ -119,6 +142,12 @@ fn instrument_function(body: &[&str], out: &mut String, stats: &mut Stats) {
 
         let trimmed = line.trim_start();
         let indent = &line[..line.len() - trimmed.len()];
+        // Carry the source instruction's debug location onto the inserted call.
+        // LLVM's verifier requires that an inlinable call inside a function with
+        // debug info have a `!dbg` location; the final `clang -O3` inlines the
+        // barrier, and a dbg-less call makes it strip debug info module-wide
+        // (which silently drops DWARF for the runtime too). See `dbg_suffix`.
+        let dbg = dbg_suffix(trimmed);
 
         if let Some(store) = parse_store(trimmed) {
             match store {
@@ -127,7 +156,7 @@ fn instrument_function(body: &[&str], out: &mut String, stats: &mut Stats) {
                         stats.stack_skipped += 1;
                     } else {
                         out.push_str(&format!(
-                            "{indent}call void @sol_write_barrier(ptr {dst}, ptr {val})\n"
+                            "{indent}call void @sol_write_barrier(ptr {dst}, ptr {val}){dbg}\n"
                         ));
                         stats.barriers += 1;
                     }
@@ -137,7 +166,7 @@ fn instrument_function(body: &[&str], out: &mut String, stats: &mut Stats) {
                         stats.stack_skipped += 1;
                     } else {
                         out.push_str(&format!(
-                            "{indent}call void @sol_write_barrier(ptr {dst}, ptr null)\n"
+                            "{indent}call void @sol_write_barrier(ptr {dst}, ptr null){dbg}\n"
                         ));
                         stats.vector_barriers += 1;
                     }
@@ -148,7 +177,7 @@ fn instrument_function(body: &[&str], out: &mut String, stats: &mut Stats) {
                 stats.stack_skipped += 1;
             } else {
                 out.push_str(&format!(
-                    "{indent}call void @sol_gc_memcpy_barrier(ptr {dst}, {len_ty} {len_val})\n"
+                    "{indent}call void @sol_gc_memcpy_barrier(ptr {dst}, {len_ty} {len_val}){dbg}\n"
                 ));
                 stats.memcpy_barriers += 1;
             }
@@ -446,6 +475,27 @@ mod tests {
         let (out, stats) = run(&ll);
         assert_eq!(stats.memcpy_barriers, 1);
         assert!(out.contains("call void @sol_gc_memcpy_barrier(ptr %d, i64 32)"));
+    }
+
+    #[test]
+    fn barrier_inherits_dbg_location_from_store() {
+        // A dbg-less inserted call inside a debug-info function makes the
+        // inliner strip debug info module-wide, so the call must carry the
+        // store's `!dbg`.
+        let ll = with_def(
+            "define internal void @solar_f(ptr %a, ptr %b) {\n  store ptr %a, ptr %b, align 8, !dbg !42, !tbaa !7\n  ret void\n}\n",
+        );
+        let (out, _) = run(&ll);
+        assert!(out.contains("call void @sol_write_barrier(ptr %b, ptr %a), !dbg !42\n"));
+    }
+
+    #[test]
+    fn memcpy_barrier_inherits_dbg_location() {
+        let ll = with_def(
+            "define internal void @solar_f(ptr %d, ptr %s, i64 %n) {\n  call void @llvm.memcpy.p0.p0.i64(ptr %d, ptr %s, i64 %n, i1 false), !dbg !9\n  ret void\n}\n",
+        );
+        let (out, _) = run(&ll);
+        assert!(out.contains("call void @sol_gc_memcpy_barrier(ptr %d, i64 %n), !dbg !9"));
     }
 
     #[test]

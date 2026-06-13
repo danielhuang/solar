@@ -260,6 +260,24 @@ pub unsafe fn set_marked(class: usize, slot: usize) {
     unsafe { &*mark_class_base(class).add(slot >> 6) }.fetch_or(bit_mask(slot), Ordering::Relaxed);
 }
 
+/// Is the slot containing arena pointer `p` already marked? Used by the write
+/// barrier for white-only shading: an already-marked (black/gray) target needs
+/// no shading, which keeps the barrier from flooding the gray queue with
+/// redundant already-live pointers (e.g. freshly born-black objects). Returns
+/// false for pointers outside `[0, hwm)` so the marker still sees them.
+#[inline]
+pub unsafe fn is_marked_addr(p: usize) -> bool {
+    let Some((class, rbase)) = classify(p) else {
+        return false;
+    };
+    let slot = slot_index(p, rbase, class);
+    if slot as u64 >= hwm(class) {
+        return false;
+    }
+    let w = unsafe { &*mark_class_base(class).add(slot >> 6) };
+    w.load(Ordering::Relaxed) & bit_mask(slot) != 0
+}
+
 #[inline]
 pub unsafe fn meta_entry(class: usize, slot: usize) -> *mut MetaEntry {
     let base = META_BASE.load(Ordering::Relaxed) + meta_class_offset(class);
