@@ -9,3 +9,4 @@ pub mod pipeline;
 pub mod resolve;
 pub mod scope;
 pub mod typed_ast;
+pub mod write_barriers;

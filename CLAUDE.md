@@ -70,6 +70,8 @@ Entry point is `pipeline::compile(file_path)` which returns a `Typed` struct. Ea
 
 `CSource::to_binary` supports two modes via `CompileMode::Debug` (ASAN + clang, links `target/debug/libsolar_system`) and `CompileMode::Release` (LLVM LTO, cross-language optimization, allocator attribute stamping, links `target/release/libsolar_system.a`). Intermediate files go in `target/solar/{name}_{random_hex}/` and are kept for debugging.
 
+In release mode, GC write barriers are inserted by `src/write_barriers.rs` as a textual rewrite of the LLVM IR *after* `opt -O3` (so barrier calls don't block allocation elision/SROA); the final `clang -O3` link inlines the barrier fast path. The barrier (`sol_write_barrier` in `solar-system/src/gc.rs`) is a Dijkstra-style insertion barrier gated on `SOL_CONCURRENT_MARKING`, which is never set while the GC is stop-the-world — so it is currently a no-op flag check, kept as the foundation for concurrent marking.
+
 ### Stage details
 
 1. **Parse**: tree-sitter produces a CST, `parser.rs` converts it to an untyped `ast::SourceFile`.

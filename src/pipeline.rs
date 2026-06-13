@@ -320,6 +320,39 @@ fn compile_release(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
         run_cmd("opt", &opt_args);
     }
 
+    // Insert GC write barriers. This runs after `opt -O3` so barrier calls
+    // don't block allocation elision/SROA; the final clang -O3 below inlines
+    // the barrier fast path into the instrumented stores.
+    eprintln!("=== Inserting write barriers ===");
+    let full_wb_bc = dir.join("full_wb.bc");
+    {
+        let full_opt_ll = dir.join("full_opt.ll");
+        run_cmd(
+            "llvm-dis",
+            &[
+                full_opt_bc.to_str().unwrap(),
+                "-o",
+                full_opt_ll.to_str().unwrap(),
+            ],
+        );
+        let ll = std::fs::read_to_string(&full_opt_ll).unwrap();
+        let (patched, stats) = crate::write_barriers::insert_write_barriers(&ll);
+        eprintln!(
+            "write barriers: {} inserted ({} vector-conservative), {} stack stores skipped, {} functions",
+            stats.barriers, stats.vector_barriers, stats.stack_skipped, stats.functions
+        );
+        let full_wb_ll = dir.join("full_wb.ll");
+        std::fs::write(&full_wb_ll, patched).unwrap();
+        run_cmd(
+            "llvm-as",
+            &[
+                full_wb_ll.to_str().unwrap(),
+                "-o",
+                full_wb_bc.to_str().unwrap(),
+            ],
+        );
+    }
+
     // Final link
     eprintln!("=== Final link ===");
     let bin_path = dir.join(name);
@@ -329,7 +362,7 @@ fn compile_release(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
             link_args.extend(["-mllvm", "-attributor-enable=all"]);
         }
         link_args.extend([
-            full_opt_bc.to_str().unwrap(),
+            full_wb_bc.to_str().unwrap(),
             runtime_lib.to_str().unwrap(),
             "-lm",
             "-lpthread",

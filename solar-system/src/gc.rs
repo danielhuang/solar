@@ -671,6 +671,41 @@ pub unsafe extern "C" fn sol_gc_mark(ctx: *mut u8, ptr: *mut u8) {
     unsafe { (*ctx.worklist).push(ptr as usize) };
 }
 
+/// True while a concurrent marking phase is running. The GC is fully
+/// stop-the-world today, so this is never set and `sol_write_barrier` always
+/// takes the no-op fast path. Exported with external linkage (`no_mangle`):
+/// otherwise LTO proves the never-written flag is always false and deletes
+/// the inlined fast path entirely, making release binaries lie about the
+/// barrier's steady-state cost (one flag load + branch per instrumented
+/// store).
+#[unsafe(no_mangle)]
+pub static SOL_CONCURRENT_MARKING: AtomicBool = AtomicBool::new(false);
+
+/// Dijkstra-style insertion write barrier. The pipeline's post-optimization
+/// pass (`src/write_barriers.rs` in the compiler) inserts a call after every
+/// store of a potentially-heap pointer `val` to a non-stack destination `dst`.
+/// Inserting after `opt -O3` keeps LLVM's allocation elision intact; the final
+/// `clang -O3` link inlines this fast path into the instrumented stores.
+///
+/// `val` is null when the stored value is unknown (e.g. vectorized stores);
+/// the slow path must then treat the store conservatively.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sol_write_barrier(dst: *mut u8, val: *mut u8) {
+    if SOL_CONCURRENT_MARKING.load(Ordering::Relaxed) {
+        write_barrier_slow(dst, val);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn write_barrier_slow(_dst: *mut u8, _val: *mut u8) {
+    // TODO(concurrent-gc): shade `val` (or rescan `dst`'s object when `val`
+    // is null) so concurrent marking never loses a pointer stored after its
+    // destination object was scanned. Termination relies on a brief STW
+    // remark that rescans stacks and globals — stores to stack slots and
+    // global roots are deliberately not barriered.
+}
+
 #[derive(Clone)]
 enum Root {
     StackRange(Range<*mut u8>),
