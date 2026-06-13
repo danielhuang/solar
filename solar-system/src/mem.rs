@@ -4,8 +4,8 @@ use std::ptr::null_mut;
 use std::sync::atomic::Ordering;
 
 use crate::gc::{
-    BigAllocLocal, DISABLE_GC, ENABLE_ALLOC_PRINTS, MY_SLOT, TOTAL_LIVE_SIZE, ThreadAllocState,
-    run_gc, self_suspend,
+    BigAllocLocal, DISABLE_GC, ENABLE_ALLOC_PRINTS, MY_SLOT, SOL_CONCURRENT_MARKING,
+    TOTAL_LIVE_SIZE, ThreadAllocState, memcpy_barrier, request_gc, self_suspend,
 };
 use crate::heap;
 
@@ -33,7 +33,10 @@ pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -
     let new_size = unsafe { (*alloc_ptr).new_size_since_last_gc };
     let total_live = TOTAL_LIVE_SIZE.load(Ordering::Relaxed) + new_size;
     if new_size * 2 > total_live && total_live > MIN_SIZE_UNTIL_GC {
-        unsafe { run_gc() };
+        // Wake the dedicated GC thread and keep going — collection runs
+        // concurrently. (No allocation back-pressure: a fast allocator can
+        // outrun the marker and grow the heap before the cycle finishes.)
+        request_gc();
     }
 
     if ENABLE_ALLOC_PRINTS.load(Ordering::Relaxed) {
@@ -115,6 +118,14 @@ unsafe fn arena_allocate(
     }
     unsafe { heap::set_allocated(class, slot) };
 
+    // Allocate black: an object born during concurrent marking is marked live
+    // immediately, so the stop-the-world sweep at the end of the cycle never
+    // reclaims it. Its (zeroed) fields are filled by barriered stores, so its
+    // outgoing pointers are still shaded.
+    if SOL_CONCURRENT_MARKING.load(Ordering::Relaxed) {
+        unsafe { heap::set_marked(class, slot) };
+    }
+
     state.new_size_since_last_gc += ssz;
     state.total_allocations += 1;
     addr as *mut u8
@@ -177,6 +188,11 @@ unsafe fn bump_forever(size: usize, align: usize) -> *mut u8 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_memcpy(dst: *mut u8, src: *const u8, size: usize) {
     unsafe { std::ptr::copy_nonoverlapping(src, dst, size) };
+    // Aggregate copies bypass the per-store write barrier, so conservatively
+    // shade any pointers in the copied region while marking is active.
+    if SOL_CONCURRENT_MARKING.load(Ordering::Relaxed) {
+        unsafe { memcpy_barrier(dst, size) };
+    }
 }
 
 #[unsafe(no_mangle)]

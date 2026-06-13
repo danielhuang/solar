@@ -23,6 +23,12 @@
 //!   SSA value and `%dst` does not provably derive from an `alloca`
 //! - `store <N x ptr>` vector stores, conservatively with a null `val`
 //!
+//! - `llvm.memcpy.*` / `llvm.memmove.*` whose destination is not stack-derived:
+//!   a bulk `sol_gc_memcpy_barrier(dst, len)` call is inserted after the
+//!   intrinsic (the optimizer turns aggregate pointer copies into these, and
+//!   they bypass the per-store barrier). `sol_memcpy` calls are handled in the
+//!   runtime itself, so they are not instrumented here.
+//!
 //! What is deliberately skipped (correctness relies on the listed invariant):
 //! - stored values that are `null`/`undef`/`poison` or globals/constexprs —
 //!   never GC-heap pointers, nothing to shade
@@ -30,13 +36,14 @@
 //!   STW remark phase that terminates concurrent marking
 //! - destinations that are globals or constant expressions — global roots
 //!   are likewise rescanned at remark
-//! - `llvm.memcpy`/`memmove` and `sol_memcpy` aggregate copies —
-//!   TODO(concurrent-gc): these need a bulk barrier in the runtime before
-//!   marking can run concurrently; the conservative small-slot heap scan
-//!   makes shading every pointer-aligned word of the copy sufficient
 //! - pointer stores re-written by LLVM as integer stores (`ptrtoint`) —
 //!   not observed in practice for this codegen; the stats printed by the
 //!   pipeline make regressions visible for auditing
+//!
+//! Declarations: the pass appends `declare` lines for the barrier functions it
+//! references when the module does not already define them. In release the
+//! merged runtime bitcode defines them (so no declare is added); in debug the
+//! generated-C module has neither, so the declares are injected.
 
 /// Summary of one instrumentation run, printed by the pipeline.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -47,7 +54,9 @@ pub struct Stats {
     pub barriers: usize,
     /// Barriers inserted conservatively (null `val`) after vector ptr stores.
     pub vector_barriers: usize,
-    /// Pointer stores skipped because the destination derives from an alloca.
+    /// Bulk barriers inserted after `llvm.memcpy`/`memmove` intrinsics.
+    pub memcpy_barriers: usize,
+    /// Pointer stores / copies skipped because the destination is stack-derived.
     pub stack_skipped: usize,
 }
 
@@ -77,11 +86,17 @@ pub fn insert_write_barriers(ll: &str) -> (String, Stats) {
         i += 1;
     }
 
-    if stats.barriers + stats.vector_barriers > 0 {
-        assert!(
-            ll.contains("@sol_write_barrier("),
-            "sol_write_barrier not found in module — runtime bitcode missing the barrier definition"
-        );
+    // Ensure the barrier functions we referenced are declared. In the merged
+    // release module they are already defined (so the substring is present and
+    // nothing is added); in the standalone debug-C module they are absent and
+    // get a top-level `declare` appended.
+    // Check the *input* for an existing declaration/definition — `out` now also
+    // contains the calls we inserted, which mention the symbol name.
+    if (stats.barriers + stats.vector_barriers > 0) && !ll.contains("@sol_write_barrier(") {
+        out.push_str("declare void @sol_write_barrier(ptr, ptr)\n");
+    }
+    if stats.memcpy_barriers > 0 && !ll.contains("@sol_gc_memcpy_barrier(") {
+        out.push_str("declare void @sol_gc_memcpy_barrier(ptr, i64)\n");
     }
     (out, stats)
 }
@@ -103,34 +118,73 @@ fn instrument_function(body: &[&str], out: &mut String, stats: &mut Stats) {
         out.push('\n');
 
         let trimmed = line.trim_start();
-        let Some(store) = parse_store(trimmed) else {
-            continue;
-        };
         let indent = &line[..line.len() - trimmed.len()];
 
-        match store {
-            Store::Scalar { val, dst } => {
-                if stack.contains(dst) {
-                    stats.stack_skipped += 1;
-                } else {
-                    out.push_str(&format!(
-                        "{indent}call void @sol_write_barrier(ptr {dst}, ptr {val})\n"
-                    ));
-                    stats.barriers += 1;
+        if let Some(store) = parse_store(trimmed) {
+            match store {
+                Store::Scalar { val, dst } => {
+                    if stack.contains(dst) {
+                        stats.stack_skipped += 1;
+                    } else {
+                        out.push_str(&format!(
+                            "{indent}call void @sol_write_barrier(ptr {dst}, ptr {val})\n"
+                        ));
+                        stats.barriers += 1;
+                    }
+                }
+                Store::Vector { dst } => {
+                    if stack.contains(dst) {
+                        stats.stack_skipped += 1;
+                    } else {
+                        out.push_str(&format!(
+                            "{indent}call void @sol_write_barrier(ptr {dst}, ptr null)\n"
+                        ));
+                        stats.vector_barriers += 1;
+                    }
                 }
             }
-            Store::Vector { dst } => {
-                if stack.contains(dst) {
-                    stats.stack_skipped += 1;
-                } else {
-                    out.push_str(&format!(
-                        "{indent}call void @sol_write_barrier(ptr {dst}, ptr null)\n"
-                    ));
-                    stats.vector_barriers += 1;
-                }
+        } else if let Some((dst, len_ty, len_val)) = parse_memcpy(trimmed) {
+            if stack.contains(dst) {
+                stats.stack_skipped += 1;
+            } else {
+                out.push_str(&format!(
+                    "{indent}call void @sol_gc_memcpy_barrier(ptr {dst}, {len_ty} {len_val})\n"
+                ));
+                stats.memcpy_barriers += 1;
             }
         }
     }
+}
+
+/// Parse an `llvm.memcpy.*` / `llvm.memmove.*` intrinsic call, returning
+/// `(dst, len_type, len_value)` when the destination is an SSA register (so it
+/// might be a heap object). Returns `None` for non-memcpy lines or constant /
+/// global destinations (the latter are roots, rescanned at remark).
+fn parse_memcpy(line: &str) -> Option<(&str, &str, &str)> {
+    if !line.contains("@llvm.memcpy.") && !line.contains("@llvm.memmove.") {
+        return None;
+    }
+    // Argument list is between the first '(' after the intrinsic name and the
+    // matching ')'. memcpy/memmove args: (dst, src, len, isvolatile).
+    let open = line.find('(')?;
+    let close = line.rfind(')')?;
+    let args: Vec<&str> = line[open + 1..close].split(',').map(|a| a.trim()).collect();
+    if args.len() < 3 {
+        return None;
+    }
+    // dst: "ptr [attrs] %name" — value is the last whitespace token.
+    let dst = args[0].split_whitespace().last()?;
+    if !dst.starts_with('%') {
+        return None;
+    }
+    // len: "iN [attrs] value" — keep the integer type and the value token.
+    let mut len_toks = args[2].split_whitespace();
+    let len_ty = len_toks.next()?;
+    let len_val = len_toks.last()?;
+    if !len_ty.starts_with('i') {
+        return None;
+    }
+    Some((dst, len_ty, len_val))
 }
 
 enum Store<'a> {
@@ -354,8 +408,54 @@ mod tests {
     }
 
     #[test]
-    fn missing_barrier_definition_panics() {
+    fn declare_injected_when_definition_absent() {
+        // Debug-mode module: no barrier definition present, so a `declare` is
+        // appended for each referenced barrier function.
         let ll = "define internal void @solar_f(ptr %a, ptr %b) {\n  store ptr %a, ptr %b, align 8\n  ret void\n}\n";
-        assert!(std::panic::catch_unwind(|| insert_write_barriers(ll)).is_err());
+        let (out, stats) = run(ll);
+        assert_eq!(stats.barriers, 1);
+        assert!(out.contains("declare void @sol_write_barrier(ptr, ptr)"));
+    }
+
+    #[test]
+    fn declare_not_injected_when_definition_present() {
+        // Release-mode merged module: definition present, so no extra declare.
+        let ll = with_def(
+            "define internal void @solar_f(ptr %a, ptr %b) {\n  store ptr %a, ptr %b, align 8\n  ret void\n}\n",
+        );
+        let (out, _) = run(&ll);
+        assert!(!out.contains("declare void @sol_write_barrier"));
+    }
+
+    #[test]
+    fn memcpy_with_ssa_dst_gets_bulk_barrier() {
+        let ll = with_def(
+            "define internal void @solar_f(ptr %d, ptr %s, i64 %n) {\n  call void @llvm.memcpy.p0.p0.i64(ptr align 8 %d, ptr align 8 %s, i64 %n, i1 false)\n  ret void\n}\n",
+        );
+        let (out, stats) = run(&ll);
+        assert_eq!(stats.memcpy_barriers, 1);
+        assert!(out.contains("call void @sol_gc_memcpy_barrier(ptr %d, i64 %n)"));
+        assert!(out.contains("declare void @sol_gc_memcpy_barrier(ptr, i64)"));
+    }
+
+    #[test]
+    fn memmove_constant_len_gets_bulk_barrier() {
+        let ll = with_def(
+            "define internal void @solar_f(ptr %d, ptr %s) {\n  call void @llvm.memmove.p0.p0.i64(ptr %d, ptr %s, i64 32, i1 false)\n  ret void\n}\n",
+        );
+        let (out, stats) = run(&ll);
+        assert_eq!(stats.memcpy_barriers, 1);
+        assert!(out.contains("call void @sol_gc_memcpy_barrier(ptr %d, i64 32)"));
+    }
+
+    #[test]
+    fn memcpy_to_alloca_skipped() {
+        let ll = with_def(
+            "define internal void @solar_f(ptr %s) {\n  %buf = alloca [8 x i64], align 8\n  call void @llvm.memcpy.p0.p0.i64(ptr %buf, ptr %s, i64 64, i1 false)\n  ret void\n}\n",
+        );
+        let (out, stats) = run(&ll);
+        assert_eq!(stats.memcpy_barriers, 0);
+        assert_eq!(stats.stack_skipped, 1);
+        assert!(!out.contains("sol_gc_memcpy_barrier"));
     }
 }

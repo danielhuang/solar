@@ -105,6 +105,38 @@ impl Binary {
 fn compile_debug(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
     let obj_path = dir.join(format!("{name}.o"));
     let bin_path = dir.join(name);
+    let ll_path = dir.join(format!("{name}.ll"));
+
+    // Emit textual LLVM IR (LTO defers optimization + ASAN instrumentation to
+    // link time, so this IR is un-instrumented), insert GC write barriers, then
+    // compile the patched IR. This makes debug/ASAN test binaries exercise the
+    // concurrent collector with barriers active.
+    let emit = Command::new("clang")
+        .args([
+            "-fsanitize=address",
+            "-fno-omit-frame-pointer",
+            "-flto",
+            "-g",
+            "-S",
+            "-emit-llvm",
+            c_path.to_str().unwrap(),
+            "-o",
+            ll_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        emit.status.success(),
+        "C->IR compilation failed for {name}:\n{}",
+        String::from_utf8_lossy(&emit.stderr)
+    );
+    let ll = std::fs::read_to_string(&ll_path).unwrap();
+    let (patched, stats) = crate::write_barriers::insert_write_barriers(&ll);
+    eprintln!(
+        "write barriers (debug): {} store, {} vector, {} memcpy inserted; {} stack skipped",
+        stats.barriers, stats.vector_barriers, stats.memcpy_barriers, stats.stack_skipped
+    );
+    std::fs::write(&ll_path, patched).unwrap();
 
     let compile = Command::new("clang")
         .args([
@@ -113,7 +145,7 @@ fn compile_debug(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
             "-flto",
             "-g",
             "-c",
-            c_path.to_str().unwrap(),
+            ll_path.to_str().unwrap(),
             "-o",
             obj_path.to_str().unwrap(),
         ])
@@ -121,7 +153,7 @@ fn compile_debug(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
         .unwrap();
     assert!(
         compile.status.success(),
-        "C compilation failed for {name}:\n{}",
+        "IR compilation failed for {name}:\n{}",
         String::from_utf8_lossy(&compile.stderr)
     );
 
@@ -338,8 +370,12 @@ fn compile_release(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
         let ll = std::fs::read_to_string(&full_opt_ll).unwrap();
         let (patched, stats) = crate::write_barriers::insert_write_barriers(&ll);
         eprintln!(
-            "write barriers: {} inserted ({} vector-conservative), {} stack stores skipped, {} functions",
-            stats.barriers, stats.vector_barriers, stats.stack_skipped, stats.functions
+            "write barriers: {} store, {} vector, {} memcpy inserted; {} stack skipped, {} functions",
+            stats.barriers,
+            stats.vector_barriers,
+            stats.memcpy_barriers,
+            stats.stack_skipped,
+            stats.functions
         );
         let full_wb_ll = dir.join("full_wb.ll");
         std::fs::write(&full_wb_ll, patched).unwrap();

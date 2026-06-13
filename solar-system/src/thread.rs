@@ -30,6 +30,8 @@ fn register_thread(stack_base: *mut usize) {
         stack_top: AtomicPtr::new(std::ptr::null_mut()),
         saved_regs: std::array::from_fn(|_| AtomicU64::new(0)),
         alloc: UnsafeCell::new(ThreadAllocState::new()),
+        // Pre-reserve so the write barrier never reallocates on its hot path.
+        gray_buf: UnsafeCell::new(Vec::with_capacity(crate::gc::GRAY_BUF_CAP)),
         in_alloc: AtomicBool::new(false),
         gc_pending_epoch: AtomicU64::new(0),
         gc_waiting_epoch: AtomicU64::new(0),
@@ -50,6 +52,10 @@ fn unregister_thread() {
     let _gc_guard = GC_LOCK.read();
     block_gc_signal();
     if let Some(slot) = THREAD_REGISTRY.write().unwrap().remove(&tid) {
+        // Flush any pointers this thread shaded but didn't yet publish to GRAY.
+        // (Objects reachable only from its stack and never stored to the heap
+        // are legitimately dead; anything published went through the barrier.)
+        unsafe { crate::gc::flush_gray_buf(&slot) };
         let alloc_state = slot.alloc.into_inner();
         ORPHANED_TOTAL_ALLOCATIONS.fetch_add(alloc_state.total_allocations, Ordering::Relaxed);
         // The thread's arena allocations live in the global bitmaps already;

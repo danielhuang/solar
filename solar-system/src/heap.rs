@@ -251,6 +251,14 @@ pub unsafe fn mark_word_load(class: usize, word: usize) -> u64 {
 pub unsafe fn mark_word_or(class: usize, word: usize, bits: u64) {
     unsafe { &*mark_class_base(class).add(word) }.fetch_or(bits, Ordering::Relaxed);
 }
+/// Atomically set the mark bit for a single slot. Used for "allocate black":
+/// an object born during concurrent marking is marked live immediately so the
+/// stop-the-world sweep at the end of the cycle does not reclaim it. Atomic
+/// because the concurrent marker may be flushing other bits in the same word.
+#[inline]
+pub unsafe fn set_marked(class: usize, slot: usize) {
+    unsafe { &*mark_class_base(class).add(slot >> 6) }.fetch_or(bit_mask(slot), Ordering::Relaxed);
+}
 
 #[inline]
 pub unsafe fn meta_entry(class: usize, slot: usize) -> *mut MetaEntry {
