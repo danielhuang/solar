@@ -886,6 +886,13 @@ impl<'a, W: Write> Interpreter<'a, W> {
                     .into_raw_fd();
                 Value::Int(fd as i64)
             }
+            Intrinsic::FileClose => {
+                // Evaluated for the side effect only; FileDesc auto-close / dead-fd
+                // neutering is a compiled-runtime behavior. Here FileDescs are raw
+                // leaked fds, so closing is a no-op (mirrors file_open's leak).
+                self.eval_expr(&arguments[0]);
+                Value::Unit
+            }
             Intrinsic::ArrayLen => {
                 let arr = self.eval_expr(&arguments[0]);
                 match arr {

@@ -15,7 +15,7 @@
 //! slot went unmarked — GC-driven resource cleanup. This mirrors the heap's
 //! alloc/mark-bitmap sweep (`heap::sweep_word_range`).
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
 
 /// 4 GiB of address space: fd numbers `0..2^32` (covers every `i32` fd).
 pub const FD_ARENA_SIZE: usize = 1usize << 32;
@@ -29,6 +29,12 @@ static FD_ALLOC_BITS: AtomicUsize = AtomicUsize::new(0);
 static FD_MARK_BITS: AtomicUsize = AtomicUsize::new(0);
 /// Highest fd + 1 ever handed out; never decreases. Sweep only scans `[0, HWM)`.
 static FD_HWM: AtomicU64 = AtomicU64::new(0);
+
+/// A permanently-open "dead" fd: the read end of a pipe whose write end is
+/// closed. Reading it yields immediate EOF, so any I/O on a fd that has been
+/// [`sol_file_close`]d (via `dup2(DEAD_FD, fd)`) fails harmlessly. Set once by
+/// [`init`]; `+1` so the unset state (`0`) is distinguishable from fd 0.
+static DEAD_FD: AtomicI32 = AtomicI32::new(0);
 
 unsafe fn mmap(size: usize, prot: i32, what: &str) -> usize {
     let p = unsafe {
@@ -71,6 +77,20 @@ pub fn init() {
         let arena = mmap(FD_ARENA_SIZE, libc::PROT_NONE, "fd arena");
         FD_ALLOC_BITS.store(alloc, Ordering::Relaxed);
         FD_MARK_BITS.store(mark, Ordering::Relaxed);
+
+        // The "dead" fd: read end of a pipe with the write end closed. Reads on
+        // it return EOF; `sol_file_close` dup2's it over a fd to neuter the fd's
+        // file without freeing the fd number (which a live `FileDesc` may still
+        // hold). It is never closed for the life of the process.
+        let mut fds = [0i32; 2];
+        assert!(
+            libc::pipe(fds.as_mut_ptr()) == 0,
+            "solar fd arena: pipe() for dead fd failed (errno {})",
+            std::io::Error::last_os_error()
+        );
+        libc::close(fds[1]); // drop the write end → reads on fds[0] hit EOF
+        DEAD_FD.store(fds[0], Ordering::Relaxed);
+
         // Published last; `in_fd_arena` gates on `FD_BASE != 0`.
         FD_BASE.store(arena, Ordering::Relaxed);
     }
@@ -139,6 +159,33 @@ pub unsafe extern "C" fn sol_file_open(path_ptr: *const u8, path_len: usize) -> 
             (FD_BASE.load(Ordering::Relaxed) + fd) as *mut u8
         })
     }
+}
+
+/// "Close" the file behind a `FileDesc` without freeing its fd number.
+///
+/// A plain `close(fd)` would return the fd number to the kernel, which could
+/// then hand it back out from a later `open` — and any escaped `FileDesc` still
+/// holding that number would silently alias the new file. Instead we `dup2` the
+/// process-wide [`DEAD_FD`] over it: the underlying file is closed atomically by
+/// `dup2`, but the fd number stays occupied (now referring to the dead pipe), so
+/// stale `FileDesc`s see only harmless EOF. The fd keeps its allocated bit, so
+/// the collector still traces it and eventually `close`s the dead-pipe dup when
+/// no live `FileDesc` remains.
+///
+/// Needs no GC critical section: it neither allocates nor touches the alloc/mark
+/// bitmaps, and `fd_sweep` (the only other toucher of this fd) runs under STW.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sol_file_close(fd_ptr: *mut u8) {
+    let base = FD_BASE.load(Ordering::Relaxed);
+    debug_assert!(
+        base != 0 && (fd_ptr as usize).wrapping_sub(base) < FD_ARENA_SIZE,
+        "sol_file_close: pointer is not a FileDesc"
+    );
+    let fd = (fd_ptr as usize).wrapping_sub(base) as libc::c_int;
+    let dead = DEAD_FD.load(Ordering::Relaxed);
+    // dup2 onto the same fd is a no-op, so a dead fd value of 0 (pre-init) would
+    // be wrong only if init never ran — which can't happen for compiled code.
+    unsafe { libc::dup2(dead, fd) };
 }
 
 /// Does `v` point into the fd arena (i.e. is it a `FileDesc`)?

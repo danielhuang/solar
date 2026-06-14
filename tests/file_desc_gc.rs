@@ -111,6 +111,30 @@ fn dropped_file_descriptors_are_closed_by_gc() {
 }
 
 #[test]
+fn closed_file_descriptors_keep_their_fd_number() {
+    // Each handle is `close`d but still retained in the reachable `kept` chain.
+    // `close` neuters the file via `dup2(dead_fd, fd)` WITHOUT freeing the fd
+    // number — a stale FileDesc must never be able to alias a fd reused by a
+    // later open. So the numbers stay occupied and the program exhausts the
+    // ceiling exactly as the retain-without-close case does. (A plain `close`
+    // would free the numbers, and the program would survive.)
+    let src = TEMPLATE.replace(
+        "OPEN_STMT",
+        r#"let f = open("Cargo.toml"&);
+            close(f);
+            kept = (FdNode { fd: f, next: FdOpt::Some(kept) })&;
+            fd_root&.atomic_store(kept);"#,
+    );
+    let bin = build(&src, "fd_gc_closed_retained");
+    assert!(
+        !run_with_fd_limit(&bin),
+        "closing a FileDesc must keep its fd number occupied (dup2 over a dead \
+         fd, not a real close), so retaining the closed handles still exhausts \
+         the fd limit"
+    );
+}
+
+#[test]
 fn retained_file_descriptors_are_not_closed() {
     // Every handle is retained in the reachable `kept` chain; the GC must keep
     // them open, so the fds accumulate and the program exhausts the ceiling.

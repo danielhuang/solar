@@ -5973,6 +5973,10 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
             params: vec![byte_slice()],
             ret: Fixed(Type::FileDesc),
         },
+        ast::Intrinsic::FileClose => IntrinsicSpec {
+            params: vec![Exact(Type::FileDesc)],
+            ret: Fixed(Type::Unit),
+        },
     }
 }
 

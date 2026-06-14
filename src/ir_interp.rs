@@ -1103,6 +1103,12 @@ impl<'a, W: Write> Interpreter<'a, W> {
                     .into_raw_fd();
                 self.scalar_store(dst, fd as u64, result_ty);
             }
+            Intrinsic::FileClose => {
+                // The interpreter has no fd arena and leaks fds, so the dead-fd
+                // neutering (a compiled-runtime behavior) is a no-op here. Still
+                // evaluate the argument for any side effects.
+                let _ = self.eval_load(nodes, args[0]);
+            }
             Intrinsic::ArrayLen => {
                 let len = if let Type::FixedArray(_, n) = &nodes[args[0].0].ty {
                     *n as usize

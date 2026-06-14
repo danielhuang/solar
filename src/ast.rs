@@ -352,6 +352,7 @@ pub enum Intrinsic {
     FutexWait,
     FutexWake,
     FileOpen,
+    FileClose,
     Cast(NumericType, NumericType),
 }
 
@@ -369,6 +370,7 @@ const INTRINSIC_NAMES: &[(&str, Intrinsic)] = &[
     ("futex_wait", Intrinsic::FutexWait),
     ("futex_wake", Intrinsic::FutexWake),
     ("file_open", Intrinsic::FileOpen),
+    ("file_close", Intrinsic::FileClose),
 ];
 
 impl Intrinsic {

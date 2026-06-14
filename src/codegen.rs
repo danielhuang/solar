@@ -490,6 +490,7 @@ impl<'a> Codegen<'a> {
         self.line("extern void sol_panic(const uint8_t* ptr, size_t len);");
         self.line("extern size_t sol_read_stdin(uint8_t* ptr, size_t len);");
         self.line("extern uint8_t* sol_file_open(const uint8_t* ptr, size_t len);");
+        self.line("extern void sol_file_close(uint8_t* fd);");
         self.line("extern int64_t sol_checked_add_int(int64_t a, int64_t b);");
         self.line("extern int64_t sol_checked_sub_int(int64_t a, int64_t b);");
         self.line("extern int64_t sol_checked_mul_int(int64_t a, int64_t b);");
@@ -2058,6 +2059,12 @@ impl<'a> Codegen<'a> {
                 self.linef(format!(
                     "*(uint8_t**){dst} = sol_file_open({data_ptr}, {data_len});"
                 ));
+            }
+            Intrinsic::FileClose => {
+                // arg is a FileDesc (opaque uint8_t* into the fd arena). Neuters
+                // the fd in place — no result.
+                let fd = self.emit_load(nodes, args[0]);
+                self.linef(format!("sol_file_close((uint8_t*){fd});"));
             }
             Intrinsic::ArrayLen => {
                 let len = if let Type::FixedArray(_, n) = &nodes[args[0].0].ty {
