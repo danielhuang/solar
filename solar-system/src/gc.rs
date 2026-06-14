@@ -35,6 +35,11 @@ pub struct ThreadAllocState {
     pub classes: [ThreadClassState; heap::NUM_CLASSES],
     pub big_allocs: Vec<BigAllocLocal>,
     pub new_size_since_last_gc: usize,
+    /// Set once this thread has requested a cycle for the current inter-GC
+    /// period, so the heap-growth trigger fires only on the rising edge instead
+    /// of on every allocation past the threshold. Cleared at cycle end together
+    /// with `new_size_since_last_gc`.
+    pub gc_requested_since_last_gc: bool,
     /// Bytes allocated since this thread last flushed into `ALLOCATED_SINCE_GC`.
     /// Batches the global counter update off the hot path (flush every
     /// `ALLOC_FLUSH_CHUNK`) so back-pressure accounting costs ~nothing per
@@ -55,6 +60,7 @@ impl ThreadAllocState {
             classes: std::array::from_fn(|_| ThreadClassState { cur: 0, end: 0 }),
             big_allocs: Vec::new(),
             new_size_since_last_gc: 0,
+            gc_requested_since_last_gc: false,
             unflushed_alloc: 0,
             total_allocations: 0,
         }
@@ -75,7 +81,7 @@ impl ThreadAllocState {
 
 /// Total live size (in slot bytes + big-alloc bytes), recomputed by the GC at
 /// the end of each cycle. Read by allocating threads for the trigger heuristic.
-pub(crate) static TOTAL_LIVE_SIZE: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static TOTAL_LIVE_SIZE_AFTER_LAST_GC: AtomicUsize = AtomicUsize::new(0);
 
 /// Bytes allocated (across all threads) since the last completed GC cycle,
 /// updated in batches from per-thread `unflushed_alloc`. Drives allocation
@@ -970,10 +976,11 @@ unsafe fn run_gc_cycle() {
         for slot in registry.values() {
             let st = unsafe { &mut *slot.alloc.get() };
             st.new_size_since_last_gc = 0;
+            st.gc_requested_since_last_gc = false;
             st.unflushed_alloc = 0;
             st.reset_claims();
         }
-        TOTAL_LIVE_SIZE.store(new_total_live_size, Ordering::Release);
+        TOTAL_LIVE_SIZE_AFTER_LAST_GC.store(new_total_live_size, Ordering::Release);
 
         // Estimate traced live = total marked − bytes born black during the mark
         // window (allocation between mark-start and now). This excludes float

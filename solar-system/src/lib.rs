@@ -71,6 +71,7 @@ pub unsafe extern "C" fn sol_start(solar_main: unsafe extern "C" fn(*mut c_void)
             eprintln!("memory used: {live_size} bytes");
             eprintln!("{live_count}/{total_allocations} allocations live");
         }
+        eprintln!("total time: {:?}", start.elapsed());
         if total_allocations > 0 {
             eprintln!(
                 "avg {:?} per allocation (includes non-allocation time)",
