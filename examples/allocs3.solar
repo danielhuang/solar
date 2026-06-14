@@ -1,17 +1,11 @@
-enum Option#[T] {
-    Some(T),
-    None,
-}
-
 struct Node {
-    next: &Option#[Node],
+    next: &?Node,
 }
 
 fn main() {
-    let none: Option#[Node] = Option#[Node]::None;
-    let node = Node { next: none& };
+    let node = Node { next: null#[Node] };
     for _ in 0..100000000 {
-        let wrapped: Option#[Node] = Option#[Node]::Some(node);
-        node = Node { next: wrapped& };
+        let prev = node;
+        node = Node { next: prev& };
     }
 }
