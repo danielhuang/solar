@@ -1,6 +1,4 @@
 use std::alloc::Layout;
-use std::cell::Cell;
-use std::ptr::null_mut;
 use std::sync::atomic::Ordering;
 
 use crate::gc::{
@@ -16,10 +14,6 @@ pub type MarkFn = unsafe extern "C" fn(*mut u8, *mut u8, u64);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -> *mut u8 {
-    if DISABLE_GC.load(Ordering::Relaxed) {
-        return unsafe { bump_forever(size, align) };
-    }
-
     // Per-thread slot (stable across GC).
     let slot_ptr = MY_SLOT.get();
     assert!(
@@ -33,19 +27,29 @@ pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -
     let alloc_ptr = slot.alloc.get();
     let new_size = unsafe { (*alloc_ptr).new_size_since_last_gc };
     let total_live = TOTAL_LIVE_SIZE.load(Ordering::Relaxed) + new_size;
-    if new_size * 2 > total_live && total_live > MIN_SIZE_UNTIL_GC {
-        // Wake the dedicated GC thread and keep going — collection runs
-        // concurrently with this and other mutators.
-        request_gc();
-    }
 
-    // Back-pressure: if mutators have collectively outrun the collector, stall
-    // here (a GC safepoint, before the critical section) until a cycle reclaims
-    // space. Without this a fast allocator born-blacks unbounded floating
-    // garbage and exhausts memory. The check reads an approximate global
-    // counter, so it is cheap and only trips when the heap is genuinely large.
-    if ALLOCATED_SINCE_GC.load(Ordering::Relaxed) > alloc_hard_cap() {
-        unsafe { stall_for_gc() };
+    // GC coordination. `SOLAR_DISABLE_GC` gates only this block, so the
+    // allocation path below stays byte-for-byte identical to a collected build
+    // (same arena, bitmaps, born-black logic and accounting) and the disabled
+    // mode measures the real allocator rather than a separate bump arena. The
+    // back-pressure stall is gated together with the trigger it depends on:
+    // with no cycle to ever reset `ALLOCATED_SINCE_GC`, a stall could never be
+    // relieved and would hang.
+    if !DISABLE_GC.load(Ordering::Relaxed) {
+        if new_size * 2 > total_live && total_live > MIN_SIZE_UNTIL_GC {
+            // Wake the dedicated GC thread and keep going — collection runs
+            // concurrently with this and other mutators.
+            request_gc();
+        }
+
+        // Back-pressure: if mutators have collectively outrun the collector, stall
+        // here (a GC safepoint, before the critical section) until a cycle reclaims
+        // space. Without this a fast allocator born-blacks unbounded floating
+        // garbage and exhausts memory. The check reads an approximate global
+        // counter, so it is cheap and only trips when the heap is genuinely large.
+        if ALLOCATED_SINCE_GC.load(Ordering::Relaxed) > alloc_hard_cap() {
+            unsafe { stall_for_gc() };
+        }
     }
 
     if ENABLE_ALLOC_PRINTS.load(Ordering::Relaxed) {
@@ -151,37 +155,6 @@ unsafe fn big_allocate(
     });
     account_alloc(state, size);
     ptr
-}
-
-/// `SOLAR_DISABLE_GC` path: a thread-local, never-freed bump arena.
-unsafe fn bump_forever(size: usize, align: usize) -> *mut u8 {
-    thread_local! {
-        static REGION: Cell<(*mut u8, *mut u8)> = const { Cell::new((null_mut(), null_mut())) };
-        static MMAP_SIZE: Cell<usize> = const { Cell::new(1 << 20) };
-    }
-
-    let slot_ptr = MY_SLOT.get();
-    if !slot_ptr.is_null() {
-        unsafe { &mut *(*slot_ptr).alloc.get() }.total_allocations += 1;
-    }
-    let enable_stat_prints = crate::gc::ENABLE_STAT_PRINTS.load(Ordering::Relaxed);
-
-    loop {
-        let (start, end) = REGION.get();
-        let start = start.with_addr((start as usize).next_multiple_of(align.max(1)));
-        let space_left = unsafe { end.byte_offset_from_unsigned(start) };
-        if size <= space_left {
-            REGION.set((unsafe { start.add(size) }, end));
-            return start;
-        }
-        if enable_stat_prints {
-            eprintln!("mapping more memory ({} bytes)", MMAP_SIZE.get());
-        }
-        let chunk = MMAP_SIZE.get().max(size);
-        let new_start = Box::leak(vec![0u8; chunk].into_boxed_slice()).as_mut_ptr();
-        REGION.set((new_start, unsafe { new_start.byte_add(chunk) }));
-        MMAP_SIZE.set(MMAP_SIZE.get() * 2);
-    }
 }
 
 #[unsafe(no_mangle)]

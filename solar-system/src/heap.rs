@@ -55,16 +55,29 @@ pub const fn slot_size(class: usize) -> usize {
 pub const fn slots_per_region(class: usize) -> usize {
     REGION_SIZE >> slot_size_log(class)
 }
-/// Number of slots handed out per `claim_run` — roughly a page's worth, but
-/// always rounded up to a whole 64-slot bitmap word. Since `NEXT_SLOT` only
-/// ever moves by multiples of this (or resets to 0), every claim's slot range
-/// is bitmap-word-aligned, so two threads' claims never share an alloc-bitmap
-/// word — which lets `set_allocated` skip the atomic `fetch_or`.
+/// Bytes handed out per `claim_run`. Sized well above a page so the contended
+/// `NEXT_SLOT[class]` fetch_add is amortized across many allocations: at one
+/// page (~128 slots for a small object) that shared frontier counter was a real
+/// multi-thread bottleneck — 16 mutators hammering one cache line every ~128
+/// allocs. Must be a power of two so `CLAIM_BYTES / slot_size` is itself a power
+/// of two, keeping every claim a whole number of 64-slot bitmap words.
+const CLAIM_BYTES: usize = 256 * 1024;
+const _: () = assert!(CLAIM_BYTES.is_power_of_two() && CLAIM_BYTES >= PAGE_SIZE);
+
+/// Number of slots handed out per `claim_run` — `CLAIM_BYTES` worth, but always
+/// rounded up to a whole 64-slot bitmap word. Since `NEXT_SLOT` only ever moves
+/// by multiples of this (or resets to 0), every claim's slot range is
+/// bitmap-word-aligned, so two threads' claims never share an alloc-bitmap word
+/// — which lets `set_allocated` skip the atomic `fetch_or`.
 #[inline]
 pub const fn claim_slots(class: usize) -> usize {
     let ssz = slot_size(class);
-    let per_page = if ssz >= PAGE_SIZE { 1 } else { PAGE_SIZE / ssz };
-    if per_page < 64 { 64 } else { per_page }
+    let per_claim = if ssz >= CLAIM_BYTES {
+        1
+    } else {
+        CLAIM_BYTES / ssz
+    };
+    if per_claim < 64 { 64 } else { per_claim }
 }
 
 // Bitmap layout: `bitmap_class_offset(c)` bytes of region-0..c-1 precede
