@@ -153,6 +153,7 @@ module.exports = grammar({
         $.identifier,
         $.integer_literal,
         $.boolean_literal,
+        $.null_expr,
         $.string_literal,
         $.array_literal,
         $.array_repeat,
@@ -357,7 +358,7 @@ module.exports = grammar({
       seq("[", $._destructure_target, repeat(seq(",", $._destructure_target)), optional(","), "]"),
 
     // ── Types ───────────────────────────────────────────────
-    _type: ($) => choice($.named_type, $.qualified_type, $.reference_type, $.unique_type, $.slice_type, $.fixed_array_type, $.function_type, $.tuple_type),
+    _type: ($) => choice($.named_type, $.qualified_type, $.reference_type, $.nullable_reference_type, $.unique_type, $.slice_type, $.fixed_array_type, $.function_type, $.tuple_type),
 
     named_type: ($) => seq($.identifier, optional(field("type_args", $.type_args))),
 
@@ -365,6 +366,8 @@ module.exports = grammar({
     qualified_type: ($) => seq(field("module", $.identifier), "::", field("name", $.identifier), optional(field("type_args", $.type_args))),
 
     reference_type: ($) => seq("&", field("inner", $._type)),
+
+    nullable_reference_type: ($) => seq("&", "?", field("inner", $._type)),
 
     unique_type: ($) => seq("^", field("inner", $._type)),
 
@@ -396,6 +399,9 @@ module.exports = grammar({
     integer_literal: (_) => /[0-9]+(i8|i16|i32|i64|u8|u16|u32|u64|u)?/,
 
     boolean_literal: (_) => choice("true", "false"),
+
+    // null#[T] — the null value of a nullable reference type &?T
+    null_expr: ($) => seq("null", field("type_args", $.type_args)),
 
     string_literal: (_) => /"([^"\\]|\\.)*"/,
   },

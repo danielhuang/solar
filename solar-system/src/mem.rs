@@ -198,6 +198,14 @@ pub unsafe extern "C" fn sol_slice_index(
     unsafe { base.add(offset as usize) }
 }
 
+/// Null check for dereferencing a nullable reference (`&?T`). Panics if the
+/// pointer is null; otherwise returns it unchanged.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sol_null_check(ptr: *const u8) -> *const u8 {
+    assert!(!ptr.is_null(), "null pointer dereference");
+    ptr
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn sol_assert_array_len(actual: u64, expected: u64) {
     assert!(

@@ -303,3 +303,10 @@ fn bad_reflect_variant_not_ref() {
 fn bad_reflect_variant_unit_val() {
     compile(&fixture("typecheck_bad_reflect_variant_unit_val.solar"));
 }
+
+// A nullable reference `&?T` does not implicitly coerce to a normal `&T`.
+#[test]
+#[should_panic(expected = "type mismatch in let: expected &Int, got &?Int")]
+fn bad_nullable_coerce() {
+    compile(&fixture("typecheck_bad_nullable_coerce.solar"));
+}

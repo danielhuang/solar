@@ -77,6 +77,10 @@ pub enum NodeKind {
     // Expressions
     IntegerLiteral(i64),
     BooleanLiteral(bool),
+    /// A null nullable reference (`null#[T]`). The node's `ty` is a
+    /// `NullableRef`/`NullableRefUnsized` and determines whether it materializes
+    /// as an 8-byte or 16-byte zero.
+    Null,
     Local(VarId),
     FieldAccess {
         object: NodeId,
@@ -340,6 +344,7 @@ fn collect_closure_captures_expr(
         typed_ast::ExprKind::Identifier(_)
         | typed_ast::ExprKind::IntegerLiteral(_)
         | typed_ast::ExprKind::BooleanLiteral(_)
+        | typed_ast::ExprKind::NullLiteral
         | typed_ast::ExprKind::FunctionRef(_) => {}
     }
 }
@@ -351,8 +356,8 @@ pub fn type_size(ty: &Type, datatypes: &HashMap<String, DataType>) -> usize {
         Type::Int32 | Type::Uint32 | Type::Float32 => 4,
         Type::Int64 | Type::Uint64 | Type::Int | Type::Uint | Type::Float64 => 8,
         Type::Function { .. } => 16,
-        Type::Ref(_) | Type::Unique(_) | Type::FileDesc => 8,
-        Type::RefUnsized(_) | Type::UniqueUnsized(_) => 16,
+        Type::Ref(_) | Type::NullableRef(_) | Type::Unique(_) | Type::FileDesc => 8,
+        Type::RefUnsized(_) | Type::NullableRefUnsized(_) | Type::UniqueUnsized(_) => 16,
         Type::FixedArray(inner, n) => (*n as usize) * type_size(inner, datatypes),
         Type::Array(_) => panic!("type_size called on unsized type [T]"),
         Type::Struct(name) | Type::Enum(name) => {
@@ -372,8 +377,11 @@ pub fn type_align(ty: &Type, datatypes: &HashMap<String, DataType>) -> usize {
         Type::Int16 | Type::Uint16 => 2,
         Type::Int32 | Type::Uint32 | Type::Float32 => 4,
         Type::Int64 | Type::Uint64 | Type::Int | Type::Uint | Type::Float64 => 8,
-        Type::Ref(_) | Type::Unique(_) | Type::FileDesc => 8,
-        Type::RefUnsized(_) | Type::UniqueUnsized(_) | Type::Function { .. } => 16,
+        Type::Ref(_) | Type::NullableRef(_) | Type::Unique(_) | Type::FileDesc => 8,
+        Type::RefUnsized(_)
+        | Type::NullableRefUnsized(_)
+        | Type::UniqueUnsized(_)
+        | Type::Function { .. } => 16,
         Type::Array(inner) | Type::FixedArray(inner, _) => type_align(inner, datatypes),
         Type::Struct(name) | Type::Enum(name) => datatypes[name].align,
         Type::Unit | Type::Never => 1,
@@ -431,7 +439,12 @@ pub fn type_contains_unique(ty: &Type, dt: &HashMap<String, DataType>) -> bool {
 
 pub fn type_contains_gc_ptr(ty: &Type, dt: &HashMap<String, DataType>) -> bool {
     match ty {
-        Type::Ref(_) | Type::Unique(_) | Type::RefUnsized(_) | Type::UniqueUnsized(_) => true,
+        Type::Ref(_)
+        | Type::Unique(_)
+        | Type::RefUnsized(_)
+        | Type::UniqueUnsized(_)
+        | Type::NullableRef(_)
+        | Type::NullableRefUnsized(_) => true,
         // A `FileDesc` is a traced pointer into the fd arena.
         Type::FileDesc => true,
         Type::Function { .. } => true,
@@ -727,6 +740,11 @@ impl<'a> FunctionLowerer<'a> {
             typed_ast::ExprKind::BooleanLiteral(b) => self.push(Node {
                 ty: expr.ty.clone(),
                 kind: NodeKind::BooleanLiteral(*b),
+                span: expr.span,
+            }),
+            typed_ast::ExprKind::NullLiteral => self.push(Node {
+                ty: expr.ty.clone(),
+                kind: NodeKind::Null,
                 span: expr.span,
             }),
             typed_ast::ExprKind::FieldAccess { object, field } => {

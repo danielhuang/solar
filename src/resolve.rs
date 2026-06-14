@@ -609,6 +609,12 @@ fn rewrite_type(
             module_aliases,
             type_params,
         ))),
+        Type::NullableReference(inner) => Type::NullableReference(Box::new(rewrite_type(
+            inner,
+            rename_map,
+            module_aliases,
+            type_params,
+        ))),
         Type::Unique(inner) => Type::Unique(Box::new(rewrite_type(
             inner,
             rename_map,
@@ -871,6 +877,9 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<String>) {
         }
         ExprKind::Deref(inner) | ExprKind::Reference(inner) | ExprKind::Unique(inner) => {
             rewrite_expr(inner, ctx, locals);
+        }
+        ExprKind::NullLiteral(ty) => {
+            *ty = rewrite_type(ty, ctx.rename_map, ctx.module_aliases, ctx.type_params);
         }
         ExprKind::Call {
             function,

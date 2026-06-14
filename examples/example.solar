@@ -327,6 +327,18 @@ fn main() {
   match.reflect_variant (variant, val) in col& {
     println(variant);                      // Blue
   }
+
+  // nullable references: `&?T` may be null. `null#[T]` is the null value.
+  // A normal `&T` coerces to `&?T`, but not the reverse.
+  let num = 7;
+  let maybe: &?Int = num&;                 // &Int coerces to &?Int
+  if maybe != null#[Int] {
+    print_int(maybe@);                     // 7 — `@` null-checks then loads
+  }
+  let nothing: &?Int = null#[Int];
+  if nothing == null#[Int] {
+    print_int(0);                          // 0
+  }
 }
 
 // works with generics: each instantiation takes its own branch

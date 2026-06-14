@@ -700,6 +700,11 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             let operand = convert_expr(node.child_by_field_name("operand").unwrap(), source);
             ExprKind::Unique(Box::new(operand))
         }
+        "null_expr" => {
+            let type_args =
+                convert_type_args(node.child_by_field_name("type_args").unwrap(), source);
+            ExprKind::NullLiteral(type_args.into_iter().next().unwrap())
+        }
         "call_expr" => {
             let func_node = node.child_by_field_name("function").unwrap();
             let mut arguments = Vec::new();
@@ -1123,6 +1128,10 @@ fn convert_type(node: tree_sitter::Node, source: &str) -> Type {
         "reference_type" => {
             let inner = convert_type(node.child_by_field_name("inner").unwrap(), source);
             Type::Reference(Box::new(inner))
+        }
+        "nullable_reference_type" => {
+            let inner = convert_type(node.child_by_field_name("inner").unwrap(), source);
+            Type::NullableReference(Box::new(inner))
         }
         "unique_type" => {
             let inner = convert_type(node.child_by_field_name("inner").unwrap(), source);

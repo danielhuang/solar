@@ -415,6 +415,12 @@ fn atomics() {
 }
 
 #[test]
+fn nullable_ref() {
+    let output = run(&fixture("nullable_ref.solar"), "nullable_ref");
+    assert_eq!(output, "0\n1\n5\n1\n0\n5\n9\n1\n0\n100\n");
+}
+
+#[test]
 fn file_open() {
     let output = run(&fixture("file_open.solar"), "file_open");
     assert_eq!(output, "opened\n");

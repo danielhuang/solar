@@ -1,0 +1,6 @@
+fn main() {
+  let a: Int = 5;
+  let n: &?Int = a&;
+  // A nullable reference does NOT implicitly coerce back to a normal reference.
+  let r: &Int = n;
+}

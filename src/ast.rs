@@ -229,6 +229,8 @@ pub enum ExprKind {
     Deref(Box<Expr>),
     Reference(Box<Expr>),
     Unique(Box<Expr>),
+    /// `null#[T]` — the null value of the nullable reference type `&?T`.
+    NullLiteral(Type),
     Call {
         function: Box<Expr>,
         type_args: Vec<Type>,
@@ -487,6 +489,8 @@ pub enum Type {
         type_args: Vec<Type>,
     },
     Reference(Box<Type>),
+    /// `&?T` — a nullable reference.
+    NullableReference(Box<Type>),
     Unique(Box<Type>),
     Slice(Box<Type>),
     FixedArray(Box<Type>, u64),

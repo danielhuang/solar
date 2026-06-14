@@ -26,6 +26,24 @@ fn oob_index_codegen() {
 }
 
 #[test]
+#[should_panic(expected = "null pointer dereference")]
+fn null_deref_ast() {
+    run_ast_file(&fixture("null_deref.solar"));
+}
+
+#[test]
+#[should_panic(expected = "null pointer dereference")]
+fn null_deref_ir() {
+    run_ir_file(&fixture("null_deref.solar"));
+}
+
+#[test]
+#[should_panic(expected = "null pointer dereference")]
+fn null_deref_codegen() {
+    run_codegen_file(&fixture("null_deref.solar"), "null_deref");
+}
+
+#[test]
 #[should_panic(expected = "slice end (5) > length (3)")]
 fn oob_slice_ast() {
     run_ast_file(&fixture("oob_slice.solar"));

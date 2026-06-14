@@ -28,6 +28,8 @@ enum Value {
         name: String,
         captures: Vec<(String, Slot)>,
     },
+    /// A null nullable reference (`null#[T]`).
+    Null,
     Unit,
 }
 
@@ -122,6 +124,7 @@ fn deep_copy_value(val: &Value) -> Value {
                 .map(|(n, s)| (n.clone(), Rc::clone(s)))
                 .collect(),
         },
+        Value::Null => Value::Null,
         Value::Unit => Value::Unit,
     }
 }
@@ -134,6 +137,9 @@ fn atomic_value_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => x == y,
         (Value::Ref(x), Value::Ref(y)) => Rc::ptr_eq(x, y),
+        // Nullable references: a null compares equal only to another null.
+        (Value::Null, Value::Null) => true,
+        (Value::Null, Value::Ref(_)) | (Value::Ref(_), Value::Null) => false,
         (
             Value::Function {
                 name: na,
@@ -292,6 +298,7 @@ impl<'a, W: Write> Interpreter<'a, W> {
                 let inner_ref = inner_slot.borrow();
                 match &*inner_ref {
                     Value::Ref(target) | Value::Unique(target) => Rc::clone(target),
+                    Value::Null => panic!("null pointer dereference"),
                     _ => unreachable!("type checker guarantees ref/unique"),
                 }
             }
@@ -419,6 +426,7 @@ impl<'a, W: Write> Interpreter<'a, W> {
             }
             ExprKind::IntegerLiteral(n) => Value::Int(*n),
             ExprKind::BooleanLiteral(b) => Value::Int(if *b { 1 } else { 0 }),
+            ExprKind::NullLiteral => Value::Null,
             ExprKind::Reference(inner) => {
                 let slot = self.eval_place(inner);
                 Value::Ref(slot)
@@ -617,6 +625,16 @@ impl<'a, W: Write> Interpreter<'a, W> {
                                 }
                                 _ => unreachable!(),
                             },
+                            // Nullable-reference equality (`ref == null#[T]`, etc.):
+                            // pointer identity, with null distinct from any live ref.
+                            _ if matches!(op, BinOp::Eq | BinOp::Ne) => {
+                                let equal = atomic_value_eq(&lv, &rv);
+                                match op {
+                                    BinOp::Eq => Value::Int(if equal { 1 } else { 0 }),
+                                    BinOp::Ne => Value::Int(if !equal { 1 } else { 0 }),
+                                    _ => unreachable!(),
+                                }
+                            }
                             _ => unreachable!(),
                         }
                     }

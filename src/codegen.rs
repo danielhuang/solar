@@ -77,8 +77,12 @@ impl<'a> Codegen<'a> {
         match ty {
             // A `FileDesc` is a single pointer (into the fd arena); the marker
             // enqueues its value and `drain` routes it to the fd mark bitmap.
-            Type::Ref(_) | Type::Unique(_) | Type::FileDesc => "_mark_single_ptr".to_string(),
-            Type::RefUnsized(_) | Type::UniqueUnsized(_) => "_mark_wide_ptr".to_string(),
+            Type::Ref(_) | Type::NullableRef(_) | Type::Unique(_) | Type::FileDesc => {
+                "_mark_single_ptr".to_string()
+            }
+            Type::RefUnsized(_) | Type::NullableRefUnsized(_) | Type::UniqueUnsized(_) => {
+                "_mark_wide_ptr".to_string()
+            }
             Type::Function { .. } => "_mark_fn_value".to_string(),
             Type::Struct(name) | Type::Enum(name) => {
                 format!("_mark_{}", Self::sanitize_type_name(name))
@@ -212,10 +216,10 @@ impl<'a> Codegen<'a> {
 
     fn emit_mark_at(&mut self, base: &str, ty: &Type, size: usize) {
         match ty {
-            Type::Ref(_) | Type::Unique(_) | Type::FileDesc => {
+            Type::Ref(_) | Type::NullableRef(_) | Type::Unique(_) | Type::FileDesc => {
                 self.linef(format!("sol_gc_mark(ctx, *(uint8_t**){base});"));
             }
-            Type::RefUnsized(_) | Type::UniqueUnsized(_) => {
+            Type::RefUnsized(_) | Type::NullableRefUnsized(_) | Type::UniqueUnsized(_) => {
                 self.linef(format!("sol_gc_mark(ctx, *(uint8_t**){base});"));
             }
             Type::Function { .. } => {
@@ -265,7 +269,7 @@ impl<'a> Codegen<'a> {
             Type::Float32 => "float",
             Type::Float64 => "double",
             Type::Bool => "uint8_t",
-            Type::Ref(_) | Type::Unique(_) | Type::FileDesc => "uint8_t*",
+            Type::Ref(_) | Type::NullableRef(_) | Type::Unique(_) | Type::FileDesc => "uint8_t*",
             _ => unreachable!("c_int_type on non-scalar type: {ty}"),
         }
     }
@@ -503,6 +507,7 @@ impl<'a> Codegen<'a> {
         self.line("extern uint64_t sol_checked_mod_uint(uint64_t a, uint64_t b);");
         self.line("extern uint8_t* sol_slice_index(uint8_t* base, uint64_t index, uint64_t len, uint64_t elem_size);");
         self.line("extern uint8_t* sol_slice_range(uint8_t* base, uint64_t start, uint64_t end, uint64_t len, uint64_t elem_size);");
+        self.line("extern uint8_t* sol_null_check(uint8_t* ptr);");
         self.line("extern void sol_assert_array_len(uint64_t actual, uint64_t expected);");
         self.line("extern void sol_start(void (*solar_main)(void*));");
         self.line("extern void sol_thread_spawn(void* fn_ptr, void* env);");
@@ -691,6 +696,14 @@ impl<'a> Codegen<'a> {
                         self.linef(format!("uint8_t* {tmp} = *(uint8_t**){place};"));
                         (tmp, None)
                     }
+                    // `&?T` deref: null-check the loaded pointer before use.
+                    Type::NullableRef(_) => {
+                        let tmp = self.fresh_tmp();
+                        self.linef(format!(
+                            "uint8_t* {tmp} = sol_null_check(*(uint8_t**){place});"
+                        ));
+                        (tmp, None)
+                    }
                     Type::RefUnsized(_) | Type::UniqueUnsized(_) => {
                         let wide_tmp = self.fresh_tmp();
                         self.linef(format!(
@@ -700,6 +713,23 @@ impl<'a> Codegen<'a> {
                         let ptr_tmp = self.fresh_tmp();
                         let meta_tmp = self.fresh_tmp();
                         self.linef(format!("uint8_t* {ptr_tmp} = *(uint8_t**){wide_tmp};"));
+                        self.linef(format!(
+                            "uint64_t {meta_tmp} = *(uint64_t*)({wide_tmp} + 8);"
+                        ));
+                        (ptr_tmp, Some(meta_tmp))
+                    }
+                    // `&?[T]` deref: null-check the pointer half of the fat pointer.
+                    Type::NullableRefUnsized(_) => {
+                        let wide_tmp = self.fresh_tmp();
+                        self.linef(format!(
+                            "uint8_t {wide_tmp}[16] __attribute__((aligned(16)));"
+                        ));
+                        self.linef(format!("sol_atomic_load_128({wide_tmp}, {place});"));
+                        let ptr_tmp = self.fresh_tmp();
+                        let meta_tmp = self.fresh_tmp();
+                        self.linef(format!(
+                            "uint8_t* {ptr_tmp} = sol_null_check(*(uint8_t**){wide_tmp});"
+                        ));
                         self.linef(format!(
                             "uint64_t {meta_tmp} = *(uint64_t*)({wide_tmp} + 8);"
                         ));
@@ -1028,6 +1058,8 @@ impl<'a> Codegen<'a> {
                     "0".to_string()
                 }
             }
+            // A sized `null#[T]` is the null pointer.
+            NodeKind::Null => "(uint8_t*)0".to_string(),
             NodeKind::Local(var) => {
                 let ty = &nodes[id.0].ty;
                 let c_ty = self.c_int_type(ty);
@@ -1214,6 +1246,30 @@ impl<'a> Codegen<'a> {
                 }
                 result
             }
+            _ if left_ty.is_nullable_ref() => {
+                // Nullable-reference equality: compare the pointer (first 8 bytes).
+                // Handles `ref == null#[T]` and pointer identity; for fat refs the
+                // length half is ignored.
+                let c_op = match op {
+                    BinOp::Eq => "==",
+                    BinOp::Ne => "!=",
+                    _ => unreachable!("only ==/!= allowed on nullable references"),
+                };
+                let sz = self.type_size(left_ty);
+                let al = self.type_align(left_ty);
+                let vt = Self::val_type_name(sz, al);
+                let lt = self.fresh_tmp();
+                self.linef(format!("{vt} {lt};"));
+                self.emit_into(nodes, left, &format!("(uint8_t*)&{lt}"));
+                let rt = self.fresh_tmp();
+                self.linef(format!("{vt} {rt};"));
+                self.emit_into(nodes, right, &format!("(uint8_t*)&{rt}"));
+                let result = self.fresh_tmp();
+                self.linef(format!(
+                    "{result_c_ty} {result} = (*(uint8_t**)&{lt} {c_op} *(uint8_t**)&{rt}) ? 1 : 0;"
+                ));
+                result
+            }
             _ if matches!(left_ty, Type::Array(_) | Type::FixedArray(_, _)) => {
                 // Array equality: emit both into temp storage, compare
                 let inner = match left_ty {
@@ -1298,7 +1354,10 @@ impl<'a> Codegen<'a> {
     /// pointers, recursively deep-copies the pointees. Otherwise falls back to memcpy.
     fn emit_copy(&mut self, dst: &str, src: &str, ty: &Type, size_expr: &str) {
         // UniqueUnsized needs deep-copy, so it goes through the match below
-        if matches!(ty, Type::Function { .. } | Type::RefUnsized(_)) {
+        if matches!(
+            ty,
+            Type::Function { .. } | Type::RefUnsized(_) | Type::NullableRefUnsized(_)
+        ) {
             self.linef(format!("sol_atomic_copy_128({dst}, {src});"));
             return;
         }
@@ -1494,6 +1553,13 @@ impl<'a> Codegen<'a> {
             NodeKind::BooleanLiteral(b) => {
                 let v = if *b { 1 } else { 0 };
                 self.linef(format!("*(uint8_t*){dst} = {v};"));
+            }
+            NodeKind::Null => {
+                // null#[T]: zero pointer (plus zero meta for the fat-pointer case).
+                self.linef(format!("*(uint8_t**){dst} = (uint8_t*)0;"));
+                if matches!(nodes[id.0].ty, Type::NullableRefUnsized(_)) {
+                    self.linef(format!("*(uint64_t*)({dst} + 8) = 0;"));
+                }
             }
             NodeKind::Ref(inner) => {
                 let inner = *inner;

@@ -26,6 +26,10 @@ pub enum Type {
     FixedArray(Box<Type>, u64),
     Ref(Box<Type>),
     RefUnsized(Box<Type>),
+    /// `&?T` — a nullable reference to a sized `T` (8-byte pointer, may be null).
+    NullableRef(Box<Type>),
+    /// `&?T` — a nullable reference to an unsized `T` (16-byte fat pointer, may be null).
+    NullableRefUnsized(Box<Type>),
     Unique(Box<Type>),
     UniqueUnsized(Box<Type>),
     Function {
@@ -87,6 +91,10 @@ impl Type {
         )
     }
 
+    pub fn is_nullable_ref(&self) -> bool {
+        matches!(self, Type::NullableRef(_) | Type::NullableRefUnsized(_))
+    }
+
     pub fn is_sized(&self, structs: &HashMap<String, StructDef>) -> bool {
         match self {
             Type::Array(_) => false,
@@ -123,6 +131,8 @@ impl fmt::Display for Type {
             Type::FixedArray(inner, n) => write!(f, "[{inner}; {n}]"),
             Type::Ref(inner) => write!(f, "&{inner}"),
             Type::RefUnsized(inner) => write!(f, "&{inner}"),
+            Type::NullableRef(inner) => write!(f, "&?{inner}"),
+            Type::NullableRefUnsized(inner) => write!(f, "&?{inner}"),
             Type::Unique(inner) => write!(f, "^{inner}"),
             Type::UniqueUnsized(inner) => write!(f, "^{inner}"),
             Type::Function {
@@ -210,6 +220,9 @@ fn from_ast_type_with_subst(ty: &ast::Type, subst: &HashMap<String, Type>) -> Ty
             Type::Struct(mangled)
         }
         ast::Type::Reference(inner) => Type::Ref(Box::new(from_ast_type_with_subst(inner, subst))),
+        ast::Type::NullableReference(inner) => {
+            Type::NullableRef(Box::new(from_ast_type_with_subst(inner, subst)))
+        }
         ast::Type::Unique(inner) => Type::Unique(Box::new(from_ast_type_with_subst(inner, subst))),
         ast::Type::Slice(inner) => Type::Array(Box::new(from_ast_type_with_subst(inner, subst))),
         ast::Type::FixedArray(inner, n) => {
@@ -261,6 +274,9 @@ fn apply_subst_to_ast_type(ty: &ast::Type, subst: &HashMap<String, ast::Type>) -
         ast::Type::Reference(inner) => {
             ast::Type::Reference(Box::new(apply_subst_to_ast_type(inner, subst)))
         }
+        ast::Type::NullableReference(inner) => {
+            ast::Type::NullableReference(Box::new(apply_subst_to_ast_type(inner, subst)))
+        }
         ast::Type::Unique(inner) => {
             ast::Type::Unique(Box::new(apply_subst_to_ast_type(inner, subst)))
         }
@@ -309,6 +325,9 @@ fn apply_subst_to_ast_expr(expr: &ast::Expr, subst: &HashMap<String, ast::Type>)
         }
         ast::ExprKind::Unique(inner) => {
             ast::ExprKind::Unique(Box::new(apply_subst_to_ast_expr(inner, subst)))
+        }
+        ast::ExprKind::NullLiteral(ty) => {
+            ast::ExprKind::NullLiteral(apply_subst_to_ast_type(ty, subst))
         }
         ast::ExprKind::Call {
             function,
@@ -678,6 +697,9 @@ fn mangle_type(ty: &Type) -> String {
         Type::Bool => "Bool".to_string(),
         Type::Struct(name) | Type::Enum(name) => name.clone(),
         Type::Ref(inner) | Type::RefUnsized(inner) => format!("ref_{}", mangle_type(inner)),
+        Type::NullableRef(inner) | Type::NullableRefUnsized(inner) => {
+            format!("ref_nullable_{}", mangle_type(inner))
+        }
         Type::Unique(inner) | Type::UniqueUnsized(inner) => {
             format!("unique_{}", mangle_type(inner))
         }
@@ -796,6 +818,9 @@ pub enum ExprKind {
     Deref(Box<Expr>),
     Reference(Box<Expr>),
     Unique(Box<Expr>),
+    /// `null#[T]` — a null nullable reference. The expression's `ty` carries the
+    /// concrete `NullableRef`/`NullableRefUnsized` type.
+    NullLiteral,
     Call {
         function: String,
         arguments: Vec<Expr>,
@@ -1159,9 +1184,10 @@ fn type_param_appears_in(ty: &ast::Type, param: &str) -> bool {
         ast::Type::Generic { type_args, .. } => {
             type_args.iter().any(|t| type_param_appears_in(t, param))
         }
-        ast::Type::Reference(inner) | ast::Type::Unique(inner) | ast::Type::Slice(inner) => {
-            type_param_appears_in(inner, param)
-        }
+        ast::Type::Reference(inner)
+        | ast::Type::NullableReference(inner)
+        | ast::Type::Unique(inner)
+        | ast::Type::Slice(inner) => type_param_appears_in(inner, param),
         ast::Type::FixedArray(inner, _) => type_param_appears_in(inner, param),
         ast::Type::Function {
             params,
@@ -1488,6 +1514,14 @@ impl<'a> Lowerer<'a> {
                     Type::RefUnsized(Box::new(inner))
                 }
             }
+            Type::NullableRef(inner) => {
+                let inner = self.resolve_refs(*inner);
+                if inner.is_sized(&self.lowered_structs) {
+                    Type::NullableRef(Box::new(inner))
+                } else {
+                    Type::NullableRefUnsized(Box::new(inner))
+                }
+            }
             Type::Unique(inner) => {
                 let inner = self.resolve_refs(*inner);
                 if inner.is_sized(&self.lowered_structs) {
@@ -1609,6 +1643,19 @@ impl<'a> Lowerer<'a> {
             {
                 expr
             }
+            // &T → &?T: a non-null reference is always a valid nullable reference.
+            // Identical representation (8 bytes), so this is a no-op retag. The
+            // reverse (&?T → &T) is intentionally NOT a coercion.
+            (Type::Ref(a), Type::NullableRef(b)) if a == b => Expr {
+                ty: target.clone(),
+                span: expr.span,
+                kind: expr.kind,
+            },
+            (Type::RefUnsized(a), Type::NullableRefUnsized(b)) if a == b => Expr {
+                ty: target.clone(),
+                span: expr.span,
+                kind: expr.kind,
+            },
             // Never coerces to any type
             (Type::Never, _) => Expr {
                 ty: target.clone(),
@@ -1745,6 +1792,14 @@ impl<'a> Lowerer<'a> {
                     Ok(Type::Ref(Box::new(inner_ty)))
                 } else {
                     Ok(Type::RefUnsized(Box::new(inner_ty)))
+                }
+            }
+            ast::Type::NullableReference(inner) => {
+                let inner_ty = self.resolve_ast_type_with_subst(inner, subst)?;
+                if inner_ty.is_sized(&self.lowered_structs) {
+                    Ok(Type::NullableRef(Box::new(inner_ty)))
+                } else {
+                    Ok(Type::NullableRefUnsized(Box::new(inner_ty)))
                 }
             }
             ast::Type::Unique(inner) => {
@@ -2044,6 +2099,9 @@ impl<'a> Lowerer<'a> {
             Type::FileDesc => ast::Type::Named("FileDesc".to_string()),
             Type::Unit => ast::Type::Named("Unit".to_string()),
             Type::Never => ast::Type::Named("Never".to_string()),
+            Type::NullableRef(inner) | Type::NullableRefUnsized(inner) => {
+                ast::Type::NullableReference(Box::new(self.concrete_type_to_ast_type(inner)))
+            }
             Type::Ref(inner) | Type::RefUnsized(inner) => {
                 ast::Type::Reference(Box::new(self.concrete_type_to_ast_type(inner)))
             }
@@ -2121,6 +2179,13 @@ impl<'a> Lowerer<'a> {
             },
             ast::Type::Reference(inner) => {
                 if let Type::Ref(c_inner) | Type::RefUnsized(c_inner) = concrete
+                    && !self.try_unify_type(inner, c_inner, type_params, bindings)
+                {
+                    return false;
+                }
+            }
+            ast::Type::NullableReference(inner) => {
+                if let Type::NullableRef(c_inner) | Type::NullableRefUnsized(c_inner) = concrete
                     && !self.try_unify_type(inner, c_inner, type_params, bindings)
                 {
                     return false;
@@ -3365,9 +3430,14 @@ impl<'a> Lowerer<'a> {
             }
             ast::ExprKind::Deref(inner) => {
                 let inner_expr = self.lower_expr(inner)?;
+                // A `&?T` deref yields the same pointee place as `&T`, but the
+                // null check is emitted downstream (IR interp / codegen) keyed on
+                // this inner type.
                 let target_ty = match &inner_expr.ty {
                     Type::Ref(t)
                     | Type::RefUnsized(t)
+                    | Type::NullableRef(t)
+                    | Type::NullableRefUnsized(t)
                     | Type::Unique(t)
                     | Type::UniqueUnsized(t) => (**t).clone(),
                     other => {
@@ -3406,6 +3476,17 @@ impl<'a> Lowerer<'a> {
                 Ok(Expr {
                     ty,
                     kind: ExprKind::Unique(Box::new(inner_expr)),
+                    span: expr.span,
+                })
+            }
+            ast::ExprKind::NullLiteral(inner_ty) => {
+                // `null#[T]` — resolve T, then wrap as the nullable reference type.
+                // `resolve_refs` picks NullableRef vs NullableRefUnsized by sizedness.
+                let inner = self.resolve_ast_type(inner_ty)?;
+                let ty = self.resolve_refs(Type::NullableRef(Box::new(inner)));
+                Ok(Expr {
+                    ty,
+                    kind: ExprKind::NullLiteral,
                     span: expr.span,
                 })
             }
@@ -4106,8 +4187,20 @@ impl<'a> Lowerer<'a> {
                 })
             }
             ast::ExprKind::BinaryOp { op, left, right } => {
-                let lhs = self.lower_expr(left)?;
-                let rhs = self.lower_expr(right)?;
+                let mut lhs = self.lower_expr(left)?;
+                let mut rhs = self.lower_expr(right)?;
+                // For `==`/`!=`, a non-null reference (`&T`) compares against a
+                // nullable reference (`&?T`, e.g. `null#[T]`) by coercing the
+                // non-null side to the nullable type first.
+                if matches!(op, ast::BinOp::Eq | ast::BinOp::Ne) {
+                    if lhs.ty.is_nullable_ref() && !rhs.ty.is_nullable_ref() {
+                        let target = lhs.ty.clone();
+                        rhs = self.try_coerce(rhs, &target);
+                    } else if rhs.ty.is_nullable_ref() && !lhs.ty.is_nullable_ref() {
+                        let target = rhs.ty.clone();
+                        lhs = self.try_coerce(lhs, &target);
+                    }
+                }
                 // Allow array types with same element type (Array(T) and FixedArray(T, N))
                 let lhs_inner = Self::array_inner(&lhs.ty);
                 let rhs_inner = Self::array_inner(&rhs.ty);
@@ -4168,6 +4261,7 @@ impl<'a> Lowerer<'a> {
                     ast::BinOp::Eq | ast::BinOp::Ne => {
                         let ok = lhs.ty.is_integer()
                             || lhs.ty == Type::Bool
+                            || lhs.ty.is_nullable_ref()
                             || lhs_inner
                                 .is_some_and(|inner| inner.is_integer() || *inner == Type::Bool);
                         if !ok {
@@ -6007,6 +6101,8 @@ fn is_atomic_shape_ok(ty: &Type, structs: &HashMap<String, StructDef>) -> bool {
         | Type::Float64
         | Type::Ref(_)
         | Type::RefUnsized(_)
+        | Type::NullableRef(_)
+        | Type::NullableRefUnsized(_)
         | Type::Function { .. } => true,
         Type::Struct(name) => {
             if let Some(def) = structs.get(name) {
@@ -6041,8 +6137,12 @@ fn atomic_type_size(ty: &Type, structs: &HashMap<String, StructDef>) -> Option<u
         | Type::Uint
         | Type::Float64
         | Type::Ref(_)
+        | Type::NullableRef(_)
         | Type::Unique(_) => Some(8),
-        Type::RefUnsized(_) | Type::UniqueUnsized(_) | Type::Function { .. } => Some(16),
+        Type::RefUnsized(_)
+        | Type::NullableRefUnsized(_)
+        | Type::UniqueUnsized(_)
+        | Type::Function { .. } => Some(16),
         Type::Struct(name) => {
             let def = structs.get(name)?;
             let mut size = 0usize;
@@ -6072,8 +6172,12 @@ fn atomic_type_align(ty: &Type, structs: &HashMap<String, StructDef>) -> Option<
         | Type::Uint
         | Type::Float64
         | Type::Ref(_)
+        | Type::NullableRef(_)
         | Type::Unique(_) => Some(8),
-        Type::RefUnsized(_) | Type::UniqueUnsized(_) | Type::Function { .. } => Some(16),
+        Type::RefUnsized(_)
+        | Type::NullableRefUnsized(_)
+        | Type::UniqueUnsized(_)
+        | Type::Function { .. } => Some(16),
         Type::Struct(name) => {
             let def = structs.get(name)?;
             let mut a = 1usize;

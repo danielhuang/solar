@@ -305,7 +305,7 @@ impl<'a, W: Write> Interpreter<'a, W> {
                 let inner = *inner;
                 let (ref_place, _) = self.eval_place(nodes, inner);
                 match &nodes[inner.0].ty {
-                    Type::RefUnsized(_) | Type::UniqueUnsized(_) => {
+                    Type::RefUnsized(_) | Type::UniqueUnsized(_) | Type::NullableRefUnsized(_) => {
                         Some(self.mem.load(ref_place + 8, 8) as usize)
                     }
                     _ => None,
@@ -362,8 +362,19 @@ impl<'a, W: Write> Interpreter<'a, W> {
                         let addr = self.mem.load(ref_place, 8) as usize;
                         (addr, None)
                     }
+                    Type::NullableRef(_) => {
+                        let addr = self.mem.load(ref_place, 8) as usize;
+                        assert!(addr != 0, "null pointer dereference");
+                        (addr, None)
+                    }
                     Type::RefUnsized(_) | Type::UniqueUnsized(_) => {
                         let addr = self.mem.load(ref_place, 8) as usize;
+                        let meta = self.mem.load(ref_place + 8, 8) as usize;
+                        (addr, Some(meta))
+                    }
+                    Type::NullableRefUnsized(_) => {
+                        let addr = self.mem.load(ref_place, 8) as usize;
+                        assert!(addr != 0, "null pointer dereference");
                         let meta = self.mem.load(ref_place + 8, 8) as usize;
                         (addr, Some(meta))
                     }
@@ -494,6 +505,8 @@ impl<'a, W: Write> Interpreter<'a, W> {
     fn eval_load(&mut self, nodes: &[Node], id: NodeId) -> u64 {
         match &nodes[id.0].kind {
             NodeKind::IntegerLiteral(n) => *n as u64,
+            // A sized `null#[T]` is the zero pointer.
+            NodeKind::Null => 0,
             NodeKind::BooleanLiteral(b) => {
                 if *b {
                     1
@@ -571,6 +584,21 @@ impl<'a, W: Write> Interpreter<'a, W> {
                     lv
                 } else {
                     self.eval_load(nodes, right)
+                }
+            }
+            _ if matches!(nodes[left.0].ty, Type::NullableRefUnsized(_)) => {
+                // Fat nullable reference: compare the pointer half (first 8 bytes).
+                let ty = nodes[left.0].ty.clone();
+                let lt = self.alloc_ty(&ty);
+                self.eval_into(nodes, left, lt);
+                let rt = self.alloc_ty(&ty);
+                self.eval_into(nodes, right, rt);
+                let a = self.mem.load(lt, 8);
+                let b = self.mem.load(rt, 8);
+                match op {
+                    BinOp::Eq => (a == b) as u64,
+                    BinOp::Ne => (a != b) as u64,
+                    _ => unreachable!("only ==/!= allowed on nullable references"),
                 }
             }
             _ if is_signed(&nodes[left.0].ty) => {
@@ -656,6 +684,13 @@ impl<'a, W: Write> Interpreter<'a, W> {
             }
             NodeKind::BooleanLiteral(b) => {
                 self.mem.store(dst, if *b { 1 } else { 0 }, 1);
+            }
+            NodeKind::Null => {
+                // null#[T]: zero pointer (and zero meta for the fat-pointer case).
+                self.mem.store(dst, 0, 8);
+                if matches!(nodes[id.0].ty, Type::NullableRefUnsized(_)) {
+                    self.mem.store(dst + 8, 0, 8);
+                }
             }
             NodeKind::Ref(inner) => {
                 let inner = *inner;
