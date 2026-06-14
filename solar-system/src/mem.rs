@@ -37,7 +37,7 @@ pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -
     // relieved and would hang.
     if !DISABLE_GC.load(Ordering::Relaxed) {
         let threshold = total_live + MIN_SIZE_UNTIL_GC;
-        if new_size + size % threshold < size {
+        if (new_size + size) % threshold < size {
             request_gc();
         }
 
