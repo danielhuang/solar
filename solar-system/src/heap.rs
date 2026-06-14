@@ -153,6 +153,13 @@ unsafe fn mmap_reserve(size: usize, what: &str) -> usize {
     p as usize
 }
 
+/// Ask the kernel to back `[base, base+size)` with transparent huge pages.
+/// Advisory: a failure (e.g. THP configured `never`, or an unsupported range)
+/// just leaves the mapping on base pages, so the result is ignored.
+unsafe fn advise_hugepage(base: usize, size: usize) {
+    unsafe { libc::madvise(base as *mut libc::c_void, size, libc::MADV_HUGEPAGE) };
+}
+
 /// Reserve the arena, bitmaps and metadata table. Idempotent; call once from
 /// `sol_start` before any Solar code runs.
 pub fn init() {
@@ -161,6 +168,11 @@ pub fn init() {
     }
     unsafe {
         let arena = mmap_reserve(ARENA_SIZE, "arena");
+        // The arena is the hot, demand-paged surface; 2 MiB pages cut both TLB
+        // misses on the alloc/mark walks and the per-fault cost of growing the
+        // resident heap. The bitmaps/metadata are comparatively cold, so only
+        // the arena gets the hint.
+        advise_hugepage(arena, ARENA_SIZE);
         let alloc_bits = mmap_reserve(BITMAP_TOTAL, "alloc bitmap");
         let mark_bits = mmap_reserve(BITMAP_TOTAL, "mark bitmap");
         let meta = mmap_reserve(META_TOTAL, "metadata table");
