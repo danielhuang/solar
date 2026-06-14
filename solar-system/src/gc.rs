@@ -194,24 +194,36 @@ unsafe fn gray_enqueue_raw(slot: &ThreadSlot, v: usize) {
     }
 }
 
-/// Run `f` (which touches per-thread GC structures and may lock `GRAY`) with
-/// the STW signal deferred, then honor any stop that arrived meanwhile. Mirrors
-/// `sol_alloc`'s critical-section discipline: if the GC signal fires while we're
-/// inside, the handler sees `in_alloc` and defers (records `gc_pending_epoch`)
-/// instead of parking us mid-flush; we self-suspend cleanly at the end.
+/// Run `f` inside a GC critical section and return its result. Shared by
+/// `sol_alloc` and the barrier / `sol_memcpy` gray-buffer updates — anything
+/// that touches per-thread GC structures (and may lock `GRAY`). While
+/// `in_critical_section` is set, the STW signal handler records
+/// `gc_pending_epoch` instead of parking us mid-update; we honor that stop by
+/// self-suspending cleanly at the end.
+///
+/// The `compiler_fence`s keep the `gc_pending_epoch` load ordered *after* the
+/// `in_critical_section` store: otherwise the compiler could hoist the load
+/// before the store, opening a window where a signal sees `in_critical_section
+/// == true`, defers into `gc_pending_epoch`, and this load misses it — so the
+/// thread never acks the GC and the collector hangs forever. The handler runs
+/// on this same thread, so a compiler fence (not a full barrier) is enough.
 #[inline]
-unsafe fn with_signal_deferred(slot: &ThreadSlot, f: impl FnOnce()) {
-    slot.in_alloc.store(true, Ordering::Relaxed);
+pub(crate) unsafe fn with_signal_deferred<R>(slot: &ThreadSlot, f: impl FnOnce() -> R) -> R {
+    slot.in_critical_section.store(true, Ordering::Relaxed);
     std::sync::atomic::compiler_fence(Ordering::SeqCst);
-    f();
+    let r = f();
     std::sync::atomic::compiler_fence(Ordering::SeqCst);
-    slot.in_alloc.store(false, Ordering::Release);
+    slot.in_critical_section.store(false, Ordering::Release);
     std::sync::atomic::compiler_fence(Ordering::SeqCst);
+    // `gc_pending_epoch` is only written by this thread's own GC signal handler
+    // (and only while `in_critical_section` is true), so a plain load + reset
+    // suffices — no atomic RMW.
     let pending = slot.gc_pending_epoch.load(Ordering::Acquire);
     if pending != 0 {
         slot.gc_pending_epoch.store(0, Ordering::Relaxed);
         unsafe { self_suspend(slot, pending) };
     }
+    r
 }
 
 /// Flush a thread's residual gray buffer into `GRAY`. Called at STW (owner
@@ -256,10 +268,11 @@ pub(crate) struct ThreadSlot {
     /// `sol_memcpy`). Flushed to `GRAY` at capacity by the owner, and drained
     /// by the GC thread at STW pause 2 while this thread is stopped.
     pub(crate) gray_buf: UnsafeCell<Vec<usize>>,
-    /// True while `sol_alloc` is updating per-thread structures. If the GC
-    /// signal arrives then, the handler defers (stores `gc_pending_epoch`)
-    /// and `sol_alloc` self-suspends after its critical section.
-    pub(crate) in_alloc: AtomicBool,
+    /// True while a GC critical section (`with_signal_deferred`) is updating
+    /// per-thread structures. If the GC signal arrives then, the handler defers
+    /// (stores `gc_pending_epoch`) and the critical section self-suspends at its
+    /// end.
+    pub(crate) in_critical_section: AtomicBool,
     pub(crate) gc_pending_epoch: AtomicU64,
     /// Set to epoch N when this thread acknowledges GC cycle N and is stopped.
     /// Monotonically increases.
@@ -331,7 +344,7 @@ unsafe extern "C" fn gc_signal_handler(
     }
     let slot = unsafe { &*slot };
 
-    if slot.in_alloc.load(Ordering::Acquire) {
+    if slot.in_critical_section.load(Ordering::Acquire) {
         slot.gc_pending_epoch.store(wait_epoch, Ordering::Release);
         return;
     }
@@ -495,7 +508,7 @@ pub(crate) fn alloc_hard_cap() -> usize {
 
 /// Block until a GC cycle reclaims space, throttling the mutator to the
 /// collector's pace when it would otherwise outrun it. Runs as a GC *safepoint*
-/// (caller must NOT hold `in_alloc`): if the STW signal arrives mid-stall, the
+/// (caller must NOT be `in_critical_section`): if the STW signal arrives mid-stall, the
 /// handler parks this thread and the cycle proceeds, so this never deadlocks
 /// the collector. The end of a cycle resets `ALLOCATED_SINCE_GC` and bumps
 /// `GC_EPOCH`, waking us to re-check.

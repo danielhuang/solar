@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 use crate::gc::{
     ALLOC_FLUSH_CHUNK, ALLOCATED_SINCE_GC, BigAllocLocal, DISABLE_GC, ENABLE_ALLOC_PRINTS, MY_SLOT,
     SOL_CONCURRENT_MARKING, TOTAL_LIVE_SIZE, ThreadAllocState, alloc_hard_cap, request_gc,
-    self_suspend, stall_for_gc,
+    stall_for_gc, with_signal_deferred,
 };
 use crate::heap;
 
@@ -40,10 +40,10 @@ pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -
     }
 
     // Back-pressure: if mutators have collectively outrun the collector, stall
-    // here (a GC safepoint, before `in_alloc`) until a cycle reclaims space.
-    // Without this a fast allocator born-blacks unbounded floating garbage and
-    // exhausts memory. The check reads an approximate global counter, so it is
-    // cheap and only trips when the heap is genuinely large.
+    // here (a GC safepoint, before the critical section) until a cycle reclaims
+    // space. Without this a fast allocator born-blacks unbounded floating
+    // garbage and exhausts memory. The check reads an approximate global
+    // counter, so it is cheap and only trips when the heap is genuinely large.
     if ALLOCATED_SINCE_GC.load(Ordering::Relaxed) > alloc_hard_cap() {
         unsafe { stall_for_gc() };
     }
@@ -54,37 +54,15 @@ pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -
         );
     }
 
-    // Set in_alloc before touching per-thread structures so the GC signal
-    // handler defers rather than interrupting mid-update.
-    slot.in_alloc.store(true, Ordering::Relaxed);
-    std::sync::atomic::compiler_fence(Ordering::SeqCst);
-
-    let ptr = match heap::size_class(size, align) {
-        Some(class) => unsafe { arena_allocate(&mut *alloc_ptr, class, size, mark_fn) },
-        None => unsafe { big_allocate(&mut *alloc_ptr, size, align, mark_fn) },
-    };
-
-    std::sync::atomic::compiler_fence(Ordering::SeqCst);
-    slot.in_alloc.store(false, Ordering::Release);
-    std::sync::atomic::compiler_fence(Ordering::SeqCst);
-
-    // If the signal handler fired while we were in_alloc, it deferred by
-    // storing the epoch; handle it now that our structures are consistent.
-    // `gc_pending_epoch` is only written by this thread's own GC signal handler
-    // (and only while `in_alloc` is true), so a plain load + reset suffices — no
-    // atomic RMW. But this load MUST stay ordered *after* the `in_alloc` store
-    // above; the `compiler_fence` is what enforces that. Without it the compiler
-    // may hoist the load before the store, opening a window where a signal sees
-    // `in_alloc == true`, defers into `gc_pending_epoch`, and this load misses
-    // it — so the thread never acks the GC and the collector hangs forever. The
-    // handler runs on this same thread, so a compiler fence is enough.
-    let pending_epoch = slot.gc_pending_epoch.load(Ordering::Acquire);
-    if pending_epoch != 0 {
-        slot.gc_pending_epoch.store(0, Ordering::Relaxed);
-        unsafe { self_suspend(slot, pending_epoch) };
+    // Update per-thread structures inside a GC critical section so the signal
+    // handler defers rather than interrupting mid-update; if a stop arrived
+    // meanwhile, `with_signal_deferred` self-suspends cleanly afterwards.
+    unsafe {
+        with_signal_deferred(slot, || match heap::size_class(size, align) {
+            Some(class) => arena_allocate(&mut *alloc_ptr, class, size, mark_fn),
+            None => big_allocate(&mut *alloc_ptr, size, align, mark_fn),
+        })
     }
-
-    ptr
 }
 
 /// Allocate `size` bytes (rounded up to a power-of-2 size class) from the
