@@ -96,32 +96,49 @@ unsafe fn mark_word(fd: usize) -> *const AtomicU64 {
 /// opaque-handle contract needs no sentinel value.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_file_open(path_ptr: *const u8, path_len: usize) -> *mut u8 {
-    // Build a NUL-terminated copy of the (unterminated) Solar byte-slice path.
-    let mut buf: Vec<u8> = Vec::with_capacity(path_len + 1);
-    unsafe {
-        std::ptr::copy_nonoverlapping(path_ptr, buf.as_mut_ptr(), path_len);
-        buf.set_len(path_len);
-    }
-    buf.push(0);
-
-    let fd = unsafe { libc::open(buf.as_ptr() as *const libc::c_char, libc::O_RDONLY) };
+    let slot_ptr = crate::gc::MY_SLOT.get();
     assert!(
-        fd >= 0,
-        "file_open: could not open file (errno {})",
-        std::io::Error::last_os_error()
+        !slot_ptr.is_null(),
+        "sol_file_open called on unregistered thread"
     );
-    let fd = fd as usize;
+    let slot = unsafe { &*slot_ptr };
 
-    // Mirror the heap's allocate path: set the allocated bit, advance the HWM,
-    // and be born marked if a concurrent mark is already in flight (so this
-    // cycle cannot sweep an fd that became live mid-mark).
-    unsafe { (*alloc_word(fd)).fetch_or(bit_mask(fd), Ordering::Relaxed) };
-    FD_HWM.fetch_max(fd as u64 + 1, Ordering::Relaxed);
-    if crate::gc::SOL_CONCURRENT_MARKING.load(Ordering::Relaxed) {
-        unsafe { (*mark_word(fd)).fetch_or(bit_mask(fd), Ordering::Relaxed) };
+    // The whole body runs in a GC critical section. Two things require it:
+    //  - The born-marked decision (read `SOL_CONCURRENT_MARKING`, conditionally
+    //    set the mark bit) must not be interrupted by the STW signal, exactly
+    //    like `sol_alloc`'s allocate-black.
+    //  - The path buffer uses the system allocator. If the STW signal parked
+    //    this thread mid-`malloc`/`free` (holding the allocator lock), the GC
+    //    thread's own STW allocations would deadlock. Inside the section the
+    //    signal only *defers*, so the buffer's whole lifetime — alloc, use by
+    //    `open`, drop — stays unparkable; we self-suspend cleanly at the end.
+    unsafe {
+        crate::gc::with_signal_deferred(slot, || {
+            // NUL-terminated copy of the (unterminated) Solar byte-slice path.
+            let mut buf: Vec<u8> = Vec::with_capacity(path_len + 1);
+            std::ptr::copy_nonoverlapping(path_ptr, buf.as_mut_ptr(), path_len);
+            buf.set_len(path_len);
+            buf.push(0);
+
+            let fd = libc::open(buf.as_ptr() as *const libc::c_char, libc::O_RDONLY);
+            assert!(
+                fd >= 0,
+                "file_open: could not open file (errno {})",
+                std::io::Error::last_os_error()
+            );
+            let fd = fd as usize;
+
+            // Mirror the heap's allocate path: set the allocated bit, advance the
+            // HWM, and be born marked if a concurrent mark is already in flight.
+            (*alloc_word(fd)).fetch_or(bit_mask(fd), Ordering::Relaxed);
+            FD_HWM.fetch_max(fd as u64 + 1, Ordering::Relaxed);
+            if crate::gc::SOL_CONCURRENT_MARKING.load(Ordering::Relaxed) {
+                (*mark_word(fd)).fetch_or(bit_mask(fd), Ordering::Relaxed);
+            }
+
+            (FD_BASE.load(Ordering::Relaxed) + fd) as *mut u8
+        })
     }
-
-    (FD_BASE.load(Ordering::Relaxed) + fd) as *mut u8
 }
 
 /// Does `v` point into the fd arena (i.e. is it a `FileDesc`)?
