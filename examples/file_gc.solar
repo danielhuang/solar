@@ -1,0 +1,41 @@
+// Demonstrates GC-managed file descriptors.
+//
+// `FileDesc` is a built-in opaque handle (the byte representation of `&Int32`)
+// pointing into a GC-traced fd arena. Each iteration opens a file and drops the
+// handle immediately, so it becomes unreachable; the collector closes the
+// underlying file during its sweep. Without that, opening 100000 files would
+// exhaust the process fd limit.
+//
+// The list-building inner loop (an escaping, atomically-published chain — the
+// same idiom as threads_list2.solar) generates real heap garbage so the
+// collector actually runs while the dropped FileDescs pile up.
+
+enum ListOpt {
+    Some(&Node),
+    None,
+}
+
+struct Node {
+    value: Int,
+    next: ListOpt,
+}
+
+fn main() {
+    let sentinel = (Node { value: 0, next: ListOpt::None })&;
+    let root = sentinel;
+    let is_done = false;
+    thread::spawn(\ {
+        for iter in 0..400 {
+            let f = open("CLAUDE.md"&);   // dropped immediately -> garbage
+            let head = sentinel;
+            for j in 0..100000 {
+                head = (Node { value: j, next: ListOpt::Some(head) })&;
+            }
+            root&.atomic_store(head);
+        }
+        is_done&.atomic_store(true);
+    });
+    while is_done&.atomic_load() == false {}
+    print_int(root@.value);
+    println("done"&);
+}

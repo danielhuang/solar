@@ -413,3 +413,9 @@ fn atomics() {
     let output = run(&fixture("atomics.solar"), "atomics");
     assert_eq!(output, "99\n1\n77\n10\n5\n99\n99\n99\n1\n2\n100\n200\n");
 }
+
+#[test]
+fn file_open() {
+    let output = run(&fixture("file_open.solar"), "file_open");
+    assert_eq!(output, "opened\n");
+}

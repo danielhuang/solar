@@ -1088,6 +1088,21 @@ impl<'a, W: Write> Interpreter<'a, W> {
                 self.mem.data[data_ptr..data_ptr + n].copy_from_slice(&buf[..n]);
                 self.scalar_store(dst, n as u64, result_ty);
             }
+            Intrinsic::FileOpen => {
+                let (ref_addr, _) = self.eval_place(nodes, args[0]);
+                let data_ptr = self.mem.load(ref_addr, 8) as usize;
+                let data_len = self.mem.load(ref_addr + 8, 8) as usize;
+                let bytes = self.mem.data[data_ptr..data_ptr + data_len].to_vec();
+                let path = String::from_utf8_lossy(&bytes).into_owned();
+                // The interpreter has no fd arena and no GC: represent the opaque
+                // FileDesc as the raw fd and leak it (the compiled runtime closes
+                // it on GC instead). Auto-close is a compiled-runtime behavior.
+                use std::os::fd::IntoRawFd;
+                let fd = std::fs::File::open(&path)
+                    .unwrap_or_else(|e| panic!("file_open: could not open {path:?}: {e}"))
+                    .into_raw_fd();
+                self.scalar_store(dst, fd as u64, result_ty);
+            }
             Intrinsic::ArrayLen => {
                 let len = if let Type::FixedArray(_, n) = &nodes[args[0].0].ty {
                     *n as usize

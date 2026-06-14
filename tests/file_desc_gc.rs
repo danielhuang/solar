@@ -1,0 +1,128 @@
+//! Compiled-only regression test for GC-managed `FileDesc` lifetimes.
+//!
+//! These behaviors are only observable in the native runtime (the interpreters
+//! have no fd arena and no collector), so they cannot go through the usual
+//! three-backend `run` harness. Instead we compile two programs and run each
+//! under a restricted `RLIMIT_NOFILE`.
+//!
+//! Both build an escaping, atomically-published garbage chain (>1 MiB per
+//! generation — the GC's trigger threshold) so the collector actually runs.
+//!
+//! * `dropped` opens a file every iteration and immediately drops the handle.
+//!   The collector closes the unreachable fds, keeping the live count tiny, so
+//!   the program survives a small fd ceiling.
+//! * `retained` keeps every opened `FileDesc` reachable in a growing chain. The
+//!   collector must NOT close them, so the fds accumulate and the program hits
+//!   the ceiling (EMFILE) and aborts.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use solar::pipeline::CompileMode;
+
+const FD_LIMIT: u32 = 64;
+
+fn build(src: &str, name: &str) -> PathBuf {
+    test_utils::ensure_runtime_built();
+    let dir = Path::new("target/test-fixtures");
+    std::fs::create_dir_all(dir).unwrap();
+    let path = dir.join(format!("{name}.solar"));
+    std::fs::write(&path, src).unwrap();
+    let typed = solar::pipeline::compile(&path).unwrap();
+    typed
+        .to_ir()
+        .to_c(&path.display().to_string())
+        .to_binary(name, CompileMode::Debug)
+        .path
+}
+
+/// Run `bin` with `RLIMIT_NOFILE` lowered to `FD_LIMIT`. Returns whether it
+/// exited successfully. Leak detection is disabled: the test programs
+/// intentionally orphan GC-managed allocations.
+fn run_with_fd_limit(bin: &Path) -> bool {
+    Command::new("bash")
+        .arg("-c")
+        .arg(format!(
+            "ulimit -n {FD_LIMIT}; exec '{}'",
+            bin.canonicalize().unwrap().display()
+        ))
+        .env("ASAN_OPTIONS", "detect_leaks=0")
+        .output()
+        .unwrap()
+        .status
+        .success()
+}
+
+// A spawned thread runs 100 iterations. Each builds a >1 MiB escaping garbage
+// chain (published via an atomic root) so the collector runs while fds churn.
+// `OPEN_STMT` is spliced in per test: drop the handle, or retain it in `kept`.
+const TEMPLATE: &str = r#"
+enum GOpt {
+    Some(&GNode),
+    None,
+}
+struct GNode {
+    value: Int,
+    next: GOpt,
+}
+enum FdOpt {
+    Some(&FdNode),
+    None,
+}
+struct FdNode {
+    fd: FileDesc,
+    next: FdOpt,
+}
+
+fn main() {
+    let g_sentinel = (GNode { value: 0, next: GOpt::None })&;
+    let g_root = g_sentinel;
+    let fd_sentinel = (FdNode { fd: open("Cargo.toml"&), next: FdOpt::None })&;
+    let fd_root = fd_sentinel;
+    let is_done = false;
+    thread::spawn(\ {
+        let kept = fd_sentinel;
+        for iter in 0..100 {
+            OPEN_STMT
+            let head = g_sentinel;
+            for j in 0..40000 {
+                head = (GNode { value: j, next: GOpt::Some(head) })&;
+            }
+            g_root&.atomic_store(head);
+        }
+        is_done&.atomic_store(true);
+    });
+    while is_done&.atomic_load() == false {}
+    println("done"&);
+}
+"#;
+
+#[test]
+fn dropped_file_descriptors_are_closed_by_gc() {
+    // The handle is dropped each iteration; the GC closes the unreachable fds,
+    // so the live count stays tiny and the program survives the fd ceiling.
+    let src = TEMPLATE.replace("OPEN_STMT", r#"let f = open("Cargo.toml"&);"#);
+    let bin = build(&src, "fd_gc_dropped");
+    assert!(
+        run_with_fd_limit(&bin),
+        "opening+dropping FileDescs should survive a low fd limit because the \
+         GC closes the unreachable ones"
+    );
+}
+
+#[test]
+fn retained_file_descriptors_are_not_closed() {
+    // Every handle is retained in the reachable `kept` chain; the GC must keep
+    // them open, so the fds accumulate and the program exhausts the ceiling.
+    let src = TEMPLATE.replace(
+        "OPEN_STMT",
+        r#"kept = (FdNode { fd: open("Cargo.toml"&), next: FdOpt::Some(kept) })&;
+            fd_root&.atomic_store(kept);"#,
+    );
+    let bin = build(&src, "fd_gc_retained");
+    assert!(
+        !run_with_fd_limit(&bin),
+        "retaining all FileDescs should exhaust the fd limit because the GC \
+         must keep reachable fds open"
+    );
+}

@@ -55,6 +55,12 @@ fn bad_deref() {
 }
 
 #[test]
+#[should_panic(expected = "cannot deref non-reference type FileDesc")]
+fn filedesc_not_dereferenceable() {
+    compile_with_pipeline(&fixture("filedesc_no_deref.solar"));
+}
+
+#[test]
 #[should_panic(expected = "field access on non-struct type Int")]
 fn bad_field_on_int() {
     compile(&fixture("typecheck_bad_field.solar"));

@@ -32,6 +32,10 @@ pub enum Type {
         params: Vec<Type>,
         return_type: Box<Type>,
     },
+    /// An open file descriptor. A built-in opaque handle with the byte
+    /// representation of `&Int32`: an 8-byte pointer into the GC-traced fd
+    /// arena. The collector closes the file once no live `FileDesc` remains.
+    FileDesc,
     Unit,
     Never,
 }
@@ -138,6 +142,7 @@ impl fmt::Display for Type {
                 }
                 Ok(())
             }
+            Type::FileDesc => write!(f, "FileDesc"),
             Type::Unit => write!(f, "()"),
             Type::Never => write!(f, "!"),
         }
@@ -192,6 +197,7 @@ fn from_ast_type_with_subst(ty: &ast::Type, subst: &HashMap<String, Type>) -> Ty
                 "Float32" => Type::Float32,
                 "Float64" => Type::Float64,
                 "Bool" => Type::Bool,
+                "FileDesc" => Type::FileDesc,
                 other => Type::Struct(other.to_string()),
             }
         }
@@ -690,6 +696,7 @@ fn mangle_type(ty: &Type) -> String {
             s.push_str(&mangle_type(return_type));
             s
         }
+        Type::FileDesc => "FileDesc".to_string(),
         Type::Unit => "Unit".to_string(),
         Type::Never => "Never".to_string(),
     }
@@ -2034,6 +2041,7 @@ impl<'a> Lowerer<'a> {
             Type::Float32 => ast::Type::Named("Float32".to_string()),
             Type::Float64 => ast::Type::Named("Float64".to_string()),
             Type::Bool => ast::Type::Named("Bool".to_string()),
+            Type::FileDesc => ast::Type::Named("FileDesc".to_string()),
             Type::Unit => ast::Type::Named("Unit".to_string()),
             Type::Never => ast::Type::Named("Never".to_string()),
             Type::Ref(inner) | Type::RefUnsized(inner) => {
@@ -5961,6 +5969,10 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
             params: vec![ref_u32(), u32()],
             ret: Fixed(Type::Unit),
         },
+        ast::Intrinsic::FileOpen => IntrinsicSpec {
+            params: vec![byte_slice()],
+            ret: Fixed(Type::FileDesc),
+        },
     }
 }
 
@@ -6001,7 +6013,10 @@ fn is_atomic_shape_ok(ty: &Type, structs: &HashMap<String, StructDef>) -> bool {
                 false
             }
         }
-        Type::Unique(_)
+        // `FileDesc` is excluded: an atomic store could bypass the GC write
+        // barrier and let a still-referenced file be closed mid-mark.
+        Type::FileDesc
+        | Type::Unique(_)
         | Type::UniqueUnsized(_)
         | Type::Enum(_)
         | Type::Array(_)

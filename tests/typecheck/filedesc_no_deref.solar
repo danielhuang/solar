@@ -1,0 +1,7 @@
+// FileDesc is an opaque handle: dereferencing it (to read the raw fd) must be
+// rejected, even though it has the byte representation of &Int32.
+fn main() {
+  let f = open("CLAUDE.md"&);
+  let x = f@;
+  print_int(x);
+}

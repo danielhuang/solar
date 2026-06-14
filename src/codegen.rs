@@ -75,7 +75,9 @@ impl<'a> Codegen<'a> {
             return "_mark_noop".to_string();
         }
         match ty {
-            Type::Ref(_) | Type::Unique(_) => "_mark_single_ptr".to_string(),
+            // A `FileDesc` is a single pointer (into the fd arena); the marker
+            // enqueues its value and `drain` routes it to the fd mark bitmap.
+            Type::Ref(_) | Type::Unique(_) | Type::FileDesc => "_mark_single_ptr".to_string(),
             Type::RefUnsized(_) | Type::UniqueUnsized(_) => "_mark_wide_ptr".to_string(),
             Type::Function { .. } => "_mark_fn_value".to_string(),
             Type::Struct(name) | Type::Enum(name) => {
@@ -210,7 +212,7 @@ impl<'a> Codegen<'a> {
 
     fn emit_mark_at(&mut self, base: &str, ty: &Type, size: usize) {
         match ty {
-            Type::Ref(_) | Type::Unique(_) => {
+            Type::Ref(_) | Type::Unique(_) | Type::FileDesc => {
                 self.linef(format!("sol_gc_mark(ctx, *(uint8_t**){base});"));
             }
             Type::RefUnsized(_) | Type::UniqueUnsized(_) => {
@@ -263,7 +265,7 @@ impl<'a> Codegen<'a> {
             Type::Float32 => "float",
             Type::Float64 => "double",
             Type::Bool => "uint8_t",
-            Type::Ref(_) | Type::Unique(_) => "uint8_t*",
+            Type::Ref(_) | Type::Unique(_) | Type::FileDesc => "uint8_t*",
             _ => unreachable!("c_int_type on non-scalar type: {ty}"),
         }
     }
@@ -487,6 +489,7 @@ impl<'a> Codegen<'a> {
         self.line("extern void sol_write_stdout(const uint8_t* ptr, size_t len);");
         self.line("extern void sol_panic(const uint8_t* ptr, size_t len);");
         self.line("extern size_t sol_read_stdin(uint8_t* ptr, size_t len);");
+        self.line("extern uint8_t* sol_file_open(const uint8_t* ptr, size_t len);");
         self.line("extern int64_t sol_checked_add_int(int64_t a, int64_t b);");
         self.line("extern int64_t sol_checked_sub_int(int64_t a, int64_t b);");
         self.line("extern int64_t sol_checked_mul_int(int64_t a, int64_t b);");
@@ -2041,6 +2044,20 @@ impl<'a> Codegen<'a> {
                 ));
                 let c_ty = self.c_int_type(result_ty);
                 self.linef(format!("*({c_ty}*){dst} = ({c_ty}){count};"));
+            }
+            Intrinsic::FileOpen => {
+                // arg is RefUnsized([Uint8]) — fat pointer (path bytes + len).
+                // Returns a FileDesc (opaque uint8_t* into the fd arena).
+                let (ref_place, _) = self.emit_place(nodes, args[0]);
+                let data_ptr = self.fresh_tmp();
+                let data_len = self.fresh_tmp();
+                self.linef(format!("uint8_t* {data_ptr} = *(uint8_t**){ref_place};"));
+                self.linef(format!(
+                    "uint64_t {data_len} = *(uint64_t*)({ref_place} + 8);"
+                ));
+                self.linef(format!(
+                    "*(uint8_t**){dst} = sol_file_open({data_ptr}, {data_len});"
+                ));
             }
             Intrinsic::ArrayLen => {
                 let len = if let Type::FixedArray(_, n) = &nodes[args[0].0].ty {

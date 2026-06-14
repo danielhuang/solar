@@ -8,6 +8,7 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 pub mod arith;
+pub mod file;
 pub mod futex;
 pub mod gc;
 pub mod heap;
@@ -38,6 +39,7 @@ pub unsafe extern "C" fn sol_start(solar_main: unsafe extern "C" fn(*mut c_void)
 
     gc::install_signal_handler();
     heap::init();
+    file::init();
     LazyLock::force(&thread_pool::THREAD_POOL);
 
     // Dedicated collector thread. Mutators only ever wake it (via request_gc);

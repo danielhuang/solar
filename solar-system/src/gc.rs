@@ -947,10 +947,12 @@ unsafe fn run_gc_cycle() {
         let sweep_start = std::time::Instant::now();
         let (arena_live, arena_freed) = unsafe { parallel_sweep_arena() };
         let (big_live, big_freed) = unsafe { sweep_big(&big_snapshot, born_big) };
+        // Close any file whose `FileDesc` slot went unmarked this cycle.
+        let fd_closed = unsafe { crate::file::fd_sweep() };
         sweep_elapsed = sweep_start.elapsed();
 
         new_total_live_size = arena_live + big_live;
-        freed_count = arena_freed + big_freed;
+        freed_count = arena_freed + big_freed + fd_closed;
 
         for slot in registry.values() {
             let st = unsafe { &mut *slot.alloc.get() };
@@ -1087,6 +1089,12 @@ unsafe fn write_barrier_slow(_dst: *mut u8, val: *mut u8) {
         if unsafe { heap::is_marked_addr(v) } {
             return;
         }
+    } else if crate::file::in_fd_arena(v) {
+        // A `FileDesc` stored into a black object mid-mark must be shaded so its
+        // fd survives this cycle's sweep. White-only, like the heap case.
+        if unsafe { crate::file::is_marked(v) } {
+            return;
+        }
     } else if !MARKING_HAS_BIG.load(Ordering::Relaxed) {
         return;
     }
@@ -1134,6 +1142,10 @@ pub(crate) unsafe fn memcpy_barrier(dst: *mut u8, size: usize) {
                         if !heap::is_marked_addr(v) {
                             gray_enqueue_raw(slot, v);
                         }
+                    } else if crate::file::in_fd_arena(v) {
+                        if !crate::file::is_marked(v) {
+                            gray_enqueue_raw(slot, v);
+                        }
                     } else if has_big {
                         gray_enqueue_raw(slot, v);
                     }
@@ -1151,7 +1163,7 @@ pub(crate) unsafe fn memcpy_barrier(dst: *mut u8, size: usize) {
 /// isn't an arena pointer through to the big-alloc binary search).
 #[inline]
 fn plausible(v: usize, arena_base: usize, big_len: usize) -> bool {
-    v.wrapping_sub(arena_base) < heap::ARENA_SIZE || big_len != 0
+    v.wrapping_sub(arena_base) < heap::ARENA_SIZE || big_len != 0 || crate::file::in_fd_arena(v)
 }
 
 /// Set the mark bit for `(class, slot)` via the per-word accumulator. Returns
@@ -1244,7 +1256,14 @@ unsafe fn drain(ctx: &mut MarkContext, arena_base: usize) {
         let mut p = start;
         loop {
             let Some((class, slot, base, kind)) = (unsafe { heap::lookup_arena(p) }) else {
-                unsafe { mark_big(ctx, p) };
+                // Not a heap pointer: it may be a `FileDesc` (into the fd arena)
+                // or a big allocation. A marked fd slot keeps its file open past
+                // this cycle's sweep.
+                if crate::file::in_fd_arena(p) {
+                    unsafe { crate::file::fd_mark(p) };
+                } else {
+                    unsafe { mark_big(ctx, p) };
+                }
                 break;
             };
             if !unsafe { mark_slot_batched(ctx, class, slot) } {

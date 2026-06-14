@@ -1,0 +1,7 @@
+// Opens a file (this fixture itself, relative to the crate root where tests
+// run) via the built-in FileDesc / file_open path. FileDesc is opaque so we
+// just confirm the open succeeds; all three backends must agree on the output.
+fn main() {
+  let f = open("tests/runtime/file_open.solar"&);
+  println("opened"&);
+}

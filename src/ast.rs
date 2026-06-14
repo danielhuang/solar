@@ -351,6 +351,7 @@ pub enum Intrinsic {
     AtomicCompareExchange,
     FutexWait,
     FutexWake,
+    FileOpen,
     Cast(NumericType, NumericType),
 }
 
@@ -367,6 +368,7 @@ const INTRINSIC_NAMES: &[(&str, Intrinsic)] = &[
     ("atomic_compare_exchange", Intrinsic::AtomicCompareExchange),
     ("futex_wait", Intrinsic::FutexWait),
     ("futex_wake", Intrinsic::FutexWake),
+    ("file_open", Intrinsic::FileOpen),
 ];
 
 impl Intrinsic {

@@ -861,6 +861,31 @@ impl<'a, W: Write> Interpreter<'a, W> {
                     _ => unreachable!(),
                 }
             }
+            Intrinsic::FileOpen => {
+                let val = self.eval_expr(&arguments[0]);
+                let bytes: Vec<u8> = match &val {
+                    Value::Ref(slot) | Value::Unique(slot) => match &*slot.borrow() {
+                        Value::Array(elements) => elements
+                            .iter()
+                            .map(|s| match &*s.borrow() {
+                                Value::Int(n) => *n as u8,
+                                _ => unreachable!(),
+                            })
+                            .collect(),
+                        _ => unreachable!(),
+                    },
+                    _ => unreachable!(),
+                };
+                let path = String::from_utf8_lossy(&bytes).into_owned();
+                // No fd arena / GC in the reference interpreter: model the opaque
+                // FileDesc as the raw fd and leak it. Auto-close is a
+                // compiled-runtime behavior only.
+                use std::os::fd::IntoRawFd;
+                let fd = std::fs::File::open(&path)
+                    .unwrap_or_else(|e| panic!("file_open: could not open {path:?}: {e}"))
+                    .into_raw_fd();
+                Value::Int(fd as i64)
+            }
             Intrinsic::ArrayLen => {
                 let arr = self.eval_expr(&arguments[0]);
                 match arr {
