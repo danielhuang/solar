@@ -102,9 +102,76 @@ impl Binary {
 // Debug compilation: clang + ASAN, links target/debug/libsolar_system
 // ---------------------------------------------------------------------------
 
+/// Path to the GC write-barrier LLVM pass plugin (built by `build.rs`).
+fn wb_plugin() -> &'static str {
+    match option_env!("SOLAR_WB_PLUGIN") {
+        Some(p) => p,
+        None => panic!(
+            "GC write-barrier pass plugin not built — install an llvm-dev package + clang++ and rebuild"
+        ),
+    }
+}
+
+/// Run a pass from the Solar plugin over `in_bc`, writing `out_bc`.
+fn run_solar_pass(pass: &str, in_bc: &Path, out_bc: &Path) {
+    let plugin_arg = format!("-load-pass-plugin={}", wb_plugin());
+    let passes_arg = format!("-passes={pass}");
+    run_cmd(
+        "opt",
+        &[
+            &plugin_arg,
+            &passes_arg,
+            in_bc.to_str().unwrap(),
+            "-o",
+            out_bc.to_str().unwrap(),
+        ],
+    );
+}
+
+/// Run the `solar-write-barriers` pass (also raises any calloc placeholders left
+/// by `solar-lower-gc-alloc` back to sol_alloc). Debug locations and
+/// stack/global provenance are handled structurally by the pass.
+fn insert_write_barriers(in_bc: &Path, out_bc: &Path) {
+    run_solar_pass("solar-write-barriers", in_bc, out_bc);
+}
+
+/// Rewrite generated `sol_alloc` calls into recognized `calloc` placeholders so
+/// opt -O3 can elide non-escaping/dead allocations; survivors are raised back to
+/// `sol_alloc` by `insert_write_barriers` after optimization.
+fn lower_gc_alloc(in_bc: &Path, out_bc: &Path) {
+    run_solar_pass("solar-lower-gc-alloc", in_bc, out_bc);
+}
+
 fn compile_debug(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
     let obj_path = dir.join(format!("{name}.o"));
     let bin_path = dir.join(name);
+    let bc_path = dir.join(format!("{name}.bc"));
+    let wb_path = dir.join(format!("{name}_wb.bc"));
+
+    // Emit LLVM bitcode (LTO defers optimization + ASAN instrumentation to link
+    // time, so this IR is un-instrumented), insert GC write barriers with the
+    // pass plugin, then compile the patched IR. This makes debug/ASAN test
+    // binaries exercise the concurrent collector with barriers active.
+    let emit = Command::new("clang")
+        .args([
+            "-fsanitize=address",
+            "-fno-omit-frame-pointer",
+            "-flto",
+            "-g",
+            "-c",
+            "-emit-llvm",
+            c_path.to_str().unwrap(),
+            "-o",
+            bc_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        emit.status.success(),
+        "C->IR compilation failed for {name}:\n{}",
+        String::from_utf8_lossy(&emit.stderr)
+    );
+    insert_write_barriers(&bc_path, &wb_path);
 
     let compile = Command::new("clang")
         .args([
@@ -113,7 +180,7 @@ fn compile_debug(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
             "-flto",
             "-g",
             "-c",
-            c_path.to_str().unwrap(),
+            wb_path.to_str().unwrap(),
             "-o",
             obj_path.to_str().unwrap(),
         ])
@@ -121,7 +188,7 @@ fn compile_debug(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
         .unwrap();
     assert!(
         compile.status.success(),
-        "C compilation failed for {name}:\n{}",
+        "IR compilation failed for {name}:\n{}",
         String::from_utf8_lossy(&compile.stderr)
     );
 
@@ -304,6 +371,13 @@ fn compile_release(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
         &[full_ll.to_str().unwrap(), "-o", full_bc.to_str().unwrap()],
     );
 
+    // Lower generated sol_alloc calls to recognized calloc placeholders so the
+    // optimizer can promote/elide non-escaping allocations (it won't do this for
+    // our custom sol_alloc, even fully malloc-attributed). Raised back after opt.
+    eprintln!("=== Lowering GC allocations to calloc placeholders ===");
+    let full_lowered_bc = dir.join("full_lowered.bc");
+    lower_gc_alloc(&full_bc, &full_lowered_bc);
+
     // Optimize
     eprintln!("=== Optimizing (cross-language inlining) ===");
     let full_opt_bc = dir.join("full_opt.bc");
@@ -313,12 +387,19 @@ fn compile_release(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
             opt_args.push("-attributor-enable=all");
         }
         opt_args.extend([
-            full_bc.to_str().unwrap(),
+            full_lowered_bc.to_str().unwrap(),
             "-o",
             full_opt_bc.to_str().unwrap(),
         ]);
         run_cmd("opt", &opt_args);
     }
+
+    // Insert GC write barriers. This runs after `opt -O3` so barrier calls
+    // don't block allocation elision/SROA; the final clang -O3 below inlines
+    // the barrier fast path into the instrumented stores.
+    eprintln!("=== Inserting write barriers ===");
+    let full_wb_bc = dir.join("full_wb.bc");
+    insert_write_barriers(&full_opt_bc, &full_wb_bc);
 
     // Final link
     eprintln!("=== Final link ===");
@@ -329,7 +410,7 @@ fn compile_release(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
             link_args.extend(["-mllvm", "-attributor-enable=all"]);
         }
         link_args.extend([
-            full_opt_bc.to_str().unwrap(),
+            full_wb_bc.to_str().unwrap(),
             runtime_lib.to_str().unwrap(),
             "-lm",
             "-lpthread",

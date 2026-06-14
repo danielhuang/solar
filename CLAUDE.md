@@ -6,12 +6,13 @@ Solar is a custom programming language. The compiler is written in Rust (edition
 
 Required tools:
 - **Rust** (via rustup)
-- **LLVM and clang** — version must match rustc's LLVM version (`rustc --version --verbose | grep LLVM`)
+- **LLVM and clang** — version must match rustc's LLVM version (`rustc --version --verbose | grep LLVM`). The distro repos may lag; the matching version usually comes from the official LLVM apt repo (`apt.llvm.org`, e.g. `llvm-toolchain-trixie-22`).
+- **LLVM dev headers + `clang++` and `llvm-config`** — `build.rs` compiles the GC write-barrier LLVM pass plugin (`llvm-pass/SolarWriteBarriers.cpp`) against these. Install e.g. `llvm-22-dev`. Without them `cargo build` still works (interpreter only) but native codegen fails with a clear message.
 - **lld** — same version as LLVM/clang
 - **Node.js** — needed by tree-sitter to generate the parser
 - **tree-sitter CLI** — `cargo install tree-sitter-cli`
 
-The unversioned commands (`clang`, `llvm-as`, `llvm-link`, `llc`, `opt`, `ld.lld`) must be on `$PATH`.
+The unversioned commands (`clang`, `clang++`, `llvm-as`, `llvm-link`, `llc`, `opt`, `ld.lld`, `llvm-config`) must be on `$PATH`.
 
 ## Build
 
@@ -69,6 +70,15 @@ pipeline::compile(path) → Typed → .to_ir() → Ir → .to_c(name) → CSourc
 Entry point is `pipeline::compile(file_path)` which returns a `Typed` struct. Each stage wraps its data and has methods to advance to the next stage. You can stop at any stage (e.g., stop at `Typed` for typecheck tests, at `Ir` for interpreter tests).
 
 `CSource::to_binary` supports two modes via `CompileMode::Debug` (ASAN + clang, links `target/debug/libsolar_system`) and `CompileMode::Release` (LLVM LTO, cross-language optimization, allocator attribute stamping, links `target/release/libsolar_system.a`). Intermediate files go in `target/solar/{name}_{random_hex}/` and are kept for debugging.
+
+GC write barriers are inserted by a real LLVM pass plugin (`llvm-pass/SolarWriteBarriers.cpp`), built by `build.rs`. The plugin provides two passes run via `opt -load-pass-plugin=…`:
+
+- **`solar-lower-gc-alloc`** (release only, *before* `opt -O3`): rewrites each generated `sol_alloc(size, align, mark_fn)` call into a recognized `calloc(1, size)` carrying `(align, mark_fn)` in `!solar.alloc` instruction metadata, and each `sol_memcpy` into `llvm.memcpy`. This is the key to allocation elision: LLVM's allocation-promotion/dead-alloc transforms key on *recognized* allocators (TargetLibraryInfo), so they SROA/elide a non-escaping `calloc` but **not** a custom `sol_alloc`, even one stamped with the full malloc attribute set. `calloc` (not `malloc`) preserves `sol_alloc`'s zeroing so the optimizer never sees uninitialized reads. The referenced `_mark_*` functions are anchored in `llvm.compiler.used` so they survive globaldce until raising.
+- **`solar-write-barriers`** (debug + release, *after* `opt -O3`): first *raises* surviving `calloc … !solar.alloc` calls back to `sol_alloc` (reading the metadata), then inserts the barriers. It instruments `store ptr` (and `<N x ptr>` vector stores → bulk barrier) into non-stack/global destinations, plus aggregate copies — `llvm.memcpy`/`memmove` and any residual `sol_memcpy` call — via `sol_gc_memcpy_barrier`. `getOrInsertFunction` declares the barrier runtime functions when the module doesn't define them.
+
+Inserting barriers as IR (not text — replacing an earlier `llvm-dis | edit | llvm-as` rewrite) gives robust stack-vs-heap provenance via `getUnderlyingObject`, native debug-location propagation (the inserted call inherits the store's `!dbg`, so LLVM never strips module debug info — which had silently dropped solar-system DWARF for profilers), and type safety. Both barrier-relevant runtime side effects are kept out of the optimizer's view until *after* elision: barriers are inserted post-`opt`, and `sol_memcpy` is a **plain copy** (no inline shading — that would make freshly-allocated objects escape and block their elision; the shading is re-added by the post-opt memcpy barrier). In release the final `clang -O3` link inlines the barrier fast path; in debug the pass runs on the `-emit-llvm` bitcode before the (LTO-deferred) ASAN instrumentation, so debug/ASAN test binaries also exercise the collector with barriers active.
+
+The collector (`solar-system/src/gc.rs`) is **concurrent**: a dedicated GC thread spawned in `sol_start` owns every cycle. Mutators never collect — on the heap-growth heuristic `sol_alloc` calls `request_gc` (a futex wake) and keeps running. A cycle is: **STW pause 1** (signal all registered mutators, scan their stacks+registers, seed the gray queue with root pointer values, set `SOL_CONCURRENT_MARKING`, resume) → **concurrent parallel mark** (`parallel_mark` submits one job per thread-pool worker; workers drain the gray queue, follow heap edges, and overflow excess back to the queue for idle workers to steal, until quiescence — while mutators run, the Dijkstra insertion barrier and the inserted aggregate-copy barrier (`sol_gc_memcpy_barrier`) shade newly-stored pointers, and new allocations are *born black*) → **STW pause 2** (clear the flag, flush gray buffers + re-scan roots, drain to fixpoint, then the parallel sweep). The gray frontier is a **sharded** queue (`GRAY[N]` + per-thread buffers in `ThreadSlot`) kept separate from the alloc/mark bitmaps; consumers swap a whole shard in O(1). The barrier does **white-only shading** (skips already-marked targets via `heap::is_marked_addr`) so a fast allocator's born-black stores don't flood the queue. **Allocation back-pressure**: `ALLOCATED_SINCE_GC` (batched per-thread) is capped at `alloc_hard_cap()` (a floor, else scaled by *traced* live — live excluding this cycle's born-black float, which avoids a float→cap→float feedback loop); over the cap, `sol_alloc` stalls as a safepoint (`stall_for_gc`) until a cycle reclaims space. Remaining caveat: marker heap reads are racy-by-design (sound on x86 for aligned words).
 
 ### Stage details
 

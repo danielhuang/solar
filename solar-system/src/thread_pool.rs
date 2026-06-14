@@ -7,6 +7,10 @@ type Job = Box<dyn FnOnce() + Send + 'static>;
 
 pub struct ThreadPool {
     sender: mpsc::Sender<Job>,
+    /// Number of worker threads. The parallel marker submits exactly this many
+    /// jobs (each runs until quiescence), so this must equal the count that can
+    /// run concurrently — else submitted jobs queue and never start.
+    size: usize,
     /// Submitted-but-not-finished count. `submit` fetch_adds; workers
     /// fetch_sub after the closure returns; `wait_for_all` FUTEX_WAITs
     /// while > 0; the worker that drives it to zero FUTEX_WAKEs.
@@ -48,7 +52,16 @@ impl ThreadPool {
                 })
                 .unwrap();
         }
-        ThreadPool { sender, unfinished }
+        ThreadPool {
+            sender,
+            size,
+            unfinished,
+        }
+    }
+
+    /// Number of worker threads.
+    pub fn size(&self) -> usize {
+        self.size
     }
 
     pub fn submit(&self, f: impl FnOnce() + Send + 'static) {

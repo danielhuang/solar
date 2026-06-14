@@ -4,8 +4,9 @@ use std::ptr::null_mut;
 use std::sync::atomic::Ordering;
 
 use crate::gc::{
-    BigAllocLocal, DISABLE_GC, ENABLE_ALLOC_PRINTS, MY_SLOT, TOTAL_LIVE_SIZE, ThreadAllocState,
-    run_gc, self_suspend,
+    ALLOC_FLUSH_CHUNK, ALLOCATED_SINCE_GC, BigAllocLocal, DISABLE_GC, ENABLE_ALLOC_PRINTS, MY_SLOT,
+    SOL_CONCURRENT_MARKING, TOTAL_LIVE_SIZE, ThreadAllocState, alloc_hard_cap, request_gc,
+    self_suspend, stall_for_gc,
 };
 use crate::heap;
 
@@ -33,7 +34,18 @@ pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -
     let new_size = unsafe { (*alloc_ptr).new_size_since_last_gc };
     let total_live = TOTAL_LIVE_SIZE.load(Ordering::Relaxed) + new_size;
     if new_size * 2 > total_live && total_live > MIN_SIZE_UNTIL_GC {
-        unsafe { run_gc() };
+        // Wake the dedicated GC thread and keep going — collection runs
+        // concurrently with this and other mutators.
+        request_gc();
+    }
+
+    // Back-pressure: if mutators have collectively outrun the collector, stall
+    // here (a GC safepoint, before `in_alloc`) until a cycle reclaims space.
+    // Without this a fast allocator born-blacks unbounded floating garbage and
+    // exhausts memory. The check reads an approximate global counter, so it is
+    // cheap and only trips when the heap is genuinely large.
+    if ALLOCATED_SINCE_GC.load(Ordering::Relaxed) > alloc_hard_cap() {
+        unsafe { stall_for_gc() };
     }
 
     if ENABLE_ALLOC_PRINTS.load(Ordering::Relaxed) {
@@ -115,9 +127,30 @@ unsafe fn arena_allocate(
     }
     unsafe { heap::set_allocated(class, slot) };
 
-    state.new_size_since_last_gc += ssz;
-    state.total_allocations += 1;
+    // Allocate black: an object born during concurrent marking is marked live
+    // immediately, so the stop-the-world sweep at the end of the cycle never
+    // reclaims it. Its (zeroed) fields are filled by barriered stores, so its
+    // outgoing pointers are still shaded.
+    if SOL_CONCURRENT_MARKING.load(Ordering::Relaxed) {
+        unsafe { heap::set_marked(class, slot) };
+    }
+
+    account_alloc(state, ssz);
     addr as *mut u8
+}
+
+/// Record `bytes` of allocation against the trigger counter and, in batches,
+/// the global back-pressure counter (`ALLOCATED_SINCE_GC`). Batching keeps the
+/// global atomic off the per-allocation hot path.
+#[inline]
+fn account_alloc(state: &mut ThreadAllocState, bytes: usize) {
+    state.new_size_since_last_gc += bytes;
+    state.total_allocations += 1;
+    state.unflushed_alloc += bytes;
+    if state.unflushed_alloc >= ALLOC_FLUSH_CHUNK {
+        ALLOCATED_SINCE_GC.fetch_add(state.unflushed_alloc, Ordering::Relaxed);
+        state.unflushed_alloc = 0;
+    }
 }
 
 /// Allocate a >1 GiB object via the system allocator and record it in the
@@ -138,8 +171,7 @@ unsafe fn big_allocate(
         align,
         mark_fn: mark_fn as usize,
     });
-    state.new_size_since_last_gc += size;
-    state.total_allocations += 1;
+    account_alloc(state, size);
     ptr
 }
 
@@ -176,6 +208,13 @@ unsafe fn bump_forever(size: usize, align: usize) -> *mut u8 {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_memcpy(dst: *mut u8, src: *const u8, size: usize) {
+    // A plain copy with no GC side effects: keeping the body free of global
+    // reads/writes is what lets the optimizer prove sol_memcpy doesn't capture
+    // or escape its arguments, so freshly-allocated objects initialized through
+    // it can still be SROA'd / elided. The aggregate-copy write barrier (shading
+    // the copied region's pointers) is re-added by the `solar-write-barriers`
+    // pass, which instruments the memcpy *after* optimization — exactly like the
+    // per-store barriers — so the barrier never blocks allocation elision.
     unsafe { std::ptr::copy_nonoverlapping(src, dst, size) };
 }
 

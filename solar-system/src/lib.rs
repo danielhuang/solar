@@ -40,10 +40,18 @@ pub unsafe extern "C" fn sol_start(solar_main: unsafe extern "C" fn(*mut c_void)
     heap::init();
     LazyLock::force(&thread_pool::THREAD_POOL);
 
+    // Dedicated collector thread. Mutators only ever wake it (via request_gc);
+    // collection runs concurrently on this thread.
+    let gc_handle = gc::spawn_gc_thread();
+
     // Run main via sol_thread_start (registers thread, calls entry, unregisters)
     unsafe {
         thread::sol_thread_start(solar_main, null_mut(), None);
     }
+
+    // Main has unregistered; stop the collector before touching the heap for
+    // stats so no cycle races with the reads below.
+    gc::shutdown_gc_thread(gc_handle);
 
     // Stats printing (after the main thread unregistered, outside STW).
     let enable_stat_prints = gc::ENABLE_STAT_PRINTS.load(Ordering::Relaxed);
