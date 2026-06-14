@@ -75,7 +75,7 @@ impl ThreadAllocState {
 
 /// Total live size (in slot bytes + big-alloc bytes), recomputed by the GC at
 /// the end of each cycle. Read by allocating threads for the trigger heuristic.
-pub(crate) static TOTAL_LIVE_SIZE: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static TOTAL_LIVE_SIZE_AFTER_LAST_GC: AtomicUsize = AtomicUsize::new(0);
 
 /// Bytes allocated (across all threads) since the last completed GC cycle,
 /// updated in batches from per-thread `unflushed_alloc`. Drives allocation
@@ -973,7 +973,7 @@ unsafe fn run_gc_cycle() {
             st.unflushed_alloc = 0;
             st.reset_claims();
         }
-        TOTAL_LIVE_SIZE.store(new_total_live_size, Ordering::Release);
+        TOTAL_LIVE_SIZE_AFTER_LAST_GC.store(new_total_live_size, Ordering::Release);
 
         // Estimate traced live = total marked − bytes born black during the mark
         // window (allocation between mark-start and now). This excludes float

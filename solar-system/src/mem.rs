@@ -3,8 +3,8 @@ use std::sync::atomic::Ordering;
 
 use crate::gc::{
     ALLOC_FLUSH_CHUNK, ALLOCATED_SINCE_GC, BigAllocLocal, DISABLE_GC, ENABLE_ALLOC_PRINTS, MY_SLOT,
-    SOL_CONCURRENT_MARKING, TOTAL_LIVE_SIZE, ThreadAllocState, alloc_hard_cap, request_gc,
-    stall_for_gc, with_signal_deferred,
+    SOL_CONCURRENT_MARKING, TOTAL_LIVE_SIZE_AFTER_LAST_GC, ThreadAllocState, alloc_hard_cap,
+    request_gc, stall_for_gc, with_signal_deferred,
 };
 use crate::heap;
 
@@ -26,7 +26,7 @@ pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -
     // &mut to alloc state exists across run_gc() (run_gc mutates it).
     let alloc_ptr = slot.alloc.get();
     let new_size = unsafe { (*alloc_ptr).new_size_since_last_gc };
-    let total_live = TOTAL_LIVE_SIZE.load(Ordering::Relaxed) + new_size;
+    let total_live = TOTAL_LIVE_SIZE_AFTER_LAST_GC.load(Ordering::Relaxed);
 
     // GC coordination. `SOLAR_DISABLE_GC` gates only this block, so the
     // allocation path below stays byte-for-byte identical to a collected build
@@ -36,9 +36,8 @@ pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -
     // with no cycle to ever reset `ALLOCATED_SINCE_GC`, a stall could never be
     // relieved and would hang.
     if !DISABLE_GC.load(Ordering::Relaxed) {
-        if new_size * 2 > total_live && total_live > MIN_SIZE_UNTIL_GC {
-            // Wake the dedicated GC thread and keep going — collection runs
-            // concurrently with this and other mutators.
+        let threshold = total_live + MIN_SIZE_UNTIL_GC;
+        if (new_size + size) % threshold < size {
             request_gc();
         }
 
@@ -61,12 +60,18 @@ pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -
     // Update per-thread structures inside a GC critical section so the signal
     // handler defers rather than interrupting mid-update; if a stop arrived
     // meanwhile, `with_signal_deferred` self-suspends cleanly afterwards.
-    unsafe {
+    let addr = unsafe {
         with_signal_deferred(slot, || match heap::size_class(size, align) {
             Some(class) => arena_allocate(&mut *alloc_ptr, class, size, mark_fn),
             None => big_allocate(&mut *alloc_ptr, size, align, mark_fn),
         })
+    };
+
+    unsafe {
+        account_alloc(&mut *alloc_ptr, size);
     }
+
+    addr
 }
 
 /// Allocate `size` bytes (rounded up to a power-of-2 size class) from the
@@ -117,7 +122,6 @@ unsafe fn arena_allocate(
         unsafe { heap::set_marked(class, slot) };
     }
 
-    account_alloc(state, ssz);
     addr as *mut u8
 }
 
@@ -153,7 +157,6 @@ unsafe fn big_allocate(
         align,
         mark_fn: mark_fn as usize,
     });
-    account_alloc(state, size);
     ptr
 }
 
