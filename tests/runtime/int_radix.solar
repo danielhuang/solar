@@ -1,0 +1,12 @@
+// Octal (0o) and hex (0x) integer literals, with and without type suffixes.
+fn main() {
+  print_int(0o111);          // 73
+  print_int(0o777);          // 511
+  print_int(0xFF);           // 255
+  print_int(0xff);           // 255 (lowercase)
+  print_int(0x10);           // 16
+  print_int(Int(0o123u));    // 83  (octal + u suffix)
+  print_int(Int(0xFFu8));    // 255 (hex + u8 suffix)
+  print_int(Int(0xabu));     // 171 (hex digits + u suffix)
+  print_int(0o0);            // 0
+}

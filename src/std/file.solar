@@ -23,7 +23,7 @@ pub fn open(
     const O_EXCL = 128;
     const O_TRUNC = 512;
     const O_APPEND = 1024;
-    const MODE: Uint = 438u; // 0o666
+    const MODE: Uint = 0o666u;
 
     let flags = if read {
         if write { O_RDWR } else { O_RDONLY }

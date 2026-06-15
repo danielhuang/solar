@@ -44,6 +44,12 @@ fn consts() {
 }
 
 #[test]
+fn int_radix() {
+    let output = run(&fixture("int_radix.solar"), "int_radix");
+    assert_eq!(output, "73\n511\n255\n255\n16\n83\n255\n171\n0\n");
+}
+
+#[test]
 fn binop_logic() {
     let output = run(&fixture("binop_logic.solar"), "binop_logic");
     assert_eq!(output, "1\n0\n0\n1\n0\n1\n0\n88\n1\n1\n99\n0\n");

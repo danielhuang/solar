@@ -153,6 +153,11 @@ fn main() {
   // consts substitute to their literal value at the use site
   print_int(ramp(RAMP_START, step=RAMP_STEP));  // 0 + 2*3 = 6
 
+  // octal and hex integer literals (suffixes work too)
+  print_int(0o17);             // 15
+  print_int(0xFF);             // 255
+  print_int(Int(0x10u8));      // 16
+
   // if-else statement
   if x > 100 {
     print_int(0);

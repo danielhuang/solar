@@ -713,9 +713,10 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
         "integer_literal" => {
             let text = node_text(node, source);
             let (num_str, int_ty) = parse_integer_suffix(text);
-            // The grammar guarantees digits only, so the sole possible parse error
-            // is overflow; saturate and let the type checker report out-of-range.
-            let value: i128 = num_str.parse().unwrap_or(i128::MAX);
+            // The grammar guarantees valid digits for the radix, so the sole
+            // possible parse error is overflow; saturate and let the type checker
+            // report out-of-range.
+            let value = parse_integer_value(num_str);
             ExprKind::IntegerLiteral(value, int_ty)
         }
         "boolean_literal" => {
@@ -1192,7 +1193,9 @@ fn convert_type(node: tree_sitter::Node, source: &str) -> Type {
         "fixed_array_type" => {
             let element = convert_type(node.child_by_field_name("element").unwrap(), source);
             let size_text = node_text(node.child_by_field_name("size").unwrap(), source);
-            let size: u64 = size_text.parse().unwrap();
+            // The array size literal may carry a suffix and a radix prefix.
+            let (num_str, _) = parse_integer_suffix(size_text);
+            let size = parse_integer_value(num_str) as u64;
             Type::FixedArray(Box::new(element), size)
         }
         "tuple_type" => {
@@ -1227,6 +1230,19 @@ fn convert_type(node: tree_sitter::Node, source: &str) -> Type {
         }
         other => panic!("unexpected type node kind: {other}"),
     }
+}
+
+/// Parse an integer literal body (suffix already stripped), honoring a `0o`
+/// octal or `0x` hex prefix. Saturates on overflow.
+fn parse_integer_value(num_str: &str) -> i128 {
+    let (digits, radix) = if let Some(d) = num_str.strip_prefix("0o") {
+        (d, 8)
+    } else if let Some(d) = num_str.strip_prefix("0x") {
+        (d, 16)
+    } else {
+        (num_str, 10)
+    };
+    i128::from_str_radix(digits, radix).unwrap_or(i128::MAX)
 }
 
 fn parse_integer_suffix(text: &str) -> (&str, IntegerType) {
