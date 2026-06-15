@@ -896,9 +896,17 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     _ => unreachable!(),
                 };
                 let path = String::from_utf8_lossy(&bytes).into_owned();
+                let flags = match self.eval_expr(&arguments[1]) {
+                    Value::Int(n) => n,
+                    _ => unreachable!(),
+                };
+                let mode = match self.eval_expr(&arguments[2]) {
+                    Value::Int(n) => n as u32,
+                    _ => unreachable!(),
+                };
                 // No fd arena / GC here: the FileDesc is an index into a virtual
                 // table of boxed streams (the compiled runtime uses a real fd).
-                let fd = self.files.open(&path);
+                let fd = self.files.open(&path, flags, mode);
                 Value::Int(fd as i64)
             }
             Intrinsic::FileClose => {

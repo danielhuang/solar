@@ -109,15 +109,20 @@ unsafe fn mark_word(fd: usize) -> *const AtomicU64 {
     unsafe { (FD_MARK_BITS.load(Ordering::Relaxed) as *const AtomicU64).add(fd >> 6) }
 }
 
-/// Open `path` for reading and writing (creating it if absent, mode 0666) and
-/// return an opaque `FileDesc` pointer (`FD_BASE + fd`). The fd's allocated bit
-/// is set so the next GC traces it. `O_TRUNC` is deliberately omitted: a
-/// `FileDesc` opened purely to read an existing file must not destroy it.
+/// Open `path` with the given `open(2)` `flags` and creation `mode`, and return
+/// an opaque `FileDesc` pointer (`FD_BASE + fd`). The fd's allocated bit is set
+/// so the next GC traces it. `O_CLOEXEC` is always added so descriptors don't
+/// leak across `exec`.
 ///
 /// Panics on failure so the returned pointer is always a valid, live fd — the
 /// opaque-handle contract needs no sentinel value.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sol_file_open(path_ptr: *const u8, path_len: usize) -> *mut u8 {
+pub unsafe extern "C" fn sol_file_open(
+    path_ptr: *const u8,
+    path_len: usize,
+    flags: i64,
+    mode: u64,
+) -> *mut u8 {
     let slot_ptr = crate::gc::MY_SLOT.get();
     assert!(
         !slot_ptr.is_null(),
@@ -142,10 +147,11 @@ pub unsafe extern "C" fn sol_file_open(path_ptr: *const u8, path_len: usize) -> 
             buf.set_len(path_len);
             buf.push(0);
 
+            // O_CLOEXEC is always set so fds don't leak across exec.
             let fd = libc::open(
                 buf.as_ptr() as *const libc::c_char,
-                libc::O_RDWR | libc::O_CREAT,
-                0o666 as libc::c_int,
+                (flags as libc::c_int) | libc::O_CLOEXEC,
+                mode as libc::c_uint,
             );
             assert!(
                 fd >= 0,

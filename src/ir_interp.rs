@@ -1130,9 +1130,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let data_len = self.mem.load(ref_addr + 8, 8) as usize;
                 let bytes = self.mem.data[data_ptr..data_ptr + data_len].to_vec();
                 let path = String::from_utf8_lossy(&bytes).into_owned();
+                let flags = self.eval_load(nodes, args[1]) as i64;
+                let mode = self.eval_load(nodes, args[2]) as u32;
                 // No fd arena / GC here: the FileDesc is an index into a virtual
                 // table of boxed streams (the compiled runtime uses a real fd).
-                let fd = self.files.open(&path);
+                let fd = self.files.open(&path, flags, mode);
                 self.scalar_store(dst, fd as u64, result_ty);
             }
             Intrinsic::FileClose => {

@@ -493,7 +493,7 @@ impl<'a> Codegen<'a> {
         self.line("extern void sol_write_stdout(const uint8_t* ptr, size_t len);");
         self.line("extern void sol_panic(const uint8_t* ptr, size_t len);");
         self.line("extern size_t sol_read_stdin(uint8_t* ptr, size_t len);");
-        self.line("extern uint8_t* sol_file_open(const uint8_t* ptr, size_t len);");
+        self.line("extern uint8_t* sol_file_open(const uint8_t* ptr, size_t len, int64_t flags, uint64_t mode);");
         self.line("extern void sol_file_close(uint8_t* fd);");
         self.line("extern uint8_t* sol_file_stdin(void);");
         self.line("extern uint8_t* sol_file_stdout(void);");
@@ -2119,9 +2119,11 @@ impl<'a> Codegen<'a> {
                 self.linef(format!("*({c_ty}*){dst} = ({c_ty}){count};"));
             }
             Intrinsic::FileOpen => {
-                // arg is RefUnsized([Uint8]) — fat pointer (path bytes + len).
+                // args: &[Uint8] path (fat pointer), Int flags, Uint mode.
                 // Returns a FileDesc (opaque uint8_t* into the fd arena).
                 let (ref_place, _) = self.emit_place(nodes, args[0]);
+                let flags = self.emit_load(nodes, args[1]);
+                let mode = self.emit_load(nodes, args[2]);
                 let data_ptr = self.fresh_tmp();
                 let data_len = self.fresh_tmp();
                 self.linef(format!("uint8_t* {data_ptr} = *(uint8_t**){ref_place};"));
@@ -2129,7 +2131,7 @@ impl<'a> Codegen<'a> {
                     "uint64_t {data_len} = *(uint64_t*)({ref_place} + 8);"
                 ));
                 self.linef(format!(
-                    "*(uint8_t**){dst} = sol_file_open({data_ptr}, {data_len});"
+                    "*(uint8_t**){dst} = sol_file_open({data_ptr}, {data_len}, (int64_t){flags}, (uint64_t){mode});"
                 ));
             }
             Intrinsic::FileClose => {

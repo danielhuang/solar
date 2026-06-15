@@ -65,14 +65,34 @@ impl<'io> FileTable<'io> {
         }
     }
 
-    /// Open `path` for reading and writing (creating it if absent, no truncate,
-    /// matching the compiled runtime), push it, and return its `FileDesc` index.
-    pub fn open(&mut self, path: &str) -> usize {
-        let f = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
+    /// Open `path` with the given `open(2)` `flags` and creation `mode`, push it,
+    /// and return its `FileDesc` index. The flag bits match the Linux values used
+    /// by `@std`'s `file::open` (the compiled runtime passes them straight to
+    /// `open(2)`); here they're decoded into `OpenOptions`.
+    pub fn open(&mut self, path: &str, flags: i64, mode: u32) -> usize {
+        use std::os::unix::fs::OpenOptionsExt;
+        // POSIX open(2) flags (Linux values).
+        const O_WRONLY: i64 = 1;
+        const O_RDWR: i64 = 2;
+        const O_ACCMODE: i64 = 3;
+        const O_CREAT: i64 = 64;
+        const O_EXCL: i64 = 128;
+        const O_TRUNC: i64 = 512;
+        const O_APPEND: i64 = 1024;
+
+        let access = flags & O_ACCMODE;
+        let mut o = OpenOptions::new();
+        o.read(access != O_WRONLY);
+        o.write(access == O_WRONLY || access == O_RDWR);
+        o.append(flags & O_APPEND != 0);
+        o.truncate(flags & O_TRUNC != 0);
+        if flags & O_EXCL != 0 {
+            o.create_new(true);
+        } else if flags & O_CREAT != 0 {
+            o.create(true);
+        }
+        o.mode(mode);
+        let f = o
             .open(path)
             .unwrap_or_else(|e| panic!("file_open: could not open {path:?}: {e}"));
         self.files.push(Box::new(f));

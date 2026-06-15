@@ -1,0 +1,15 @@
+// Exercises file::open keyword arguments: create + truncate to write a fresh
+// file, then reopen it read-only (write=false) and read the contents back.
+fn main() {
+  let path = "target/solar_open_flags.tmp"&;
+
+  let w = file::open(path, create=true, truncate=true);
+  w.write("xyz"&);
+  w.close();
+
+  let r = file::open(path, write=false);
+  let data = r.read(16u);
+  write_stdout(data);            // xyz
+  write_stdout("\n"&);
+  r.close();
+}

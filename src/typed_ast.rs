@@ -6391,7 +6391,8 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
             ret: Fixed(Type::Unit),
         },
         ast::Intrinsic::FileOpen => IntrinsicSpec {
-            params: vec![byte_slice()],
+            // (path, open(2) flags, file-creation mode)
+            params: vec![byte_slice(), Exact(Type::Int), Exact(Type::Uint)],
             ret: Fixed(Type::FileDesc),
         },
         ast::Intrinsic::FileClose => IntrinsicSpec {

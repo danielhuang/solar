@@ -6,6 +6,7 @@ fn main() {
 
   // read(max_size): allocate a buffer and read up to 32 bytes into it. The
   // result is a &[Uint8] whose length is the number of bytes actually read.
+  // (read=true is the default, so /dev/zero opens fine.)
   let chunk = zero.read(32u);
 
   // read(buf): read up to buf's length bytes into a caller-provided buffer,
@@ -15,9 +16,9 @@ fn main() {
   print_int(n);                // 32
   zero.close();
 
-  // Open a file in /tmp (created if absent) and write both chunks. write()
-  // loops over partial writes until the whole buffer is flushed.
-  let out = file::open("/tmp/solar_file_example.out"&);
+  // Open a file in /tmp, creating and truncating it, and write both chunks.
+  // write() loops over partial writes until the whole buffer is flushed.
+  let out = file::open("/tmp/solar_file_example.out"&, create=true, truncate=true);
   out.write(chunk);
   out.write(buf&);
   out.close();

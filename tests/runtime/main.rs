@@ -449,3 +449,9 @@ fn file_io() {
     let output = run(&fixture("file_io.solar"), "file_io");
     assert_eq!(output, "5\nhello world\n");
 }
+
+#[test]
+fn file_open_flags() {
+    let output = run(&fixture("file_open_flags.solar"), "file_open_flags");
+    assert_eq!(output, "xyz\n");
+}
