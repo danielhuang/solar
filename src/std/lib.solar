@@ -4,15 +4,15 @@ pub import sync from "sync.solar";
 pub import thread from "thread.solar";
 pub import file from "file.solar";
 
-// Prints the decimal representation of x followed by a newline.
-// Digits are extracted in the negative domain so Int's minimum value
-// (which has no positive counterpart) needs no special case.
-pub fn print_int(x: Int) {
-  // longest output: -9223372036854775808 + newline = 21 bytes
-  let buf: [Uint8] = [0u8; 21u];
-  buf[20u] = 10u8; // '\n'
+// Decimal representation of x as a byte slice (no trailing newline). The buffer
+// is GC-allocated, so the returned reference keeps it alive. Digits are
+// extracted in the negative domain so Int's minimum value (which has no positive
+// counterpart) needs no special case.
+pub method to_string(self: Int) -> &[Uint8] {
+  // longest output: -9223372036854775808 = 20 bytes
+  let buf: [Uint8] = [0u8; 20u];
   let i = 20u;
-  let n = if x > 0 { 0 - x } else { x };
+  let n = if self > 0 { 0 - self } else { self };
   i = i - 1u;
   buf[i] = Uint8(48 - n % 10);
   n = n / 10;
@@ -21,19 +21,18 @@ pub fn print_int(x: Int) {
     buf[i] = Uint8(48 - n % 10);
     n = n / 10;
   }
-  if x < 0 {
+  if self < 0 {
     i = i - 1u;
     buf[i] = 45u8; // '-'
   }
-  write_stdout(buf[i..21u]&);
+  buf[i..20u]&
 }
 
-pub fn print_int(x: Uint) {
-  // longest output: 18446744073709551615 + newline = 21 bytes
-  let buf: [Uint8] = [0u8; 21u];
-  buf[20u] = 10u8; // '\n'
+pub method to_string(self: Uint) -> &[Uint8] {
+  // longest output: 18446744073709551615 = 20 bytes
+  let buf: [Uint8] = [0u8; 20u];
   let i = 20u;
-  let n = x;
+  let n = self;
   i = i - 1u;
   buf[i] = Uint8(48u + n % 10u);
   n = n / 10u;
@@ -42,7 +41,16 @@ pub fn print_int(x: Uint) {
     buf[i] = Uint8(48u + n % 10u);
     n = n / 10u;
   }
-  write_stdout(buf[i..21u]&);
+  buf[i..20u]&
+}
+
+// Prints the decimal representation of x followed by a newline.
+pub fn print_int(x: Int) {
+  println(x.to_string());
+}
+
+pub fn print_int(x: Uint) {
+  println(x.to_string());
 }
 
 pub fn write_stdout(s: &[Uint8]) {
