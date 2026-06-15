@@ -19,30 +19,30 @@ method map#[R](self: Box#[Int], f: fn(Int) -> R) -> R {
 fn main() {
   // 1. Non-generic function: param types known from signature
   let r1 = apply_fn(\x x + 1, 10);
-  print_int(r1); // 11
+  println(r1); // 11
 
   // 2. Generic function: T=Int inferred from second arg, R inferred from closure body
   let r2 = apply(\x x * 2, 5);
-  print_int(r2); // 10
+  println(r2); // 10
 
   // 3. Generic method: T=Int from receiver, R inferred from closure body
   let b = Box#[Int] { value: 42 };
   let r3 = b.map(\x x + 8);
-  print_int(r3); // 50
+  println(r3); // 50
 
   // 4. Let binding with type annotation
   let f: fn(Int) -> Int = \x x + 100;
-  print_int(f(1)); // 101
+  println(f(1)); // 101
 
   // 5. Multi-param closure in generic function
   let r5 = apply2(\x, y x + y, 3, 4);
-  print_int(r5); // 7
+  println(r5); // 7
 
   // 6. Indirect call through function-typed variable
   let g: fn(Int) -> Int = \x x * 3;
-  print_int(g(9)); // 27
+  println(g(9)); // 27
 
   // 7. Mixed: some params typed, some inferred
   let r7 = apply(\x: Int x + 5, 10);
-  print_int(r7); // 15
+  println(r7); // 15
 }

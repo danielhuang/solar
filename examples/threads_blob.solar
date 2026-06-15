@@ -17,6 +17,6 @@ fn main() {
         });
     }
     while is_done&.atomic_load() == false {}
-    print_int(blob&.atomic_load()@[0u]);
+    println(blob&.atomic_load()@[0u]);
     println("done"&);
 }

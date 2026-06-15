@@ -41,23 +41,23 @@ fn unwrap_or#[T](opt: Option#[T], default: T) -> T {
 
 fn main() {
   // identity with Int
-  print_int(identity#[Int](42));           // 42
+  println(identity#[Int](42));           // 42
 
   // identity with Bool (different monomorphization)
   let b = identity#[Bool](true);
-  print_int(if b { 1 } else { 0 });       // 1
+  println(if b { 1 } else { 0 });       // 1
 
   // multi-param generic
-  print_int(second#[Bool, Int](true, 99)); // 99
+  println(second#[Bool, Int](true, 99)); // 99
 
   // generic function returning struct
   let bx = make_box#[Int](77);
-  print_int(bx.value);                    // 77
+  println(bx.value);                    // 77
 
   // higher-order generic function
-  print_int(apply#[Int, Int](double, 5)); // 10
+  println(apply#[Int, Int](double, 5)); // 10
 
   // generic function with enum
-  print_int(unwrap_or#[Int](Option#[Int]::Some(123), 0));  // 123
-  print_int(unwrap_or#[Int](Option#[Int]::None, 55));      // 55
+  println(unwrap_or#[Int](Option#[Int]::Some(123), 0));  // 123
+  println(unwrap_or#[Int](Option#[Int]::None, 55));      // 55
 }

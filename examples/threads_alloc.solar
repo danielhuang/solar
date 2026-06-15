@@ -10,6 +10,6 @@ fn main() {
         });
     }
     while is_done&.atomic_load() == false {}
-    print_int(ref@);
+    println(ref@);
     println("done"&);
 }

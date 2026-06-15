@@ -1,21 +1,21 @@
 fn main() {
   // closure parameter type inferred as Uint
   let arr = [5u; \i i];
-  print_int(arr[0u]);  // 0
-  print_int(arr[1u]);  // 1
-  print_int(arr[4u]);  // 4
+  println(arr[0u]);  // 0
+  println(arr[1u]);  // 1
+  println(arr[4u]);  // 4
 
   // inferred parameter, expression body
   let squares = [4u; \i i * i];
-  print_int(squares[0u]);  // 0
-  print_int(squares[1u]);  // 1
-  print_int(squares[2u]);  // 4
-  print_int(squares[3u]);  // 9
+  println(squares[0u]);  // 0
+  println(squares[1u]);  // 1
+  println(squares[2u]);  // 4
+  println(squares[3u]);  // 9
 
   // inferred parameter with capture
   let offset = 10u;
   let arr2 = [3u; \i i + offset];
-  print_int(arr2[0u]);  // 10
-  print_int(arr2[1u]);  // 11
-  print_int(arr2[2u]);  // 12
+  println(arr2[0u]);  // 10
+  println(arr2[1u]);  // 11
+  println(arr2[2u]);  // 12
 }

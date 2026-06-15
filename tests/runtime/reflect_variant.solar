@@ -42,24 +42,24 @@ fn main() {
     let n = Num::Big(99);
     match.reflect_variant (variant, val) in n& {
         println(variant);
-        print_int(val);
+        println(val);
     }
     let s = Num::Small(3);
     match.reflect_variant (variant, val) in s& {
         println(variant);
-        print_int(val);
+        println(val);
     }
 
     // a bare name binds the whole (name, payload) tuple in data arms
     match.reflect_variant v in n& {
         println(v.0);
-        print_int(v.1);
+        println(v.1);
     }
 
     // with unit variants nothing is bound for a bare name — the body just
     // can't use v in that case
     match.reflect_variant v in r& {
-        print_int(123);
+        println(123);
     }
 
     // generic use via match.reflect guard

@@ -7,7 +7,7 @@ fn main() {
   // 1. Same-scope shadowing: re-let in the same block
   let x: Int = 1;
   let x: Int = 2;
-  print_int(x);  // 2
+  println(x);  // 2
 
   // 2. Nested scope shadowing: inner block shadows outer
   let a: Int = 10;
@@ -15,12 +15,12 @@ fn main() {
     let a: Int = 20;
     a
   };
-  print_int(b);  // 20
-  print_int(a);  // 10 (outer unchanged)
+  println(b);  // 20
+  println(a);  // 10 (outer unchanged)
 
   // 3. Shadowing a function parameter
   let c: Int = shadow_param(5);
-  print_int(c);  // 99
+  println(c);  // 99
 
   // 4. Multiple levels of nested shadowing
   let y: Int = 1;
@@ -33,25 +33,25 @@ fn main() {
     // inner y (3) is gone, this y is 2
     inner + y
   };
-  print_int(r);  // 5 (3 + 2)
-  print_int(y);  // 1 (outermost unchanged)
+  println(r);  // 5 (3 + 2)
+  println(y);  // 1 (outermost unchanged)
 
   // 5. Same-scope shadowing multiple times
   let z: Int = 10;
   let z: Int = 20;
   let z: Int = 30;
-  print_int(z);  // 30
+  println(z);  // 30
 
   // 6. Shadow with a value derived from the previous binding
   let n: Int = 5;
   let n: Int = n + 1;
   let n: Int = n * 2;
-  print_int(n);  // 12
+  println(n);  // 12
 
   // 7. Reference to old binding survives shadowing
   let v: Int = 42;
   let ref_v: &Int = v&;
   let v: Int = 100;
-  print_int(ref_v@);  // 42 (ref still points to original)
-  print_int(v);       // 100 (shadow has new value)
+  println(ref_v@);  // 42 (ref still points to original)
+  println(v);       // 100 (shadow has new value)
 }

@@ -4,33 +4,33 @@ fn main() {
   // Basic closure capturing a variable
   let offset = 10;
   let add_offset = \x: Int offset + x;
-  print_int(add_offset(5));           // 15
+  println(add_offset(5));           // 15
 
   // Zero-capture closure (equivalent to plain function)
   let double = \x: Int x * 2;
-  print_int(double(7));               // 14
+  println(double(7));               // 14
 
   // Closure passed to higher-order function
   let scale = 3;
   let mul_scale = \x: Int x * scale;
-  print_int(apply(mul_scale, 10));    // 30
+  println(apply(mul_scale, 10));    // 30
 
   // Multiple captures
   let a = 100;
   let b = 200;
   let sum_ab = \x: Int a + b + x;
-  print_int(sum_ab(5));               // 305
+  println(sum_ab(5));               // 305
 
   // Closure with explicit return type
   let negate = \x: Int -> Int { 0 - x };
-  print_int(negate(42));              // -42
+  println(negate(42));              // -42
 
   // Closure with block body
   let complex = \x: Int {
     let tmp = x * 2;
     tmp + offset
   };
-  print_int(complex(5));              // 20
+  println(complex(5));              // 20
 
   // Mutation through captures (shared reference semantics)
   let counter = 0&;
@@ -38,11 +38,11 @@ fn main() {
   inc();
   inc();
   inc();
-  print_int(counter@);                // 3
+  println(counter@);                // 3
 
   // Closure stored in variable, then reassigned
   let f: fn(Int) -> Int = \x: Int x + 1;
-  print_int(f(10));                   // 11
+  println(f(10));                   // 11
   f = \x: Int x + 2;
-  print_int(f(10));                   // 12
+  println(f(10));                   // 12
 }

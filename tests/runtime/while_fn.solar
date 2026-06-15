@@ -7,7 +7,7 @@ fn while_fn(cond: fn() -> Bool, body: fn()) {
 fn main() {
     let i: Int = 0;
     while_fn(\ i < 5, \ {
-        print_int(i);
+        println(i);
         i = i + 1;
     });
 }

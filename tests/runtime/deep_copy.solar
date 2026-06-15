@@ -19,10 +19,10 @@ fn main() {
   original.ref_val@ = 42;
 
   // val: copy keeps old value (10), original has new value (99)
-  print_int(original.val);
-  print_int(copy.val);
+  println(original.val);
+  println(copy.val);
 
   // ref_val: both see the mutation (42)
-  print_int(original.ref_val@);
-  print_int(copy.ref_val@);
+  println(original.ref_val@);
+  println(copy.ref_val@);
 }

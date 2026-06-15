@@ -1,6 +1,6 @@
 import * from "lib.solar";
 
 fn main() {
-    print_int(double(5));
-    print_int(triple(3));
+    println(double(5));
+    println(triple(3));
 }

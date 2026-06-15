@@ -2,6 +2,6 @@ import { inner::Point, inner::make_point } from "mid.solar";
 
 fn main() {
     let p: Point = make_point(3, 7);
-    print_int(p.x);
-    print_int(p.y);
+    println(p.x);
+    println(p.y);
 }

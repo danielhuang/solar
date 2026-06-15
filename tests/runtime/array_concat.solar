@@ -3,21 +3,21 @@ fn main() {
   let b: [Int] = [4, 5];
   let c: [Int] = a + b;
 
-  print_int(c[0u]);
-  print_int(c[1u]);
-  print_int(c[2u]);
-  print_int(c[3u]);
-  print_int(c[4u]);
+  println(c[0u]);
+  println(c[1u]);
+  println(c[2u]);
+  println(c[3u]);
+  println(c[4u]);
 
   // concat with literals
   let d: [Int] = [10] + [20, 30];
-  print_int(d[0u]);
-  print_int(d[1u]);
-  print_int(d[2u]);
+  println(d[0u]);
+  println(d[1u]);
+  println(d[2u]);
 
   // equality on concatenated result
   let e: [Int] = [1, 2, 3, 4, 5];
   if c == e {
-    print_int(99);
+    println(99);
   }
 }

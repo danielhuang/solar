@@ -10,42 +10,42 @@ fn add_pair((a, b): (Int, Int)) -> Int {
 fn main() {
   // Tuple destructuring
   let (a, b) = (1, 2);
-  print_int(a);  // 1
-  print_int(b);  // 2
+  println(a);  // 1
+  println(b);  // 2
 
   // Struct destructuring
   let p = Point { x: 10, y: 20 };
   let Point { x, y } = p;
-  print_int(x);  // 10
-  print_int(y);  // 20
+  println(x);  // 10
+  println(y);  // 20
 
   // Struct field rename
   let Point { x: a2, y: b2 } = p;
-  print_int(a2);  // 10
-  print_int(b2);  // 20
+  println(a2);  // 10
+  println(b2);  // 20
 
   // Array destructuring (fixed)
   let [c, d, e]: [Int; 3] = [10, 20, 30];
-  print_int(c);  // 10
-  print_int(d);  // 20
-  print_int(e);  // 30
+  println(c);  // 10
+  println(d);  // 20
+  println(e);  // 30
 
   // Nested tuple
   let ((f, g), h) = ((1, 2), 3);
-  print_int(f);  // 1
-  print_int(g);  // 2
-  print_int(h);  // 3
+  println(f);  // 1
+  println(g);  // 2
+  println(h);  // 3
 
   // Wildcard
   let (_, j) = (100, 42);
-  print_int(j);  // 42
+  println(j);  // 42
 
   // Function param destructuring
-  print_int(add_pair((3, 4)));  // 7
+  println(add_pair((3, 4)));  // 7
 
   // Triple tuple
   let (x1, x2, x3) = (5, 6, 7);
-  print_int(x1);  // 5
-  print_int(x2);  // 6
-  print_int(x3);  // 7
+  println(x1);  // 5
+  println(x2);  // 6
+  println(x3);  // 7
 }

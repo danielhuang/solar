@@ -1,9 +1,9 @@
 fn print_bool(b: Bool) {
   if b {
-    print_int(1);
+    println(1);
   }
   if b == false {
-    print_int(0);
+    println(0);
   }
 }
 

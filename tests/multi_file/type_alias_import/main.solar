@@ -2,13 +2,13 @@ import { P, OptInt } from "lib.solar";
 
 fn main() {
     let p: P = P { x: 10, y: 20 };
-    print_int(p.x);   // 10
-    print_int(p.y);   // 20
+    println(p.x);   // 10
+    println(p.y);   // 20
 
     let v: OptInt = OptInt::Some(42);
     let r = match v {
         OptInt::Some(n) => n,
         OptInt::None => 0,
     };
-    print_int(r);      // 42
+    println(r);      // 42
 }

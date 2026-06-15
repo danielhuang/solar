@@ -10,5 +10,5 @@ fn main() {
     counter = counter + 1;
     m&.unlock();
     while counter&.atomic_load() < 2 {}
-    print_int(counter);
+    println(counter);
 }

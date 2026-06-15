@@ -2,7 +2,7 @@ fn for_range(start: Int, end: Int, body: fn(Int)) {
     let i: Int = 0;
     while i < 1000000000 {
         if i % 10000 == 0 {
-            print_int(i);
+            println(i);
         }
         i = i + 1;
     }
@@ -10,7 +10,7 @@ fn for_range(start: Int, end: Int, body: fn(Int)) {
 
 fn body(i: Int) {
     if i % 10000 == 0 {
-        print_int(i);
+        println(i);
     }
 }
 

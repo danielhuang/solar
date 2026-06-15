@@ -1,4 +1,4 @@
 fn main() {
   let z: &?Int = null#[Int];
-  print_int(z@);
+  println(z@);
 }

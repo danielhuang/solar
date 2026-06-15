@@ -5,7 +5,7 @@ pub fn a() {
 }
 
 pub fn main() {
-    print_int(1);
-    print_int(a());
-    print_int(b());
+    println(1);
+    println(a());
+    println(b());
 }

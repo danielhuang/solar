@@ -7,7 +7,7 @@ fn main() {
         } else if n % 3 == 0 {
             println("Fizz"&);   
         } else {
-            print_int(n);
+            println(n);
         }
     }
 }

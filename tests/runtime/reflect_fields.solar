@@ -20,7 +20,7 @@ fn print_fields#[T](o: &T) {
         "struct" => {
             for.reflect_fields f in o {
                 println(f.0);
-                print_int(f.1@);
+                println(f.1@);
             }
         },
         _ => { println("not a struct"&); },
@@ -33,7 +33,7 @@ fn main() {
     // bare use with a known struct: f is (&[Uint8], &F) per field
     for.reflect_fields f in p& {
         println(f.0);
-        print_int(f.1@);
+        println(f.1@);
     }
 
     // generic use via match.reflect guard
@@ -47,12 +47,12 @@ fn main() {
     for.reflect_fields f in v& {
         f.1@ = f.1@ * 10;
     }
-    print_int(v.x);
-    print_int(v.y);
+    println(v.x);
+    println(v.y);
 
     // tuple destructuring of the loop variable
     for.reflect_fields (name, value) in v& {
         println(name);
-        print_int(value@);
+        println(value@);
     }
 }

@@ -10,5 +10,5 @@ fn Foo(x: Int) -> Foo {
 
 fn main() {
   let f = Foo(42);
-  print_int(f.x);
+  println(f.x);
 }

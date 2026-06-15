@@ -23,7 +23,7 @@ fn main() {
         Test::B(b) => b.value&,
     };
     test = Test::B(B { value: 3 });
-    print_int(ref@); // 0
+    println(ref@); // 0
 
     // Test 2: reassign same variant — ref sees updated value
     let test2 = Test::A(A { value: 10 });
@@ -32,7 +32,7 @@ fn main() {
         Test::B(b) => b.value&,
     };
     test2 = Test::A(A { value: 20 });
-    print_int(ref2@); // 20
+    println(ref2@); // 20
 
     // Test 3: struct containing enum — ref into variant survives reassignment to different variant
     let wrap = Wrapper { inner: Test::A(A { value: 42 }) };
@@ -41,5 +41,5 @@ fn main() {
         Test::B(b) => b.value&,
     };
     wrap = Wrapper { inner: Test::B(B { value: 99 }) };
-    print_int(ref3@); // 42
+    println(ref3@); // 42
 }

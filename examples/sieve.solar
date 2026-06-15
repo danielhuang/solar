@@ -14,5 +14,5 @@ fn main() {
             primes = primes + 1;
         }
     }
-    print_int(primes);
+    println(primes);
 }

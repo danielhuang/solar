@@ -36,6 +36,6 @@ fn main() {
         is_done&.atomic_store(true);
     });
     while is_done&.atomic_load() == false {}
-    print_int(root@.value);
+    println(root@.value);
     println("done"&);
 }

@@ -17,8 +17,8 @@ fn abs2(x: Int) {
 }
 
 fn main() {
-    print_int(abs(0 - 100)); // 100
-    print_int(abs(30)); // 30
-    print_int(abs2(0 - 100)); // 100
-    print_int(abs2(30)); // 30
+    println(abs(0 - 100)); // 100
+    println(abs(30)); // 30
+    println(abs2(0 - 100)); // 100
+    println(abs2(30)); // 30
 }

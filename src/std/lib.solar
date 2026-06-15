@@ -44,15 +44,6 @@ pub method to_string(self: Uint) -> &[Uint8] {
   buf[i..20u]&
 }
 
-// Prints the decimal representation of x followed by a newline.
-pub fn print_int(x: Int) {
-  println(x.to_string());
-}
-
-pub fn print_int(x: Uint) {
-  println(x.to_string());
-}
-
 pub fn write_stdout(s: &[Uint8]) {
   intrinsics::write_stdout(s);
 }
@@ -60,6 +51,13 @@ pub fn write_stdout(s: &[Uint8]) {
 pub fn println(s: &[Uint8]) {
     write_stdout(s);
     write_stdout("\n"&);
+}
+
+// Prints any value's `to_string()` representation followed by a newline. The
+// concrete `println(&[Uint8])` overload above is more specific and is chosen for
+// byte slices; this generic handles everything else (e.g. Int, Uint).
+pub fn println#[T](x: T) {
+    println(x.to_string());
 }
 
 pub fn panic(s: &[Uint8]) {

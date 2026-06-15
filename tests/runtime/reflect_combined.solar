@@ -27,7 +27,7 @@ fn describe#[T](o: &T) {
             println("struct:"&);
             for.reflect_fields (name, value) in o {
                 println(name);
-                print_int(value@);
+                println(value@);
             }
         },
         "enum" => {

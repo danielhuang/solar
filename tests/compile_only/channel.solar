@@ -6,5 +6,5 @@ fn main() {
     });
 
     let val = ch&.recv();
-    print_int(val);
+    println(val);
 }

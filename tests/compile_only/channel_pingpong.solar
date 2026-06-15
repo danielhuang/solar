@@ -9,5 +9,5 @@ fn main() {
 
     ch1&.send(10);
     let result = ch2&.recv();
-    print_int(result);
+    println(result);
 }

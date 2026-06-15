@@ -126,7 +126,7 @@ fn deeply_nested_parens() {
     let depth = 100;
     let open: String = "(".repeat(depth);
     let close: String = ")".repeat(depth);
-    let source = format!("fn main() {{\n  print_int({open}42{close});\n}}\n");
+    let source = format!("fn main() {{\n  println({open}42{close});\n}}\n");
     // Write to a temp file so we can use the file-based pipeline
     let dir = std::path::Path::new("target/test-fixtures");
     std::fs::create_dir_all(dir).unwrap();

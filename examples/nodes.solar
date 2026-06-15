@@ -37,7 +37,7 @@ fn right(node: &Node) -> &Node {
 
 fn main() {
     let node = (Node { value: 6, left: NodePtr::None, right: NodePtr::None })&;
-    print_int(node@.value);
+    println(node@.value);
     node = left(node);
     node = left(node);
     node = left(node);
@@ -45,19 +45,19 @@ fn main() {
     node = left(node);
     node = left(node);
     node@.value = 1;
-    print_int(node@.value);
+    println(node@.value);
     node = right(node);
-    print_int(node@.value);
+    println(node@.value);
     node = right(node);
-    print_int(node@.value);
+    println(node@.value);
     node = right(node);
-    print_int(node@.value);
+    println(node@.value);
     node = right(node);
-    print_int(node@.value);
+    println(node@.value);
     node = right(node);
-    print_int(node@.value);
+    println(node@.value);
     node = right(node);
-    print_int(node@.value);
+    println(node@.value);
     node = right(node);
-    print_int(node@.value);
+    println(node@.value);
 }

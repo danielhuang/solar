@@ -4,6 +4,6 @@ fn main() {
     
     a[0u] = 1;
     
-    print_int(a[0u]); // 1
-    print_int(b[0u]); // 0
+    println(a[0u]); // 1
+    println(b[0u]); // 0
 }

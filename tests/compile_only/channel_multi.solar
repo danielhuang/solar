@@ -11,5 +11,5 @@ fn main() {
     sum = sum + ch&.recv();
     sum = sum + ch&.recv();
     sum = sum + ch&.recv();
-    print_int(sum);
+    println(sum);
 }

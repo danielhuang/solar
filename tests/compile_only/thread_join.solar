@@ -4,5 +4,5 @@ fn main() {
         x&.atomic_store(42);
     });
     t.join();
-    print_int(x&.atomic_load());
+    println(x&.atomic_load());
 }

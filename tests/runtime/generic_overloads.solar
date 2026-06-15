@@ -32,25 +32,25 @@ fn pick#[T](a: T, b: Int) -> Int {
 
 fn main() {
   // concrete wins for exact Int arg
-  print_int(process(5));
+  println(process(5));
 
   // generic handles Bool
   let b: Bool = process(true);
   if b {
-    print_int(1);
+    println(1);
   }
 
   // Wrapper-specific overload wins over fully generic
   let w: Wrapper#[Int] = Wrapper#[Int] { value: 42 };
-  print_int(handle(w));
+  println(handle(w));
 
   // fully generic handles Int
-  print_int(handle(99));
+  println(handle(99));
 
   // lexicographic: first param wins
   // pick(Int, Bool) -> matches first overload (a: Int, b: T)
-  print_int(pick(10, true));
+  println(pick(10, true));
 
   // pick(Bool, Int) -> matches second overload (a: T, b: Int)
-  print_int(pick(true, 20));
+  println(pick(true, 20));
 }

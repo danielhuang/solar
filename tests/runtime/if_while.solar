@@ -1,18 +1,18 @@
 fn main() {
   // if true executes
   if true {
-    print_int(1);
+    println(1);
   }
 
   // if false does not execute
   if false {
-    print_int(2);
+    println(2);
   }
 
   // while with flag set to false in body
   let go: Bool = true;
   while go {
-    print_int(3);
+    println(3);
     go = false;
   }
 
@@ -20,18 +20,18 @@ fn main() {
   let go2: Bool = true;
   while go2 {
     if true {
-      print_int(4);
+      println(4);
     }
     if false {
-      print_int(5);
+      println(5);
     }
     go2 = false;
   }
 
   // while false never executes
   while false {
-    print_int(6);
+    println(6);
   }
 
-  print_int(7);
+  println(7);
 }

@@ -11,7 +11,7 @@ fn combine(x: Int, bonus: Int = 10, factor = 2u) -> Int {
 // string default (desugars to a byte array, referenced for the &[Uint8] param).
 fn tag(n: Int, label = "n="&) {
   write_stdout(label);
-  print_int(n);
+  println(n);
 }
 
 method bump(self: &Adder, by: Int = 1) -> Int {
@@ -19,17 +19,17 @@ method bump(self: &Adder, by: Int = 1) -> Int {
 }
 
 fn main() {
-  print_int(combine(5));                       // 5 + 10*2 = 25
-  print_int(combine(5, bonus=100));            // 5 + 100*2 = 205
-  print_int(combine(5, factor=3u));            // 5 + 10*3 = 35
-  print_int(combine(5, bonus=1, factor=1u));   // 5 + 1*1 = 6
+  println(combine(5));                       // 5 + 10*2 = 25
+  println(combine(5, bonus=100));            // 5 + 100*2 = 205
+  println(combine(5, factor=3u));            // 5 + 10*3 = 35
+  println(combine(5, bonus=1, factor=1u));   // 5 + 1*1 = 6
   // kwargs may be passed in any order
-  print_int(combine(5, factor=1u, bonus=1));   // 5 + 1*1 = 6 (reordered)
+  println(combine(5, factor=1u, bonus=1));   // 5 + 1*1 = 6 (reordered)
 
   tag(7);                                       // n=\n7\n
   tag(9, label="v="&);                          // v=\n9\n
 
   let a = Adder { base: 100, };
-  print_int(a&.bump());                         // 101
-  print_int(a&.bump(by=5));                      // 105
+  println(a&.bump());                         // 101
+  println(a&.bump(by=5));                      // 105
 }

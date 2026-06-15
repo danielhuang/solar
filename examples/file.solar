@@ -13,7 +13,7 @@ fn main() {
   // returning the count read.
   let buf: [Uint8] = [0u8; 32u];
   let n = zero.read(buf&);
-  print_int(n);                // 32
+  println(n);                // 32
   zero.close();
 
   // Open a file in /tmp, creating and truncating it, and write both chunks.

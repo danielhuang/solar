@@ -45,31 +45,31 @@ fn double(x: Int) -> Int {
 
 fn main() {
   // basic method on Int
-  print_int(5.double());                  // 10
+  println(5.double());                  // 10
 
   // method on struct
   let p = Point { x: 3, y: 7 };
-  print_int(p.sum());                     // 10
+  println(p.sum());                     // 10
 
   // method with ref receiver
   let p2 = Point { x: 1, y: 2 };
   let rp = p2&;
   rp.set_x(42);
-  print_int(p2.x);                        // 42
+  println(p2.x);                        // 42
 
   // generic method
   let b = Box#[Int] { value: 99 };
-  print_int(b.get#[Int]());               // 99
+  println(b.get#[Int]());               // 99
 
   // generic method with inference
   let b2 = Box#[Int] { value: 77 };
-  print_int(b2.get());                    // 77
+  println(b2.get());                    // 77
 
   // generic method with extra arg
   let b3 = Box#[Int] { value: 5 };
-  print_int(b3.map#[Int](negate));        // -5
+  println(b3.map#[Int](negate));        // -5
 
   // namespace separation: fn double != method double
-  print_int(double(10));                   // 30 (fn double = x*3)
-  print_int(10.double());                  // 20 (method double = x*2)
+  println(double(10));                   // 30 (fn double = x*3)
+  println(10.double());                  // 20 (method double = x*2)
 }

@@ -7,5 +7,5 @@ fn main() {
     while flag&.atomic_load() == 0u32 {
         flag&.futex_wait(0u32);
     }
-    print_int(Int(flag&.atomic_load()));
+    println(Int(flag&.atomic_load()));
 }

@@ -30,15 +30,15 @@ fn describe_shape(s: Shape) -> Int {
 fn main() {
   // Basic unit variant
   let p: Shape = Shape::Point;
-  print_int(describe_shape(p));           // 0
+  println(describe_shape(p));           // 0
 
   // Data variant
   let c: Shape = Shape::Circle(5);
-  print_int(describe_shape(c));           // 5
+  println(describe_shape(c));           // 5
 
   // Another data variant
   let sq: Shape = Shape::Square(4);
-  print_int(describe_shape(sq));          // 16
+  println(describe_shape(sq));          // 16
 
   // Match returning values
   let x: Shape = Shape::Circle(10);
@@ -47,7 +47,7 @@ fn main() {
     Shape::Square(s) => s,
     Shape::Point => 0,
   };
-  print_int(val);                         // 11
+  println(val);                         // 11
 
   // Wildcard pattern
   let y: Shape = Shape::Square(7);
@@ -55,7 +55,7 @@ fn main() {
     Shape::Point => 0,
     other => 1,
   };
-  print_int(w);                           // 1
+  println(w);                           // 1
 
   // Match bindings are places: assign to binding
   let e: Shape = Shape::Circle(100);
@@ -72,7 +72,7 @@ fn main() {
     Shape::Square(s) => s,
     Shape::Point => 0,
   };
-  print_int(check);                       // 200
+  println(check);                       // 200
 
   // Match bindings are places: take reference to binding
   let e2: Shape = Shape::Circle(50);
@@ -89,20 +89,20 @@ fn main() {
     Shape::Square(s) => s,
     Shape::Point => 0,
   };
-  print_int(check2);                      // 99
+  println(check2);                      // 99
 
   // Enums inside structs
   let wrapped = Wrapper {
     shape: Shape::Circle(42),
     tag: 7,
   };
-  print_int(wrapped.tag);                 // 7
+  println(wrapped.tag);                 // 7
   let inner_val = match wrapped.shape {
     Shape::Circle(r) => r,
     Shape::Square(s) => s,
     Shape::Point => 0,
   };
-  print_int(inner_val);                   // 42
+  println(inner_val);                   // 42
 
   // Structs inside enums (enum variant wraps a struct)
   // Not directly — but we can nest enums
@@ -116,5 +116,5 @@ fn main() {
     },
     Outer::Y => 0,
   };
-  print_int(result);                      // 77
+  println(result);                      // 77
 }

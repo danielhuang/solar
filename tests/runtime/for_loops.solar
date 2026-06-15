@@ -1,10 +1,10 @@
 fn main() {
     for i in 0..5 {
-        print_int(i);
+        println(i);
     }
     
     let list = [1, 2, 3, 4];
     for x in list {
-        print_int(x);
+        println(x);
     }
 }

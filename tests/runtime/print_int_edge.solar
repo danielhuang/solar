@@ -1,27 +1,27 @@
 fn main() {
-    print_int(0);
-    print_int(7);
-    print_int(0 - 7);
-    print_int(42);
-    print_int(0 - 42);
-    print_int(1000000);
-    print_int(0u);
-    print_int(9u);
-    print_int(123456789u);
-    print_int(0 - 9223372036854775807 - 1);  // Int min — has no positive counterpart
-    print_int(9223372036854775807);           // Int max
-    print_int(18446744073709551615u);         // Uint max
-    print_int(12345678901234567890u);         // above Int max
+    println(0);
+    println(7);
+    println(0 - 7);
+    println(42);
+    println(0 - 42);
+    println(1000000);
+    println(0u);
+    println(9u);
+    println(123456789u);
+    println(0 - 9223372036854775807 - 1);  // Int min — has no positive counterpart
+    println(9223372036854775807);           // Int max
+    println(18446744073709551615u);         // Uint max
+    println(12345678901234567890u);         // above Int max
 
     // unsigned arithmetic and comparisons on full-range values
-    print_int(18446744073709551615u / 10u);
-    print_int(18446744073709551615u % 7u);
-    print_int(9223372036854775807u + 1u);     // crosses Int max
-    print_int(18446744073709551615u - 18446744073709551614u);
+    println(18446744073709551615u / 10u);
+    println(18446744073709551615u % 7u);
+    println(9223372036854775807u + 1u);     // crosses Int max
+    println(18446744073709551615u - 18446744073709551614u);
     if 18446744073709551615u > 9223372036854775807u {
-        print_int(1);
+        println(1);
     }
     if 1u < 18446744073709551615u {
-        print_int(1);
+        println(1);
     }
 }

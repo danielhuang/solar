@@ -1,20 +1,20 @@
 fn print_bool(b: Bool) {
   if b {
-    print_int(1);
+    println(1);
   }
   if b == false {
-    print_int(0);
+    println(0);
   }
 }
 
 // Side-effecting functions that return Bool — used to test short-circuiting
 fn true_with_effect() -> Bool {
-  print_int(88);
+  println(88);
   true
 }
 
 fn false_with_effect() -> Bool {
-  print_int(99);
+  println(99);
   false
 }
 

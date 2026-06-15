@@ -1,39 +1,39 @@
 fn main() {
   // basic tuple creation and field access
   let t = (10, 20);
-  print_int(t.0);               // 10
-  print_int(t.1);               // 20
+  println(t.0);               // 10
+  println(t.1);               // 20
 
   // 3-element tuple
   let t3 = (1, 2, 3);
-  print_int(t3.0);              // 1
-  print_int(t3.1);              // 2
-  print_int(t3.2);              // 3
+  println(t3.0);              // 1
+  println(t3.1);              // 2
+  println(t3.2);              // 3
 
   // tuple with explicit type annotation
   let t4: (Int, Bool) = (42, true);
-  print_int(t4.0);              // 42
+  println(t4.0);              // 42
 
   // tuple field mutation
   let t5 = (100, 200);
   t5.0 = 999;
-  print_int(t5.0);              // 999
-  print_int(t5.1);              // 200
+  println(t5.0);              // 999
+  println(t5.1);              // 200
 
   // nested tuple
   let t6 = ((1, 2), 3);
-  print_int(t6.0.0);            // 1
-  print_int(t6.0.1);            // 2
-  print_int(t6.1);              // 3
+  println(t6.0.0);            // 1
+  println(t6.0.1);            // 2
+  println(t6.1);              // 3
 
   // tuple as function argument
   let t7 = (7, 8);
-  print_int(tuple_sum(t7));     // 15
+  println(tuple_sum(t7));     // 15
 
   // tuple as return value
   let t8 = make_pair(50, 60);
-  print_int(t8.0);              // 50
-  print_int(t8.1);              // 60
+  println(t8.0);              // 50
+  println(t8.1);              // 60
 }
 
 fn tuple_sum(t: (Int, Int)) -> Int {

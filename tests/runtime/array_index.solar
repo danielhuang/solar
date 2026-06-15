@@ -6,24 +6,24 @@ struct Pair {
 fn main() {
   // basic read
   let a: [Int] = [10, 20, 30];
-  print_int(a[0u]);   // 10
-  print_int(a[1u]);   // 20
-  print_int(a[2u]);   // 30
+  println(a[0u]);   // 10
+  println(a[1u]);   // 20
+  println(a[2u]);   // 30
 
   // write through index
   a[1u] = 99;
-  print_int(a[1u]);   // 99
+  println(a[1u]);   // 99
 
   // index with expression
   let i: Uint = 1u + 1u;
-  print_int(a[i]);   // 30
+  println(a[i]);   // 30
 
   // indexing a struct field that is an array
   let p: Pair = Pair { y: 7, xs: [100, 200, 300], };
-  print_int(p.xs[0u]);  // 100
-  print_int(p.xs[2u]);  // 300
+  println(p.xs[0u]);  // 100
+  println(p.xs[2u]);  // 300
 
   // write through struct field array index
   p.xs[1u] = 999;
-  print_int(p.xs[1u]);  // 999
+  println(p.xs[1u]);  // 999
 }

@@ -1,19 +1,19 @@
 fn main() {
   let a: Int = 42;
-  print_int(Int(Uint(a)));    // 42
-  print_int(Int(Int8(a)));    // 42
-  print_int(Int(Int64(a)));   // 42
+  println(Int(Uint(a)));    // 42
+  println(Int(Int8(a)));    // 42
+  println(Int(Int64(a)));   // 42
 
   let b: Uint = 10u;
-  print_int(Int(b));          // 10
-  print_int(Int(Int32(b)));   // 10
+  println(Int(b));          // 10
+  println(Int(Int32(b)));   // 10
 
   let c: Int8 = 7i8;
-  print_int(Int(c));          // 7
-  print_int(Int(Uint(c)));    // 7
-  print_int(Int(Int64(c)));   // 7
+  println(Int(c));          // 7
+  println(Int(Uint(c)));    // 7
+  println(Int(Int64(c)));   // 7
 
   let d: Int = 5;
   let e: Float64 = Float64(d);
-  print_int(Int(e));          // 5
+  println(Int(e));          // 5
 }

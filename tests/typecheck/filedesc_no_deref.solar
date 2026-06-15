@@ -3,5 +3,5 @@
 fn main() {
   let f = file::open("CLAUDE.md"&);
   let x = f@;
-  print_int(x);
+  println(x);
 }

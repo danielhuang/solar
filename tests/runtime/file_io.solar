@@ -8,7 +8,7 @@ fn main() {
   // Read the first 5 bytes into an explicit buffer.
   let buf: [Uint8] = [0u8; 5u];
   let n1 = f.read(buf&);
-  print_int(n1);               // 5
+  println(n1);               // 5
 
   // Read the remaining bytes via the allocating overload.
   let rest = f.read(100u);

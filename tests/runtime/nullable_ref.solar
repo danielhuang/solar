@@ -5,10 +5,10 @@ struct Node {
 
 fn print_bool(b: Bool) {
   if b {
-    print_int(1);
+    println(1);
   }
   if b == false {
-    print_int(0);
+    println(0);
   }
 }
 
@@ -19,7 +19,7 @@ fn main() {
   let n: &?Int = a&;
   print_bool(n == null#[Int]); // 0
   print_bool(n != null#[Int]); // 1
-  print_int(n@);              // 5  (deref does a null check, then loads)
+  println(n@);              // 5  (deref does a null check, then loads)
 
   // A null nullable reference.
   let z: &?Int = null#[Int];
@@ -28,14 +28,14 @@ fn main() {
 
   // Round-trip &?Int -> &Int via `@&` (null check + reborrow).
   let r: &Int = n@&;
-  print_int(r@);             // 5
+  println(r@);             // 5
   r@ = 9;
-  print_int(a);              // 9
+  println(a);              // 9
 
   // Nullable struct field.
   let tail: Node = Node { value: 100, next: null#[Node] };
   print_bool(tail.next == null#[Node]); // 1
   let head: Node = Node { value: 42, next: tail& };
   print_bool(head.next == null#[Node]); // 0
-  print_int(head.next@.value);         // 100
+  println(head.next@.value);         // 100
 }

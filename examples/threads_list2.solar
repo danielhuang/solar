@@ -20,6 +20,6 @@ fn main() {
         });
     }
     while is_done&.atomic_load() == false {}
-    print_int(root@.value);
+    println(root@.value);
     println("done"&);
 }

@@ -14,9 +14,9 @@ fn describe(x: Int, y: Int) -> Int {
 
 fn main() {
   // Different types
-  print_int(describe(42));       // 1
-  print_int(describe(true));     // 2
+  println(describe(42));       // 1
+  println(describe(true));     // 2
 
   // Different arity
-  print_int(describe(10, 20));   // 3
+  println(describe(10, 20));   // 3
 }

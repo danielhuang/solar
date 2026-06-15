@@ -29,32 +29,32 @@ fn get_x#[T](value: T) -> Int {
 
 fn main() {
     let p = Point { x: 42, y: 7 };
-    print_int(classify(p));
-    print_int(classify(Shape::Circle));
-    print_int(classify(5));
-    print_int(classify(true));
-    print_int(classify(p&));
-    print_int(classify(p^));
+    println(classify(p));
+    println(classify(Shape::Circle));
+    println(classify(5));
+    println(classify(true));
+    println(classify(p&));
+    println(classify(p^));
     let arr = [1, 2, 3];
-    print_int(classify(arr&));
-    print_int(classify#[Alias](p));
+    println(classify(arr&));
+    println(classify#[Alias](p));
 
     // Module-qualified generic type from the stdlib
-    print_int(match.reflect vec::Vec#[Int] { "struct" => 8, _ => 9 });
+    println(match.reflect vec::Vec#[Int] { "struct" => 8, _ => 9 });
 
-    print_int(get_x(p));
-    print_int(get_x(7));
+    println(get_x(p));
+    println(get_x(7));
 
     // Concrete types directly, in expression position
-    print_int(match.reflect Point { "struct" => 10, _ => 20 });
-    print_int(match.reflect Int { "struct" => 10, _ => 20 });
+    println(match.reflect Point { "struct" => 10, _ => 20 });
+    println(match.reflect Int { "struct" => 10, _ => 20 });
 
     // First matching arm wins: wildcard before "struct" shadows it
-    print_int(match.reflect Point { _ => 30, "struct" => 40 });
+    println(match.reflect Point { _ => 30, "struct" => 40 });
 
     // Statement position
     match.reflect Shape {
-        "enum" => { print_int(100); },
+        "enum" => { println(100); },
         _ => { },
     };
 }

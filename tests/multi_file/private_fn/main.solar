@@ -1,5 +1,5 @@
 import { public_fn, private_fn } from "lib.solar";
 
 fn main() {
-    print_int(public_fn());
+    println(public_fn());
 }

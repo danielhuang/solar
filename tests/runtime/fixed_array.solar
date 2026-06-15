@@ -1,38 +1,38 @@
 fn main() {
   // Basic fixed array type annotation (coerce from Array literal)
   let a: [Int; 3] = [1, 2, 3];
-  print_int(a[0u]);   // 1
-  print_int(a[1u]);   // 2
-  print_int(a[2u]);   // 3
+  println(a[0u]);   // 1
+  println(a[1u]);   // 2
+  println(a[2u]);   // 3
 
   // Equality between FixedArrays
   let b: [Int; 3] = [1, 2, 3];
   let c: [Int; 3] = [1, 2, 4];
-  if a == b { print_int(1); } else { print_int(0); }  // 1
-  if a == c { print_int(1); } else { print_int(0); }  // 0
+  if a == b { println(1); } else { println(0); }  // 1
+  if a == c { println(1); } else { println(0); }  // 0
 
   // Concat of fixed arrays produces Array
   let d: [Int; 2] = [10, 20];
   let e: [Int; 3] = [30, 40, 50];
   let f: [Int] = d + e;
-  print_int(f[0u]);   // 10
-  print_int(f[4u]);   // 50
+  println(f[0u]);   // 10
+  println(f[4u]);   // 50
 
   // Coerce concat result into fixed array
   let g: [Int; 5] = d + e;
-  print_int(g[2u]);   // 30
+  println(g[2u]);   // 30
 
   // Reference to fixed array is thin (works as &T)
   let h: [Int; 2] = [100, 200];
   let r: &[Int; 2] = h&;
-  print_int(r@[0u]);  // 100
-  print_int(r@[1u]);  // 200
+  println(r@[0u]);  // 100
+  println(r@[1u]);  // 200
 
   // Mutation through reference
   r@[1u] = 999;
-  print_int(h[1u]);   // 999
+  println(h[1u]);   // 999
 
   // Cross-type equality: FixedArray vs Array
   let arr: [Int] = [1, 2, 3];
-  if a == arr { print_int(1); } else { print_int(0); }  // 1
+  if a == arr { println(1); } else { println(0); }  // 1
 }
