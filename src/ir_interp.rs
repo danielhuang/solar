@@ -112,9 +112,14 @@ fn cast_numeric(raw: u64, src: &Type, dst: &Type) -> u64 {
 }
 
 enum ControlFlow {
-    Continue,
+    /// Proceed to the next statement.
+    Normal,
+    /// Exit the current function.
     Return,
+    /// Exit the innermost loop.
     Break,
+    /// Skip to the next iteration of the innermost loop.
+    Continue,
 }
 
 struct Interpreter<'a, 'io> {
@@ -1247,7 +1252,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 if let Some(m) = meta {
                     self.var_meta.insert(var, m);
                 }
-                ControlFlow::Continue
+                ControlFlow::Normal
             }
             NodeKind::Assign { target, value } => {
                 let target = *target;
@@ -1261,7 +1266,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     );
                 }
                 self.eval_into(nodes, value, place);
-                ControlFlow::Continue
+                ControlFlow::Normal
             }
             NodeKind::If {
                 condition,
@@ -1277,20 +1282,23 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 } else if !else_body.is_empty() {
                     self.exec_body(nodes, &else_body, ret_dst)
                 } else {
-                    ControlFlow::Continue
+                    ControlFlow::Normal
                 }
             }
             NodeKind::Loop { body } => {
                 let body = body.clone();
                 loop {
                     match self.exec_body(nodes, &body, ret_dst) {
-                        ControlFlow::Break => break ControlFlow::Continue,
+                        ControlFlow::Break => break ControlFlow::Normal,
                         ControlFlow::Return => return ControlFlow::Return,
-                        ControlFlow::Continue => {}
+                        // Both a fall-through and a `continue` start the next
+                        // iteration (the condition re-check is at the loop top).
+                        ControlFlow::Normal | ControlFlow::Continue => {}
                     }
                 }
             }
             NodeKind::Break => ControlFlow::Break,
+            NodeKind::Continue => ControlFlow::Continue,
             NodeKind::Expr(inner) => {
                 let inner = *inner;
                 let ty = &nodes[inner.0].ty;
@@ -1300,7 +1308,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     let tmp = self.alloc_ty(ty);
                     self.eval_into(nodes, inner, tmp);
                 }
-                ControlFlow::Continue
+                ControlFlow::Normal
             }
             NodeKind::Return(inner) => {
                 let inner = *inner;
@@ -1314,11 +1322,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
     fn exec_body(&mut self, nodes: &[Node], body: &[NodeId], ret_dst: usize) -> ControlFlow {
         for &id in body {
             match self.exec_stmt(nodes, id, ret_dst) {
-                ControlFlow::Continue => {}
+                ControlFlow::Normal => {}
                 cf => return cf,
             }
         }
-        ControlFlow::Continue
+        ControlFlow::Normal
     }
 
     fn exec_branch_into(&mut self, nodes: &[Node], body: &[NodeId], dst: usize) {
@@ -1364,8 +1372,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         for &id in init {
             match self.exec_stmt(nodes, id, ret_dst) {
                 ControlFlow::Return => return,
-                ControlFlow::Continue => {}
+                ControlFlow::Normal => {}
                 ControlFlow::Break => unreachable!("break outside loop"),
+                ControlFlow::Continue => unreachable!("continue outside loop"),
             }
         }
 

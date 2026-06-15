@@ -313,6 +313,13 @@ fn main() {
     println(x);                         // 10, 20, 30
   }
 
+  // break and continue (target the innermost loop)
+  for n in 0..10 {
+    if n == 1 { continue; }             // skip 1
+    if n == 4 { break; }                // stop before 4
+    println(n);                         // 0, 2, 3
+  }
+
   // array init: [count; fn(Uint) -> T]
   let indices = [5u; \i: Uint i];
   println(indices[2u]);                 // 2

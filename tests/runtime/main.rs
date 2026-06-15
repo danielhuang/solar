@@ -50,6 +50,15 @@ fn int_radix() {
 }
 
 #[test]
+fn break_continue() {
+    let output = run(&fixture("break_continue.solar"), "break_continue");
+    assert_eq!(
+        output,
+        "0\n1\n2\n1\n3\n4\n5\n1\n3\n5\n100\n101\n10\n30\n1000\n1001\n1010\n1011\n1020\n1021\n"
+    );
+}
+
+#[test]
 fn binop_logic() {
     let output = run(&fixture("binop_logic.solar"), "binop_logic");
     assert_eq!(output, "1\n0\n0\n1\n0\n1\n0\n88\n1\n1\n99\n0\n");

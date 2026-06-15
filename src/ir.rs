@@ -172,6 +172,7 @@ pub enum NodeKind {
         body: Vec<NodeId>,
     },
     Break,
+    Continue,
     Not(NodeId),
     Expr(NodeId),
     Return(NodeId),
@@ -245,6 +246,7 @@ fn collect_closure_captures(
             }
             typed_ast::StatementKind::Expression(e) => collect_closure_captures_expr(e, map),
             typed_ast::StatementKind::Return(e) => collect_closure_captures_expr(e, map),
+            typed_ast::StatementKind::Break | typed_ast::StatementKind::Continue => {}
         }
     }
 }
@@ -1248,6 +1250,16 @@ impl<'a> FunctionLowerer<'a> {
                     span: stmt.span,
                 })
             }
+            typed_ast::StatementKind::Break => self.push(Node {
+                ty: Type::Unit,
+                kind: NodeKind::Break,
+                span: stmt.span,
+            }),
+            typed_ast::StatementKind::Continue => self.push(Node {
+                ty: Type::Unit,
+                kind: NodeKind::Continue,
+                span: stmt.span,
+            }),
         }
     }
 }

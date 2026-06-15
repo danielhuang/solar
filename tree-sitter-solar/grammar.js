@@ -128,10 +128,14 @@ module.exports = grammar({
 
     // ── Statements ──────────────────────────────────────────
     _statement: ($) =>
-      choice($.let_statement, $.assignment_statement, $.expression_statement, $.if_statement, $.while_statement, $.for_statement, $.reflect_fields_statement, $.reflect_variant_statement, $.return_statement, $.function_def, $.const_def),
+      choice($.let_statement, $.assignment_statement, $.expression_statement, $.if_statement, $.while_statement, $.for_statement, $.reflect_fields_statement, $.reflect_variant_statement, $.return_statement, $.break_statement, $.continue_statement, $.function_def, $.const_def),
 
     return_statement: ($) =>
       seq("return", field("value", $._expression_with_struct), ";"),
+
+    break_statement: (_) => seq("break", ";"),
+
+    continue_statement: (_) => seq("continue", ";"),
 
     if_statement: ($) =>
       seq("if", field("condition", $._expression), field("body", $.block),

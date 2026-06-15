@@ -892,6 +892,7 @@ fn rewrite_statement(stmt: &mut Statement, ctx: &RewriteCtx, locals: &mut HashSe
             rewrite_expr(&mut c.value, ctx, locals);
             c.span.file_id = ctx.file_id;
         }
+        StatementKind::Break | StatementKind::Continue => {}
     }
 }
 

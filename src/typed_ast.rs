@@ -617,6 +617,8 @@ fn apply_subst_to_ast_statement(
         ast::StatementKind::Return(expr) => {
             ast::StatementKind::Return(apply_subst_to_ast_expr(expr, subst))
         }
+        ast::StatementKind::Break => ast::StatementKind::Break,
+        ast::StatementKind::Continue => ast::StatementKind::Continue,
         ast::StatementKind::NestedFunction(fdef) => {
             ast::StatementKind::NestedFunction(ast::FunctionDef {
                 name: fdef.name.clone(),
@@ -926,6 +928,8 @@ pub enum StatementKind {
     },
     Expression(Expr),
     Return(Expr),
+    Break,
+    Continue,
 }
 
 #[derive(Debug, Clone)]
@@ -1362,6 +1366,10 @@ struct Lowerer<'a> {
     consts: HashMap<String, &'a ast::ConstDef>,
     /// Block-scoped local const declarations, pushed/popped with `scopes`.
     const_scopes: Vec<HashMap<String, ast::ConstDef>>,
+    /// Nesting depth of the enclosing loops in the *current* function. Reset to
+    /// 0 when entering a closure or nested function so `break`/`continue` can't
+    /// escape into an outer function's loop.
+    loop_depth: usize,
 }
 
 impl<'a> Lowerer<'a> {
@@ -1615,6 +1623,7 @@ impl<'a> Lowerer<'a> {
             type_aliases,
             consts,
             const_scopes: Vec::new(),
+            loop_depth: 0,
         })
     }
 
@@ -2759,6 +2768,10 @@ impl<'a> Lowerer<'a> {
     fn lower_function(&mut self, func: &ast::FunctionDef) -> Result<FunctionDef, CompileError> {
         self.push_scope();
         self.nested_function_defs.push(HashMap::new());
+        // A function body starts a fresh loop context (lowering can be triggered
+        // lazily from inside an enclosing loop during monomorphization).
+        let saved_loop_depth = self.loop_depth;
+        self.loop_depth = 0;
         let mut param_destructure_stmts: Vec<Statement> = Vec::new();
         let mut parameters: Vec<Parameter> = Vec::new();
         for (i, p) in func.parameters.iter().enumerate() {
@@ -2898,6 +2911,7 @@ impl<'a> Lowerer<'a> {
 
         self.nested_function_defs.pop();
         self.pop_scope();
+        self.loop_depth = saved_loop_depth;
         Ok(FunctionDef {
             name: func.name.clone(),
             parameters,
@@ -3058,6 +3072,7 @@ impl<'a> Lowerer<'a> {
                     ));
                 }
                 self.push_scope();
+                self.loop_depth += 1;
                 let lowered_body: Vec<Statement> = body
                     .iter()
                     .map(|s| self.lower_statement(s))
@@ -3065,6 +3080,7 @@ impl<'a> Lowerer<'a> {
                     .into_iter()
                     .flatten()
                     .collect();
+                self.loop_depth -= 1;
                 self.pop_scope();
                 Ok(vec![Statement {
                     kind: StatementKind::While {
@@ -3129,10 +3145,10 @@ impl<'a> Lowerer<'a> {
                     },
                     span: stmt.span,
                 };
-                let mut while_body = vec![let_var];
-                for s in body {
-                    while_body.extend(self.lower_statement(s)?);
-                }
+                // Increment the counter immediately after binding the loop
+                // variable and before the user body, so `continue` (which jumps
+                // to the loop's condition check) still advances the counter. The
+                // loop variable already captured the pre-increment value.
                 let increment = Statement {
                     kind: StatementKind::Assignment {
                         target: Expr {
@@ -3160,7 +3176,12 @@ impl<'a> Lowerer<'a> {
                     },
                     span: stmt.span,
                 };
-                while_body.push(increment);
+                let mut while_body = vec![let_var, increment];
+                self.loop_depth += 1;
+                for s in body {
+                    while_body.extend(self.lower_statement(s)?);
+                }
+                self.loop_depth -= 1;
                 self.pop_scope();
 
                 let condition = Expr {
@@ -3297,10 +3318,10 @@ impl<'a> Lowerer<'a> {
                     },
                     span: stmt.span,
                 };
-                let mut while_body = vec![let_var];
-                for s in body {
-                    while_body.extend(self.lower_statement(s)?);
-                }
+                // Increment the index right after binding the loop variable and
+                // before the user body, so `continue` still advances the index
+                // (the loop variable already captured the element at the old
+                // index).
                 let increment = Statement {
                     kind: StatementKind::Assignment {
                         target: Expr {
@@ -3328,7 +3349,12 @@ impl<'a> Lowerer<'a> {
                     },
                     span: stmt.span,
                 };
-                while_body.push(increment);
+                let mut while_body = vec![let_var, increment];
+                self.loop_depth += 1;
+                for s in body {
+                    while_body.extend(self.lower_statement(s)?);
+                }
+                self.loop_depth -= 1;
                 self.pop_scope();
 
                 let condition = Expr {
@@ -3389,6 +3415,30 @@ impl<'a> Lowerer<'a> {
                 };
                 Ok(vec![Statement {
                     kind: StatementKind::Return(lowered),
+                    span: stmt.span,
+                }])
+            }
+            ast::StatementKind::Break => {
+                if self.loop_depth == 0 {
+                    return Err(CompileError::new(
+                        "`break` outside of a loop".to_string(),
+                        stmt.span,
+                    ));
+                }
+                Ok(vec![Statement {
+                    kind: StatementKind::Break,
+                    span: stmt.span,
+                }])
+            }
+            ast::StatementKind::Continue => {
+                if self.loop_depth == 0 {
+                    return Err(CompileError::new(
+                        "`continue` outside of a loop".to_string(),
+                        stmt.span,
+                    ));
+                }
+                Ok(vec![Statement {
+                    kind: StatementKind::Continue,
                     span: stmt.span,
                 }])
             }
@@ -5256,6 +5306,10 @@ impl<'a> Lowerer<'a> {
         // Push a new scope for closure params
         self.push_scope();
         self.nested_function_defs.push(HashMap::new());
+        // A closure body starts a fresh loop context — `break`/`continue` must
+        // not escape into a loop in the enclosing function.
+        let saved_loop_depth = self.loop_depth;
+        self.loop_depth = 0;
 
         let mut typed_params: Vec<Parameter> = Vec::new();
         for (i, p) in parameters.iter().enumerate() {
@@ -5309,6 +5363,7 @@ impl<'a> Lowerer<'a> {
 
         self.nested_function_defs.pop();
         self.pop_scope();
+        self.loop_depth = saved_loop_depth;
 
         // Extract captures
         let ctx = self.capture_context.take().unwrap();

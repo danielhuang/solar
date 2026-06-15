@@ -509,6 +509,14 @@ fn convert_block(node: tree_sitter::Node, source: &str) -> Vec<Statement> {
                 stmts.push(convert_reflect_variant_statement(child, source))
             }
             "return_statement" => stmts.push(convert_return_statement(child, source)),
+            "break_statement" => stmts.push(Statement {
+                kind: StatementKind::Break,
+                span: source_span(child),
+            }),
+            "continue_statement" => stmts.push(Statement {
+                kind: StatementKind::Continue,
+                span: source_span(child),
+            }),
             "function_def" => {
                 let span = source_span(child);
                 stmts.push(Statement {

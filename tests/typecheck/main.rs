@@ -345,3 +345,18 @@ fn const_nonliteral() {
 fn const_out_of_scope() {
     compile(&fixture("const_out_of_scope.solar"));
 }
+
+// `break` is only valid inside a loop.
+#[test]
+#[should_panic(expected = "`break` outside of a loop")]
+fn break_outside_loop() {
+    compile(&fixture("break_outside_loop.solar"));
+}
+
+// A closure resets the loop context, so `continue` inside a closure that is
+// itself inside a loop is an error.
+#[test]
+#[should_panic(expected = "`continue` outside of a loop")]
+fn continue_outside_loop() {
+    compile(&fixture("continue_outside_loop.solar"));
+}

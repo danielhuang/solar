@@ -244,6 +244,18 @@ fn assign_value_in_place(dst: &Slot, src: Value) {
     }
 }
 
+/// How a statement/block finished executing — used to propagate early exits.
+enum Flow {
+    /// Proceed to the next statement.
+    Normal,
+    /// Exit the innermost loop.
+    Break,
+    /// Skip to the next iteration of the innermost loop.
+    Continue,
+    /// Exit the function with this value.
+    Return(Value),
+}
+
 struct Interpreter<'a, 'io> {
     functions: HashMap<String, &'a FunctionDef>,
     scopes: ScopeStack<Slot>,
@@ -1011,19 +1023,19 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         }
     }
 
-    /// Returns `Some(value)` if a `return` statement was hit, `None` otherwise.
-    fn exec_statement(&mut self, stmt: &Statement) -> Option<Value> {
+    /// Execute one statement, returning how control flow should proceed.
+    fn exec_statement(&mut self, stmt: &Statement) -> Flow {
         match &stmt.kind {
             StatementKind::Let { name, value, .. } => {
                 let val = self.eval_expr(value);
                 self.define_var(name.clone(), Rc::new(RefCell::new(val)));
-                None
+                Flow::Normal
             }
             StatementKind::Assignment { target, value } => {
                 let val = self.eval_expr(value);
                 let slot = self.eval_place(target);
                 assign_value_in_place(&slot, val);
-                None
+                Flow::Normal
             }
             StatementKind::If {
                 condition,
@@ -1034,18 +1046,18 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 match val {
                     Value::Int(n) if n != 0 => {
                         self.push_scope();
-                        let ret = self.exec_body(body);
+                        let flow = self.exec_body(body);
                         self.pop_scope();
-                        ret
+                        flow
                     }
                     _ => {
                         if !else_body.is_empty() {
                             self.push_scope();
-                            let ret = self.exec_body(else_body);
+                            let flow = self.exec_body(else_body);
                             self.pop_scope();
-                            ret
+                            flow
                         } else {
-                            None
+                            Flow::Normal
                         }
                     }
                 }
@@ -1055,34 +1067,40 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 match val {
                     Value::Int(n) if n != 0 => {
                         self.push_scope();
-                        let ret = self.exec_body(body);
+                        let flow = self.exec_body(body);
                         self.pop_scope();
-                        if ret.is_some() {
-                            return ret;
+                        match flow {
+                            Flow::Return(v) => return Flow::Return(v),
+                            Flow::Break => break Flow::Normal,
+                            // A `continue` or fall-through starts the next iteration.
+                            Flow::Continue | Flow::Normal => {}
                         }
                     }
-                    _ => break None,
+                    _ => break Flow::Normal,
                 }
             },
             StatementKind::Expression(expr) => {
                 self.eval_expr(expr);
-                None
+                Flow::Normal
             }
             StatementKind::Return(expr) => {
                 let val = self.eval_expr(expr);
-                Some(val)
+                Flow::Return(val)
             }
+            StatementKind::Break => Flow::Break,
+            StatementKind::Continue => Flow::Continue,
         }
     }
 
-    /// Execute a list of statements, propagating early returns.
-    fn exec_body(&mut self, body: &[Statement]) -> Option<Value> {
+    /// Execute a list of statements, propagating any early exit.
+    fn exec_body(&mut self, body: &[Statement]) -> Flow {
         for stmt in body {
-            if let Some(val) = self.exec_statement(stmt) {
-                return Some(val);
+            match self.exec_statement(stmt) {
+                Flow::Normal => {}
+                flow => return flow,
             }
         }
-        None
+        Flow::Normal
     }
 
     /// Execute a function body, returning the function's return value.
@@ -1102,8 +1120,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
 
         // Execute all statements before the tail
         for stmt in init {
-            if let Some(val) = self.exec_statement(stmt) {
-                return val; // early return
+            match self.exec_statement(stmt) {
+                Flow::Return(val) => return val, // early return
+                Flow::Normal => {}
+                Flow::Break => unreachable!("break outside loop"),
+                Flow::Continue => unreachable!("continue outside loop"),
             }
         }
 

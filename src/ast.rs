@@ -208,6 +208,8 @@ pub enum StatementKind {
     },
     Expression(Expr),
     Return(Expr),
+    Break,
+    Continue,
     NestedFunction(FunctionDef),
     Const(ConstDef),
 }

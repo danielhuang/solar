@@ -2407,6 +2407,9 @@ impl<'a> Codegen<'a> {
             NodeKind::Break => {
                 self.line("break;");
             }
+            NodeKind::Continue => {
+                self.line("continue;");
+            }
             NodeKind::Expr(inner) => {
                 let inner = *inner;
                 match &nodes[inner.0].kind {

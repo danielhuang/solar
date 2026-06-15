@@ -1,0 +1,48 @@
+// break and continue in while, for-range, and for-in loops, including the
+// for-loop `continue` (which must still advance the loop counter) and nested
+// loops (break/continue target the innermost loop).
+fn main() {
+  // break in while
+  let i = 0;
+  while i < 100 {
+    if i == 3 { break; }
+    println(i);                   // 0 1 2
+    i = i + 1;
+  }
+
+  // continue in while (skips the rest of the body, not the post-loop step)
+  let j = 0;
+  while j < 5 {
+    j = j + 1;
+    if j == 2 { continue; }
+    println(j);                   // 1 3 4 5
+  }
+
+  // continue in for-range must still advance the counter
+  for k in 0..6 {
+    if k % 2 == 0 { continue; }
+    println(k);                   // 1 3 5
+  }
+
+  // break in for-range
+  for m in 0..100 {
+    if m == 2 { break; }
+    println(100 + m);             // 100 101
+  }
+
+  // continue + break in for-in
+  let arr: [Int] = [10, 20, 30, 40, 50];
+  for v in arr {
+    if v == 20 { continue; }
+    if v == 40 { break; }
+    println(v);                   // 10 30
+  }
+
+  // nested loops: break/continue target the innermost loop only
+  for a in 0..3 {
+    for b in 0..5 {
+      if b == 2 { break; }
+      println(1000 + a * 10 + b); // 1000 1001 1010 1011 1020 1021
+    }
+  }
+}
