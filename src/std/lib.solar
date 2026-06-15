@@ -45,7 +45,7 @@ pub method to_string(self: Uint) -> &[Uint8] {
 }
 
 pub fn write_stdout(s: &[Uint8]) {
-  intrinsics::write_stdout(s);
+  file::stdout().write(s);
 }
 
 pub fn println(s: &[Uint8]) {

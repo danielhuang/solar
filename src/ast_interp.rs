@@ -808,32 +808,6 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         result_ty: &Type,
     ) -> Value {
         match intrinsic {
-            Intrinsic::WriteStdout => {
-                let val = self.eval_expr(&arguments[0]);
-                match &val {
-                    Value::Ref(slot) | Value::Unique(slot) => {
-                        let inner = slot.borrow();
-                        match &*inner {
-                            Value::Array(elements) => {
-                                let bytes: Vec<u8> = elements
-                                    .iter()
-                                    .map(|s| {
-                                        let v = s.borrow();
-                                        match &*v {
-                                            Value::Int(n) => *n as u8,
-                                            _ => unreachable!(),
-                                        }
-                                    })
-                                    .collect();
-                                self.files.write_all(STDOUT, &bytes);
-                            }
-                            _ => unreachable!(),
-                        }
-                    }
-                    _ => unreachable!(),
-                }
-                Value::Unit
-            }
             Intrinsic::Panic => {
                 let val = self.eval_expr(&arguments[0]);
                 match &val {
@@ -853,26 +827,6 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                                     .collect();
                                 let msg = String::from_utf8_lossy(&bytes);
                                 panic!("{msg}");
-                            }
-                            _ => unreachable!(),
-                        }
-                    }
-                    _ => unreachable!(),
-                }
-            }
-            Intrinsic::ReadStdin => {
-                let val = self.eval_expr(&arguments[0]);
-                match &val {
-                    Value::Ref(slot) | Value::Unique(slot) => {
-                        let inner = slot.borrow();
-                        match &*inner {
-                            Value::Array(elements) => {
-                                let mut buf = vec![0u8; elements.len()];
-                                let n = self.files.read(STDIN, &mut buf);
-                                for (i, byte) in buf[..n].iter().enumerate() {
-                                    *elements[i].borrow_mut() = Value::Int(*byte as i64);
-                                }
-                                Value::Int(n as i64)
                             }
                             _ => unreachable!(),
                         }

@@ -1094,14 +1094,6 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         dst: usize,
     ) {
         match intrinsic {
-            Intrinsic::WriteStdout => {
-                assert_eq!(*result_ty, Type::Unit);
-                let (ref_addr, _) = self.eval_place(nodes, args[0]);
-                let data_ptr = self.mem.load(ref_addr, 8) as usize;
-                let data_len = self.mem.load(ref_addr + 8, 8) as usize;
-                let bytes = self.mem.data[data_ptr..data_ptr + data_len].to_vec();
-                self.files.write_all(STDOUT, &bytes);
-            }
             Intrinsic::Panic => {
                 assert_eq!(*result_ty, Type::Never);
                 let (ref_addr, _) = self.eval_place(nodes, args[0]);
@@ -1110,19 +1102,6 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let bytes = self.mem.data[data_ptr..data_ptr + data_len].to_vec();
                 let msg = String::from_utf8_lossy(&bytes);
                 panic!("{msg}");
-            }
-            Intrinsic::ReadStdin => {
-                assert!(
-                    result_ty.is_integer(),
-                    "read_stdin must return integer type"
-                );
-                let (ref_addr, _) = self.eval_place(nodes, args[0]);
-                let data_ptr = self.mem.load(ref_addr, 8) as usize;
-                let data_len = self.mem.load(ref_addr + 8, 8) as usize;
-                let mut buf = vec![0u8; data_len];
-                let n = self.files.read(STDIN, &mut buf);
-                self.mem.data[data_ptr..data_ptr + n].copy_from_slice(&buf[..n]);
-                self.scalar_store(dst, n as u64, result_ty);
             }
             Intrinsic::FileOpen => {
                 let (ref_addr, _) = self.eval_place(nodes, args[0]);

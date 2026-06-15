@@ -103,7 +103,7 @@ fn path_import_mixed() {
 #[test]
 fn intrinsic_import() {
     let output = run(&fixture("intrinsic_import/main.solar"), "intrinsic_import");
-    assert_eq!(output, "hello");
+    assert_eq!(output, "3\n");
 }
 
 #[test]

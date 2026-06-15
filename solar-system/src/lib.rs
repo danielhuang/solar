@@ -12,7 +12,6 @@ pub mod file;
 pub mod futex;
 pub mod gc;
 pub mod heap;
-pub mod io;
 pub mod mem;
 pub mod panic;
 pub mod thread;

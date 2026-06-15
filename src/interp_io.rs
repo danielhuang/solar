@@ -113,11 +113,4 @@ impl<'io> FileTable<'io> {
             .write(buf)
             .unwrap_or_else(|e| panic!("file_write_partial failed: {e}"))
     }
-
-    /// Write all of `buf` to the stream at `fd` and flush. Used by `write_stdout`.
-    pub fn write_all(&mut self, fd: usize, buf: &[u8]) {
-        let f = &mut self.files[fd];
-        f.write_all(buf).unwrap();
-        f.flush().unwrap();
-    }
 }

@@ -1,5 +1,6 @@
-import { write_stdout } from "@intrinsics";
+import { array_len } from "@intrinsics";
 
 fn main() {
-    write_stdout("hello"&);
+    let a: [Int] = [10, 20, 30];
+    println(array_len(a));
 }

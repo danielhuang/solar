@@ -6338,17 +6338,9 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
     };
 
     match intrinsic {
-        ast::Intrinsic::WriteStdout => IntrinsicSpec {
-            params: vec![byte_slice()],
-            ret: Fixed(Type::Unit),
-        },
         ast::Intrinsic::Panic => IntrinsicSpec {
             params: vec![byte_slice()],
             ret: Fixed(Type::Never),
-        },
-        ast::Intrinsic::ReadStdin => IntrinsicSpec {
-            params: vec![byte_slice()],
-            ret: Fixed(Type::Uint),
         },
         ast::Intrinsic::Cast(from_nt, to_nt) => IntrinsicSpec {
             params: vec![Exact(from_nt.into())],

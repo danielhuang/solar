@@ -365,8 +365,6 @@ impl NumericType {
 
 #[derive(Debug, Clone)]
 pub enum Intrinsic {
-    WriteStdout,
-    ReadStdin,
     Panic,
     ArrayLen,
     AssertArrayLen,
@@ -387,8 +385,6 @@ pub enum Intrinsic {
 }
 
 const INTRINSIC_NAMES: &[(&str, Intrinsic)] = &[
-    ("write_stdout", Intrinsic::WriteStdout),
-    ("read_stdin", Intrinsic::ReadStdin),
     ("panic", Intrinsic::Panic),
     ("array_len", Intrinsic::ArrayLen),
     ("assert_array_len", Intrinsic::AssertArrayLen),
