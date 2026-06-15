@@ -4,7 +4,8 @@ import intrinsics from "@intrinsics";
 // file once no live FileDesc refers to it. The boolean keyword arguments select
 // the open mode: `read`/`write` set the access mode, `append` opens at the end,
 // `truncate` empties an existing file, `create` creates it if absent, and `new`
-// (O_EXCL, combine with `create`) fails if it already exists.
+// (O_EXCL, combine with `create`) fails if it already exists. `mode` is the
+// permission bits applied when a file is created.
 pub fn open(
     path: &[Uint8],
     read = true,
@@ -13,6 +14,7 @@ pub fn open(
     truncate = false,
     new = false,
     create = false,
+    mode = 0o666u,
 ) -> FileDesc {
     // POSIX open(2) flag bits (Linux values) — an implementation detail; the
     // runtime always adds O_CLOEXEC. Combined by addition since they're disjoint.
@@ -23,7 +25,6 @@ pub fn open(
     const O_EXCL = 128;
     const O_TRUNC = 512;
     const O_APPEND = 1024;
-    const MODE: Uint = 0o666u;
 
     let flags = if read {
         if write { O_RDWR } else { O_RDONLY }
@@ -34,7 +35,7 @@ pub fn open(
     if new { flags = flags + O_EXCL; }
     if truncate { flags = flags + O_TRUNC; }
     if append { flags = flags + O_APPEND; }
-    intrinsics::file_open(path, flags, MODE)
+    intrinsics::file_open(path, flags, mode)
 }
 
 // Returns a FileDesc for the process's standard input. It refers to a stream
