@@ -497,6 +497,10 @@ impl<'a> Codegen<'a> {
         self.line("extern void sol_file_close(uint8_t* fd);");
         self.line("extern uint8_t* sol_file_stdin(void);");
         self.line("extern uint8_t* sol_file_stdout(void);");
+        self.line("extern size_t sol_file_read(uint8_t* fd, uint8_t* ptr, size_t len);");
+        self.line(
+            "extern size_t sol_file_write_partial(uint8_t* fd, const uint8_t* ptr, size_t len);",
+        );
         self.line("extern int64_t sol_checked_add_int(int64_t a, int64_t b);");
         self.line("extern int64_t sol_checked_sub_int(int64_t a, int64_t b);");
         self.line("extern int64_t sol_checked_mul_int(int64_t a, int64_t b);");
@@ -2141,6 +2145,36 @@ impl<'a> Codegen<'a> {
             Intrinsic::FileStdout => {
                 // No args; returns a FileDesc for stdout (opaque uint8_t*).
                 self.linef(format!("*(uint8_t**){dst} = sol_file_stdout();"));
+            }
+            Intrinsic::FileRead => {
+                // args: FileDesc, &[Uint8] dst (fat pointer). Returns bytes read.
+                let fd = self.emit_load(nodes, args[0]);
+                let (ref_place, _) = self.emit_place(nodes, args[1]);
+                let data_ptr = self.fresh_tmp();
+                let data_len = self.fresh_tmp();
+                self.linef(format!("uint8_t* {data_ptr} = *(uint8_t**){ref_place};"));
+                self.linef(format!(
+                    "uint64_t {data_len} = *(uint64_t*)({ref_place} + 8);"
+                ));
+                let c_ty = self.c_int_type(result_ty);
+                self.linef(format!(
+                    "*({c_ty}*){dst} = ({c_ty})sol_file_read((uint8_t*){fd}, {data_ptr}, {data_len});"
+                ));
+            }
+            Intrinsic::FileWritePartial => {
+                // args: FileDesc, &[Uint8] src (fat pointer). Returns bytes written.
+                let fd = self.emit_load(nodes, args[0]);
+                let (ref_place, _) = self.emit_place(nodes, args[1]);
+                let data_ptr = self.fresh_tmp();
+                let data_len = self.fresh_tmp();
+                self.linef(format!("uint8_t* {data_ptr} = *(uint8_t**){ref_place};"));
+                self.linef(format!(
+                    "uint64_t {data_len} = *(uint64_t*)({ref_place} + 8);"
+                ));
+                let c_ty = self.c_int_type(result_ty);
+                self.linef(format!(
+                    "*({c_ty}*){dst} = ({c_ty})sol_file_write_partial((uint8_t*){fd}, {data_ptr}, {data_len});"
+                ));
             }
             Intrinsic::ArrayLen => {
                 let len = if let Type::FixedArray(_, n) = &nodes[args[0].0].ty {

@@ -4,6 +4,8 @@ use crate::typed_ast::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{Read, Write};
+
+use crate::interp_io::{FileTable, STDIN, STDOUT};
 use std::rc::Rc;
 
 type Slot = Rc<RefCell<Value>>;
@@ -242,14 +244,14 @@ fn assign_value_in_place(dst: &Slot, src: Value) {
     }
 }
 
-struct Interpreter<'a, W: Write> {
+struct Interpreter<'a, 'io> {
     functions: HashMap<String, &'a FunctionDef>,
     scopes: ScopeStack<Slot>,
-    stdout: W,
+    files: FileTable<'io>,
 }
 
-impl<'a, W: Write> Interpreter<'a, W> {
-    fn new(source: &'a SourceFile, stdout: W) -> Self {
+impl<'a, 'io> Interpreter<'a, 'io> {
+    fn new(source: &'a SourceFile, stdin: impl Read + 'io, stdout: impl Write + 'io) -> Self {
         let functions = source
             .functions
             .iter()
@@ -258,7 +260,7 @@ impl<'a, W: Write> Interpreter<'a, W> {
         Interpreter {
             functions,
             scopes: ScopeStack::default(),
-            stdout,
+            files: FileTable::new(stdin, stdout),
         }
     }
 
@@ -823,8 +825,7 @@ impl<'a, W: Write> Interpreter<'a, W> {
                                         }
                                     })
                                     .collect();
-                                self.stdout.write_all(&bytes).unwrap();
-                                self.stdout.flush().unwrap();
+                                self.files.write_all(STDOUT, &bytes);
                             }
                             _ => unreachable!(),
                         }
@@ -867,7 +868,7 @@ impl<'a, W: Write> Interpreter<'a, W> {
                         match &*inner {
                             Value::Array(elements) => {
                                 let mut buf = vec![0u8; elements.len()];
-                                let n = std::io::stdin().read(&mut buf).unwrap();
+                                let n = self.files.read(STDIN, &mut buf);
                                 for (i, byte) in buf[..n].iter().enumerate() {
                                     *elements[i].borrow_mut() = Value::Int(*byte as i64);
                                 }
@@ -895,26 +896,62 @@ impl<'a, W: Write> Interpreter<'a, W> {
                     _ => unreachable!(),
                 };
                 let path = String::from_utf8_lossy(&bytes).into_owned();
-                // No fd arena / GC in the reference interpreter: model the opaque
-                // FileDesc as the raw fd and leak it. Auto-close is a
-                // compiled-runtime behavior only.
-                use std::os::fd::IntoRawFd;
-                let fd = std::fs::File::open(&path)
-                    .unwrap_or_else(|e| panic!("file_open: could not open {path:?}: {e}"))
-                    .into_raw_fd();
+                // No fd arena / GC here: the FileDesc is an index into a virtual
+                // table of boxed streams (the compiled runtime uses a real fd).
+                let fd = self.files.open(&path);
                 Value::Int(fd as i64)
             }
             Intrinsic::FileClose => {
-                // Evaluated for the side effect only; FileDesc auto-close / dead-fd
-                // neutering is a compiled-runtime behavior. Here FileDescs are raw
-                // leaked fds, so closing is a no-op (mirrors file_open's leak).
+                // The virtual table keeps the stream alive (no auto-close in the
+                // interpreters); evaluate the argument for any side effects.
                 self.eval_expr(&arguments[0]);
                 Value::Unit
             }
-            // No fd arena in the reference interpreter: model the FileDesc as the
-            // raw fd (0 = stdin, 1 = stdout).
-            Intrinsic::FileStdin => Value::Int(0),
-            Intrinsic::FileStdout => Value::Int(1),
+            Intrinsic::FileStdin => Value::Int(STDIN as i64),
+            Intrinsic::FileStdout => Value::Int(STDOUT as i64),
+            Intrinsic::FileRead => {
+                let fd = match self.eval_expr(&arguments[0]) {
+                    Value::Int(n) => n as usize,
+                    _ => unreachable!(),
+                };
+                let dst = self.eval_expr(&arguments[1]);
+                match &dst {
+                    Value::Ref(slot) | Value::Unique(slot) => match &*slot.borrow() {
+                        Value::Array(elements) => {
+                            let mut buf = vec![0u8; elements.len()];
+                            let n = self.files.read(fd, &mut buf);
+                            for (i, byte) in buf[..n].iter().enumerate() {
+                                *elements[i].borrow_mut() = Value::Int(*byte as i64);
+                            }
+                            Value::Int(n as i64)
+                        }
+                        _ => unreachable!(),
+                    },
+                    _ => unreachable!(),
+                }
+            }
+            Intrinsic::FileWritePartial => {
+                let fd = match self.eval_expr(&arguments[0]) {
+                    Value::Int(n) => n as usize,
+                    _ => unreachable!(),
+                };
+                let src = self.eval_expr(&arguments[1]);
+                let bytes: Vec<u8> = match &src {
+                    Value::Ref(slot) | Value::Unique(slot) => match &*slot.borrow() {
+                        Value::Array(elements) => elements
+                            .iter()
+                            .map(|s| match &*s.borrow() {
+                                Value::Int(n) => *n as u8,
+                                _ => unreachable!(),
+                            })
+                            .collect(),
+                        _ => unreachable!(),
+                    },
+                    _ => unreachable!(),
+                };
+                let n = self.files.write_partial(fd, &bytes);
+                Value::Int(n as i64)
+            }
             Intrinsic::ArrayLen => {
                 let arr = self.eval_expr(&arguments[0]);
                 match arr {
@@ -1138,11 +1175,11 @@ impl<'a, W: Write> Interpreter<'a, W> {
 }
 
 pub fn interpret(source: &SourceFile) {
-    let mut interp = Interpreter::new(source, std::io::stdout());
+    let mut interp = Interpreter::new(source, std::io::stdin(), std::io::stdout());
     interp.run();
 }
 
-pub fn interpret_to(source: &SourceFile, stdout: impl Write) {
-    let mut interp = Interpreter::new(source, stdout);
+pub fn interpret_to(source: &SourceFile, stdin: impl Read, stdout: impl Write) {
+    let mut interp = Interpreter::new(source, stdin, stdout);
     interp.run();
 }

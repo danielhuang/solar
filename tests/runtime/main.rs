@@ -431,3 +431,9 @@ fn file_std_streams() {
     let output = run(&fixture("file_std_streams.solar"), "file_std_streams");
     assert_eq!(output, "std streams ok\n");
 }
+
+#[test]
+fn file_io() {
+    let output = run(&fixture("file_io.solar"), "file_io");
+    assert_eq!(output, "5\nhello world\n");
+}

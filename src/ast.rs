@@ -357,6 +357,8 @@ pub enum Intrinsic {
     FileClose,
     FileStdin,
     FileStdout,
+    FileRead,
+    FileWritePartial,
     Cast(NumericType, NumericType),
 }
 
@@ -377,6 +379,8 @@ const INTRINSIC_NAMES: &[(&str, Intrinsic)] = &[
     ("file_close", Intrinsic::FileClose),
     ("file_stdin", Intrinsic::FileStdin),
     ("file_stdout", Intrinsic::FileStdout),
+    ("file_read", Intrinsic::FileRead),
+    ("file_write_partial", Intrinsic::FileWritePartial),
 ];
 
 impl Intrinsic {

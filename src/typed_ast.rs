@@ -6075,6 +6075,14 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
             params: vec![],
             ret: Fixed(Type::FileDesc),
         },
+        ast::Intrinsic::FileRead => IntrinsicSpec {
+            params: vec![Exact(Type::FileDesc), byte_slice()],
+            ret: Fixed(Type::Uint),
+        },
+        ast::Intrinsic::FileWritePartial => IntrinsicSpec {
+            params: vec![Exact(Type::FileDesc), byte_slice()],
+            ret: Fixed(Type::Uint),
+        },
     }
 }
 

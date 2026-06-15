@@ -187,6 +187,58 @@ pub unsafe extern "C" fn sol_file_stdout() -> *mut u8 {
     unsafe { std_stream(libc::STDOUT_FILENO) }
 }
 
+/// Recover the raw fd number from a `FileDesc` pointer (`addr - FD_BASE`).
+#[inline]
+fn fd_from_ptr(fd_ptr: *mut u8) -> libc::c_int {
+    let base = FD_BASE.load(Ordering::Relaxed);
+    debug_assert!(
+        base != 0 && (fd_ptr as usize).wrapping_sub(base) < FD_ARENA_SIZE,
+        "FileDesc pointer is not in the fd arena"
+    );
+    (fd_ptr as usize).wrapping_sub(base) as libc::c_int
+}
+
+/// Read up to `dst_len` bytes from `fd` into `dst`, returning the count read (0
+/// at EOF). Panics on a non-`EINTR` I/O error. Calls `read(2)` directly.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sol_file_read(fd_ptr: *mut u8, dst: *mut u8, dst_len: usize) -> usize {
+    let fd = fd_from_ptr(fd_ptr);
+    loop {
+        let n = unsafe { libc::read(fd, dst as *mut libc::c_void, dst_len) };
+        if n >= 0 {
+            return n as usize;
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        crate::panic::sol_panic_internal(&format!("file_read failed: {err}"));
+    }
+}
+
+/// Write up to `src_len` bytes from `src` to `fd`, returning the count actually
+/// written (a single, possibly partial, `write(2)`). Panics on a non-`EINTR`
+/// I/O error. Calls `write(2)` directly; the looping write-all lives in `@std`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sol_file_write_partial(
+    fd_ptr: *mut u8,
+    src: *const u8,
+    src_len: usize,
+) -> usize {
+    let fd = fd_from_ptr(fd_ptr);
+    loop {
+        let n = unsafe { libc::write(fd, src as *const libc::c_void, src_len) };
+        if n >= 0 {
+            return n as usize;
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        crate::panic::sol_panic_internal(&format!("file_write_partial failed: {err}"));
+    }
+}
+
 /// "Close" the file behind a `FileDesc` without freeing its fd number.
 ///
 /// A plain `close(fd)` would return the fd number to the kernel, which could

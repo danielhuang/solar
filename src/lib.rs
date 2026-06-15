@@ -2,6 +2,7 @@ pub mod ast;
 pub mod ast_interp;
 pub mod codegen;
 pub mod error;
+pub mod interp_io;
 pub mod ir;
 pub mod ir_interp;
 pub mod parser;

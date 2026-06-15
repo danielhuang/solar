@@ -19,13 +19,13 @@ pub fn ensure_runtime_built() {
 
 pub fn run_ast(typed: &Typed) -> String {
     let mut buf = Vec::new();
-    solar::ast_interp::interpret_to(&typed.typed, &mut buf);
+    solar::ast_interp::interpret_to(&typed.typed, std::io::empty(), &mut buf);
     String::from_utf8(buf).unwrap()
 }
 
 pub fn run_ir(ir: &Ir) -> String {
     let mut buf = Vec::new();
-    solar::ir_interp::interpret_to(&ir.ir, &mut buf);
+    solar::ir_interp::interpret_to(&ir.ir, std::io::empty(), &mut buf);
     String::from_utf8(buf).unwrap()
 }
 

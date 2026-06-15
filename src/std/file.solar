@@ -25,3 +25,34 @@ pub fn stdout() -> FileDesc {
 pub method close(self: FileDesc) {
     intrinsics::file_close(self)
 }
+
+// Reads up to `buf`'s length bytes into `buf`, returning the number of bytes
+// read (0 at end of file). A single read; may return fewer bytes than requested.
+pub method read(self: FileDesc, buf: &[Uint8]) -> Uint {
+    intrinsics::file_read(self, buf)
+}
+
+// Reads up to `max_size` bytes into a freshly allocated buffer and returns the
+// bytes read (the result's length is the number of bytes actually read). The
+// buffer is GC-allocated, so the returned reference keeps it alive.
+pub method read(self: FileDesc, max_size: Uint) -> &[Uint8] {
+    let buf: [Uint8] = [0u8; max_size];
+    let n = self.read(buf&);
+    buf[0u..n]&
+}
+
+// Writes up to `src`'s length bytes, returning the number actually written. A
+// single write; may write fewer bytes than requested.
+pub method write_partial(self: FileDesc, src: &[Uint8]) -> Uint {
+    intrinsics::file_write_partial(self, src)
+}
+
+// Writes the entire `src` buffer, looping over partial writes until done (like
+// Rust's `write_all`).
+pub method write(self: FileDesc, src: &[Uint8]) {
+    let len = intrinsics::array_len(src@);
+    let written = 0u;
+    while written < len {
+        written = written + self.write_partial(src@[written..len]&);
+    }
+}

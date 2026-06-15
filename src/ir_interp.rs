@@ -4,6 +4,8 @@ use crate::ir::*;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 
+use crate::interp_io::{FileTable, STDIN, STDOUT};
+
 struct Memory {
     data: Vec<u8>,
     next_addr: usize,
@@ -115,7 +117,7 @@ enum ControlFlow {
     Break,
 }
 
-struct Interpreter<'a, W: Write> {
+struct Interpreter<'a, 'io> {
     module: &'a Module,
     functions: HashMap<&'a str, &'a Function>,
     fn_name_to_index: HashMap<&'a str, u64>,
@@ -123,11 +125,11 @@ struct Interpreter<'a, W: Write> {
     mem: Memory,
     vars: HashMap<VarId, usize>,
     var_meta: HashMap<VarId, usize>,
-    stdout: W,
+    files: FileTable<'io>,
 }
 
-impl<'a, W: Write> Interpreter<'a, W> {
-    fn new(module: &'a Module, stdout: W) -> Self {
+impl<'a, 'io> Interpreter<'a, 'io> {
+    fn new(module: &'a Module, stdin: impl Read + 'io, stdout: impl Write + 'io) -> Self {
         let functions = module
             .functions
             .iter()
@@ -148,7 +150,7 @@ impl<'a, W: Write> Interpreter<'a, W> {
             mem: Memory::new(),
             vars: HashMap::new(),
             var_meta: HashMap::new(),
-            stdout,
+            files: FileTable::new(stdin, stdout),
         }
     }
 
@@ -1098,8 +1100,7 @@ impl<'a, W: Write> Interpreter<'a, W> {
                 let data_ptr = self.mem.load(ref_addr, 8) as usize;
                 let data_len = self.mem.load(ref_addr + 8, 8) as usize;
                 let bytes = self.mem.data[data_ptr..data_ptr + data_len].to_vec();
-                self.stdout.write_all(&bytes).unwrap();
-                self.stdout.flush().unwrap();
+                self.files.write_all(STDOUT, &bytes);
             }
             Intrinsic::Panic => {
                 assert_eq!(*result_ty, Type::Never);
@@ -1119,7 +1120,7 @@ impl<'a, W: Write> Interpreter<'a, W> {
                 let data_ptr = self.mem.load(ref_addr, 8) as usize;
                 let data_len = self.mem.load(ref_addr + 8, 8) as usize;
                 let mut buf = vec![0u8; data_len];
-                let n = std::io::stdin().read(&mut buf).unwrap();
+                let n = self.files.read(STDIN, &mut buf);
                 self.mem.data[data_ptr..data_ptr + n].copy_from_slice(&buf[..n]);
                 self.scalar_store(dst, n as u64, result_ty);
             }
@@ -1129,28 +1130,40 @@ impl<'a, W: Write> Interpreter<'a, W> {
                 let data_len = self.mem.load(ref_addr + 8, 8) as usize;
                 let bytes = self.mem.data[data_ptr..data_ptr + data_len].to_vec();
                 let path = String::from_utf8_lossy(&bytes).into_owned();
-                // The interpreter has no fd arena and no GC: represent the opaque
-                // FileDesc as the raw fd and leak it (the compiled runtime closes
-                // it on GC instead). Auto-close is a compiled-runtime behavior.
-                use std::os::fd::IntoRawFd;
-                let fd = std::fs::File::open(&path)
-                    .unwrap_or_else(|e| panic!("file_open: could not open {path:?}: {e}"))
-                    .into_raw_fd();
+                // No fd arena / GC here: the FileDesc is an index into a virtual
+                // table of boxed streams (the compiled runtime uses a real fd).
+                let fd = self.files.open(&path);
                 self.scalar_store(dst, fd as u64, result_ty);
             }
             Intrinsic::FileClose => {
-                // The interpreter has no fd arena and leaks fds, so the dead-fd
-                // neutering (a compiled-runtime behavior) is a no-op here. Still
-                // evaluate the argument for any side effects.
+                // The virtual table keeps the stream alive (no auto-close in the
+                // interpreters); evaluate the argument for any side effects.
                 let _ = self.eval_load(nodes, args[0]);
             }
             Intrinsic::FileStdin => {
-                // No fd arena: model the FileDesc as the raw fd (0 = stdin).
-                self.scalar_store(dst, 0, result_ty);
+                self.scalar_store(dst, STDIN as u64, result_ty);
             }
             Intrinsic::FileStdout => {
-                // No fd arena: model the FileDesc as the raw fd (1 = stdout).
-                self.scalar_store(dst, 1, result_ty);
+                self.scalar_store(dst, STDOUT as u64, result_ty);
+            }
+            Intrinsic::FileRead => {
+                let fd = self.eval_load(nodes, args[0]) as usize;
+                let (ref_addr, _) = self.eval_place(nodes, args[1]);
+                let data_ptr = self.mem.load(ref_addr, 8) as usize;
+                let data_len = self.mem.load(ref_addr + 8, 8) as usize;
+                let mut buf = vec![0u8; data_len];
+                let n = self.files.read(fd, &mut buf);
+                self.mem.data[data_ptr..data_ptr + n].copy_from_slice(&buf[..n]);
+                self.scalar_store(dst, n as u64, result_ty);
+            }
+            Intrinsic::FileWritePartial => {
+                let fd = self.eval_load(nodes, args[0]) as usize;
+                let (ref_addr, _) = self.eval_place(nodes, args[1]);
+                let data_ptr = self.mem.load(ref_addr, 8) as usize;
+                let data_len = self.mem.load(ref_addr + 8, 8) as usize;
+                let bytes = self.mem.data[data_ptr..data_ptr + data_len].to_vec();
+                let n = self.files.write_partial(fd, &bytes);
+                self.scalar_store(dst, n as u64, result_ty);
             }
             Intrinsic::ArrayLen => {
                 let len = if let Type::FixedArray(_, n) = &nodes[args[0].0].ty {
@@ -1394,11 +1407,11 @@ impl<'a, W: Write> Interpreter<'a, W> {
 }
 
 pub fn interpret(module: &Module) {
-    let mut interp = Interpreter::new(module, std::io::stdout());
+    let mut interp = Interpreter::new(module, std::io::stdin(), std::io::stdout());
     interp.run();
 }
 
-pub fn interpret_to(module: &Module, stdout: impl Write) {
-    let mut interp = Interpreter::new(module, stdout);
+pub fn interpret_to(module: &Module, stdin: impl Read, stdout: impl Write) {
+    let mut interp = Interpreter::new(module, stdin, stdout);
     interp.run();
 }
