@@ -885,6 +885,7 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<String>) {
             function,
             type_args,
             arguments,
+            kwargs,
         } => {
             // Case 1: direct name import — func(x) where func is in intrinsic_names
             if let ExprKind::Identifier(name) = &function.kind
@@ -930,6 +931,9 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<String>) {
             }
             for arg in arguments {
                 rewrite_expr(arg, ctx, locals);
+            }
+            for (_, value) in kwargs {
+                rewrite_expr(value, ctx, locals);
             }
         }
         ExprKind::StructLiteral {
@@ -1054,6 +1058,7 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<String>) {
             receiver,
             type_args,
             arguments,
+            kwargs,
             ..
         } => {
             rewrite_expr(receiver, ctx, locals);
@@ -1062,6 +1067,9 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<String>) {
             }
             for arg in arguments {
                 rewrite_expr(arg, ctx, locals);
+            }
+            for (_, value) in kwargs {
+                rewrite_expr(value, ctx, locals);
             }
         }
         ExprKind::IntrinsicCall { arguments, .. } => {

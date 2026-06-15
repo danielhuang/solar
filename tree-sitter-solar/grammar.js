@@ -100,7 +100,17 @@ module.exports = grammar({
     parameter_list: ($) => seq($.parameter, repeat(seq(",", $.parameter)), optional(",")),
 
     parameter: ($) =>
-      seq(field("pattern", $._destructure_target), ":", field("type", $._type)),
+      choice(
+        // normal param, or explicitly-typed keyword param with a default
+        seq(
+          field("pattern", $._destructure_target),
+          ":",
+          field("type", $._type),
+          optional(seq("=", field("default", $._expression))),
+        ),
+        // keyword param with the type inferred from its default
+        seq(field("pattern", $._destructure_target), "=", field("default", $._expression)),
+      ),
 
     block: ($) => seq("{", repeat($._statement), optional(field("tail", $._expression_with_struct)), "}"),
 
@@ -223,7 +233,14 @@ module.exports = grammar({
         "(", optional($.argument_list), ")"
       )),
 
-    argument_list: ($) => seq($._expression_with_struct, repeat(seq(",", $._expression_with_struct)), optional(",")),
+    argument_list: ($) => seq($.argument, repeat(seq(",", $.argument)), optional(",")),
+
+    argument: ($) =>
+      choice(
+        field("value", $._expression_with_struct),
+        // keyword argument: name = value
+        seq(field("name", $.identifier), "=", field("value", $._expression_with_struct)),
+      ),
 
     index_expr: ($) =>
       prec.left(90, seq(field("object", $._expression), "[", field("index", $._expression), "]")),

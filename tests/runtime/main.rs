@@ -32,6 +32,12 @@ fn binop_comparison() {
 }
 
 #[test]
+fn kwargs() {
+    let output = run(&fixture("kwargs.solar"), "kwargs");
+    assert_eq!(output, "25\n205\n35\n6\n6\nn=7\nv=9\n101\n105\n");
+}
+
+#[test]
 fn binop_logic() {
     let output = run(&fixture("binop_logic.solar"), "binop_logic");
     assert_eq!(output, "1\n0\n0\n1\n0\n1\n0\n88\n1\n1\n99\n0\n");

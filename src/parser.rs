@@ -26,6 +26,7 @@ pub fn generate_numeric_constructors(items: &mut Vec<TopLevelItem>) {
                 parameters: vec![Parameter {
                     pattern: DestructurePattern::Name("x".to_string()),
                     ty: Type::Named(from_name.to_string()),
+                    default: None,
                     span,
                 }],
                 return_type: Some(Type::Named(target_name.to_string())),
@@ -361,10 +362,19 @@ fn convert_function_def(node: tree_sitter::Node, source: &str) -> FunctionDef {
 fn convert_parameter(node: tree_sitter::Node, source: &str) -> Parameter {
     let pattern_node = node.child_by_field_name("pattern").unwrap();
     let pattern = convert_destructure_pattern(pattern_node, source);
-    let ty = convert_type(node.child_by_field_name("type").unwrap(), source);
+    // An explicit type is present unless this is the inferred-type keyword form
+    // (`name = default`).
+    let ty = match node.child_by_field_name("type") {
+        Some(type_node) => convert_type(type_node, source),
+        None => Type::Infer,
+    };
+    let default = node
+        .child_by_field_name("default")
+        .map(|n| Box::new(convert_expr(n, source)));
     Parameter {
         pattern,
         ty,
+        default,
         span: source_span(node),
     }
 }
@@ -378,8 +388,32 @@ fn convert_closure_parameter(node: tree_sitter::Node, source: &str) -> Parameter
     Parameter {
         pattern: DestructurePattern::Name(name),
         ty,
+        default: None,
         span: source_span(node),
     }
+}
+
+/// Convert an `argument_list` node into positional arguments and keyword
+/// arguments (`name = value`).
+fn convert_arguments(node: tree_sitter::Node, source: &str) -> (Vec<Expr>, Vec<(String, Expr)>) {
+    let mut positional = Vec::new();
+    let mut kwargs = Vec::new();
+    if let Some(arg_list) = named_child_by_kind(node, "argument_list") {
+        let mut cursor = arg_list.walk();
+        for arg in arg_list.named_children(&mut cursor) {
+            if arg.kind() != "argument" {
+                continue;
+            }
+            let value = convert_expr(arg.child_by_field_name("value").unwrap(), source);
+            match arg.child_by_field_name("name") {
+                Some(name_node) => {
+                    kwargs.push((node_text(name_node, source).to_string(), value));
+                }
+                None => positional.push(value),
+            }
+        }
+    }
+    (positional, kwargs)
 }
 
 fn convert_destructure_pattern(node: tree_sitter::Node, source: &str) -> DestructurePattern {
@@ -707,13 +741,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
         }
         "call_expr" => {
             let func_node = node.child_by_field_name("function").unwrap();
-            let mut arguments = Vec::new();
-            if let Some(arg_list) = named_child_by_kind(node, "argument_list") {
-                let mut cursor = arg_list.walk();
-                for child in arg_list.named_children(&mut cursor) {
-                    arguments.push(convert_expr(child, source));
-                }
-            }
+            let (arguments, kwargs) = convert_arguments(node, source);
             // a.b(c) parses as call_expr(field_access(a, b), [c])
             // Convert to MethodCall when the callee is a field_access with an identifier field
             // (not a numeric field like .0 from tuple access)
@@ -729,6 +757,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                     method,
                     type_args: Vec::new(),
                     arguments,
+                    kwargs,
                 }
             } else if func_node.kind() == "path_expr" {
                 // path_expr as call: sync::Channel#[Int]() — extract type_args from last segment
@@ -761,6 +790,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                     function: Box::new(function),
                     type_args: last_type_args,
                     arguments,
+                    kwargs,
                 }
             } else {
                 let function = convert_expr(func_node, source);
@@ -768,6 +798,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                     function: Box::new(function),
                     type_args: Vec::new(),
                     arguments,
+                    kwargs,
                 }
             }
         }
@@ -777,13 +808,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                 .child_by_field_name("type_args")
                 .map(|n| convert_type_args(n, source))
                 .unwrap_or_default();
-            let mut arguments = Vec::new();
-            if let Some(arg_list) = named_child_by_kind(node, "argument_list") {
-                let mut cursor = arg_list.walk();
-                for child in arg_list.named_children(&mut cursor) {
-                    arguments.push(convert_expr(child, source));
-                }
-            }
+            let (arguments, kwargs) = convert_arguments(node, source);
             ExprKind::Call {
                 function: Box::new(Expr {
                     kind: ExprKind::Identifier(name),
@@ -791,6 +816,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                 }),
                 type_args,
                 arguments,
+                kwargs,
             }
         }
         "struct_literal" => {
@@ -934,18 +960,13 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                 .child_by_field_name("type_args")
                 .map(|n| convert_type_args(n, source))
                 .unwrap_or_default();
-            let mut arguments = Vec::new();
-            if let Some(arg_list) = named_child_by_kind(node, "argument_list") {
-                let mut cursor = arg_list.walk();
-                for child in arg_list.named_children(&mut cursor) {
-                    arguments.push(convert_expr(child, source));
-                }
-            }
+            let (arguments, kwargs) = convert_arguments(node, source);
             ExprKind::MethodCall {
                 receiver: Box::new(receiver),
                 method,
                 type_args,
                 arguments,
+                kwargs,
             }
         }
         "block" => ExprKind::Block(convert_block(node, source)),

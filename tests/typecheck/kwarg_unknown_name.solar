@@ -1,0 +1,2 @@
+fn f(a: Int, b: Int = 0) { }
+fn main() { f(1, c = 2); }

@@ -310,3 +310,24 @@ fn bad_reflect_variant_unit_val() {
 fn bad_nullable_coerce() {
     compile(&fixture("typecheck_bad_nullable_coerce.solar"));
 }
+
+// A required parameter cannot follow a keyword parameter with a default.
+#[test]
+#[should_panic(expected = "required parameter cannot follow a keyword parameter with a default")]
+fn kwarg_required_after_default() {
+    compile(&fixture("kwarg_required_after_default.solar"));
+}
+
+// A keyword parameter's default must be a literal.
+#[test]
+#[should_panic(expected = "default value of a keyword parameter must be a literal")]
+fn kwarg_nonliteral_default() {
+    compile(&fixture("kwarg_nonliteral_default.solar"));
+}
+
+// A keyword argument must name an existing keyword parameter.
+#[test]
+#[should_panic(expected = "f has no keyword parameter `c`")]
+fn kwarg_unknown_name() {
+    compile(&fixture("kwarg_unknown_name.solar"));
+}

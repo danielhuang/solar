@@ -333,6 +333,7 @@ fn apply_subst_to_ast_expr(expr: &ast::Expr, subst: &HashMap<String, ast::Type>)
             function,
             type_args,
             arguments,
+            kwargs,
         } => ast::ExprKind::Call {
             function: Box::new(apply_subst_to_ast_expr(function, subst)),
             type_args: type_args
@@ -342,6 +343,10 @@ fn apply_subst_to_ast_expr(expr: &ast::Expr, subst: &HashMap<String, ast::Type>)
             arguments: arguments
                 .iter()
                 .map(|a| apply_subst_to_ast_expr(a, subst))
+                .collect(),
+            kwargs: kwargs
+                .iter()
+                .map(|(n, v)| (n.clone(), apply_subst_to_ast_expr(v, subst)))
                 .collect(),
         },
         ast::ExprKind::StructLiteral {
@@ -419,6 +424,10 @@ fn apply_subst_to_ast_expr(expr: &ast::Expr, subst: &HashMap<String, ast::Type>)
                 .map(|p| ast::Parameter {
                     pattern: p.pattern.clone(),
                     ty: apply_subst_to_ast_type(&p.ty, subst),
+                    default: p
+                        .default
+                        .as_ref()
+                        .map(|d| Box::new(apply_subst_to_ast_expr(d, subst))),
                     span: p.span,
                 })
                 .collect(),
@@ -469,6 +478,7 @@ fn apply_subst_to_ast_expr(expr: &ast::Expr, subst: &HashMap<String, ast::Type>)
             method,
             type_args,
             arguments,
+            kwargs,
         } => ast::ExprKind::MethodCall {
             receiver: Box::new(apply_subst_to_ast_expr(receiver, subst)),
             method: method.clone(),
@@ -479,6 +489,10 @@ fn apply_subst_to_ast_expr(expr: &ast::Expr, subst: &HashMap<String, ast::Type>)
             arguments: arguments
                 .iter()
                 .map(|a| apply_subst_to_ast_expr(a, subst))
+                .collect(),
+            kwargs: kwargs
+                .iter()
+                .map(|(n, v)| (n.clone(), apply_subst_to_ast_expr(v, subst)))
                 .collect(),
         },
         ast::ExprKind::TupleLiteral(elements) => ast::ExprKind::TupleLiteral(
@@ -606,6 +620,10 @@ fn apply_subst_to_ast_statement(
                     .map(|p| ast::Parameter {
                         pattern: p.pattern.clone(),
                         ty: apply_subst_to_ast_type(&p.ty, subst),
+                        default: p
+                            .default
+                            .as_ref()
+                            .map(|d| Box::new(apply_subst_to_ast_expr(d, subst))),
                         span: p.span,
                     })
                     .collect(),
@@ -661,6 +679,110 @@ fn pattern_name_or_placeholder(pat: &ast::DestructurePattern) -> String {
         ast::DestructurePattern::Name(name) => name.clone(),
         _ => "<pattern>".to_string(),
     }
+}
+
+/// The `ast::Type` name for an integer literal's suffix type.
+fn integer_type_ast_name(it: &ast::IntegerType) -> &'static str {
+    match it {
+        ast::IntegerType::Int8 => "Int8",
+        ast::IntegerType::Int16 => "Int16",
+        ast::IntegerType::Int32 => "Int32",
+        ast::IntegerType::Int64 => "Int64",
+        ast::IntegerType::Int => "Int",
+        ast::IntegerType::Uint8 => "Uint8",
+        ast::IntegerType::Uint16 => "Uint16",
+        ast::IntegerType::Uint32 => "Uint32",
+        ast::IntegerType::Uint64 => "Uint64",
+        ast::IntegerType::Uint => "Uint",
+    }
+}
+
+/// Is `e` a literal usable as a keyword-parameter default? Allowed: integer and
+/// boolean literals, and arrays (literal or repeat) of such literals. (Strings
+/// desugar to byte-array literals in the parser, so they're covered too.)
+fn is_literal_default(e: &ast::Expr) -> bool {
+    match &e.kind {
+        ast::ExprKind::IntegerLiteral(..) | ast::ExprKind::BooleanLiteral(_) => true,
+        ast::ExprKind::ArrayLiteral(elems) => elems.iter().all(is_literal_default),
+        ast::ExprKind::ArrayRepeat { element, count } => {
+            is_literal_default(element) && is_literal_default(count)
+        }
+        // A reference/unique pointer to a literal — needed for string/array
+        // defaults passed to reference parameters, e.g. `label = "x"&`.
+        ast::ExprKind::Reference(inner) | ast::ExprKind::Unique(inner) => is_literal_default(inner),
+        _ => false,
+    }
+}
+
+/// Infer the `ast::Type` of a literal default expression (see [`is_literal_default`]).
+fn literal_default_type(e: &ast::Expr) -> Option<ast::Type> {
+    match &e.kind {
+        ast::ExprKind::IntegerLiteral(_, it) => {
+            Some(ast::Type::Named(integer_type_ast_name(it).to_string()))
+        }
+        ast::ExprKind::BooleanLiteral(_) => Some(ast::Type::Named("Bool".to_string())),
+        ast::ExprKind::ArrayLiteral(elems) => Some(ast::Type::Slice(Box::new(
+            literal_default_type(elems.first()?)?,
+        ))),
+        ast::ExprKind::ArrayRepeat { element, .. } => {
+            Some(ast::Type::Slice(Box::new(literal_default_type(element)?)))
+        }
+        ast::ExprKind::Reference(inner) => {
+            Some(ast::Type::Reference(Box::new(literal_default_type(inner)?)))
+        }
+        ast::ExprKind::Unique(inner) => {
+            Some(ast::Type::Unique(Box::new(literal_default_type(inner)?)))
+        }
+        _ => None,
+    }
+}
+
+/// Validate a function/method's keyword parameters and bake inferred types.
+/// Optional (defaulted) parameters must follow all required ones, their
+/// defaults must be literals, and an `Infer` type is replaced by the default's
+/// inferred type. Run once at registration so the rest of the pipeline sees
+/// ordinary concretely-typed parameters.
+fn prepare_keyword_params(f: &mut ast::FunctionDef) -> Result<(), CompileError> {
+    let mut seen_default = false;
+    for p in &mut f.parameters {
+        match &p.default {
+            None => {
+                if seen_default {
+                    return Err(CompileError::new(
+                        format!(
+                            "required parameter cannot follow a keyword parameter with a default, in `{}`",
+                            f.name
+                        ),
+                        p.span,
+                    ));
+                }
+            }
+            Some(def) => {
+                seen_default = true;
+                if !matches!(p.pattern, ast::DestructurePattern::Name(_)) {
+                    return Err(CompileError::new(
+                        "a keyword parameter must be a simple name".to_string(),
+                        p.span,
+                    ));
+                }
+                if !is_literal_default(def) {
+                    return Err(CompileError::new(
+                        "default value of a keyword parameter must be a literal".to_string(),
+                        def.span,
+                    ));
+                }
+                if matches!(p.ty, ast::Type::Infer) {
+                    p.ty = literal_default_type(def).ok_or_else(|| {
+                        CompileError::new(
+                            "cannot infer keyword parameter type from its default".to_string(),
+                            def.span,
+                        )
+                    })?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Extract the name from a simple DestructurePattern::Name, or panic for compound patterns.
@@ -1291,11 +1413,13 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 ast::TopLevelItem::Function(f) => {
+                    let mut f = f.clone();
+                    prepare_keyword_params(&mut f)?;
                     let entries = function_defs.entry(f.name.clone()).or_default();
                     let overload_index = entries.len();
                     entries.push(FunctionEntry {
                         type_params: f.type_params.clone(),
-                        ast_def: f.clone(),
+                        ast_def: f,
                         overload_index,
                     });
                 }
@@ -1326,11 +1450,13 @@ impl<'a> Lowerer<'a> {
                             ));
                         }
                     }
+                    let mut m = m.clone();
+                    prepare_keyword_params(&mut m)?;
                     let entries = method_defs.entry(m.name.clone()).or_default();
                     let overload_index = entries.len();
                     entries.push(FunctionEntry {
                         type_params: m.type_params.clone(),
-                        ast_def: m.clone(),
+                        ast_def: m,
                         overload_index,
                     });
                 }
@@ -3225,6 +3351,9 @@ impl<'a> Lowerer<'a> {
                 }])
             }
             ast::StatementKind::NestedFunction(fdef) => {
+                let mut fdef_owned = fdef.clone();
+                prepare_keyword_params(&mut fdef_owned)?;
+                let fdef = &fdef_owned;
                 // Generic or overloaded nested function: store for later resolution at call sites
                 let has_prev_entries = self
                     .nested_function_defs
@@ -3541,7 +3670,18 @@ impl<'a> Lowerer<'a> {
                 function,
                 type_args,
                 arguments,
+                kwargs,
             } => {
+                // Keyword arguments are only supported on calls that resolve
+                // through the global function registry (handled below); reject
+                // them on the other call forms (enum construction, nested,
+                // indirect) up front.
+                let reject_kwargs = |span: ast::SourceSpan| {
+                    CompileError::new(
+                        "keyword arguments are not supported for this call".to_string(),
+                        span,
+                    )
+                };
                 // Intercept enum variant construction: EnumVariant(value)
                 if let ast::ExprKind::EnumVariant {
                     module_path: _,
@@ -3550,6 +3690,9 @@ impl<'a> Lowerer<'a> {
                     variant_name,
                 } = &function.as_ref().kind
                 {
+                    if !kwargs.is_empty() {
+                        return Err(reject_kwargs(expr.span));
+                    }
                     let resolved_name = self.resolve_enum_name(enum_name, enum_type_args)?;
                     let edef = self
                         .lowered_enums
@@ -3622,6 +3765,9 @@ impl<'a> Lowerer<'a> {
                     if let Some(entries) = nested_entries
                         && (entries.len() > 1 || !entries[0].type_params.is_empty())
                     {
+                        if !kwargs.is_empty() {
+                            return Err(reject_kwargs(expr.span));
+                        }
                         // Generic or overloaded nested function — resolve at call site
                         for entry in &entries {
                             let gdef = &entry.ast_def;
@@ -3715,15 +3861,18 @@ impl<'a> Lowerer<'a> {
                                     .map(|(p, a)| (p.clone(), a.clone()))
                                     .collect();
 
-                                let concrete_params: Vec<ast::Parameter> = gdef
-                                    .parameters
-                                    .iter()
-                                    .map(|p| ast::Parameter {
-                                        pattern: p.pattern.clone(),
-                                        ty: apply_subst_to_ast_type(&p.ty, &subst),
-                                        span: p.span,
-                                    })
-                                    .collect();
+                                let concrete_params: Vec<ast::Parameter> =
+                                    gdef.parameters
+                                        .iter()
+                                        .map(|p| ast::Parameter {
+                                            pattern: p.pattern.clone(),
+                                            ty: apply_subst_to_ast_type(&p.ty, &subst),
+                                            default: p.default.as_ref().map(|d| {
+                                                Box::new(apply_subst_to_ast_expr(d, &subst))
+                                            }),
+                                            span: p.span,
+                                        })
+                                        .collect();
                                 let concrete_return_type = gdef
                                     .return_type
                                     .as_ref()
@@ -3800,8 +3949,12 @@ impl<'a> Lowerer<'a> {
                 {
                     let entries = self.function_defs[name.as_str()].clone();
                     return self.resolve_overloaded_call(
-                        entries, name, arguments, type_args, expr.span, "",
+                        entries, name, arguments, kwargs, type_args, expr.span, "",
                     );
+                }
+
+                if !kwargs.is_empty() {
+                    return Err(reject_kwargs(expr.span));
                 }
 
                 // Lower callee as a normal expression (variables shadow functions)
@@ -4399,7 +4552,8 @@ impl<'a> Lowerer<'a> {
                 method,
                 type_args,
                 arguments,
-            } => self.lower_method_call(expr.span, receiver, method, type_args, arguments),
+                kwargs,
+            } => self.lower_method_call(expr.span, receiver, method, type_args, arguments, kwargs),
             ast::ExprKind::IntrinsicCall {
                 intrinsic,
                 arguments,
@@ -5157,13 +5311,61 @@ impl<'a> Lowerer<'a> {
         })
     }
 
+    /// Number of leading required (non-default) parameters. Optional keyword
+    /// parameters always follow them (validated at registration).
+    fn required_param_count(params: &[ast::Parameter]) -> usize {
+        params.iter().take_while(|p| p.default.is_none()).count()
+    }
+
+    /// Build the full positional argument list for `params` from the call's
+    /// positional `arguments` plus `kwargs`, filling any unspecified optional
+    /// parameter with its default. Keyword parameters are keyword-only: the
+    /// positional arguments must fill exactly the required parameters. Returns
+    /// `None` if this signature isn't a structural match (wrong positional
+    /// count, or a kwarg that doesn't name an optional parameter).
+    fn expand_kwargs(
+        params: &[ast::Parameter],
+        arguments: &[ast::Expr],
+        kwargs: &[(String, ast::Expr)],
+    ) -> Option<Vec<ast::Expr>> {
+        let required = Self::required_param_count(params);
+        if arguments.len() != required {
+            return None;
+        }
+        let optional = &params[required..];
+        let opt_name = |p: &ast::Parameter| match &p.pattern {
+            ast::DestructurePattern::Name(n) => Some(n.clone()),
+            _ => None,
+        };
+        // Every kwarg must name an optional parameter.
+        for (k, _) in kwargs {
+            if !optional
+                .iter()
+                .any(|p| opt_name(p).as_deref() == Some(k.as_str()))
+            {
+                return None;
+            }
+        }
+        let mut full: Vec<ast::Expr> = arguments.to_vec();
+        for p in optional {
+            let pname = opt_name(p)?;
+            match kwargs.iter().find(|(k, _)| *k == pname) {
+                Some((_, v)) => full.push(v.clone()),
+                None => full.push((**p.default.as_ref()?).clone()),
+            }
+        }
+        Some(full)
+    }
+
     /// Shared overload resolution for both function calls and method calls.
     /// `mangle_prefix` is "" for functions, "__method_" for methods.
+    #[allow(clippy::too_many_arguments)]
     fn resolve_overloaded_call(
         &mut self,
         entries: Vec<FunctionEntry>,
         name: &str,
         arguments: &[ast::Expr],
+        kwargs: &[(String, ast::Expr)],
         type_args: &[ast::Type],
         span: ast::SourceSpan,
         mangle_prefix: &str,
@@ -5186,18 +5388,18 @@ impl<'a> Lowerer<'a> {
         // If explicit type args provided, skip concrete entries entirely
         if !type_args.is_empty() {
             // Find matching generic overload with explicit type args
-            let mut matched_gdef: Option<FunctionEntry> = None;
+            let mut matched: Option<(FunctionEntry, Vec<ast::Expr>)> = None;
             for gdef in &generic_entries {
                 if gdef.type_params.len() != type_args.len() {
                     continue;
                 }
-                if gdef.ast_def.parameters.len() != arguments.len() {
-                    continue;
+                if let Some(full) = Self::expand_kwargs(&gdef.ast_def.parameters, arguments, kwargs)
+                {
+                    matched = Some((gdef.clone(), full));
+                    break;
                 }
-                matched_gdef = Some(gdef.clone());
-                break;
             }
-            let gdef = matched_gdef.ok_or_else(|| {
+            let (gdef, full_args) = matched.ok_or_else(|| {
                 CompileError::new(
                     format!("no matching generic overload for `{name}` with {} type args and {} arguments", type_args.len(), arguments.len()),
                     span,
@@ -5211,18 +5413,18 @@ impl<'a> Lowerer<'a> {
                 mangle_prefix,
             )?;
             let mono_fn = self.monomorphized_functions[&mangled].clone();
-            if arguments.len() != mono_fn.parameters.len() {
+            if full_args.len() != mono_fn.parameters.len() {
                 return Err(CompileError::new(
                     format!(
                         "{name}: expected {} arguments, got {}",
                         mono_fn.parameters.len(),
-                        arguments.len()
+                        full_args.len()
                     ),
                     span,
                 ));
             }
             let mut lowered_args: Vec<Expr> = Vec::new();
-            for (arg, param) in arguments.iter().zip(mono_fn.parameters.iter()) {
+            for (arg, param) in full_args.iter().zip(mono_fn.parameters.iter()) {
                 let lowered = if Self::has_infer_params(arg) {
                     self.lower_expr_with_expected(arg, &param.ty)?
                 } else {
@@ -5256,25 +5458,36 @@ impl<'a> Lowerer<'a> {
 
         // No explicit type args
         if !has_infer_closures {
-            let lowered_args: Vec<Expr> = arguments
+            // Lower the positional arguments once for diagnostics; each candidate
+            // re-lowers its full (kwargs-expanded) argument list below.
+            let pos_lowered: Vec<Expr> = arguments
                 .iter()
                 .map(|a| self.lower_expr(a))
                 .collect::<Result<Vec<_>, _>>()?;
-            let arg_types: Vec<Type> = lowered_args.iter().map(|a| a.ty.clone()).collect();
+            let arg_types: Vec<Type> = pos_lowered.iter().map(|a| a.ty.clone()).collect();
 
-            // Candidate enum for unified matching
+            // Candidate enum for unified matching. Each carries its own fully
+            // expanded (kwargs-filled) lowered argument list.
             #[derive(Clone)]
             enum Candidate {
-                Concrete(Vec<Type>, ast::FunctionDef),
-                Generic(Box<FunctionEntry>, Vec<ast::Type>),
+                Concrete(Vec<Type>, ast::FunctionDef, Vec<Expr>),
+                Generic(Box<FunctionEntry>, Vec<ast::Type>, Vec<Expr>),
             }
 
             let mut candidates: Vec<(Candidate, Vec<ast::Type>)> = Vec::new();
 
             // Check concrete entries
             for entry in &concrete_entries {
-                if entry.ast_def.parameters.len() != lowered_args.len() {
-                    continue;
+                let full = match Self::expand_kwargs(&entry.ast_def.parameters, arguments, kwargs) {
+                    Some(f) => f,
+                    None => continue,
+                };
+                // The positional prefix is already lowered (`pos_lowered`); only
+                // the optional suffix (defaults / kwargs) needs lowering. Reusing
+                // the prefix avoids re-lowering effectful args like closures.
+                let mut lowered_args = pos_lowered.clone();
+                for a in &full[arguments.len()..] {
+                    lowered_args.push(self.lower_expr(a)?);
                 }
                 let param_types: Vec<Type> = entry
                     .ast_def
@@ -5296,7 +5509,7 @@ impl<'a> Lowerer<'a> {
                         .map(|p| p.ty.clone())
                         .collect();
                     candidates.push((
-                        Candidate::Concrete(param_types, entry.ast_def.clone()),
+                        Candidate::Concrete(param_types, entry.ast_def.clone(), lowered_args),
                         ast_types,
                     ));
                 }
@@ -5304,8 +5517,13 @@ impl<'a> Lowerer<'a> {
 
             // Check generic entries
             for gdef in &generic_entries {
-                if gdef.ast_def.parameters.len() != lowered_args.len() {
-                    continue;
+                let full = match Self::expand_kwargs(&gdef.ast_def.parameters, arguments, kwargs) {
+                    Some(f) => f,
+                    None => continue,
+                };
+                let mut lowered_args = pos_lowered.clone();
+                for a in &full[arguments.len()..] {
+                    lowered_args.push(self.lower_expr(a)?);
                 }
                 let param_ast_types: Vec<ast::Type> = gdef
                     .ast_def
@@ -5358,7 +5576,7 @@ impl<'a> Lowerer<'a> {
                     continue;
                 }
                 candidates.push((
-                    Candidate::Generic(Box::new(gdef.clone()), inferred),
+                    Candidate::Generic(Box::new(gdef.clone()), inferred, lowered_args),
                     param_ast_types,
                 ));
             }
@@ -5368,32 +5586,53 @@ impl<'a> Lowerer<'a> {
                 // give a specific per-argument error message
                 if concrete_entries.len() == 1 && generic_entries.is_empty() {
                     let entry = &concrete_entries[0];
-                    if entry.ast_def.parameters.len() != lowered_args.len() {
-                        return Err(CompileError::new(
-                            format!(
-                                "{name}: expected {} arguments, got {}",
-                                entry.ast_def.parameters.len(),
-                                lowered_args.len()
-                            ),
-                            span,
-                        ));
-                    }
-                    for (arg, param) in lowered_args.iter().zip(entry.ast_def.parameters.iter()) {
-                        let pty = self.resolve_ast_type(&param.ty)?;
-                        let coerced = self.try_coerce(arg.clone(), &pty);
-                        if coerced.ty != pty {
-                            let pname = pattern_name_or_placeholder(&param.pattern);
+                    match Self::expand_kwargs(&entry.ast_def.parameters, arguments, kwargs) {
+                        None => {
+                            let params = &entry.ast_def.parameters;
+                            let required = Self::required_param_count(params);
+                            // Distinguish an unknown keyword from an arg-count mismatch.
+                            if arguments.len() == required
+                                && let Some((k, _)) = kwargs.iter().find(|(k, _)| {
+                                    !params[required..].iter().any(|p| {
+                                        matches!(&p.pattern, ast::DestructurePattern::Name(n) if n == k)
+                                    })
+                                })
+                            {
+                                return Err(CompileError::new(
+                                    format!("{name} has no keyword parameter `{k}`"),
+                                    span,
+                                ));
+                            }
                             return Err(CompileError::new(
                                 format!(
-                                    "type mismatch in argument `{pname}` of {name}: expected {pty}, got {}",
-                                    coerced.ty
+                                    "{name}: expected {required} positional argument(s), got {}",
+                                    arguments.len()
                                 ),
-                                coerced.span,
-                            )
-                            .with_label(
-                                format!("parameter `{pname}` defined here"),
-                                param.span,
+                                span,
                             ));
+                        }
+                        Some(full) => {
+                            for (arg_expr, param) in
+                                full.iter().zip(entry.ast_def.parameters.iter())
+                            {
+                                let arg = self.lower_expr(arg_expr)?;
+                                let pty = self.resolve_ast_type(&param.ty)?;
+                                let coerced = self.try_coerce(arg, &pty);
+                                if coerced.ty != pty {
+                                    let pname = pattern_name_or_placeholder(&param.pattern);
+                                    return Err(CompileError::new(
+                                        format!(
+                                            "type mismatch in argument `{pname}` of {name}: expected {pty}, got {}",
+                                            coerced.ty
+                                        ),
+                                        coerced.span,
+                                    )
+                                    .with_label(
+                                        format!("parameter `{pname}` defined here"),
+                                        param.span,
+                                    ));
+                                }
+                            }
                         }
                     }
                 }
@@ -5418,7 +5657,7 @@ impl<'a> Lowerer<'a> {
                     .map(|(i, (c, _))| {
                         let tp = match c {
                             Candidate::Concrete(..) => vec![],
-                            Candidate::Generic(g, _) => g.type_params.clone(),
+                            Candidate::Generic(g, _, _) => g.type_params.clone(),
                         };
                         (i, tp)
                     })
@@ -5438,7 +5677,7 @@ impl<'a> Lowerer<'a> {
             let (best_candidate, _) = candidates.into_iter().next().unwrap();
 
             match best_candidate {
-                Candidate::Concrete(param_types, ast_def) => {
+                Candidate::Concrete(param_types, ast_def, lowered_args) => {
                     let mangled = format!("{mangle_prefix}{}", mangle_name(name, &param_types));
                     self.ensure_concrete_lowered(&mangled, &ast_def)?;
                     let ret_ty = self.resolve_return_type(&mangled)?;
@@ -5456,7 +5695,7 @@ impl<'a> Lowerer<'a> {
                         span,
                     })
                 }
-                Candidate::Generic(gdef, inferred) => {
+                Candidate::Generic(gdef, inferred, lowered_args) => {
                     let mangled = self.ensure_function_monomorphized_with_def(
                         name,
                         &gdef,
@@ -5499,9 +5738,11 @@ impl<'a> Lowerer<'a> {
             let mut matched_result: Option<Result<Expr, CompileError>> = None;
 
             for gdef in &generic_entries {
-                if gdef.ast_def.parameters.len() != arguments.len() {
-                    continue;
-                }
+                let arguments =
+                    match Self::expand_kwargs(&gdef.ast_def.parameters, arguments, kwargs) {
+                        Some(f) => f,
+                        None => continue,
+                    };
                 let type_params = gdef.type_params.clone();
                 let param_ast_types: Vec<ast::Type> = gdef
                     .ast_def
@@ -5594,9 +5835,11 @@ impl<'a> Lowerer<'a> {
 
             // Try concrete entries with infer closures
             for entry in &concrete_entries {
-                if entry.ast_def.parameters.len() != arguments.len() {
-                    continue;
-                }
+                let arguments =
+                    match Self::expand_kwargs(&entry.ast_def.parameters, arguments, kwargs) {
+                        Some(f) => f,
+                        None => continue,
+                    };
                 let param_types: Vec<Type> = entry
                     .ast_def
                     .parameters
@@ -5650,10 +5893,11 @@ impl<'a> Lowerer<'a> {
         method: &str,
         type_args: &[ast::Type],
         arguments: &[ast::Expr],
+        kwargs: &[(String, ast::Expr)],
     ) -> Result<Expr, CompileError> {
         let entries = self.method_defs.get(method).cloned().unwrap_or_default();
 
-        // Build combined argument list: [receiver, ...arguments]
+        // Build combined positional argument list: [receiver, ...arguments]
         let mut all_arguments = vec![receiver.clone()];
         all_arguments.extend(arguments.iter().cloned());
 
@@ -5661,6 +5905,7 @@ impl<'a> Lowerer<'a> {
             entries,
             method,
             &all_arguments,
+            kwargs,
             type_args,
             span,
             "__method_",

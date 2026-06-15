@@ -1,0 +1,35 @@
+// Optional keyword parameters: defaults, keyword overrides, inferred types,
+// string/array defaults, and kwargs on methods.
+
+struct Adder { base: Int, }
+
+// kwarg with explicit type (kwarg1) and inferred type (factor: Uint from 2u).
+fn combine(x: Int, bonus: Int = 10, factor = 2u) -> Int {
+  x + bonus * Int(factor)
+}
+
+// string default (desugars to a byte array, referenced for the &[Uint8] param).
+fn tag(n: Int, label = "n="&) {
+  write_stdout(label);
+  print_int(n);
+}
+
+method bump(self: &Adder, by: Int = 1) -> Int {
+  self@.base + by
+}
+
+fn main() {
+  print_int(combine(5));                       // 5 + 10*2 = 25
+  print_int(combine(5, bonus=100));            // 5 + 100*2 = 205
+  print_int(combine(5, factor=3u));            // 5 + 10*3 = 35
+  print_int(combine(5, bonus=1, factor=1u));   // 5 + 1*1 = 6
+  // kwargs may be passed in any order
+  print_int(combine(5, factor=1u, bonus=1));   // 5 + 1*1 = 6 (reordered)
+
+  tag(7);                                       // n=\n7\n
+  tag(9, label="v="&);                          // v=\n9\n
+
+  let a = Adder { base: 100, };
+  print_int(a&.bump());                         // 101
+  print_int(a&.bump(by=5));                      // 105
+}

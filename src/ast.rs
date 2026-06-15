@@ -121,6 +121,10 @@ pub struct FunctionDef {
 pub struct Parameter {
     pub pattern: DestructurePattern,
     pub ty: Type,
+    /// Default value for an optional keyword parameter (a literal). `None` for a
+    /// normal required parameter. When `ty` is `Type::Infer`, the type is
+    /// inferred from this default.
+    pub default: Option<Box<Expr>>,
     pub span: SourceSpan,
 }
 
@@ -235,6 +239,9 @@ pub enum ExprKind {
         function: Box<Expr>,
         type_args: Vec<Type>,
         arguments: Vec<Expr>,
+        /// Keyword arguments (`name = value`), matched to optional parameters by
+        /// name. Always appear after positional `arguments` in source.
+        kwargs: Vec<(String, Expr)>,
     },
     StructLiteral {
         module: Option<String>,
@@ -291,6 +298,9 @@ pub enum ExprKind {
         method: String,
         type_args: Vec<Type>,
         arguments: Vec<Expr>,
+        /// Keyword arguments (`name = value`), matched to optional parameters by
+        /// name. Always appear after positional `arguments` in source.
+        kwargs: Vec<(String, Expr)>,
     },
     TupleLiteral(Vec<Expr>),
     IntrinsicCall {
