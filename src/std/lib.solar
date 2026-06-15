@@ -2,6 +2,7 @@ import intrinsics from "@intrinsics";
 pub import vec from "vec.solar";
 pub import sync from "sync.solar";
 pub import thread from "thread.solar";
+pub import file from "file.solar";
 
 // Prints the decimal representation of x followed by a newline.
 // Digits are extracted in the negative domain so Int's minimum value
@@ -55,18 +56,5 @@ pub fn println(s: &[Uint8]) {
 
 pub fn panic(s: &[Uint8]) {
     intrinsics::panic(s);
-}
-
-// Opens `path` (read-only) and returns an opaque FileDesc. The garbage
-// collector closes the file once no live FileDesc refers to it.
-pub fn open(path: &[Uint8]) -> FileDesc {
-    intrinsics::file_open(path)
-}
-
-// "Closes" `f`: the underlying file is released now, but the fd number stays
-// occupied (it points at a dead pipe), so any other live FileDesc holding the
-// same fd cannot silently alias a different file later opened on that number.
-pub fn close(f: FileDesc) {
-    intrinsics::file_close(f)
 }
 

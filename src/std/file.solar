@@ -1,0 +1,14 @@
+import intrinsics from "@intrinsics";
+
+// Opens `path` (read-only) and returns an opaque FileDesc. The garbage
+// collector closes the file once no live FileDesc refers to it.
+pub fn open(path: &[Uint8]) -> FileDesc {
+    intrinsics::file_open(path)
+}
+
+// "Closes" `f`: the underlying file is released now, but the fd number stays
+// occupied (it points at a dead pipe), so any other live FileDesc holding the
+// same fd cannot silently alias a different file later opened on that number.
+pub method close(self: FileDesc) {
+    intrinsics::file_close(self)
+}

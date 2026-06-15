@@ -26,7 +26,7 @@ fn main() {
     let is_done = false;
     thread::spawn(\ {
         for iter in 0..400 {
-            let f = open("CLAUDE.md"&);   // dropped immediately -> garbage
+            let f = file::open("CLAUDE.md"&);   // dropped immediately -> garbage
             let head = sentinel;
             for j in 0..100000 {
                 head = (Node { value: j, next: ListOpt::Some(head) })&;

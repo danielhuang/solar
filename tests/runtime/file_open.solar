@@ -2,6 +2,6 @@
 // run) via the built-in FileDesc / file_open path. FileDesc is opaque so we
 // just confirm the open succeeds; all three backends must agree on the output.
 fn main() {
-  let f = open("tests/runtime/file_open.solar"&);
+  let f = file::open("tests/runtime/file_open.solar"&);
   println("opened"&);
 }

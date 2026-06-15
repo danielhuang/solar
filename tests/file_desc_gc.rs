@@ -77,7 +77,7 @@ struct FdNode {
 fn main() {
     let g_sentinel = (GNode { value: 0, next: GOpt::None })&;
     let g_root = g_sentinel;
-    let fd_sentinel = (FdNode { fd: open("Cargo.toml"&), next: FdOpt::None })&;
+    let fd_sentinel = (FdNode { fd: file::open("Cargo.toml"&), next: FdOpt::None })&;
     let fd_root = fd_sentinel;
     let is_done = false;
     thread::spawn(\ {
@@ -101,7 +101,7 @@ fn main() {
 fn dropped_file_descriptors_are_closed_by_gc() {
     // The handle is dropped each iteration; the GC closes the unreachable fds,
     // so the live count stays tiny and the program survives the fd ceiling.
-    let src = TEMPLATE.replace("OPEN_STMT", r#"let f = open("Cargo.toml"&);"#);
+    let src = TEMPLATE.replace("OPEN_STMT", r#"let f = file::open("Cargo.toml"&);"#);
     let bin = build(&src, "fd_gc_dropped");
     assert!(
         run_with_fd_limit(&bin),
@@ -120,8 +120,8 @@ fn closed_file_descriptors_keep_their_fd_number() {
     // would free the numbers, and the program would survive.)
     let src = TEMPLATE.replace(
         "OPEN_STMT",
-        r#"let f = open("Cargo.toml"&);
-            close(f);
+        r#"let f = file::open("Cargo.toml"&);
+            f.close();
             kept = (FdNode { fd: f, next: FdOpt::Some(kept) })&;
             fd_root&.atomic_store(kept);"#,
     );
@@ -140,7 +140,7 @@ fn retained_file_descriptors_are_not_closed() {
     // them open, so the fds accumulate and the program exhausts the ceiling.
     let src = TEMPLATE.replace(
         "OPEN_STMT",
-        r#"kept = (FdNode { fd: open("Cargo.toml"&), next: FdOpt::Some(kept) })&;
+        r#"kept = (FdNode { fd: file::open("Cargo.toml"&), next: FdOpt::Some(kept) })&;
             fd_root&.atomic_store(kept);"#,
     );
     let bin = build(&src, "fd_gc_retained");
