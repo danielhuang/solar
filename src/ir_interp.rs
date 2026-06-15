@@ -1144,6 +1144,14 @@ impl<'a, W: Write> Interpreter<'a, W> {
                 // evaluate the argument for any side effects.
                 let _ = self.eval_load(nodes, args[0]);
             }
+            Intrinsic::FileStdin => {
+                // No fd arena: model the FileDesc as the raw fd (0 = stdin).
+                self.scalar_store(dst, 0, result_ty);
+            }
+            Intrinsic::FileStdout => {
+                // No fd arena: model the FileDesc as the raw fd (1 = stdout).
+                self.scalar_store(dst, 1, result_ty);
+            }
             Intrinsic::ArrayLen => {
                 let len = if let Type::FixedArray(_, n) = &nodes[args[0].0].ty {
                     *n as usize

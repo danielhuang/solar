@@ -425,3 +425,9 @@ fn file_open() {
     let output = run(&fixture("file_open.solar"), "file_open");
     assert_eq!(output, "opened\n");
 }
+
+#[test]
+fn file_std_streams() {
+    let output = run(&fixture("file_std_streams.solar"), "file_std_streams");
+    assert_eq!(output, "std streams ok\n");
+}

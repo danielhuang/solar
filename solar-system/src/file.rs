@@ -161,6 +161,32 @@ pub unsafe extern "C" fn sol_file_open(path_ptr: *const u8, path_len: usize) -> 
     }
 }
 
+/// Return a `FileDesc` for one of the process's standard streams (`fd`).
+///
+/// Standard streams are owned by the process for its whole lifetime, so the
+/// returned handle is deliberately **not** registered in the alloc bitmap: the
+/// collector traces it harmlessly (the arena address is recognized and its mark
+/// bit may be set), but [`fd_sweep`] only closes fds whose *alloc* bit is set,
+/// so stdin/stdout are never auto-closed regardless of reachability.
+#[inline]
+unsafe fn std_stream(fd: libc::c_int) -> *mut u8 {
+    let base = FD_BASE.load(Ordering::Relaxed);
+    debug_assert!(base != 0, "std_stream called before fd arena init");
+    (base + fd as usize) as *mut u8
+}
+
+/// `FileDesc` for the process's standard input (fd 0). Never auto-closed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sol_file_stdin() -> *mut u8 {
+    unsafe { std_stream(libc::STDIN_FILENO) }
+}
+
+/// `FileDesc` for the process's standard output (fd 1). Never auto-closed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sol_file_stdout() -> *mut u8 {
+    unsafe { std_stream(libc::STDOUT_FILENO) }
+}
+
 /// "Close" the file behind a `FileDesc` without freeing its fd number.
 ///
 /// A plain `close(fd)` would return the fd number to the kernel, which could

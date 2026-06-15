@@ -6,6 +6,19 @@ pub fn open(path: &[Uint8]) -> FileDesc {
     intrinsics::file_open(path)
 }
 
+// Returns a FileDesc for the process's standard input. It refers to a stream
+// owned by the process for its whole lifetime, so the collector never
+// auto-closes it.
+pub fn stdin() -> FileDesc {
+    intrinsics::file_stdin()
+}
+
+// Returns a FileDesc for the process's standard output. Like stdin, the stream
+// is process-owned and is never auto-closed by the collector.
+pub fn stdout() -> FileDesc {
+    intrinsics::file_stdout()
+}
+
 // "Closes" `f`: the underlying file is released now, but the fd number stays
 // occupied (it points at a dead pipe), so any other live FileDesc holding the
 // same fd cannot silently alias a different file later opened on that number.

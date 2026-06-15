@@ -6071,6 +6071,10 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
             params: vec![Exact(Type::FileDesc)],
             ret: Fixed(Type::Unit),
         },
+        ast::Intrinsic::FileStdin | ast::Intrinsic::FileStdout => IntrinsicSpec {
+            params: vec![],
+            ret: Fixed(Type::FileDesc),
+        },
     }
 }
 

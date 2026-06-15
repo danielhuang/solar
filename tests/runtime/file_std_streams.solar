@@ -1,0 +1,8 @@
+// Exercises the file::stdin() / file::stdout() intrinsics, which both return an
+// opaque FileDesc for a process-owned standard stream. FileDesc is opaque so we
+// just confirm the handles are obtained; all three backends must agree.
+fn main() {
+  let out = file::stdout();
+  let inp = file::stdin();
+  println("std streams ok"&);
+}

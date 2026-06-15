@@ -911,6 +911,10 @@ impl<'a, W: Write> Interpreter<'a, W> {
                 self.eval_expr(&arguments[0]);
                 Value::Unit
             }
+            // No fd arena in the reference interpreter: model the FileDesc as the
+            // raw fd (0 = stdin, 1 = stdout).
+            Intrinsic::FileStdin => Value::Int(0),
+            Intrinsic::FileStdout => Value::Int(1),
             Intrinsic::ArrayLen => {
                 let arr = self.eval_expr(&arguments[0]);
                 match arr {
