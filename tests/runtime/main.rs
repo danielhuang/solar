@@ -65,6 +65,12 @@ fn loop_expr() {
 }
 
 #[test]
+fn array_len() {
+    let output = run(&fixture("array_len.solar"), "array_len");
+    assert_eq!(output, "4\n5\n4\n2\n0\n");
+}
+
+#[test]
 fn binop_logic() {
     let output = run(&fixture("binop_logic.solar"), "binop_logic");
     assert_eq!(output, "1\n0\n0\n1\n0\n1\n0\n88\n1\n1\n99\n0\n");

@@ -1,0 +1,16 @@
+// The `len` method on array references (@std), replacing the array_len intrinsic.
+fn main() {
+  let a: [Int] = [10, 20, 30, 40];
+  println(a&.len());           // 4
+
+  let s = "hello";
+  println(s&.len());           // 5
+
+  // through a &[T] binding and a slice
+  let r: &[Int] = a&;
+  println(r.len());            // 4
+  println(a[1u..3u]&.len());   // 2
+
+  let empty: [Int] = [0; 0u];
+  println(empty&.len());       // 0
+}

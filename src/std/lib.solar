@@ -44,6 +44,11 @@ pub method to_string(self: Uint) -> &[Uint8] {
   buf[i..20u]&
 }
 
+// Number of elements in an array.
+pub method len#[T](self: &[T]) -> Uint {
+  intrinsics::array_len(self@)
+}
+
 pub fn write_stdout(s: &[Uint8]) {
   file::stdout().write(s);
 }

@@ -1,4 +1,4 @@
-import { array_len, panic } from "@intrinsics";
+import { panic } from "@intrinsics";
 
 pub struct Vec#[T] {
     len: Uint,
@@ -7,13 +7,13 @@ pub struct Vec#[T] {
 
 pub fn Vec#[T](src: &[T]) -> Vec#[T] {
     Vec#[T] {
-        len: array_len(src@),
+        len: src.len(),
         inner: src@^,
     }
 }
 
 pub method push#[T](self: &Vec#[T], value: T) {
-    let cap = array_len(self@.inner@);
+    let cap = self@.inner@&.len();
     if self@.len >= cap {
         // Double capacity by concatenating inner with itself
         self@.inner = (self@.inner@ + self@.inner@)^;

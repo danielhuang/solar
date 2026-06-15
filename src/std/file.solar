@@ -82,7 +82,7 @@ pub method write_partial(self: FileDesc, src: &[Uint8]) -> Uint {
 // Writes the entire `src` buffer, looping over partial writes until done (like
 // Rust's `write_all`).
 pub method write(self: FileDesc, src: &[Uint8]) {
-    let len = intrinsics::array_len(src@);
+    let len = src.len();
     let written = 0u;
     while written < len {
         written = written + self.write_partial(src@[written..len]&);
