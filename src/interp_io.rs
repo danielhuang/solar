@@ -7,7 +7,7 @@
 //! 1 is stdout (matching `file::stdin()` / `file::stdout()`); `file_open` pushes
 //! a `File` and returns its index.
 
-use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::{Read, Write};
 
 /// A stream usable for both reading and writing. Real files implement both; the
@@ -65,10 +65,16 @@ impl<'io> FileTable<'io> {
         }
     }
 
-    /// Open `path` read-only, push it, and return its `FileDesc` index.
+    /// Open `path` for reading and writing (creating it if absent, no truncate,
+    /// matching the compiled runtime), push it, and return its `FileDesc` index.
     pub fn open(&mut self, path: &str) -> usize {
-        let f =
-            File::open(path).unwrap_or_else(|e| panic!("file_open: could not open {path:?}: {e}"));
+        let f = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .unwrap_or_else(|e| panic!("file_open: could not open {path:?}: {e}"));
         self.files.push(Box::new(f));
         self.files.len() - 1
     }

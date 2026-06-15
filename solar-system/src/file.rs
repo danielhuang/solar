@@ -109,8 +109,10 @@ unsafe fn mark_word(fd: usize) -> *const AtomicU64 {
     unsafe { (FD_MARK_BITS.load(Ordering::Relaxed) as *const AtomicU64).add(fd >> 6) }
 }
 
-/// Open `path` (read-only) and return an opaque `FileDesc` pointer
-/// (`FD_BASE + fd`). The fd's allocated bit is set so the next GC traces it.
+/// Open `path` for reading and writing (creating it if absent, mode 0666) and
+/// return an opaque `FileDesc` pointer (`FD_BASE + fd`). The fd's allocated bit
+/// is set so the next GC traces it. `O_TRUNC` is deliberately omitted: a
+/// `FileDesc` opened purely to read an existing file must not destroy it.
 ///
 /// Panics on failure so the returned pointer is always a valid, live fd — the
 /// opaque-handle contract needs no sentinel value.
@@ -140,7 +142,11 @@ pub unsafe extern "C" fn sol_file_open(path_ptr: *const u8, path_len: usize) -> 
             buf.set_len(path_len);
             buf.push(0);
 
-            let fd = libc::open(buf.as_ptr() as *const libc::c_char, libc::O_RDONLY);
+            let fd = libc::open(
+                buf.as_ptr() as *const libc::c_char,
+                libc::O_RDWR | libc::O_CREAT,
+                0o666 as libc::c_int,
+            );
             assert!(
                 fd >= 0,
                 "file_open: could not open file (errno {})",

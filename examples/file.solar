@@ -1,0 +1,26 @@
+// Demonstrates the file I/O API in @std: open, read (both overloads), write,
+// and close. Reads zero bytes from /dev/zero (an endless stream of 0x00) and
+// writes them to a file in /tmp.
+fn main() {
+  let zero = file::open("/dev/zero"&);
+
+  // read(max_size): allocate a buffer and read up to 32 bytes into it. The
+  // result is a &[Uint8] whose length is the number of bytes actually read.
+  let chunk = zero.read(32u);
+
+  // read(buf): read up to buf's length bytes into a caller-provided buffer,
+  // returning the count read.
+  let buf: [Uint8] = [0u8; 32u];
+  let n = zero.read(buf&);
+  print_int(n);                // 32
+  zero.close();
+
+  // Open a file in /tmp (created if absent) and write both chunks. write()
+  // loops over partial writes until the whole buffer is flushed.
+  let out = file::open("/tmp/solar_file_example.out"&);
+  out.write(chunk);
+  out.write(buf&);
+  out.close();
+
+  println("wrote 64 zero bytes to /tmp/solar_file_example.out"&);
+}

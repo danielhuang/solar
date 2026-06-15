@@ -1,7 +1,8 @@
 import intrinsics from "@intrinsics";
 
-// Opens `path` (read-only) and returns an opaque FileDesc. The garbage
-// collector closes the file once no live FileDesc refers to it.
+// Opens `path` for reading and writing, creating it if it does not exist (it is
+// not truncated), and returns an opaque FileDesc. The garbage collector closes
+// the file once no live FileDesc refers to it.
 pub fn open(path: &[Uint8]) -> FileDesc {
     intrinsics::file_open(path)
 }
