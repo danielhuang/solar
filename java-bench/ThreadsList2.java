@@ -5,7 +5,7 @@
 // `root`. The previous list becomes garbage as soon as `root` is overwritten,
 // so this is a concurrent allocate-and-discard (high garbage rate) benchmark.
 //
-// Solar's `ListOpt` enum (Some(&Node) | None) becomes a nullable `Node next`.
+// Solar's nullable reference `next: &?Node` (`null#[Node]` when empty) becomes a nullable `Node next`.
 // Solar `atomic_store`/`atomic_load` become `volatile` field accesses.
 //
 // Crucially the Solar process exits the moment `main` returns -- the first
@@ -16,7 +16,7 @@
 public final class ThreadsList2 {
     static final class Node {
         final long value;   // Solar `Int` is 64-bit
-        final Node next;    // null == ListOpt::None
+        final Node next;    // null == empty (null#[Node])
         Node(long value, Node next) { this.value = value; this.next = next; }
     }
 
