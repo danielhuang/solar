@@ -1,0 +1,3 @@
+pub const VERSION = 42;
+pub const PADDING: Uint = 4u;
+const PRIVATE = 99;

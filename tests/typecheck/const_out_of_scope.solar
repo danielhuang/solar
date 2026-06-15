@@ -1,0 +1,6 @@
+fn main() {
+  if true {
+    const INNER = 5;
+  }
+  let x = INNER;
+}

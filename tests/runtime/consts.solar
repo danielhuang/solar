@@ -1,0 +1,28 @@
+// Const declarations: top-level, local (block-scoped), explicit type, string,
+// and use in expressions. Consts are substituted with their literal value, so
+// the lowered output contains no const declarations.
+const LIMIT: Uint = 3u;
+const STEP = 10;
+const BANNER = "go\n"&;
+
+fn main() {
+  write_stdout(BANNER);          // go
+
+  // local const, shadowing-free use in a loop
+  const START = 100;
+  let total = START;
+  let i = 0u;
+  while i < LIMIT {
+    total = total + STEP;
+    i = i + 1u;
+  }
+  print_int(total);              // 100 + 10*3 = 130
+
+  // block-scoped local const
+  if total > 0 {
+    const INNER = 7;
+    print_int(INNER);            // 7
+  }
+
+  print_int(Int(LIMIT));         // 3
+}

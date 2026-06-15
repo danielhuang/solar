@@ -52,6 +52,12 @@ fn abs(x: Int) -> Int {
   x
 }
 
+// Const declarations hold a literal value and are substituted at each use site.
+// They can be top-level (and exported with `pub`) or local to a block, and the
+// type is optional (inferred from the literal when omitted).
+const RAMP_START = 0;
+const RAMP_STEP: Int = 2;
+
 // Optional keyword parameters: `step` has an explicit type and default, `times`
 // has its type (Uint) inferred from its default. Both must follow the normal
 // parameters and are passed by name at call sites (e.g. `ramp(1, step=5)`).
@@ -144,6 +150,8 @@ fn main() {
   print_int(ramp(0, step=10));           // 0 + 10*3 = 30
   print_int(ramp(0, times=5u));          // 0 + 1*5 = 5
   print_int(ramp(0, step=2, times=4u));  // 0 + 2*4 = 8
+  // consts substitute to their literal value at the use site
+  print_int(ramp(RAMP_START, step=RAMP_STEP));  // 0 + 2*3 = 6
 
   // if-else statement
   if x > 100 {

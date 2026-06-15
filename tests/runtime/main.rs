@@ -38,6 +38,12 @@ fn kwargs() {
 }
 
 #[test]
+fn consts() {
+    let output = run(&fixture("consts.solar"), "consts");
+    assert_eq!(output, "go\n130\n7\n3\n");
+}
+
+#[test]
 fn binop_logic() {
     let output = run(&fixture("binop_logic.solar"), "binop_logic");
     assert_eq!(output, "1\n0\n0\n1\n0\n1\n0\n88\n1\n1\n99\n0\n");

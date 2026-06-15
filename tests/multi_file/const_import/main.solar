@@ -1,0 +1,8 @@
+import { VERSION } from "config.solar";
+import config from "config.solar";
+
+fn main() {
+    print_int(VERSION);            // 42 (named import)
+    print_int(config::VERSION);    // 42 (module-qualified)
+    print_int(Int(config::PADDING)); // 4
+}

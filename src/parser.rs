@@ -156,6 +156,7 @@ fn convert_source_file(node: tree_sitter::Node, source: &str) -> SourceFile {
             "type_alias_def" => items.push(TopLevelItem::TypeAlias(convert_type_alias_def(
                 child, source,
             ))),
+            "const_def" => items.push(TopLevelItem::Const(convert_const_def(child, source))),
             _ => {}
         }
     }
@@ -254,6 +255,25 @@ fn convert_struct_def(node: tree_sitter::Node, source: &str) -> StructDef {
         name,
         type_params,
         fields,
+        is_pub,
+        span: source_span(node),
+    }
+}
+
+fn convert_const_def(node: tree_sitter::Node, source: &str) -> ConstDef {
+    let name = node_text(node.child_by_field_name("name").unwrap(), source).to_string();
+    let is_pub = has_pub_keyword(node, source);
+    let ty = node
+        .child_by_field_name("type")
+        .map(|n| convert_type(n, source));
+    let value = Box::new(convert_expr(
+        node.child_by_field_name("value").unwrap(),
+        source,
+    ));
+    ConstDef {
+        name,
+        ty,
+        value,
         is_pub,
         span: source_span(node),
     }
@@ -493,6 +513,13 @@ fn convert_block(node: tree_sitter::Node, source: &str) -> Vec<Statement> {
                 let span = source_span(child);
                 stmts.push(Statement {
                     kind: StatementKind::NestedFunction(convert_function_def(child, source)),
+                    span,
+                });
+            }
+            "const_def" => {
+                let span = source_span(child);
+                stmts.push(Statement {
+                    kind: StatementKind::Const(convert_const_def(child, source)),
                     span,
                 });
             }

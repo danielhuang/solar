@@ -331,3 +331,17 @@ fn kwarg_nonliteral_default() {
 fn kwarg_unknown_name() {
     compile(&fixture("kwarg_unknown_name.solar"));
 }
+
+// A const must be assigned a literal value.
+#[test]
+#[should_panic(expected = "const `BAD` must be assigned a literal value")]
+fn const_nonliteral() {
+    compile(&fixture("const_nonliteral.solar"));
+}
+
+// A const declared in a block is not visible outside it.
+#[test]
+#[should_panic(expected = "undefined variable: INNER")]
+fn const_out_of_scope() {
+    compile(&fixture("const_out_of_scope.solar"));
+}

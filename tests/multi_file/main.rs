@@ -20,6 +20,12 @@ fn wildcard_import() {
 }
 
 #[test]
+fn const_import() {
+    let output = run(&fixture("const_import/main.solar"), "const_import");
+    assert_eq!(output, "42\n42\n4\n");
+}
+
+#[test]
 fn module_import() {
     let output = run(&fixture("module_import/main.solar"), "module_import");
     assert_eq!(output, "0\n0\n");

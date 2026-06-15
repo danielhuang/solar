@@ -528,6 +528,13 @@ fn apply_subst_to_ast_statement(
             ty: ty.as_ref().map(|t| apply_subst_to_ast_type(t, subst)),
             value: apply_subst_to_ast_expr(value, subst),
         },
+        ast::StatementKind::Const(c) => ast::StatementKind::Const(ast::ConstDef {
+            name: c.name.clone(),
+            ty: c.ty.as_ref().map(|t| apply_subst_to_ast_type(t, subst)),
+            value: Box::new(apply_subst_to_ast_expr(&c.value, subst)),
+            is_pub: c.is_pub,
+            span: c.span,
+        }),
         ast::StatementKind::Assignment { target, value } => ast::StatementKind::Assignment {
             target: apply_subst_to_ast_expr(target, subst),
             value: apply_subst_to_ast_expr(value, subst),
@@ -1350,6 +1357,11 @@ struct Lowerer<'a> {
     reverse_mono: HashMap<String, (String, Vec<Type>)>,
     nested_function_defs: Vec<HashMap<String, Vec<FunctionEntry>>>,
     type_aliases: HashMap<String, (Vec<String>, ast::Type)>,
+    /// Top-level const declarations, by (possibly module-mangled) name. Their
+    /// literal values are substituted at each use site during lowering.
+    consts: HashMap<String, &'a ast::ConstDef>,
+    /// Block-scoped local const declarations, pushed/popped with `scopes`.
+    const_scopes: Vec<HashMap<String, ast::ConstDef>>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -1360,6 +1372,7 @@ impl<'a> Lowerer<'a> {
         let mut generic_enums = HashMap::new();
         let mut function_defs: HashMap<String, Vec<FunctionEntry>> = HashMap::new();
         let mut method_defs: HashMap<String, Vec<FunctionEntry>> = HashMap::new();
+        let mut consts: HashMap<String, &ast::ConstDef> = HashMap::new();
         for item in &source.items {
             match item {
                 ast::TopLevelItem::Struct(s) => {
@@ -1462,6 +1475,20 @@ impl<'a> Lowerer<'a> {
                 }
                 ast::TopLevelItem::TypeAlias(_) => {
                     // Handled below after all items are collected
+                }
+                ast::TopLevelItem::Const(c) => {
+                    if !is_literal_default(&c.value) {
+                        return Err(CompileError::new(
+                            format!("const `{}` must be assigned a literal value", c.name),
+                            c.value.span,
+                        ));
+                    }
+                    if consts.insert(c.name.clone(), c).is_some() {
+                        return Err(CompileError::new(
+                            format!("duplicate const definition: `{}`", c.name),
+                            c.span,
+                        ));
+                    }
                 }
                 ast::TopLevelItem::Import(_) => {
                     panic!("Import items must be resolved before type checking");
@@ -1586,6 +1613,8 @@ impl<'a> Lowerer<'a> {
             reverse_mono: HashMap::new(),
             nested_function_defs: Vec::new(),
             type_aliases,
+            consts,
+            const_scopes: Vec::new(),
         })
     }
 
@@ -1671,10 +1700,23 @@ impl<'a> Lowerer<'a> {
 
     fn push_scope(&mut self) {
         self.scopes.push();
+        self.const_scopes.push(HashMap::new());
     }
 
     fn pop_scope(&mut self) {
         self.scopes.pop();
+        self.const_scopes.pop();
+    }
+
+    /// Look up a const declaration in scope: innermost local const scope first,
+    /// then top-level consts.
+    fn lookup_const(&self, name: &str) -> Option<ast::ConstDef> {
+        for scope in self.const_scopes.iter().rev() {
+            if let Some(c) = scope.get(name) {
+                return Some(c.clone());
+            }
+        }
+        self.consts.get(name).map(|c| (*c).clone())
     }
 
     fn define_var(&mut self, name: String, ty: Type) {
@@ -3402,6 +3444,22 @@ impl<'a> Lowerer<'a> {
                     span: stmt.span,
                 }])
             }
+            ast::StatementKind::Const(c) => {
+                // Local const: validate it's a literal, register it in the
+                // current scope for substitution, and emit no statement (consts
+                // are erased from the lowered output).
+                if !is_literal_default(&c.value) {
+                    return Err(CompileError::new(
+                        format!("const `{}` must be assigned a literal value", c.name),
+                        c.value.span,
+                    ));
+                }
+                self.const_scopes
+                    .last_mut()
+                    .expect("const declared outside any scope")
+                    .insert(c.name.clone(), c.clone());
+                Ok(vec![])
+            }
         }
     }
 
@@ -3426,6 +3484,30 @@ impl<'a> Lowerer<'a> {
                     Ok(Expr {
                         ty,
                         kind: ExprKind::Identifier(name.clone()),
+                        span: expr.span,
+                    })
+                } else if let Some(cdef) = self.lookup_const(name) {
+                    // Substitute the const's literal value at the use site.
+                    let value = self.lower_expr(&cdef.value)?;
+                    let value = if let Some(ann) = &cdef.ty {
+                        let resolved = self.resolve_ast_type(ann)?;
+                        let coerced = self.try_coerce(value, &resolved);
+                        if coerced.ty != resolved {
+                            return Err(CompileError::new(
+                                format!(
+                                    "const `{name}`: value of type {} does not match declared type {resolved}",
+                                    coerced.ty
+                                ),
+                                cdef.value.span,
+                            ));
+                        }
+                        coerced
+                    } else {
+                        value
+                    };
+                    Ok(Expr {
+                        ty: value.ty,
+                        kind: value.kind,
                         span: expr.span,
                     })
                 } else if self.function_defs.contains_key(name.as_str()) {

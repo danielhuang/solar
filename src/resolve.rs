@@ -23,6 +23,7 @@ enum ExportKind {
     Function,
     Method,
     TypeAlias,
+    Const,
 }
 
 struct Resolver {
@@ -176,6 +177,12 @@ impl Resolver {
                         .or_default()
                         .push(ExportKind::TypeAlias);
                 }
+                TopLevelItem::Const(c) if c.is_pub => {
+                    exports
+                        .entry(c.name.clone())
+                        .or_default()
+                        .push(ExportKind::Const);
+                }
                 _ => {}
             }
         }
@@ -293,6 +300,12 @@ impl Resolver {
                     local_defs.insert(ta.name.clone());
                     if !prefix.is_empty() {
                         rename_map.insert(ta.name.clone(), format!("{prefix}{}", ta.name));
+                    }
+                }
+                TopLevelItem::Const(c) => {
+                    local_defs.insert(c.name.clone());
+                    if !prefix.is_empty() {
+                        rename_map.insert(c.name.clone(), format!("{prefix}{}", c.name));
                     }
                 }
                 TopLevelItem::Import(_) => {}
@@ -531,6 +544,17 @@ impl Resolver {
                     );
                     set_file_id_span(&mut ta.span, file_id);
                     rewritten.push(TopLevelItem::TypeAlias(ta));
+                }
+                TopLevelItem::Const(c) => {
+                    let mut c = c.clone();
+                    c.name = rename_map.get(&c.name).cloned().unwrap_or(c.name.clone());
+                    // The value is a literal (no name references), but an explicit
+                    // type may reference a renamed/imported type.
+                    if let Some(ty) = &mut c.ty {
+                        *ty = rewrite_type(ty, &rename_map, &module_aliases, &[]);
+                    }
+                    set_file_id_span(&mut c.span, file_id);
+                    rewritten.push(TopLevelItem::Const(c));
                 }
                 TopLevelItem::Import(_) => {
                     // Strip imports from output
@@ -857,6 +881,16 @@ fn rewrite_statement(stmt: &mut Statement, ctx: &RewriteCtx, locals: &mut HashSe
                 ctx.intrinsic_modules,
                 ctx.file_id,
             );
+        }
+        StatementKind::Const(c) => {
+            // A local const is block-scoped; treat its name as a local so later
+            // references aren't rewritten to a module-mangled name.
+            locals.insert(c.name.clone());
+            if let Some(t) = &mut c.ty {
+                *t = rewrite_type(t, ctx.rename_map, ctx.module_aliases, ctx.type_params);
+            }
+            rewrite_expr(&mut c.value, ctx, locals);
+            c.span.file_id = ctx.file_id;
         }
     }
 }

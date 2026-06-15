@@ -24,6 +24,19 @@ pub enum TopLevelItem {
     Method(FunctionDef),
     Import(ImportDef),
     TypeAlias(TypeAliasDef),
+    Const(ConstDef),
+}
+
+#[derive(Debug, Clone)]
+pub struct ConstDef {
+    pub name: String,
+    /// Optional explicit type; inferred from the literal `value` when absent.
+    pub ty: Option<Type>,
+    /// The constant's value — must be a literal. Substituted at each use site
+    /// during type-check/lowering.
+    pub value: Box<Expr>,
+    pub is_pub: bool,
+    pub span: SourceSpan,
 }
 
 #[derive(Debug, Clone)]
@@ -196,6 +209,7 @@ pub enum StatementKind {
     Expression(Expr),
     Return(Expr),
     NestedFunction(FunctionDef),
+    Const(ConstDef),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
