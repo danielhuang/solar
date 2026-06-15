@@ -892,7 +892,12 @@ fn rewrite_statement(stmt: &mut Statement, ctx: &RewriteCtx, locals: &mut HashSe
             rewrite_expr(&mut c.value, ctx, locals);
             c.span.file_id = ctx.file_id;
         }
-        StatementKind::Break | StatementKind::Continue => {}
+        StatementKind::Break(value) => {
+            if let Some(v) = value {
+                rewrite_expr(v, ctx, locals);
+            }
+        }
+        StatementKind::Continue => {}
     }
 }
 
@@ -1025,6 +1030,10 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<String>) {
             rewrite_statements(else_body, ctx, &mut locals_copy);
         }
         ExprKind::Block(stmts) => {
+            let mut locals_copy = locals.clone();
+            rewrite_statements(stmts, ctx, &mut locals_copy);
+        }
+        ExprKind::Loop(stmts) => {
             let mut locals_copy = locals.clone();
             rewrite_statements(stmts, ctx, &mut locals_copy);
         }

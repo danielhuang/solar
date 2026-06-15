@@ -510,7 +510,11 @@ fn convert_block(node: tree_sitter::Node, source: &str) -> Vec<Statement> {
             }
             "return_statement" => stmts.push(convert_return_statement(child, source)),
             "break_statement" => stmts.push(Statement {
-                kind: StatementKind::Break,
+                kind: StatementKind::Break(
+                    child
+                        .child_by_field_name("value")
+                        .map(|n| convert_expr(n, source)),
+                ),
                 span: source_span(child),
             }),
             "continue_statement" => stmts.push(Statement {
@@ -1006,6 +1010,10 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             }
         }
         "block" => ExprKind::Block(convert_block(node, source)),
+        "loop_expression" => {
+            let body_node = node.child_by_field_name("body").unwrap();
+            ExprKind::Loop(convert_block(body_node, source))
+        }
         "closure_expr" => {
             let mut parameters = Vec::new();
             if let Some(param_list) = named_child_by_kind(node, "closure_param_list") {

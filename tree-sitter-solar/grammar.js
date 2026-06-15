@@ -133,9 +133,13 @@ module.exports = grammar({
     return_statement: ($) =>
       seq("return", field("value", $._expression_with_struct), ";"),
 
-    break_statement: (_) => seq("break", ";"),
+    // The `;` is optional so `loop { break 5 }` works as a tail-less block. The
+    // value excludes bare blocks/struct-literals to avoid `break {` ambiguity.
+    // `prec.right` makes the parser prefer attaching a following expression as
+    // the value rather than treating the `break` as valueless.
+    break_statement: ($) => prec.right(seq("break", optional(field("value", $._expression)), optional(";"))),
 
-    continue_statement: (_) => seq("continue", ";"),
+    continue_statement: (_) => seq("continue", optional(";")),
 
     if_statement: ($) =>
       seq("if", field("condition", $._expression), field("body", $.block),
@@ -147,6 +151,10 @@ module.exports = grammar({
 
     while_statement: ($) =>
       seq("while", field("condition", $._expression), field("body", $.block)),
+
+    // `loop` is an expression (it can yield a value via `break <v>`), but it may
+    // also stand alone as a statement without a trailing semicolon, like `while`.
+    loop_expression: ($) => seq("loop", field("body", $.block)),
 
     for_statement: ($) => choice(
       seq("for", field("variable", $.identifier), "in",
@@ -185,6 +193,7 @@ module.exports = grammar({
         $.array_repeat,
         $.binary_expression,
         $.if_expression,
+        $.loop_expression,
         $.closure_expr,
         $.path_expr,
         $.match_expression,

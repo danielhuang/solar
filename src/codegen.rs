@@ -11,6 +11,7 @@ pub fn generate(module: &Module, source_file: &str) -> String {
         tmp_counter: 0,
         source_file: source_file.to_string(),
         emitted_mark_fns: HashSet::new(),
+        loop_dst: Vec::new(),
     };
     cg.emit_module();
     cg.out
@@ -23,6 +24,9 @@ struct Codegen<'a> {
     tmp_counter: usize,
     source_file: String,
     emitted_mark_fns: HashSet<String>,
+    /// C lvalue strings for the enclosing loop expressions' result destinations;
+    /// `break <v>` assigns into the innermost one.
+    loop_dst: Vec<String>,
 }
 
 impl<'a> Codegen<'a> {
@@ -1787,6 +1791,19 @@ impl<'a> Codegen<'a> {
                 self.indent -= 1;
                 self.line("}");
             }
+            NodeKind::Loop { body } => {
+                // Loop expression: `break <v>` assigns its value into `dst`.
+                let body = body.clone();
+                self.loop_dst.push(dst.to_string());
+                self.line("while (1) {");
+                self.indent += 1;
+                for &stmt_id in &body {
+                    self.emit_stmt(nodes, stmt_id);
+                }
+                self.indent -= 1;
+                self.line("}");
+                self.loop_dst.pop();
+            }
             NodeKind::EnumVariant {
                 enum_name,
                 variant_name,
@@ -2395,7 +2412,23 @@ impl<'a> Codegen<'a> {
                 self.line("}");
             }
             NodeKind::Loop { body } => {
+                // Statement-position loop (while/for, or a bare `loop`): any break
+                // value is written into a throwaway heap slot of the loop's type.
                 let body = body.clone();
+                let ty = nodes[id.0].ty.clone();
+                let dst = if matches!(ty, Type::Unit | Type::Never) {
+                    "(uint8_t*)0".to_string()
+                } else {
+                    let size = self.type_size(&ty);
+                    let align = self.type_align(&ty);
+                    let mf = self.mark_fn_expr(&ty);
+                    let tmp = self.fresh_tmp();
+                    self.linef(format!(
+                        "uint8_t* {tmp} = sol_alloc({size}, {align}, {mf});"
+                    ));
+                    tmp
+                };
+                self.loop_dst.push(dst);
                 self.line("while (1) {");
                 self.indent += 1;
                 for &stmt_id in &body {
@@ -2403,8 +2436,17 @@ impl<'a> Codegen<'a> {
                 }
                 self.indent -= 1;
                 self.line("}");
+                self.loop_dst.pop();
             }
-            NodeKind::Break => {
+            NodeKind::Break(value) => {
+                if let Some(v) = *value {
+                    let dst = self
+                        .loop_dst
+                        .last()
+                        .cloned()
+                        .expect("break value outside a loop");
+                    self.emit_into(nodes, v, &dst);
+                }
                 self.line("break;");
             }
             NodeKind::Continue => {

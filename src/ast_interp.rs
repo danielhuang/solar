@@ -248,12 +248,20 @@ fn assign_value_in_place(dst: &Slot, src: Value) {
 enum Flow {
     /// Proceed to the next statement.
     Normal,
-    /// Exit the innermost loop.
-    Break,
+    /// Exit the innermost loop, optionally with a value (for `loop` expressions).
+    Break(Option<Value>),
     /// Skip to the next iteration of the innermost loop.
     Continue,
     /// Exit the function with this value.
     Return(Value),
+}
+
+/// How a loop terminated.
+enum LoopExit {
+    /// `break <v>` (or valueless break → Unit).
+    Broke(Value),
+    /// `return <v>` propagated out of the loop.
+    Returned(Value),
 }
 
 struct Interpreter<'a, 'io> {
@@ -675,6 +683,15 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 self.pop_scope();
                 result
             }
+            ExprKind::Loop(body) => {
+                // Loop expression: its value comes from `break <v>`. (As with
+                // other expression-position bodies, `return` inside is not
+                // propagated by the interpreter.)
+                match self.run_loop(body) {
+                    LoopExit::Broke(v) => v,
+                    LoopExit::Returned(v) => v,
+                }
+            }
             ExprKind::EnumVariant {
                 enum_name,
                 variant_name,
@@ -1071,7 +1088,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                         self.pop_scope();
                         match flow {
                             Flow::Return(v) => return Flow::Return(v),
-                            Flow::Break => break Flow::Normal,
+                            Flow::Break(_) => break Flow::Normal,
                             // A `continue` or fall-through starts the next iteration.
                             Flow::Continue | Flow::Normal => {}
                         }
@@ -1079,6 +1096,18 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     _ => break Flow::Normal,
                 }
             },
+            // A bare `loop` statement runs through the statement path so `return`
+            // (and outer break/continue) propagate; the break value is discarded.
+            StatementKind::Expression(expr) if matches!(expr.kind, ExprKind::Loop(_)) => {
+                let body = match &expr.kind {
+                    ExprKind::Loop(body) => body,
+                    _ => unreachable!(),
+                };
+                match self.run_loop(body) {
+                    LoopExit::Returned(v) => Flow::Return(v),
+                    LoopExit::Broke(_) => Flow::Normal,
+                }
+            }
             StatementKind::Expression(expr) => {
                 self.eval_expr(expr);
                 Flow::Normal
@@ -1087,8 +1116,22 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let val = self.eval_expr(expr);
                 Flow::Return(val)
             }
-            StatementKind::Break => Flow::Break,
+            StatementKind::Break(value) => Flow::Break(value.as_ref().map(|v| self.eval_expr(v))),
             StatementKind::Continue => Flow::Continue,
+        }
+    }
+
+    /// Run a `loop` body until it breaks or returns.
+    fn run_loop(&mut self, body: &[Statement]) -> LoopExit {
+        loop {
+            self.push_scope();
+            let flow = self.exec_body(body);
+            self.pop_scope();
+            match flow {
+                Flow::Break(v) => return LoopExit::Broke(v.unwrap_or(Value::Unit)),
+                Flow::Return(v) => return LoopExit::Returned(v),
+                Flow::Continue | Flow::Normal => {}
+            }
         }
     }
 
@@ -1123,7 +1166,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             match self.exec_statement(stmt) {
                 Flow::Return(val) => return val, // early return
                 Flow::Normal => {}
-                Flow::Break => unreachable!("break outside loop"),
+                Flow::Break(_) => unreachable!("break outside loop"),
                 Flow::Continue => unreachable!("continue outside loop"),
             }
         }

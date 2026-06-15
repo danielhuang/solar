@@ -208,7 +208,8 @@ pub enum StatementKind {
     },
     Expression(Expr),
     Return(Expr),
-    Break,
+    /// `break;` (no value) or `break <expr>;` (value, only inside a `loop`).
+    Break(Option<Expr>),
     Continue,
     NestedFunction(FunctionDef),
     Const(ConstDef),
@@ -279,6 +280,9 @@ pub enum ExprKind {
         element: Box<Expr>,
         count: Box<Expr>,
     },
+    /// `loop { … }` — an infinite loop usable as an expression; its value comes
+    /// from `break <expr>`.
+    Loop(Vec<Statement>),
     BinaryOp {
         op: BinOp,
         left: Box<Expr>,

@@ -320,6 +320,13 @@ fn main() {
     println(n);                         // 0, 2, 3
   }
 
+  // `loop {}` is an expression — `break <v>` yields its value
+  let doubled_until = loop {
+    let v = 3;
+    break v * 2;
+  };
+  println(doubled_until);               // 6
+
   // array init: [count; fn(Uint) -> T]
   let indices = [5u; \i: Uint i];
   println(indices[2u]);                 // 2

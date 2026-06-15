@@ -59,6 +59,12 @@ fn break_continue() {
 }
 
 #[test]
+fn loop_expr() {
+    let output = run(&fixture("loop_expr.solar"), "loop_expr");
+    assert_eq!(output, "5\n50\n1\n3\n8\n");
+}
+
+#[test]
 fn binop_logic() {
     let output = run(&fixture("binop_logic.solar"), "binop_logic");
     assert_eq!(output, "1\n0\n0\n1\n0\n1\n0\n88\n1\n1\n99\n0\n");

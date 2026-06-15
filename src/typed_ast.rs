@@ -414,6 +414,12 @@ fn apply_subst_to_ast_expr(expr: &ast::Expr, subst: &HashMap<String, ast::Type>)
                 .map(|s| apply_subst_to_ast_statement(s, subst))
                 .collect(),
         ),
+        ast::ExprKind::Loop(stmts) => ast::ExprKind::Loop(
+            stmts
+                .iter()
+                .map(|s| apply_subst_to_ast_statement(s, subst))
+                .collect(),
+        ),
         ast::ExprKind::Closure {
             parameters,
             return_type,
@@ -617,7 +623,9 @@ fn apply_subst_to_ast_statement(
         ast::StatementKind::Return(expr) => {
             ast::StatementKind::Return(apply_subst_to_ast_expr(expr, subst))
         }
-        ast::StatementKind::Break => ast::StatementKind::Break,
+        ast::StatementKind::Break(value) => {
+            ast::StatementKind::Break(value.as_ref().map(|v| apply_subst_to_ast_expr(v, subst)))
+        }
         ast::StatementKind::Continue => ast::StatementKind::Continue,
         ast::StatementKind::NestedFunction(fdef) => {
             ast::StatementKind::NestedFunction(ast::FunctionDef {
@@ -928,7 +936,7 @@ pub enum StatementKind {
     },
     Expression(Expr),
     Return(Expr),
-    Break,
+    Break(Option<Expr>),
     Continue,
 }
 
@@ -1000,6 +1008,7 @@ pub enum ExprKind {
         else_body: Vec<Statement>,
     },
     Block(Vec<Statement>),
+    Loop(Vec<Statement>),
     Closure {
         synthetic_fn: String,
         captures: Vec<CapturedVar>,
@@ -1366,10 +1375,21 @@ struct Lowerer<'a> {
     consts: HashMap<String, &'a ast::ConstDef>,
     /// Block-scoped local const declarations, pushed/popped with `scopes`.
     const_scopes: Vec<HashMap<String, ast::ConstDef>>,
-    /// Nesting depth of the enclosing loops in the *current* function. Reset to
-    /// 0 when entering a closure or nested function so `break`/`continue` can't
-    /// escape into an outer function's loop.
-    loop_depth: usize,
+    /// Stack of enclosing loops in the *current* function. Cleared when entering
+    /// a closure or nested function so `break`/`continue` can't escape into an
+    /// outer function's loop. Each entry tracks whether the loop is a value-
+    /// producing `loop` and the unified type of its `break` values so far.
+    loop_ctx: Vec<LoopCtx>,
+}
+
+/// Per-loop state used to type `loop` expressions and validate `break`.
+struct LoopCtx {
+    /// True for a `loop` expression (a `break <value>` is allowed); false for
+    /// `while`/`for`, which are statements and accept only valueless `break`.
+    is_value_loop: bool,
+    /// Unified type of `break` values seen so far. `None` means no `break` has
+    /// been encountered yet. A valueless `break` contributes `Unit`.
+    break_ty: Option<Type>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -1623,7 +1643,7 @@ impl<'a> Lowerer<'a> {
             type_aliases,
             consts,
             const_scopes: Vec::new(),
-            loop_depth: 0,
+            loop_ctx: Vec::new(),
         })
     }
 
@@ -2770,8 +2790,7 @@ impl<'a> Lowerer<'a> {
         self.nested_function_defs.push(HashMap::new());
         // A function body starts a fresh loop context (lowering can be triggered
         // lazily from inside an enclosing loop during monomorphization).
-        let saved_loop_depth = self.loop_depth;
-        self.loop_depth = 0;
+        let saved_loop_ctx = std::mem::take(&mut self.loop_ctx);
         let mut param_destructure_stmts: Vec<Statement> = Vec::new();
         let mut parameters: Vec<Parameter> = Vec::new();
         for (i, p) in func.parameters.iter().enumerate() {
@@ -2911,7 +2930,7 @@ impl<'a> Lowerer<'a> {
 
         self.nested_function_defs.pop();
         self.pop_scope();
-        self.loop_depth = saved_loop_depth;
+        self.loop_ctx = saved_loop_ctx;
         Ok(FunctionDef {
             name: func.name.clone(),
             parameters,
@@ -3072,7 +3091,10 @@ impl<'a> Lowerer<'a> {
                     ));
                 }
                 self.push_scope();
-                self.loop_depth += 1;
+                self.loop_ctx.push(LoopCtx {
+                    is_value_loop: false,
+                    break_ty: None,
+                });
                 let lowered_body: Vec<Statement> = body
                     .iter()
                     .map(|s| self.lower_statement(s))
@@ -3080,7 +3102,7 @@ impl<'a> Lowerer<'a> {
                     .into_iter()
                     .flatten()
                     .collect();
-                self.loop_depth -= 1;
+                self.loop_ctx.pop();
                 self.pop_scope();
                 Ok(vec![Statement {
                     kind: StatementKind::While {
@@ -3177,11 +3199,14 @@ impl<'a> Lowerer<'a> {
                     span: stmt.span,
                 };
                 let mut while_body = vec![let_var, increment];
-                self.loop_depth += 1;
+                self.loop_ctx.push(LoopCtx {
+                    is_value_loop: false,
+                    break_ty: None,
+                });
                 for s in body {
                     while_body.extend(self.lower_statement(s)?);
                 }
-                self.loop_depth -= 1;
+                self.loop_ctx.pop();
                 self.pop_scope();
 
                 let condition = Expr {
@@ -3350,11 +3375,14 @@ impl<'a> Lowerer<'a> {
                     span: stmt.span,
                 };
                 let mut while_body = vec![let_var, increment];
-                self.loop_depth += 1;
+                self.loop_ctx.push(LoopCtx {
+                    is_value_loop: false,
+                    break_ty: None,
+                });
                 for s in body {
                     while_body.extend(self.lower_statement(s)?);
                 }
-                self.loop_depth -= 1;
+                self.loop_ctx.pop();
                 self.pop_scope();
 
                 let condition = Expr {
@@ -3418,20 +3446,71 @@ impl<'a> Lowerer<'a> {
                     span: stmt.span,
                 }])
             }
-            ast::StatementKind::Break => {
-                if self.loop_depth == 0 {
+            ast::StatementKind::Break(value) => {
+                if self.loop_ctx.is_empty() {
                     return Err(CompileError::new(
                         "`break` outside of a loop".to_string(),
                         stmt.span,
                     ));
                 }
+                let lowered = match value {
+                    Some(v) => {
+                        if !self.loop_ctx.last().unwrap().is_value_loop {
+                            return Err(CompileError::new(
+                                "cannot `break` with a value out of a `while`/`for` loop"
+                                    .to_string(),
+                                stmt.span,
+                            ));
+                        }
+                        let expected = self.loop_ctx.last().unwrap().break_ty.clone();
+                        let lowered = self.lower_expr(v)?;
+                        let lowered = match expected {
+                            None => {
+                                self.loop_ctx.last_mut().unwrap().break_ty =
+                                    Some(lowered.ty.clone());
+                                lowered
+                            }
+                            Some(exp) => {
+                                let coerced = self.try_coerce(lowered, &exp);
+                                if coerced.ty != exp {
+                                    return Err(CompileError::new(
+                                        format!(
+                                            "`break` value type mismatch: expected {exp}, got {}",
+                                            coerced.ty
+                                        ),
+                                        coerced.span,
+                                    ));
+                                }
+                                coerced
+                            }
+                        };
+                        Some(lowered)
+                    }
+                    None => {
+                        // A valueless break contributes Unit to the loop's type.
+                        let ctx = self.loop_ctx.last_mut().unwrap();
+                        match &ctx.break_ty {
+                            None => ctx.break_ty = Some(Type::Unit),
+                            Some(t) if *t != Type::Unit => {
+                                return Err(CompileError::new(
+                                    format!(
+                                        "`break` without a value, but earlier `break` had type {t}"
+                                    ),
+                                    stmt.span,
+                                ));
+                            }
+                            _ => {}
+                        }
+                        None
+                    }
+                };
                 Ok(vec![Statement {
-                    kind: StatementKind::Break,
+                    kind: StatementKind::Break(lowered),
                     span: stmt.span,
                 }])
             }
             ast::StatementKind::Continue => {
-                if self.loop_depth == 0 {
+                if self.loop_ctx.is_empty() {
                     return Err(CompileError::new(
                         "`continue` outside of a loop".to_string(),
                         stmt.span,
@@ -4674,6 +4753,29 @@ impl<'a> Lowerer<'a> {
                     span: expr.span,
                 })
             }
+            ast::ExprKind::Loop(stmts) => {
+                self.push_scope();
+                self.loop_ctx.push(LoopCtx {
+                    is_value_loop: true,
+                    break_ty: None,
+                });
+                let lowered: Vec<Statement> = stmts
+                    .iter()
+                    .map(|s| self.lower_statement(s))
+                    .collect::<Result<Vec<Vec<Statement>>, CompileError>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                let break_ty = self.loop_ctx.pop().unwrap().break_ty;
+                self.pop_scope();
+                // No break at all → the loop never yields a value (diverges).
+                let ty = break_ty.unwrap_or(Type::Never);
+                Ok(Expr {
+                    ty,
+                    kind: ExprKind::Loop(lowered),
+                    span: expr.span,
+                })
+            }
             ast::ExprKind::Closure {
                 parameters,
                 return_type,
@@ -5308,8 +5410,7 @@ impl<'a> Lowerer<'a> {
         self.nested_function_defs.push(HashMap::new());
         // A closure body starts a fresh loop context — `break`/`continue` must
         // not escape into a loop in the enclosing function.
-        let saved_loop_depth = self.loop_depth;
-        self.loop_depth = 0;
+        let saved_loop_ctx = std::mem::take(&mut self.loop_ctx);
 
         let mut typed_params: Vec<Parameter> = Vec::new();
         for (i, p) in parameters.iter().enumerate() {
@@ -5363,7 +5464,7 @@ impl<'a> Lowerer<'a> {
 
         self.nested_function_defs.pop();
         self.pop_scope();
-        self.loop_depth = saved_loop_depth;
+        self.loop_ctx = saved_loop_ctx;
 
         // Extract captures
         let ctx = self.capture_context.take().unwrap();

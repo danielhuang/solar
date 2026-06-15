@@ -360,3 +360,17 @@ fn break_outside_loop() {
 fn continue_outside_loop() {
     compile(&fixture("continue_outside_loop.solar"));
 }
+
+// `break <value>` is only allowed in a `loop`, not a `while`/`for`.
+#[test]
+#[should_panic(expected = "cannot `break` with a value out of a `while`/`for` loop")]
+fn break_value_in_while() {
+    compile(&fixture("break_value_in_while.solar"));
+}
+
+// All `break <value>`s in a `loop` must agree on type.
+#[test]
+#[should_panic(expected = "`break` value type mismatch")]
+fn loop_break_type_mismatch() {
+    compile(&fixture("loop_break_type_mismatch.solar"));
+}

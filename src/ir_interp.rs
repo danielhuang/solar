@@ -131,6 +131,9 @@ struct Interpreter<'a, 'io> {
     vars: HashMap<VarId, usize>,
     var_meta: HashMap<VarId, usize>,
     files: FileTable<'io>,
+    /// Result destinations of the enclosing loop expressions; `break <v>` writes
+    /// the value into the innermost one.
+    loop_dst: Vec<usize>,
 }
 
 impl<'a, 'io> Interpreter<'a, 'io> {
@@ -156,6 +159,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             vars: HashMap::new(),
             var_meta: HashMap::new(),
             files: FileTable::new(stdin, stdout),
+            loop_dst: Vec::new(),
         }
     }
 
@@ -916,6 +920,13 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let branch = if cond != 0 { &then_body } else { &else_body };
                 self.exec_branch_into(nodes, branch, dst);
             }
+            NodeKind::Loop { body } => {
+                // Loop expression: `break <v>` writes its value into `dst`. (As
+                // with other expression-position bodies, `return` from inside is
+                // not propagated by the interpreter.)
+                let body = body.clone();
+                self.run_loop(nodes, &body, dst, dst);
+            }
             NodeKind::EnumVariant {
                 enum_name,
                 variant_name,
@@ -1286,18 +1297,24 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 }
             }
             NodeKind::Loop { body } => {
+                // A statement-position loop (while/for, or a bare `loop`): any
+                // break value is written into a throwaway slot of the loop's type.
                 let body = body.clone();
-                loop {
-                    match self.exec_body(nodes, &body, ret_dst) {
-                        ControlFlow::Break => break ControlFlow::Normal,
-                        ControlFlow::Return => return ControlFlow::Return,
-                        // Both a fall-through and a `continue` start the next
-                        // iteration (the condition re-check is at the loop top).
-                        ControlFlow::Normal | ControlFlow::Continue => {}
-                    }
-                }
+                let ty = nodes[id.0].ty.clone();
+                let dst = if matches!(ty, Type::Unit | Type::Never) {
+                    0
+                } else {
+                    self.alloc_ty(&ty)
+                };
+                self.run_loop(nodes, &body, dst, ret_dst)
             }
-            NodeKind::Break => ControlFlow::Break,
+            NodeKind::Break(value) => {
+                if let Some(v) = *value {
+                    let dst = *self.loop_dst.last().expect("break value outside a loop");
+                    self.eval_into(nodes, v, dst);
+                }
+                ControlFlow::Break
+            }
             NodeKind::Continue => ControlFlow::Continue,
             NodeKind::Expr(inner) => {
                 let inner = *inner;
@@ -1317,6 +1334,29 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             }
             _ => unreachable!(),
         }
+    }
+
+    /// Run a loop body repeatedly until it breaks. `dst` is where `break <v>`
+    /// writes its value. Returns the resulting control flow (`Break` becomes
+    /// `Normal`; `Return` propagates).
+    fn run_loop(
+        &mut self,
+        nodes: &[Node],
+        body: &[NodeId],
+        dst: usize,
+        ret_dst: usize,
+    ) -> ControlFlow {
+        self.loop_dst.push(dst);
+        let result = loop {
+            match self.exec_body(nodes, body, ret_dst) {
+                ControlFlow::Break => break ControlFlow::Normal,
+                ControlFlow::Return => break ControlFlow::Return,
+                // A fall-through or `continue` starts the next iteration.
+                ControlFlow::Normal | ControlFlow::Continue => {}
+            }
+        };
+        self.loop_dst.pop();
+        result
     }
 
     fn exec_body(&mut self, nodes: &[Node], body: &[NodeId], ret_dst: usize) -> ControlFlow {

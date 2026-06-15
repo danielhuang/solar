@@ -171,7 +171,9 @@ pub enum NodeKind {
     Loop {
         body: Vec<NodeId>,
     },
-    Break,
+    /// `break`, optionally with a value (which is written into the enclosing
+    /// loop expression's result destination).
+    Break(Option<NodeId>),
     Continue,
     Not(NodeId),
     Expr(NodeId),
@@ -246,7 +248,12 @@ fn collect_closure_captures(
             }
             typed_ast::StatementKind::Expression(e) => collect_closure_captures_expr(e, map),
             typed_ast::StatementKind::Return(e) => collect_closure_captures_expr(e, map),
-            typed_ast::StatementKind::Break | typed_ast::StatementKind::Continue => {}
+            typed_ast::StatementKind::Break(value) => {
+                if let Some(v) = value {
+                    collect_closure_captures_expr(v, map);
+                }
+            }
+            typed_ast::StatementKind::Continue => {}
         }
     }
 }
@@ -325,6 +332,9 @@ fn collect_closure_captures_expr(
             collect_closure_captures(else_body, map);
         }
         typed_ast::ExprKind::Block(stmts) => {
+            collect_closure_captures(stmts, map);
+        }
+        typed_ast::ExprKind::Loop(stmts) => {
             collect_closure_captures(stmts, map);
         }
         typed_ast::ExprKind::EnumVariant { value, .. } => {
@@ -1046,6 +1056,18 @@ impl<'a> FunctionLowerer<'a> {
                     })
                 }
             }
+            typed_ast::ExprKind::Loop(stmts) => {
+                self.push_scope();
+                let body = self.lower_body(stmts);
+                self.pop_scope();
+                // The loop's value (if any) is produced by `break <v>` inside the
+                // body, written into the loop's eval destination.
+                self.push(Node {
+                    ty: expr.ty.clone(),
+                    kind: NodeKind::Loop { body },
+                    span: expr.span,
+                })
+            }
             typed_ast::ExprKind::EnumVariant {
                 enum_name,
                 variant_name,
@@ -1210,7 +1232,7 @@ impl<'a> FunctionLowerer<'a> {
                 });
                 let break_node = self.push(Node {
                     ty: Type::Unit,
-                    kind: NodeKind::Break,
+                    kind: NodeKind::Break(None),
                     span: stmt.span,
                 });
                 let if_break = self.push(Node {
@@ -1236,11 +1258,18 @@ impl<'a> FunctionLowerer<'a> {
             }
             typed_ast::StatementKind::Expression(expr) => {
                 let id = self.lower_expr(expr);
-                self.push(Node {
-                    ty: expr.ty.clone(),
-                    kind: NodeKind::Expr(id),
-                    span: stmt.span,
-                })
+                // A bare `loop` statement is executed as a statement (so `return`
+                // and outer `break`/`continue` propagate, like `while`), rather
+                // than wrapped as an expression evaluated into a throwaway.
+                if matches!(&expr.kind, typed_ast::ExprKind::Loop(_)) {
+                    id
+                } else {
+                    self.push(Node {
+                        ty: expr.ty.clone(),
+                        kind: NodeKind::Expr(id),
+                        span: stmt.span,
+                    })
+                }
             }
             typed_ast::StatementKind::Return(expr) => {
                 let id = self.lower_expr(expr);
@@ -1250,11 +1279,14 @@ impl<'a> FunctionLowerer<'a> {
                     span: stmt.span,
                 })
             }
-            typed_ast::StatementKind::Break => self.push(Node {
-                ty: Type::Unit,
-                kind: NodeKind::Break,
-                span: stmt.span,
-            }),
+            typed_ast::StatementKind::Break(value) => {
+                let value_id = value.as_ref().map(|v| self.lower_expr(v));
+                self.push(Node {
+                    ty: Type::Unit,
+                    kind: NodeKind::Break(value_id),
+                    span: stmt.span,
+                })
+            }
             typed_ast::StatementKind::Continue => self.push(Node {
                 ty: Type::Unit,
                 kind: NodeKind::Continue,
