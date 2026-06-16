@@ -14,6 +14,7 @@ pub fn generate(module: &Module, source_file: &str, source_map: &SourceMap) -> S
         source_map,
         emitted_mark_fns: HashSet::new(),
         loop_dst: Vec::new(),
+        cur_loc: None,
     };
     cg.emit_module();
     cg.out
@@ -33,15 +34,34 @@ struct Codegen<'a> {
     /// C lvalue strings for the enclosing loop expressions' result destinations;
     /// `break <v>` assigns into the innermost one.
     loop_dst: Vec<String>,
+    /// Source location (`#line` value, file) to stamp on every emitted code line.
+    /// A statement expands to many C lines, but a `#line N` directive only sets the
+    /// *next* line — the C preprocessor auto-increments after that, so without
+    /// re-asserting it each line a statement's instructions drift onto later source
+    /// lines (closing braces, blanks, the next function). Re-stamping every line via
+    /// `line()` pins them all to the statement's own line. `None` = synthetic glue,
+    /// emitted with no directive.
+    cur_loc: Option<(usize, String)>,
 }
 
 impl<'a> Codegen<'a> {
-    fn line(&mut self, s: &str) {
+    /// Emit a physical line verbatim (indented), with no `#line` directive.
+    fn raw_line(&mut self, s: &str) {
         for _ in 0..self.indent {
             self.out.push_str("    ");
         }
         self.out.push_str(s);
         self.out.push('\n');
+    }
+
+    /// Emit a code line, re-asserting the current `#line` location before it so the
+    /// preprocessor's per-line auto-increment can't drift the attribution off the
+    /// statement's own source line (see `cur_loc`).
+    fn line(&mut self, s: &str) {
+        if let Some((n, f)) = self.cur_loc.clone() {
+            self.raw_line(&format!("#line {n} \"{f}\""));
+        }
+        self.raw_line(s);
     }
 
     fn linef(&mut self, s: String) {
@@ -2337,7 +2357,9 @@ impl<'a> Codegen<'a> {
             .get(span.file_id)
             .map(|(f, _)| f.to_string())
             .unwrap_or_else(|| self.source_file.clone());
-        self.linef(format!("#line {} \"{}\"", line + 1, file));
+        // Don't emit now: `line()` re-asserts this before every code line of the
+        // statement so the preprocessor can't drift the attribution forward.
+        self.cur_loc = Some(((line + 1) as usize, file));
     }
 
     fn emit_stmt(&mut self, nodes: &[Node], id: NodeId) {
@@ -2503,6 +2525,9 @@ impl<'a> Codegen<'a> {
             }
             _ => unreachable!(),
         }
-        self.line("#line 1 \"\"");
+        // End of statement: stop stamping and neutralize the trailing location so
+        // synthetic glue between statements isn't attributed to real source lines.
+        self.cur_loc = None;
+        self.raw_line("#line 1 \"\"");
     }
 }
