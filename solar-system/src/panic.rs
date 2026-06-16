@@ -295,38 +295,31 @@ mod tests {
     }
 }
 
-fn capture_backtrace() -> Vec<*mut std::ffi::c_void> {
-    let mut size = 64;
-    loop {
-        let mut addrs = vec![std::ptr::null_mut(); size];
-        let n = unsafe { libc::backtrace(addrs.as_mut_ptr(), size as i32) } as usize;
-        if n < size {
-            addrs.truncate(n);
-            return addrs;
-        }
-        size *= 2;
-    }
-}
-
 /// Print an error message and a demangled Solar stack trace, then abort.
+///
+/// Frames are resolved with the `backtrace` crate (the symbolizer std and samply
+/// use), which reads the executable's `.symtab` + DWARF. That's what lets it name
+/// the generated `solar_*` functions even though codegen emits them `static`
+/// (local) — `dladdr`, which only consults the dynamic symbol table, can't. It
+/// also recovers inlined frames, so optimized builds still show the call chain.
 pub fn sol_panic_internal(msg: &str) -> ! {
     let mut err = std::io::stderr().lock();
     let _ = writeln!(err, "{msg}");
     let _ = writeln!(err, "\nStack trace:");
 
-    let addrs = capture_backtrace();
-
     let mut frame_num = 0;
-    for addr in &addrs {
-        let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
-        if unsafe { libc::dladdr(*addr, &mut info) } != 0 && !info.dli_sname.is_null() {
-            let name_str = unsafe { std::ffi::CStr::from_ptr(info.dli_sname) }.to_string_lossy();
-            if let Some(display_name) = demangle_solar(&name_str) {
+    backtrace::trace(|frame| {
+        backtrace::resolve_frame(frame, |sym| {
+            // A frame can resolve to several symbols (inlined call chain); show each.
+            if let Some(name) = sym.name().and_then(|n| n.as_str())
+                && let Some(display_name) = demangle_solar(name)
+            {
                 let _ = writeln!(err, "  {frame_num}: {display_name}");
                 frame_num += 1;
             }
-        }
-    }
+        });
+        true
+    });
 
     if frame_num == 0 {
         let _ = writeln!(err, "  (no Solar frames found)");
