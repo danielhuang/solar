@@ -810,63 +810,95 @@ fn pattern_name(pat: &ast::DestructurePattern) -> &str {
     }
 }
 
+// --- Name mangling ---
+//
+// The mangling below is INJECTIVE and REVERSIBLE: distinct Solar entities map to
+// distinct C identifiers, and the original name can be recovered from the symbol
+// alone (no side table). `solar-system/src/panic.rs::demangle_solar` is the exact
+// inverse — keep the two in sync.
+//
+// The key primitive is a self-delimiting identifier `enc_id(s) = "<byte-len>_<s>"`:
+// to read it, take the decimal run up to the first `_`, skip the `_`, then take
+// that many bytes — so `s` may itself contain `_` or digits with no ambiguity.
+//
+// Grammar (all fragments are valid C identifier characters `[A-Za-z0-9_]`):
+//   type     := leaf | 'R' type | 'Q' type | 'U' type | 'S' type
+//             | 'A' <n> '_' type                       (fixed array of n)
+//             | 'F' <n> '_' type{n} type               (fn: n params then return)
+//   leaf     := enc_id(canonical-name)                 (primitive / struct / enum)
+//   name     := base                                   (no type args)
+//             | enc_id(base) 'G' <n> '_' type{n}        (generic / overload-keyed)
+//   tuple    := "0T" <n> '_' type{n}                   ("0T" can't start a Solar ident)
+// A type position dispatches on its first byte: a digit starts a leaf (`enc_id`),
+// the tags R/Q/U/S/A/F start a constructor. `R` covers `&`, `Q` `&?`, `U` `^`,
+// `S` `[T]`. Struct/enum leaves embed their own (already mangled) identity, so the
+// demangler recurses into them to render e.g. `Box#[Int]`.
+
+/// Self-delimiting identifier encoding (see module note above).
+fn enc_id(s: &str) -> String {
+    format!("{}_{}", s.len(), s)
+}
+
 fn mangle_name(base: &str, concrete_args: &[Type]) -> String {
-    let mut name = base.to_string();
-    for arg in concrete_args {
-        name.push('_');
-        name.push_str(&mangle_type(arg));
+    if concrete_args.is_empty() {
+        // No type args (e.g. a non-generic, non-overloaded entity): keep the bare
+        // name so identities like module structs stay readable.
+        base.to_string()
+    } else {
+        let mut name = format!("{}G{}_", enc_id(base), concrete_args.len());
+        for arg in concrete_args {
+            name.push_str(&mangle_type(arg));
+        }
+        name
     }
-    name
 }
 
 fn mangle_type(ty: &Type) -> String {
     match ty {
-        Type::Int8 => "Int8".to_string(),
-        Type::Int16 => "Int16".to_string(),
-        Type::Int32 => "Int32".to_string(),
-        Type::Int64 => "Int64".to_string(),
-        Type::Int => "Int".to_string(),
-        Type::Uint8 => "Uint8".to_string(),
-        Type::Uint16 => "Uint16".to_string(),
-        Type::Uint32 => "Uint32".to_string(),
-        Type::Uint64 => "Uint64".to_string(),
-        Type::Uint => "Uint".to_string(),
-        Type::Float32 => "Float32".to_string(),
-        Type::Float64 => "Float64".to_string(),
-        Type::Bool => "Bool".to_string(),
-        Type::Struct(name) | Type::Enum(name) => name.clone(),
-        Type::Ref(inner) | Type::RefUnsized(inner) => format!("ref_{}", mangle_type(inner)),
+        Type::Int8 => enc_id("Int8"),
+        Type::Int16 => enc_id("Int16"),
+        Type::Int32 => enc_id("Int32"),
+        Type::Int64 => enc_id("Int64"),
+        Type::Int => enc_id("Int"),
+        Type::Uint8 => enc_id("Uint8"),
+        Type::Uint16 => enc_id("Uint16"),
+        Type::Uint32 => enc_id("Uint32"),
+        Type::Uint64 => enc_id("Uint64"),
+        Type::Uint => enc_id("Uint"),
+        Type::Float32 => enc_id("Float32"),
+        Type::Float64 => enc_id("Float64"),
+        Type::Bool => enc_id("Bool"),
+        Type::Struct(name) | Type::Enum(name) => enc_id(name),
+        Type::Ref(inner) | Type::RefUnsized(inner) => format!("R{}", mangle_type(inner)),
         Type::NullableRef(inner) | Type::NullableRefUnsized(inner) => {
-            format!("ref_nullable_{}", mangle_type(inner))
+            format!("Q{}", mangle_type(inner))
         }
-        Type::Unique(inner) | Type::UniqueUnsized(inner) => {
-            format!("unique_{}", mangle_type(inner))
-        }
-        Type::Array(inner) => format!("slice_{}", mangle_type(inner)),
-        Type::FixedArray(inner, n) => format!("arr{}_{}", n, mangle_type(inner)),
+        Type::Unique(inner) | Type::UniqueUnsized(inner) => format!("U{}", mangle_type(inner)),
+        Type::Array(inner) => format!("S{}", mangle_type(inner)),
+        Type::FixedArray(inner, n) => format!("A{}_{}", n, mangle_type(inner)),
         Type::Function {
             params,
             return_type,
         } => {
-            let mut s = "fn".to_string();
+            let mut s = format!("F{}_", params.len());
             for p in params {
-                s.push('_');
                 s.push_str(&mangle_type(p));
             }
-            s.push_str("__");
             s.push_str(&mangle_type(return_type));
             s
         }
-        Type::FileDesc => "FileDesc".to_string(),
-        Type::Unit => "Unit".to_string(),
-        Type::Never => "Never".to_string(),
+        Type::FileDesc => enc_id("FileDesc"),
+        Type::Unit => enc_id("Unit"),
+        Type::Never => enc_id("Never"),
     }
 }
 
 fn mangle_tuple_name(element_types: &[Type]) -> String {
-    let mut name = "__Tuple".to_string();
+    // "0T" prefix: starts with a digit so it can't be a Solar identifier, and the
+    // leading `0` distinguishes it from an `enc_id` length (which never has a
+    // leading zero).
+    let mut name = format!("0T{}_", element_types.len());
     for ty in element_types {
-        name.push('_');
         name.push_str(&mangle_type(ty));
     }
     name

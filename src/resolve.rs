@@ -206,7 +206,11 @@ impl Resolver {
                 }
             })
             .collect();
-        format!("__mod_{sanitized}__")
+        // `__mod` + a self-delimiting (length-prefixed) module name, so the item
+        // name can be appended directly and the demangler can recover the module:
+        // `__mod3_lib` + `write_stdout` -> `__mod3_libwrite_stdout`. The length
+        // prefix also makes the module boundary injective (`a_b` vs `a` + `_b`).
+        format!("__mod{}_{}", sanitized.len(), sanitized)
     }
 
     /// Compute module aliases for a file (module imports only).
