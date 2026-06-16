@@ -33,7 +33,7 @@ pub struct Ir {
 
 impl Ir {
     pub fn to_c(&self, source_file: &str) -> CSource {
-        let c_source = codegen::generate(&self.ir, source_file);
+        let c_source = codegen::generate(&self.ir, source_file, &self.source_map);
         CSource {
             c_source,
             source_map: self.source_map.clone(),

@@ -27,7 +27,7 @@ fn main() {
     let ir = typed.to_ir();
 
     if emit_c {
-        print!("{}", solar::codegen::generate(&ir.ir, file));
+        print!("{}", solar::codegen::generate(&ir.ir, file, &ir.source_map));
     } else {
         solar::ir_interp::interpret(&ir.ir);
     }

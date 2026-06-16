@@ -1,15 +1,17 @@
 use crate::ast::BinOp;
 use crate::ast::Intrinsic;
+use crate::error::SourceMap;
 use crate::ir::*;
 use std::collections::{HashMap, HashSet};
 
-pub fn generate(module: &Module, source_file: &str) -> String {
+pub fn generate(module: &Module, source_file: &str, source_map: &SourceMap) -> String {
     let mut cg = Codegen {
         module,
         out: String::new(),
         indent: 0,
         tmp_counter: 0,
         source_file: source_file.to_string(),
+        source_map,
         emitted_mark_fns: HashSet::new(),
         loop_dst: Vec::new(),
     };
@@ -22,7 +24,11 @@ struct Codegen<'a> {
     out: String,
     indent: usize,
     tmp_counter: usize,
+    /// Fallback path for `#line` directives when a span's file isn't in the map.
     source_file: String,
+    /// Maps a span's `file_id` to its source path, so `#line` points at the
+    /// actual file (e.g. a `@std` file) rather than always the main file.
+    source_map: &'a SourceMap,
     emitted_mark_fns: HashSet<String>,
     /// C lvalue strings for the enclosing loop expressions' result destinations;
     /// `break <v>` assigns into the innermost one.
@@ -2334,8 +2340,13 @@ impl<'a> Codegen<'a> {
     }
 
     fn emit_line_directive(&mut self, nodes: &[Node], id: NodeId) {
-        let line = nodes[id.0].span.start.line;
-        let file = &self.source_file;
+        let span = nodes[id.0].span;
+        let line = span.start.line;
+        let file = self
+            .source_map
+            .get(span.file_id)
+            .map(|(f, _)| f.to_string())
+            .unwrap_or_else(|| self.source_file.clone());
         self.linef(format!("#line {} \"{}\"", line + 1, file));
     }
 
