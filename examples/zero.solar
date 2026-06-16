@@ -1,0 +1,6 @@
+fn main() {
+  let buf = [0u8; 1024u * 1024u];
+  loop {
+    write_stdout(buf&);
+  }
+}
