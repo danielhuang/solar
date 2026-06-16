@@ -583,36 +583,22 @@ impl<'a> Codegen<'a> {
             ));
         }
 
-        // Collect params whose address is taken (e.g. captured by closures or unique ptrs)
-        let ref_taken: HashSet<u32> = func
-            .nodes
-            .iter()
-            .filter_map(|n| {
-                if let NodeKind::Ref(inner) | NodeKind::Unique(inner) = &n.kind
-                    && let NodeKind::Local(v) = &func.nodes[inner.0].kind
-                {
-                    Some(v.0)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Bind params: heap-allocate only if address is taken, else use stack
+        // Bind params: every param gets a heap slot, so a `&`/`^` of it (e.g. a
+        // closure capturing it by reference, or a `^param`) is a valid, traceable
+        // GC pointer that stays live if it escapes. A param whose address never
+        // escapes is a non-escaping `sol_alloc`, which the GC-alloc lowering turns
+        // into a recognized `calloc` that `opt -O3` SROAs back into registers — so
+        // this is free in release; only unoptimized debug builds keep the slot.
         for (i, param) in func.params.iter().enumerate() {
-            if ref_taken.contains(&param.var.0) {
-                let s = self.type_size(&param.ty);
-                let a = self.type_align(&param.ty);
-                let var_id = param.var.0;
-                let ty = param.ty.clone();
-                let mf = self.mark_fn_expr(&ty);
-                self.linef(format!("uint8_t* _v{var_id} = sol_alloc({s}, {a}, {mf});"));
-                let dst_str = format!("_v{var_id}");
-                let src_str = format!("(uint8_t*)&_p{i}");
-                self.emit_copy(&dst_str, &src_str, &ty, &s.to_string());
-            } else {
-                self.linef(format!("uint8_t* _v{} = (uint8_t*)&_p{i};", param.var.0));
-            }
+            let s = self.type_size(&param.ty);
+            let a = self.type_align(&param.ty);
+            let var_id = param.var.0;
+            let ty = param.ty.clone();
+            let mf = self.mark_fn_expr(&ty);
+            self.linef(format!("uint8_t* _v{var_id} = sol_alloc({s}, {a}, {mf});"));
+            let dst_str = format!("_v{var_id}");
+            let src_str = format!("(uint8_t*)&_p{i}");
+            self.emit_copy(&dst_str, &src_str, &ty, &s.to_string());
         }
 
         let nodes = &func.nodes;
