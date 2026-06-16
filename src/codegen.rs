@@ -525,9 +525,13 @@ impl<'a> Codegen<'a> {
         self.line("extern void sol_assert_array_len(uint64_t actual, uint64_t expected);");
         self.line("extern void sol_start(void (*solar_main)(void*));");
         self.line("extern void sol_thread_spawn(void* fn_ptr, void* env);");
-        self.line("extern void sol_atomic_store_128(uint8_t* dst, const uint8_t* src);");
-        self.line("extern void sol_atomic_load_128(uint8_t* dst, const uint8_t* src);");
-        self.line("extern void sol_atomic_copy_128(uint8_t* dst, const uint8_t* src);");
+        // Tear-free but UNORDERED 16-byte moves: give a concurrent reader / the GC
+        // marker a non-torn `{ptr,len}`, with no inter-thread ordering. Used only for
+        // plain value copies (`a = b`) of fat pointers / function values. Real atomics
+        // use the `_acq`/`_rel`/cmpxchg variants below.
+        self.line("extern void sol_store_128_unordered(uint8_t* dst, const uint8_t* src);");
+        self.line("extern void sol_load_128_unordered(uint8_t* dst, const uint8_t* src);");
+        self.line("extern void sol_copy_128_unordered(uint8_t* dst, const uint8_t* src);");
         self.line("extern void sol_atomic_load_128_acq(uint8_t* dst, const uint8_t* src);");
         self.line("extern void sol_atomic_store_128_rel(uint8_t* dst, const uint8_t* src);");
         self.line("extern void sol_atomic_compare_exchange_128_acq_rel(uint8_t* dst, uint8_t* ref, const uint8_t* expected, const uint8_t* new_val);");
@@ -723,7 +727,7 @@ impl<'a> Codegen<'a> {
                         self.linef(format!(
                             "uint8_t {wide_tmp}[16] __attribute__((aligned(16)));"
                         ));
-                        self.linef(format!("sol_atomic_load_128({wide_tmp}, {place});"));
+                        self.linef(format!("sol_load_128_unordered({wide_tmp}, {place});"));
                         let ptr_tmp = self.fresh_tmp();
                         let meta_tmp = self.fresh_tmp();
                         self.linef(format!("uint8_t* {ptr_tmp} = *(uint8_t**){wide_tmp};"));
@@ -738,7 +742,7 @@ impl<'a> Codegen<'a> {
                         self.linef(format!(
                             "uint8_t {wide_tmp}[16] __attribute__((aligned(16)));"
                         ));
-                        self.linef(format!("sol_atomic_load_128({wide_tmp}, {place});"));
+                        self.linef(format!("sol_load_128_unordered({wide_tmp}, {place});"));
                         let ptr_tmp = self.fresh_tmp();
                         let meta_tmp = self.fresh_tmp();
                         self.linef(format!(
@@ -1372,7 +1376,7 @@ impl<'a> Codegen<'a> {
             ty,
             Type::Function { .. } | Type::RefUnsized(_) | Type::NullableRefUnsized(_)
         ) {
-            self.linef(format!("sol_atomic_copy_128({dst}, {src});"));
+            self.linef(format!("sol_copy_128_unordered({dst}, {src});"));
             return;
         }
         if !self.type_contains_unique(ty) && !self.type_contains_enum(ty) {
@@ -1399,7 +1403,7 @@ impl<'a> Codegen<'a> {
                 self.linef(format!(
                     "uint8_t {src_wide}[16] __attribute__((aligned(16)));"
                 ));
-                self.linef(format!("sol_atomic_load_128({src_wide}, {src});"));
+                self.linef(format!("sol_load_128_unordered({src_wide}, {src});"));
                 let align = self.type_align(inner);
                 let src_ptr = self.fresh_tmp();
                 self.linef(format!("uint8_t* {src_ptr} = *(uint8_t**){src_wide};"));
@@ -1420,7 +1424,7 @@ impl<'a> Codegen<'a> {
                 ));
                 self.linef(format!("*(uint8_t**){wide_tmp} = {new_ptr};"));
                 self.linef(format!("*(uint64_t*)({wide_tmp} + 8) = {src_meta};"));
-                self.linef(format!("sol_atomic_store_128({dst}, {wide_tmp});"));
+                self.linef(format!("sol_store_128_unordered({dst}, {wide_tmp});"));
             }
             Type::Enum(name) => {
                 let dt = &self.module.datatypes[name.as_str()];
@@ -1590,7 +1594,7 @@ impl<'a> Codegen<'a> {
                         ));
                         self.linef(format!("*(uint8_t**){wide_tmp} = {place};"));
                         self.linef(format!("*(uint64_t*)({wide_tmp} + 8) = {meta};"));
-                        self.linef(format!("sol_atomic_store_128({dst}, {wide_tmp});"));
+                        self.linef(format!("sol_store_128_unordered({dst}, {wide_tmp});"));
                     }
                 } else {
                     // &expr where expr is not a place — alloc temp
@@ -1621,7 +1625,7 @@ impl<'a> Codegen<'a> {
                         ));
                         self.linef(format!("*(uint8_t**){wide_tmp} = {tmp};"));
                         self.linef(format!("*(uint64_t*)({wide_tmp} + 8) = {meta};"));
-                        self.linef(format!("sol_atomic_store_128({dst}, {wide_tmp});"));
+                        self.linef(format!("sol_store_128_unordered({dst}, {wide_tmp});"));
                     }
                 }
             }
@@ -1655,7 +1659,7 @@ impl<'a> Codegen<'a> {
                     ));
                     self.linef(format!("*(uint8_t**){wide_tmp} = {tmp};"));
                     self.linef(format!("*(uint64_t*)({wide_tmp} + 8) = {meta};"));
-                    self.linef(format!("sol_atomic_store_128({dst}, {wide_tmp});"));
+                    self.linef(format!("sol_store_128_unordered({dst}, {wide_tmp});"));
                 }
             }
             NodeKind::StructLiteral { name, fields } => {
@@ -1918,7 +1922,7 @@ impl<'a> Codegen<'a> {
                 ));
                 self.linef(format!("*(void(**)()){wide_tmp} = (void(*)())&{cname};"));
                 self.linef(format!("*(void**)({wide_tmp} + 8) = NULL;"));
-                self.linef(format!("sol_atomic_store_128({dst}, {wide_tmp});"));
+                self.linef(format!("sol_store_128_unordered({dst}, {wide_tmp});"));
             }
             NodeKind::MakeClosure { function, captures } => {
                 let cname = self.func_name(function);
@@ -1945,7 +1949,7 @@ impl<'a> Codegen<'a> {
                     self.linef(format!("*(void(**)()){wide_tmp} = (void(*)())&{cname};"));
                     self.linef(format!("*(void**)({wide_tmp} + 8) = NULL;"));
                 }
-                self.linef(format!("sol_atomic_store_128({dst}, {wide_tmp});"));
+                self.linef(format!("sol_store_128_unordered({dst}, {wide_tmp});"));
             }
             NodeKind::IntrinsicCall { intrinsic, args } => {
                 let intrinsic = intrinsic.clone();
