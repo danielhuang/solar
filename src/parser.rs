@@ -22,6 +22,7 @@ pub fn generate_numeric_constructors(items: &mut Vec<TopLevelItem>) {
             );
             items.push(TopLevelItem::Function(FunctionDef {
                 name: target_name.to_string(),
+                display_name: target_name.to_string(),
                 type_params: vec![],
                 parameters: vec![Parameter {
                     pattern: DestructurePattern::Name("x".to_string()),
@@ -368,6 +369,7 @@ fn convert_function_def(node: tree_sitter::Node, source: &str) -> FunctionDef {
     let body = convert_block(body_node, source);
 
     FunctionDef {
+        display_name: name.clone(),
         name,
         type_params,
         parameters,

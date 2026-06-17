@@ -630,6 +630,7 @@ fn apply_subst_to_ast_statement(
         ast::StatementKind::NestedFunction(fdef) => {
             ast::StatementKind::NestedFunction(ast::FunctionDef {
                 name: fdef.name.clone(),
+                display_name: fdef.display_name.clone(),
                 type_params: fdef.type_params.clone(),
                 parameters: fdef
                     .parameters
@@ -1384,6 +1385,8 @@ struct Lowerer<'a> {
     generic_enums: HashMap<String, GenericEnumDef>,
     function_defs: HashMap<String, Vec<FunctionEntry>>,
     method_defs: HashMap<String, Vec<FunctionEntry>>,
+    /// Mangled function/method name → original un-mangled name, for diagnostics.
+    display_names: HashMap<String, String>,
     /// Maps mangled function name → AST def (populated in lower_all for concrete functions)
     concrete_ast_defs: HashMap<String, ast::FunctionDef>,
     lowered_structs: HashMap<String, StructDef>,
@@ -1432,6 +1435,7 @@ impl<'a> Lowerer<'a> {
         let mut generic_enums = HashMap::new();
         let mut function_defs: HashMap<String, Vec<FunctionEntry>> = HashMap::new();
         let mut method_defs: HashMap<String, Vec<FunctionEntry>> = HashMap::new();
+        let mut display_names: HashMap<String, String> = HashMap::new();
         let mut consts: HashMap<String, &ast::ConstDef> = HashMap::new();
         for item in &source.items {
             match item {
@@ -1488,6 +1492,7 @@ impl<'a> Lowerer<'a> {
                 ast::TopLevelItem::Function(f) => {
                     let mut f = f.clone();
                     prepare_keyword_params(&mut f)?;
+                    display_names.insert(f.name.clone(), f.display_name.clone());
                     let entries = function_defs.entry(f.name.clone()).or_default();
                     let overload_index = entries.len();
                     entries.push(FunctionEntry {
@@ -1525,6 +1530,7 @@ impl<'a> Lowerer<'a> {
                     }
                     let mut m = m.clone();
                     prepare_keyword_params(&mut m)?;
+                    display_names.insert(m.name.clone(), m.display_name.clone());
                     let entries = method_defs.entry(m.name.clone()).or_default();
                     let overload_index = entries.len();
                     entries.push(FunctionEntry {
@@ -1656,6 +1662,7 @@ impl<'a> Lowerer<'a> {
             generic_enums,
             function_defs,
             method_defs,
+            display_names,
             concrete_ast_defs: HashMap::new(),
             lowered_structs: HashMap::new(),
             lowered_enums: HashMap::new(),
@@ -1677,6 +1684,15 @@ impl<'a> Lowerer<'a> {
             const_scopes: Vec::new(),
             loop_ctx: Vec::new(),
         })
+    }
+
+    /// The un-mangled name of a function/method for diagnostics, falling back to
+    /// the raw (mangled) name if unknown.
+    fn display_name<'n>(&'n self, name: &'n str) -> &'n str {
+        self.display_names
+            .get(name)
+            .map(String::as_str)
+            .unwrap_or(name)
     }
 
     /// Look up the AST struct definition for a (possibly monomorphized) struct name.
@@ -2507,7 +2523,10 @@ impl<'a> Lowerer<'a> {
             .map(|tp| {
                 bindings.get(tp).cloned().ok_or_else(|| {
                     CompileError::new(
-                        format!("could not infer type argument `{tp}` for generic function `{func_name}`"),
+                        format!(
+                            "could not infer type argument `{tp}` for generic function `{}`",
+                            self.display_name(func_name)
+                        ),
                         ast::SourceSpan::default(),
                     )
                 })
@@ -4214,7 +4233,8 @@ impl<'a> Lowerer<'a> {
                         if arguments.len() != func_def.parameters.len() {
                             return Err(CompileError::new(
                                 format!(
-                                    "{func_name}: expected {} arguments, got {}",
+                                    "{}: expected {} arguments, got {}",
+                                    self.display_name(func_name),
                                     func_def.parameters.len(),
                                     arguments.len()
                                 ),
@@ -4245,7 +4265,8 @@ impl<'a> Lowerer<'a> {
                             if coerced.ty != *pty {
                                 return Err(CompileError::new(
                                     format!(
-                                        "type mismatch in argument `{pname}` of {func_name}: expected {pty}, got {}",
+                                        "type mismatch in argument `{pname}` of {}: expected {pty}, got {}",
+                                        self.display_name(func_name),
                                         coerced.ty
                                     ),
                                     coerced.span,
@@ -5686,7 +5707,8 @@ impl<'a> Lowerer<'a> {
             if full_args.len() != mono_fn.parameters.len() {
                 return Err(CompileError::new(
                     format!(
-                        "{name}: expected {} arguments, got {}",
+                        "{}: expected {} arguments, got {}",
+                        self.display_name(name),
                         mono_fn.parameters.len(),
                         full_args.len()
                     ),
@@ -5704,8 +5726,11 @@ impl<'a> Lowerer<'a> {
                 if coerced.ty != param.ty {
                     return Err(CompileError::new(
                         format!(
-                            "type mismatch in argument `{}` of {name}: expected {}, got {}",
-                            param.name, param.ty, coerced.ty
+                            "type mismatch in argument `{}` of {}: expected {}, got {}",
+                            param.name,
+                            self.display_name(name),
+                            param.ty,
+                            coerced.ty
                         ),
                         coerced.span,
                     )
@@ -5740,7 +5765,7 @@ impl<'a> Lowerer<'a> {
             // expanded (kwargs-filled) lowered argument list.
             #[derive(Clone)]
             enum Candidate {
-                Concrete(Vec<Type>, ast::FunctionDef, Vec<Expr>),
+                Concrete(Vec<Type>, Box<ast::FunctionDef>, Vec<Expr>),
                 Generic(Box<FunctionEntry>, Vec<ast::Type>, Vec<Expr>),
             }
 
@@ -5779,7 +5804,7 @@ impl<'a> Lowerer<'a> {
                         .map(|p| p.ty.clone())
                         .collect();
                     candidates.push((
-                        Candidate::Concrete(param_types, entry.ast_def.clone(), lowered_args),
+                        Candidate::Concrete(param_types, Box::new(entry.ast_def.clone()), lowered_args),
                         ast_types,
                     ));
                 }
@@ -5875,7 +5900,8 @@ impl<'a> Lowerer<'a> {
                             }
                             return Err(CompileError::new(
                                 format!(
-                                    "{name}: expected {required} positional argument(s), got {}",
+                                    "{}: expected {required} positional argument(s), got {}",
+                                    self.display_name(name),
                                     arguments.len()
                                 ),
                                 span,
@@ -5892,7 +5918,8 @@ impl<'a> Lowerer<'a> {
                                     let pname = pattern_name_or_placeholder(&param.pattern);
                                     return Err(CompileError::new(
                                         format!(
-                                            "type mismatch in argument `{pname}` of {name}: expected {pty}, got {}",
+                                            "type mismatch in argument `{pname}` of {}: expected {pty}, got {}",
+                                            self.display_name(name),
                                             coerced.ty
                                         ),
                                         coerced.span,
@@ -5981,8 +6008,11 @@ impl<'a> Lowerer<'a> {
                         if coerced.ty != param.ty {
                             return Err(CompileError::new(
                                 format!(
-                                    "type mismatch in argument `{}` of {name}: expected {}, got {}",
-                                    param.name, param.ty, coerced.ty
+                                    "type mismatch in argument `{}` of {}: expected {}, got {}",
+                                    param.name,
+                                    self.display_name(name),
+                                    param.ty,
+                                    coerced.ty
                                 ),
                                 coerced.span,
                             )

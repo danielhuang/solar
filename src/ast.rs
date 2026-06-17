@@ -121,6 +121,11 @@ pub struct VariantDef {
 #[derive(Debug, Clone)]
 pub struct FunctionDef {
     pub name: String,
+    /// The original, human-readable name for diagnostics (e.g. `spawn`). `name`
+    /// gets rewritten to a mangled identity by `resolve` (module prefix) and
+    /// monomorphization, but this is left untouched so error messages can show
+    /// the un-mangled name without round-tripping through the demangler.
+    pub display_name: String,
     pub type_params: Vec<String>,
     pub parameters: Vec<Parameter>,
     pub return_type: Option<Type>,

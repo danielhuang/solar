@@ -1,0 +1,11 @@
+fn main() {
+  for _ in 0..16 {
+    thread::spawn(\ {
+      loop {
+        file::open("/dev/null"&);
+      };
+      {}
+    })
+  }
+  loop {}
+}
