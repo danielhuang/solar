@@ -12,10 +12,9 @@ fn main() {
 
     let typed = match solar::pipeline::compile(file_path) {
         Ok(typed) => typed,
-        Err(errors) => {
-            let source = std::fs::read_to_string(file_path).unwrap();
+        Err((errors, source_map)) => {
             for err in &errors {
-                solar::error::render_error(err, &source, input);
+                solar::error::render_error_with_source_map(err, &source_map);
             }
             std::process::exit(1);
         }

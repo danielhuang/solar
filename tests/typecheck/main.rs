@@ -20,7 +20,7 @@ fn compile(file_path: &Path) {
 fn compile_with_pipeline(file_path: &Path) {
     match solar::pipeline::compile(file_path) {
         Ok(_) => {}
-        Err(errors) => panic!("{}", errors[0].message),
+        Err((errors, _)) => panic!("{}", errors[0].message),
     }
 }
 

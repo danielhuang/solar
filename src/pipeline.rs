@@ -5,9 +5,9 @@ use crate::error::{CompileError, SourceMap};
 use crate::{codegen, ir, resolve, typed_ast};
 
 /// Entry point: file path -> resolved + type-checked program.
-pub fn compile(file_path: &Path) -> Result<Typed, Vec<CompileError>> {
+pub fn compile(file_path: &Path) -> Result<Typed, (Vec<CompileError>, SourceMap)> {
     let (ast, source_map) = resolve::resolve(file_path)?;
-    let typed = typed_ast::lower(&ast).map_err(|e| vec![e])?;
+    let typed = typed_ast::lower(&ast).map_err(|e| (vec![e], source_map.clone()))?;
     Ok(Typed { typed, source_map })
 }
 
@@ -271,13 +271,24 @@ fn compile_release(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
         ],
     );
 
-    // Find LLVM IR bitcode .o files
-    eprintln!("=== Merging Rust bitcode ===");
+    // Find LLVM IR bitcode .o files. Only merge solar_system's OWN bitcode (its
+    // codegen units, plus the assembled atomic128 helper) into the module that
+    // gets re-optimized with the user's code. The runtime's dependency crates
+    // (backtrace, gimli, addr2line, object, rustix, …) make up ~11 MB of the
+    // ~15 MB of bitcode in the archive but are only the panic/backtrace path —
+    // never hot, never inlined into user code, and already fat-LTO-optimized
+    // when cargo built the archive. Re-running `opt -O3` over them on every
+    // compile was the dominant cost. They resolve natively from the `.a` at the
+    // final clang link below (which only pulls archive members for symbols not
+    // already defined in full.bc, so no duplicate-symbol conflict).
+    eprintln!("=== Merging Rust bitcode (solar_system only) ===");
     let bc_files: Vec<String> = std::fs::read_dir(dir)
         .unwrap()
         .filter_map(|e| {
             let path = e.unwrap().path();
-            if path.extension().is_some_and(|e| e == "o") {
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let is_own = file_name.starts_with("solar_system") || file_name == "atomic128.o";
+            if is_own && path.extension().is_some_and(|e| e == "o") {
                 let out = run_piped("file", &[path.to_str().unwrap()]);
                 if out.contains("LLVM IR bitcode") {
                     return Some(path.to_str().unwrap().to_string());
@@ -405,7 +416,11 @@ fn compile_release(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
     eprintln!("=== Final link ===");
     let bin_path = dir.join(name);
     {
-        let mut link_args = vec!["-march=native", "-O3", "-g"];
+        // Use lld: the runtime archive's dependency-crate members (backtrace,
+        // gimli, …) are LLVM bitcode (fat LTO) and are now pulled here rather
+        // than pre-merged. GNU ld can't read bitcode archive members; lld
+        // LTO-compiles them at link time.
+        let mut link_args = vec!["-fuse-ld=lld", "-march=native", "-O3", "-g"];
         if ATTRIBUTOR_ENABLE_ALL {
             link_args.extend(["-mllvm", "-attributor-enable=all"]);
         }

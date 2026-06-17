@@ -1206,9 +1206,23 @@ fn rewrite_pattern(
 
 /// Resolve a Solar program starting from the given file path.
 /// Returns a unified AST (with stdlib and numeric constructors) and a SourceMap.
-pub fn resolve(file_path: &Path) -> Result<(SourceFile, SourceMap), Vec<CompileError>> {
+pub fn resolve(file_path: &Path) -> Result<(SourceFile, SourceMap), (Vec<CompileError>, SourceMap)> {
     let mut resolver = Resolver::new();
+    // Run resolution to completion, then hand back the source map regardless of
+    // outcome so errors (including those whose spans point into stdlib files)
+    // can be rendered against the correct file via the SourceMap.
+    let result = resolve_impl(&mut resolver, file_path);
+    let source_map = resolver.source_map;
+    match result {
+        Ok(all_items) => Ok((SourceFile { items: all_items }, source_map)),
+        Err(errors) => Err((errors, source_map)),
+    }
+}
 
+fn resolve_impl(
+    resolver: &mut Resolver,
+    file_path: &Path,
+) -> Result<Vec<TopLevelItem>, Vec<CompileError>> {
     // Parse stdlib first (all files get implicit `import * from "@std"`)
     let std_lib = Path::new(STDLIB_DIR).join("lib.solar");
     let std_root_id = resolver.parse_file(&std_lib)?;
@@ -1236,7 +1250,7 @@ pub fn resolve(file_path: &Path) -> Result<(SourceFile, SourceMap), Vec<CompileE
     }
 
     // Check for circular pub import re-export chains
-    check_circular_reexports(&resolver)?;
+    check_circular_reexports(resolver)?;
 
     // Build global module alias map (needed for multi-segment module paths)
     let file_count = resolver.files.len();
@@ -1266,9 +1280,7 @@ pub fn resolve(file_path: &Path) -> Result<(SourceFile, SourceMap), Vec<CompileE
     // Generate numeric constructors
     parser::generate_numeric_constructors(&mut all_items);
 
-    let source_map = resolver.source_map;
-
-    Ok((SourceFile { items: all_items }, source_map))
+    Ok(all_items)
 }
 
 /// Check for circular pub import re-export chains.
