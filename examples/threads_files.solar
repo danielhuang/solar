@@ -3,8 +3,7 @@ fn main() {
     thread::spawn(\ {
       loop {
         file::open("/dev/null"&);
-      };
-      {}
+      }
     })
   }
   loop {}

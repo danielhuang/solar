@@ -1907,6 +1907,23 @@ impl<'a> Lowerer<'a> {
                 span: expr.span,
                 kind: expr.kind,
             },
+            // A function whose body diverges (returns Never) coerces to a function
+            // with the same parameters and any return type. Never is zero-sized and
+            // codegens identically to Unit, so a closure ending in `loop {}` can be
+            // passed where e.g. `fn()` is expected without a trailing `{}`.
+            (
+                Type::Function {
+                    params: src_params,
+                    return_type: src_ret,
+                },
+                Type::Function {
+                    params: tgt_params, ..
+                },
+            ) if **src_ret == Type::Never && src_params == tgt_params => Expr {
+                ty: target.clone(),
+                span: expr.span,
+                kind: expr.kind,
+            },
             _ => expr, // no coercion — type checker will catch mismatches
         }
     }
@@ -5804,7 +5821,11 @@ impl<'a> Lowerer<'a> {
                         .map(|p| p.ty.clone())
                         .collect();
                     candidates.push((
-                        Candidate::Concrete(param_types, Box::new(entry.ast_def.clone()), lowered_args),
+                        Candidate::Concrete(
+                            param_types,
+                            Box::new(entry.ast_def.clone()),
+                            lowered_args,
+                        ),
                         ast_types,
                     ));
                 }
