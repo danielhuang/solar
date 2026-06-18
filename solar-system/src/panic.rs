@@ -241,60 +241,6 @@ fn pretty_name(inner: &str) -> String {
     inner.to_string()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::demangle_solar;
-
-    #[track_caller]
-    fn check(sym: &str, expect: &str) {
-        assert_eq!(
-            demangle_solar(sym).as_deref(),
-            Some(expect),
-            "symbol: {sym}"
-        );
-    }
-
-    #[test]
-    fn demangles_real_symbols() {
-        check("solar_main", "main");
-        check("solar___closure_0", "<closure 0>");
-        check("solar_3_addG1_3_Int", "add(Int)");
-        check("solar___mod4_filestdout", "file::stdout()");
-        check(
-            "solar_22___mod3_libwrite_stdoutG1_RS5_Uint8",
-            "lib::write_stdout(&[Uint8])",
-        );
-        check(
-            "solar_8_while_fnG2_F0_4_BoolF0_4_Unit",
-            "while_fn(fn() -> Bool, fn())",
-        );
-        check("solar___method_9_to_stringG1_3_Int", "Int.to_string()");
-        check(
-            "solar___method_5_writeG2_8_FileDescRS5_Uint8",
-            "FileDesc.write(&[Uint8])",
-        );
-    }
-
-    #[test]
-    fn renders_composite_and_generic_types() {
-        // generic struct leaf: Box#[Int]
-        check("solar_3_fooG1_13_3_BoxG1_3_Int", "foo(Box#[Int])");
-        // tuple leaf: (Int, Bool)
-        check("solar_3_barG1_15_0T2_3_Int4_Bool", "bar((Int, Bool))");
-        // nullable ref, unique, fixed array
-        check(
-            "solar_1_fG3_Q3_IntU4_BoolA3_5_Uint8",
-            "f(&?Int, ^Bool, [Uint8; 3])",
-        );
-    }
-
-    #[test]
-    fn non_solar_symbols_are_ignored() {
-        assert_eq!(demangle_solar("_RNvCs_foo"), None);
-        assert_eq!(demangle_solar("malloc"), None);
-    }
-}
-
 /// Print an error message and a demangled Solar stack trace, then abort.
 ///
 /// Frames are resolved with the `backtrace` crate (the symbolizer std and samply
@@ -349,4 +295,58 @@ pub fn install_panic_hook() {
         };
         sol_panic_internal(&msg);
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::demangle_solar;
+
+    #[track_caller]
+    fn check(sym: &str, expect: &str) {
+        assert_eq!(
+            demangle_solar(sym).as_deref(),
+            Some(expect),
+            "symbol: {sym}"
+        );
+    }
+
+    #[test]
+    fn demangles_real_symbols() {
+        check("solar_main", "main");
+        check("solar___closure_0", "<closure 0>");
+        check("solar_3_addG1_3_Int", "add(Int)");
+        check("solar___mod4_filestdout", "file::stdout()");
+        check(
+            "solar_22___mod3_libwrite_stdoutG1_RS5_Uint8",
+            "lib::write_stdout(&[Uint8])",
+        );
+        check(
+            "solar_8_while_fnG2_F0_4_BoolF0_4_Unit",
+            "while_fn(fn() -> Bool, fn())",
+        );
+        check("solar___method_9_to_stringG1_3_Int", "Int.to_string()");
+        check(
+            "solar___method_5_writeG2_8_FileDescRS5_Uint8",
+            "FileDesc.write(&[Uint8])",
+        );
+    }
+
+    #[test]
+    fn renders_composite_and_generic_types() {
+        // generic struct leaf: Box#[Int]
+        check("solar_3_fooG1_13_3_BoxG1_3_Int", "foo(Box#[Int])");
+        // tuple leaf: (Int, Bool)
+        check("solar_3_barG1_15_0T2_3_Int4_Bool", "bar((Int, Bool))");
+        // nullable ref, unique, fixed array
+        check(
+            "solar_1_fG3_Q3_IntU4_BoolA3_5_Uint8",
+            "f(&?Int, ^Bool, [Uint8; 3])",
+        );
+    }
+
+    #[test]
+    fn non_solar_symbols_are_ignored() {
+        assert_eq!(demangle_solar("_RNvCs_foo"), None);
+        assert_eq!(demangle_solar("malloc"), None);
+    }
 }
