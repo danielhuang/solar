@@ -1206,7 +1206,9 @@ fn rewrite_pattern(
 
 /// Resolve a Solar program starting from the given file path.
 /// Returns a unified AST (with stdlib and numeric constructors) and a SourceMap.
-pub fn resolve(file_path: &Path) -> Result<(SourceFile, SourceMap), (Vec<CompileError>, SourceMap)> {
+pub fn resolve(
+    file_path: &Path,
+) -> Result<(SourceFile, SourceMap), (Vec<CompileError>, SourceMap)> {
     let mut resolver = Resolver::new();
     // Run resolution to completion, then hand back the source map regardless of
     // outcome so errors (including those whose spans point into stdlib files)

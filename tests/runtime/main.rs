@@ -83,6 +83,12 @@ fn binop_array_eq() {
 }
 
 #[test]
+fn operator_overload() {
+    let output = run(&fixture("operator_overload.solar"), "operator_overload");
+    assert_eq!(output, "11\n22\n9\n18\n3\n6\n1\n0\n3\n3\n1\n");
+}
+
+#[test]
 fn array_concat() {
     let output = run(&fixture("array_concat.solar"), "array_concat");
     assert_eq!(output, "1\n2\n3\n4\n5\n10\n20\n30\n99\n");

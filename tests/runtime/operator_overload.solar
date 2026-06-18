@@ -1,0 +1,52 @@
+// Operator overloading: `a <op> b` desugars to `a&.operator_<op>(b&)` when no
+// primitive implementation applies to the operand type. Primitive operands
+// (integers, bools, arrays) keep the built-in implementation.
+
+struct Vec2 {
+  x: Int,
+  y: Int,
+}
+
+method operator_add(self: &Vec2, other: &Vec2) -> Vec2 {
+  Vec2 { x: self@.x + other@.x, y: self@.y + other@.y }
+}
+
+method operator_sub(self: &Vec2, other: &Vec2) -> Vec2 {
+  Vec2 { x: self@.x - other@.x, y: self@.y - other@.y }
+}
+
+method operator_eq(self: &Vec2, other: &Vec2) -> Bool {
+  self@.x == other@.x && self@.y == other@.y
+}
+
+// Heterogeneous operands: scale a Vec2 by an Int.
+method operator_mul(self: &Vec2, k: &Int) -> Vec2 {
+  Vec2 { x: self@.x * k@, y: self@.y * k@ }
+}
+
+fn main() {
+  let a = Vec2 { x: 1, y: 2 };
+  let b = Vec2 { x: 10, y: 20 };
+
+  let sum = a + b;
+  println(sum.x);              // 11
+  println(sum.y);              // 22
+
+  let diff = b - a;
+  println(diff.x);             // 9
+  println(diff.y);             // 18
+
+  let scaled = a * 3;
+  println(scaled.x);           // 3
+  println(scaled.y);           // 6
+
+  // operator_eq overload
+  let c = Vec2 { x: 11, y: 22 };
+  if sum == c { println(1); } else { println(0); }   // 1
+  if sum == a { println(1); } else { println(0); }   // 0
+
+  // primitive paths are unaffected
+  println(1 + 2);              // 3
+  println(7 - 4);              // 3
+  if 5 == 5 { println(1); } else { println(0); }      // 1
+}

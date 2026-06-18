@@ -278,6 +278,10 @@ fn main() {
   let bm: Box#[Int] = Box#[Int] { value: 10 };
   println(bm.map#[Int](abs));          // 10
 
+  // operator overloading via `operator_add`
+  let sum_box = (Box#[Int] { value: 4 }) + (Box#[Int] { value: 5 });
+  println(sum_box.value);               // 9
+
   // tuples
   let t: (Int, Bool) = (42, true);
   println(t.0);                         // 42
@@ -408,6 +412,12 @@ fn second#[A, B](a: A, b: B) -> B {
 // method on Int
 method double(self: Int) -> Int {
   self * 2
+}
+
+// operator overloading: `a + b` desugars to `a&.operator_add(b&)` when no
+// primitive `+` applies to the operands (integers still use the built-in `+`).
+method operator_add(self: &Box#[Int], other: &Box#[Int]) -> Box#[Int] {
+  Box#[Int] { value: self@.value + other@.value }
 }
 
 // generic method

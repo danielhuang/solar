@@ -237,7 +237,7 @@ module.exports = grammar({
     field_access: ($) =>
       prec.left(80, seq(field("object", $._expression), ".", field("field", choice($.identifier, $.integer_literal)))),
 
-    deref_expr: ($) => prec.left(55, seq(field("operand", $._expression), "@")),
+    deref_expr: ($) => prec.left(70, seq(field("operand", $._expression), "@")),
 
     call_expr: ($) =>
       prec.left(90, seq(field("function", $._expression), "(", optional($.argument_list), ")")),

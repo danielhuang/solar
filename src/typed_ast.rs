@@ -1848,6 +1848,49 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// The overloadable method name for a binary operator (`+` → `operator_add`).
+    fn binop_method_name(op: ast::BinOp) -> &'static str {
+        match op {
+            ast::BinOp::Add => "operator_add",
+            ast::BinOp::Sub => "operator_sub",
+            ast::BinOp::Mul => "operator_mul",
+            ast::BinOp::Div => "operator_div",
+            ast::BinOp::Mod => "operator_mod",
+            ast::BinOp::Eq => "operator_eq",
+            ast::BinOp::Ne => "operator_ne",
+            ast::BinOp::Lt => "operator_lt",
+            ast::BinOp::Le => "operator_le",
+            ast::BinOp::Gt => "operator_gt",
+            ast::BinOp::Ge => "operator_ge",
+            ast::BinOp::And => "operator_and",
+            ast::BinOp::Or => "operator_or",
+        }
+    }
+
+    /// Whether the built-in (primitive) implementation of `op` handles the given
+    /// left operand type. When it does not, `a <op> b` may desugar to an
+    /// `operator_*` method call instead. Mirrors the type rules enforced by the
+    /// primitive lowering in the `BinaryOp` arm.
+    fn binop_primitive_applies(op: ast::BinOp, lhs_ty: &Type) -> bool {
+        let inner = Self::array_inner(lhs_ty);
+        match op {
+            ast::BinOp::Add => inner.is_some() || lhs_ty.is_integer(),
+            ast::BinOp::Sub | ast::BinOp::Mul | ast::BinOp::Div | ast::BinOp::Mod => {
+                lhs_ty.is_integer()
+            }
+            ast::BinOp::Eq | ast::BinOp::Ne => {
+                lhs_ty.is_integer()
+                    || *lhs_ty == Type::Bool
+                    || lhs_ty.is_nullable_ref()
+                    || inner.is_some_and(|i| i.is_integer() || *i == Type::Bool)
+            }
+            ast::BinOp::Lt | ast::BinOp::Le | ast::BinOp::Gt | ast::BinOp::Ge => {
+                lhs_ty.is_integer()
+            }
+            ast::BinOp::And | ast::BinOp::Or => *lhs_ty == Type::Bool,
+        }
+    }
+
     /// Try to coerce `expr` to `target` type. Returns the (possibly wrapped) expression.
     fn try_coerce(&self, expr: Expr, target: &Type) -> Expr {
         if expr.ty == *target {
@@ -4633,6 +4676,32 @@ impl<'a> Lowerer<'a> {
                     } else if rhs.ty.is_nullable_ref() && !lhs.ty.is_nullable_ref() {
                         let target = rhs.ty.clone();
                         lhs = self.try_coerce(lhs, &target);
+                    }
+                }
+                // Operator overloading: when no primitive implementation applies
+                // to the left operand and a matching `operator_*` method is in
+                // scope, desugar `a <op> b` into `a&.operator_*(b&)` and lower
+                // that through the ordinary method-call path. `1 + 2` keeps the
+                // primitive path; only non-primitive operands desugar.
+                if !Self::binop_primitive_applies(*op, &lhs.ty) {
+                    let method = Self::binop_method_name(*op);
+                    if self.method_defs.contains_key(method) {
+                        let recv = ast::Expr {
+                            kind: ast::ExprKind::Reference(left.clone()),
+                            span: left.span,
+                        };
+                        let arg = ast::Expr {
+                            kind: ast::ExprKind::Reference(right.clone()),
+                            span: right.span,
+                        };
+                        return self.lower_method_call(
+                            expr.span,
+                            &recv,
+                            method,
+                            &[],
+                            std::slice::from_ref(&arg),
+                            &[],
+                        );
                     }
                 }
                 // Allow array types with same element type (Array(T) and FixedArray(T, N))
