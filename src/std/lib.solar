@@ -54,10 +54,7 @@ pub fn write_stdout(s: &[Uint8]) {
 }
 
 pub fn println(s: &[Uint8]) {
-    let buf = [0u8; s.len() + 1u];
-    buf[0u..s.len()] = s@;
-    buf[s.len()] = 10u8;
-    write_stdout(buf&);
+    write_stdout((s@ + [10u8])&);
 }
 
 // Prints any value's `to_string()` representation followed by a newline. The
