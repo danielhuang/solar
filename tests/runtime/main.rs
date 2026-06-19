@@ -361,7 +361,7 @@ fn if_expr_stmt() {
 #[test]
 fn unique_ptr() {
     let output = run(&fixture("unique_ptr.solar"), "unique_ptr");
-    assert_eq!(output, "42\n100\n42\n999\n10\n99\n1\n999\n20\n77\n0\n100\n");
+    assert_eq!(output, "42\n100\n42\n999\n10\n99\n1\n999\n20\n77\n0\n100\n5\n");
 }
 
 #[test]

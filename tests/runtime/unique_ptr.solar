@@ -44,7 +44,16 @@ fn main() {
   let shared2 = shared;
   shared@ = 100;
   println(shared2@);            // 100 — aliased (as expected for &T)
+
+  // Passing a unique ref by value deep-copies it, so `identity(u)` returns a
+  // temporary owning a fresh pointee: writing through its deref is a no-op on
+  // the original.
+  let u: ^Int = 5^;
+  identity(u)@ = 1;
+  println(u@);                  // 5 — original unchanged
 }
+
+fn identity#[T](x: T) -> T { x }
 
 struct Wrapper {
   data: ^Int,
