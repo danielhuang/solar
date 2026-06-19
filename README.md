@@ -10,9 +10,7 @@ Solar's syntax is similar to Rust (with a few differences); see [`example.solar`
 
 ## Performance
 
-Currently, programs that do not require heap allocations (such as [`loop.solar`](examples/loop.solar)) have the same performance as the equivalent C program.
-
-LLVM is able to elide allocations (heap to stack, and stack to register), and programs that test this ([`loop2*.solar`](examples/)) have the same performance as the allocation-free base implementation.
+Solar's performance is equivalent to C in programs that are not allocation heavy, like [`sieve.solar`](examples/sieve.solar). Solar's memory management with GC is ~2x faster than C and Java for allocation-heavy workloads (see [`bench/RESULTS.md`](bench/RESULTS.md) for details).
 
 ## Sum types
 
