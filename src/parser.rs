@@ -1250,10 +1250,12 @@ fn convert_type(node: tree_sitter::Node, source: &str) -> Type {
     }
 }
 
-/// Parse an integer literal body (suffix already stripped), honoring a `0o`
-/// octal or `0x` hex prefix. Saturates on overflow.
+/// Parse an integer literal body (suffix already stripped), honoring a `0b`
+/// binary, `0o` octal, or `0x` hex prefix. Saturates on overflow.
 fn parse_integer_value(num_str: &str) -> i128 {
-    let (digits, radix) = if let Some(d) = num_str.strip_prefix("0o") {
+    let (digits, radix) = if let Some(d) = num_str.strip_prefix("0b") {
+        (d, 2)
+    } else if let Some(d) = num_str.strip_prefix("0o") {
         (d, 8)
     } else if let Some(d) = num_str.strip_prefix("0x") {
         (d, 16)
