@@ -24,6 +24,12 @@ solar() { # solar_bin  -> sum pause1+pause2 (ms) per cycle
         }' | stats
 }
 
+go_pauses() { # go_bin  -> STW pauses (ms): sweep-term + mark-term per cycle
+    GODEBUG=gctrace=1 "$ROOT/bench/go/$1" 2>&1 |
+        grep -oE '[0-9.]+\+[0-9.]+\+[0-9.]+ ms clock' |
+        awk '{split($1,a,"+"); print a[1]+a[3]}' | stats
+}
+
 java_pauses() { # class gcflags...
     local class="$1"; shift
     java -Xmx8g "$@" -Xlog:safepoint "$class" 2>&1 |
@@ -37,6 +43,7 @@ for b in allocs3:Allocs3 threads_list2:ThreadsList2; do
     echo "==== $class ===="
     printf '%-22s %s\n' "Solar"            "$(solar "$sbin")"
     printf '%-22s %s\n' "C (malloc/free)"  "none  none"
+    printf '%-22s %s\n' "Go"               "$(go_pauses "$sbin")"
     printf '%-22s %s\n' "Java G1"          "$(java_pauses "$class" -XX:+UseG1GC)"
     printf '%-22s %s\n' "Java Parallel"    "$(java_pauses "$class" -XX:+UseParallelGC)"
     printf '%-22s %s\n' "Java ZGC gen"     "$(java_pauses "$class" -XX:+UseZGC -XX:+ZGenerational)"

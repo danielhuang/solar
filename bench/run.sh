@@ -48,6 +48,7 @@ for bench in allocs3:Allocs3 threads:ThreadsList2; do
     echo; echo "==== $class ===="
     measure "Solar"            "$ROOT/target/$solar_bin"
     measure "C (malloc/free)"  "$ROOT/bench/c/$solar_bin"
+    measure "Go"               "$ROOT/bench/go/$solar_bin"
     measure "Java G1"          java $JAVA_OPTS -XX:+UseG1GC "$class"
     measure "Java Parallel"    java $JAVA_OPTS -XX:+UseParallelGC "$class"
     measure "Java ZGC gen"     java $JAVA_OPTS -XX:+UseZGC -XX:+ZGenerational "$class"
