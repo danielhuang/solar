@@ -6826,6 +6826,20 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
             params: vec![IsInteger],
             ret: Fixed(Type::Uint),
         },
+        // carrying_mul_add(a, b, carry, add, out_lo, out_hi): computes the full
+        // 128-bit product `a*b + carry + add` and writes the low/high 64-bit
+        // halves through the two `&Uint64` out-params. Returns Unit.
+        ast::Intrinsic::CarryingMulAdd => IntrinsicSpec {
+            params: vec![
+                Exact(Type::Uint64),
+                Exact(Type::Uint64),
+                Exact(Type::Uint64),
+                Exact(Type::Uint64),
+                Exact(Type::Ref(Box::new(Type::Uint64))),
+                Exact(Type::Ref(Box::new(Type::Uint64))),
+            ],
+            ret: Fixed(Type::Unit),
+        },
     }
 }
 

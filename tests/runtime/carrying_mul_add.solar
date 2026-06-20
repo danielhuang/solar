@@ -1,0 +1,21 @@
+fn main() {
+  // Small product with carry and add: 5*7 + 3 + 1 = 39, fits in the low half.
+  let (lo1, hi1) = (5u64).carrying_mul_add(7u64, 3u64, 1u64);
+  println(Uint(lo1));   // 39
+  println(Uint(hi1));   // 0
+
+  // Full-width product of the two maxima: (2^64-1)^2.
+  let (lo2, hi2) = (!0u64).carrying_mul_add(!0u64, 0u64, 0u64);
+  println(Uint(lo2));   // 1
+  println(Uint(hi2));   // 18446744073709551614
+
+  // Carry propagates into the high half: max*1 + max + 0.
+  let (lo3, hi3) = (!0u64).carrying_mul_add(1u64, !0u64, 0u64);
+  println(Uint(lo3));   // 18446744073709551614
+  println(Uint(hi3));   // 1
+
+  // The maximal 128-bit result: max*max + max + max = 2^128-1.
+  let (lo4, hi4) = (!0u64).carrying_mul_add(!0u64, !0u64, !0u64);
+  println(Uint(lo4));   // 18446744073709551615
+  println(Uint(hi4));   // 18446744073709551615
+}

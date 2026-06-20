@@ -51,3 +51,22 @@ pub unsafe extern "C" fn sol_checked_div_uint(a: u64, b: u64) -> u64 {
 pub unsafe extern "C" fn sol_checked_mod_uint(a: u64, b: u64) -> u64 {
     a.checked_rem(b).expect("unsigned modulo by zero")
 }
+
+/// Full 128-bit multiply-add: computes `a*b + carry + add` (which never
+/// overflows 128 bits) and writes the low/high 64-bit halves through the two
+/// out-params. Backs the `carrying_mul_add` intrinsic.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sol_carrying_mul_add(
+    a: u64,
+    b: u64,
+    carry: u64,
+    add: u64,
+    out_lo: *mut u64,
+    out_hi: *mut u64,
+) {
+    let (lo, hi) = a.carrying_mul_add(b, carry, add);
+    unsafe {
+        *out_lo = lo;
+        *out_hi = hi;
+    }
+}

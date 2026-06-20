@@ -1162,6 +1162,29 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 };
                 Value::Int(count as i64)
             }
+            Intrinsic::CarryingMulAdd => {
+                // a*b + carry + add as a 128-bit value; write low/high halves
+                // through the two `&Uint64` out-param refs.
+                let as_u64 = |v: &Value| match v {
+                    Value::Int(n) => *n as u64,
+                    _ => unreachable!("carrying_mul_add: expected integer"),
+                };
+                let a = as_u64(&self.eval_expr(&arguments[0]));
+                let b = as_u64(&self.eval_expr(&arguments[1]));
+                let carry = as_u64(&self.eval_expr(&arguments[2]));
+                let add = as_u64(&self.eval_expr(&arguments[3]));
+                let (lo_val, hi_val) = a.carrying_mul_add(b, carry, add);
+                let lo = self.eval_expr(&arguments[4]);
+                let hi = self.eval_expr(&arguments[5]);
+                match (lo, hi) {
+                    (Value::Ref(lo_slot), Value::Ref(hi_slot)) => {
+                        *lo_slot.borrow_mut() = Value::Int(lo_val as i64);
+                        *hi_slot.borrow_mut() = Value::Int(hi_val as i64);
+                    }
+                    _ => unreachable!("carrying_mul_add: expected ref out-params"),
+                }
+                Value::Unit
+            }
             Intrinsic::Cast(_, _) => {
                 let val = self.eval_expr(&arguments[0]);
                 let src_ty = &arguments[0].ty;

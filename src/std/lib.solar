@@ -73,6 +73,18 @@ pub method count_ones#[T](self: T) -> Uint {
   intrinsics::count_ones(self)
 }
 
+// Full-width multiply-add on Uint64: computes the 128-bit value
+// `self * rhs + carry + add` (which never overflows 128 bits) and returns it as
+// `(low, high)` 64-bit halves. Wraps the `carrying_mul_add` intrinsic, which
+// writes the halves through `&Uint64` out-params (lowering to the runtime's
+// `sol_carrying_mul_add`).
+pub method carrying_mul_add(self: Uint64, rhs: Uint64, carry: Uint64, add: Uint64) -> (Uint64, Uint64) {
+  let lo = 0u64;
+  let hi = 0u64;
+  intrinsics::carrying_mul_add(self, rhs, carry, add, lo&, hi&);
+  (lo, hi)
+}
+
 pub fn write_stdout(s: &[Uint8]) {
   file::stdout().write(s);
 }

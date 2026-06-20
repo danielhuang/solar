@@ -407,6 +407,7 @@ pub enum Intrinsic {
     CountTrailingZeros,
     CountLeadingZeros,
     CountOnes,
+    CarryingMulAdd,
     Cast(NumericType, NumericType),
 }
 
@@ -430,6 +431,7 @@ const INTRINSIC_NAMES: &[(&str, Intrinsic)] = &[
     ("count_trailing_zeros", Intrinsic::CountTrailingZeros),
     ("count_leading_zeros", Intrinsic::CountLeadingZeros),
     ("count_ones", Intrinsic::CountOnes),
+    ("carrying_mul_add", Intrinsic::CarryingMulAdd),
 ];
 
 impl Intrinsic {

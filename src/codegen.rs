@@ -539,6 +539,9 @@ impl<'a> Codegen<'a> {
         self.line("extern uint64_t sol_checked_mul_uint(uint64_t a, uint64_t b);");
         self.line("extern uint64_t sol_checked_div_uint(uint64_t a, uint64_t b);");
         self.line("extern uint64_t sol_checked_mod_uint(uint64_t a, uint64_t b);");
+        self.line(
+            "extern void sol_carrying_mul_add(uint64_t a, uint64_t b, uint64_t carry, uint64_t add, uint64_t* out_lo, uint64_t* out_hi);",
+        );
         self.line("extern uint8_t* sol_slice_index(uint8_t* base, uint64_t index, uint64_t len, uint64_t elem_size);");
         self.line("extern uint8_t* sol_slice_range(uint8_t* base, uint64_t start, uint64_t end, uint64_t len, uint64_t elem_size);");
         self.line("extern uint8_t* sol_null_check(uint8_t* ptr);");
@@ -2414,6 +2417,20 @@ impl<'a> Codegen<'a> {
                     _ => unreachable!(),
                 };
                 self.linef(format!("*({dst_c_ty}*){dst} = ({dst_c_ty}){expr};"));
+            }
+            Intrinsic::CarryingMulAdd => {
+                // args 0..4 are scalar Uint64 values; args 4,5 are &Uint64
+                // out-params (pointers). The runtime writes the low/high halves
+                // of `a*b + carry + add` through them. Returns Unit.
+                let a = self.emit_load(nodes, args[0]);
+                let b = self.emit_load(nodes, args[1]);
+                let carry = self.emit_load(nodes, args[2]);
+                let add = self.emit_load(nodes, args[3]);
+                let lo_ptr = self.emit_load(nodes, args[4]);
+                let hi_ptr = self.emit_load(nodes, args[5]);
+                self.linef(format!(
+                    "sol_carrying_mul_add((uint64_t){a}, (uint64_t){b}, (uint64_t){carry}, (uint64_t){add}, (uint64_t*){lo_ptr}, (uint64_t*){hi_ptr});"
+                ));
             }
             Intrinsic::Cast(_, _) => {
                 let val = self.emit_load(nodes, args[0]);

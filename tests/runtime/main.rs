@@ -42,6 +42,15 @@ fn bit_count() {
 }
 
 #[test]
+fn carrying_mul_add() {
+    let output = run(&fixture("carrying_mul_add.solar"), "carrying_mul_add");
+    assert_eq!(
+        output,
+        "39\n0\n1\n18446744073709551614\n18446744073709551614\n1\n18446744073709551615\n18446744073709551615\n"
+    );
+}
+
+#[test]
 fn wrapping() {
     let output = run(&fixture("wrapping.solar"), "wrapping");
     assert_eq!(output, "1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n15\n42\n");

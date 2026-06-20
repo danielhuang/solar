@@ -1364,6 +1364,19 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 };
                 self.scalar_store(dst, count as u64, result_ty);
             }
+            Intrinsic::CarryingMulAdd => {
+                // a*b + carry + add as a 128-bit value; write low/high halves
+                // through the two `&Uint64` out-params.
+                let a = self.eval_load(nodes, args[0]);
+                let b = self.eval_load(nodes, args[1]);
+                let carry = self.eval_load(nodes, args[2]);
+                let add = self.eval_load(nodes, args[3]);
+                let (lo, hi) = a.carrying_mul_add(b, carry, add);
+                let lo_addr = self.eval_load(nodes, args[4]) as usize;
+                let hi_addr = self.eval_load(nodes, args[5]) as usize;
+                self.scalar_store(lo_addr, lo, &Type::Uint64);
+                self.scalar_store(hi_addr, hi, &Type::Uint64);
+            }
             Intrinsic::Cast(_, _) => {
                 assert!(result_ty.is_numeric(), "cast must return numeric type");
                 let src_ty = &nodes[args[0].0].ty;
