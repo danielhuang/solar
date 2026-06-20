@@ -1,4 +1,6 @@
 import { panic } from "@intrinsics";
+import { Option } from "lib.solar";
+import iter from "iter.solar";
 
 pub struct Vec#[T] {
     len: Uint,
@@ -10,6 +12,10 @@ pub fn Vec#[T](src: &[T]) -> Vec#[T] {
         len: src.len(),
         inner: src@^,
     }
+}
+
+pub method as_slice#[T](self: &Vec#[T]) -> &[T] {
+    self@.inner@[0u..self@.len]&
 }
 
 pub method push#[T](self: &Vec#[T], value: T) {
@@ -27,4 +33,19 @@ pub method at#[T](self: &Vec#[T], index: Uint) -> &T {
         panic("Vec.at: index out of bounds"&);
     }
     self@.inner@[index]&
+}
+
+pub method iter#[T](self: &Vec#[T]) -> iter::Iterator#[T] {
+    let slice = self.as_slice();
+    iter::Iterator#[T] {
+        next: \ {
+            if slice.len() > 0u {
+                let ret = slice@[0u]&;
+                slice = slice@[1u..slice.len()]&;
+                Option#[&T]::Some(ret)
+            } else {
+                Option#[&T]::None
+            }
+        }
+    }
 }

@@ -361,7 +361,10 @@ fn if_expr_stmt() {
 #[test]
 fn unique_ptr() {
     let output = run(&fixture("unique_ptr.solar"), "unique_ptr");
-    assert_eq!(output, "42\n100\n42\n999\n10\n99\n1\n999\n20\n77\n0\n100\n5\n");
+    assert_eq!(
+        output,
+        "42\n100\n42\n999\n10\n99\n1\n999\n20\n77\n0\n100\n5\n"
+    );
 }
 
 #[test]
@@ -389,6 +392,12 @@ fn type_alias() {
 fn vec() {
     let output = run(&fixture("vec.solar"), "vec");
     assert_eq!(output, "10\n20\n30\n1\n2\n3\n4\n5\n999\n200\n");
+}
+
+#[test]
+fn vec_iter() {
+    let output = run(&fixture("vec_iter.solar"), "vec_iter");
+    assert_eq!(output, "3\n10\n20\n30\n60\n3\n999\n0\n2\n");
 }
 
 #[test]

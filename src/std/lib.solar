@@ -3,6 +3,7 @@ pub import vec from "vec.solar";
 pub import sync from "sync.solar";
 pub import thread from "thread.solar";
 pub import file from "file.solar";
+pub import iter from "iter.solar";
 
 // The optional type: `Some(value)` or `None`. Available everywhere via the
 // implicit `import * from "@std"`.

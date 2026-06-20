@@ -1,0 +1,62 @@
+fn main() {
+    let v = vec::Vec#[Int]([10, 20, 30]&);
+
+    // as_slice exposes the backing storage as a &[T]
+    let s = v&.as_slice();
+    println(s.len());                 // 3
+    println(s@[0u]);                  // 10
+    println(s@[1u]);                  // 20
+    println(s@[2u]);                  // 30
+
+    // iter walks every element, yielding Some(&T) until exhausted. The `next`
+    // method wraps the field closure so call sites need no parens.
+    let it = v&.iter();
+    let sum = 0;
+    let count = 0;
+    let cont = true;
+    while cont {
+        match it.next() {
+            Option#[&Int]::Some(r) => {
+                sum = sum + r@;
+                count = count + 1;
+            },
+            Option#[&Int]::None => { cont = false; },
+        }
+    }
+    println(sum);                     // 60
+    println(count);                   // 3
+
+    // The references yielded by iter point into the Vec's storage, so writing
+    // through one is visible afterwards. (Uses the raw field-closure call form.)
+    let it2 = v&.iter();
+    match (it2.next)() {
+        Option#[&Int]::Some(r) => { r@ = 999; },
+        Option#[&Int]::None => {},
+    };
+    println(v&.at(0u)@);              // 999
+
+    // Iterating an empty Vec yields None immediately.
+    let empty = vec::Vec#[Int]([0; 0u]&);
+    let ite = empty&.iter();
+    let any = 0;
+    match ite.next() {
+        Option#[&Int]::Some(r) => { any = 1; },
+        Option#[&Int]::None => { any = 0; },
+    };
+    println(any);                     // 0
+
+    // iter is generic: works for another element type too.
+    let vb = vec::Vec#[Bool]([true, false, true]&);
+    let itb = vb&.iter();
+    let trues = 0;
+    let contb = true;
+    while contb {
+        match itb.next() {
+            Option#[&Bool]::Some(r) => {
+                if r@ { trues = trues + 1; }
+            },
+            Option#[&Bool]::None => { contb = false; },
+        }
+    }
+    println(trues);                   // 2
+}
