@@ -8,6 +8,59 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 #[test]
+fn hashbrown_tag() {
+    let output = run(&fixture("hashbrown_tag.solar"), "hashbrown_tag");
+    assert_eq!(output, "255\n128\n127\n0\n1\n0\n1\n0\n1\n0\n");
+}
+
+#[test]
+fn hashbrown_bitmask() {
+    let output = run(&fixture("hashbrown_bitmask.solar"), "hashbrown_bitmask");
+    assert_eq!(output, "0\n2\n5\n0\n");
+}
+
+#[test]
+fn hashbrown_group() {
+    let output = run(&fixture("hashbrown_group.solar"), "hashbrown_group");
+    assert_eq!(
+        output,
+        "0\n1\n4\n99\n2\n6\n99\n2\n3\n6\n7\n99\n0\n1\n4\n5\n99\n"
+    );
+}
+
+#[test]
+fn hashbrown_hash() {
+    let output = run(&fixture("hashbrown_hash.solar"), "hashbrown_hash");
+    assert_eq!(
+        output,
+        "17103352462266903514\n12646608726195247393\n12646608726195247393\n\
+         12056765366625275561\n5134803880729456624\n10895394381029562297\n\
+         2784080265892256596\n"
+    );
+}
+
+#[test]
+fn hashbrown_map() {
+    let output = run(&fixture("hashbrown_map.solar"), "hashbrown_map");
+    assert_eq!(
+        output,
+        "0\n30\n30\n777\n1\n0\n4350\n50\n-1\n29\n777\n5555\n30\n6666\n30\n11\n777\n0\n1\n"
+    );
+}
+
+#[test]
+fn hashbrown_foldhash() {
+    // Values are bit-exact with upstream foldhash's fixed-seed `FoldHasher`.
+    let output = run(&fixture("hashbrown_foldhash.solar"), "hashbrown_foldhash");
+    assert_eq!(
+        output,
+        "17103352462266903514\n6908261415171690783\n12646608726195247393\n\
+         1980524245637793224\n799436778835710610\n2784080265892256596\n\
+         18047866850227357006\n589684135938649225\n"
+    );
+}
+
+#[test]
 fn deep_copy_ref_vs_value() {
     let output = run(&fixture("deep_copy.solar"), "deep_copy_ref_vs_value");
     assert_eq!(output, "99\n10\n42\n42\n");
@@ -17,6 +70,15 @@ fn deep_copy_ref_vs_value() {
 fn if_while() {
     let output = run(&fixture("if_while.solar"), "if_while");
     assert_eq!(output, "1\n3\n4\n7\n");
+}
+
+#[test]
+fn if_else_control_flow() {
+    let output = run(
+        &fixture("if_else_control_flow.solar"),
+        "if_else_control_flow",
+    );
+    assert_eq!(output, "3\n3\n12\n400\n3\n");
 }
 
 #[test]

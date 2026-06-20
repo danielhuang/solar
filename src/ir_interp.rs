@@ -1473,14 +1473,42 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             NodeKind::Continue => ControlFlow::Continue,
             NodeKind::Expr(inner) => {
                 let inner = *inner;
-                let ty = &nodes[inner.0].ty;
-                if *ty == Type::Unit {
-                    self.eval_into(nodes, inner, 0);
-                } else {
-                    let tmp = self.alloc_ty(ty);
-                    self.eval_into(nodes, inner, tmp);
+                // A statement-position compound expression (a trailing `if`/
+                // `match` in a block, e.g. a loop body) must propagate control
+                // flow — `break`/`continue`/`return` — out of its branches, just
+                // like the statement forms do. Its value is discarded. Without
+                // this, `loop { … if c { break } else { … } }` never terminates,
+                // because evaluating it only for its value drops the `break`.
+                match &nodes[inner.0].kind {
+                    NodeKind::IfExpr {
+                        condition,
+                        then_body,
+                        else_body,
+                    } => {
+                        let condition = *condition;
+                        let then_body = then_body.clone();
+                        let else_body = else_body.clone();
+                        let cond = self.eval_load(nodes, condition);
+                        if cond != 0 {
+                            self.exec_body(nodes, &then_body, ret_dst)
+                        } else if !else_body.is_empty() {
+                            self.exec_body(nodes, &else_body, ret_dst)
+                        } else {
+                            ControlFlow::Normal
+                        }
+                    }
+                    NodeKind::Match { .. } => self.exec_match_stmt(nodes, inner, ret_dst),
+                    _ => {
+                        let ty = &nodes[inner.0].ty;
+                        if *ty == Type::Unit {
+                            self.eval_into(nodes, inner, 0);
+                        } else {
+                            let tmp = self.alloc_ty(ty);
+                            self.eval_into(nodes, inner, tmp);
+                        }
+                        ControlFlow::Normal
+                    }
                 }
-                ControlFlow::Normal
             }
             NodeKind::Return(inner) => {
                 let inner = *inner;
@@ -1489,6 +1517,55 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             }
             _ => unreachable!(),
         }
+    }
+
+    /// Execute a statement-position `match` expression, propagating control flow
+    /// out of the taken arm (its value is discarded). Mirrors the value-path
+    /// `Match` evaluation but runs the arm body with `exec_body`.
+    fn exec_match_stmt(&mut self, nodes: &[Node], id: NodeId, ret_dst: usize) -> ControlFlow {
+        let (scrutinee, arms) = match &nodes[id.0].kind {
+            NodeKind::Match { scrutinee, arms } => (*scrutinee, arms.clone()),
+            _ => unreachable!(),
+        };
+        let enum_base = if is_place(nodes, scrutinee) {
+            let (addr, _) = self.eval_place(nodes, scrutinee);
+            addr
+        } else {
+            let ty = nodes[scrutinee.0].ty.clone();
+            let tmp = self.alloc_ty(&ty);
+            self.eval_into(nodes, scrutinee, tmp);
+            tmp
+        };
+        let disc = self.mem.load(enum_base, 8);
+        let enum_name = match &nodes[scrutinee.0].ty {
+            Type::Enum(name) => name.clone(),
+            _ => unreachable!(),
+        };
+        for arm in &arms {
+            let matches = match &arm.pattern {
+                MatchPattern::Variant { variant_index, .. } => disc == *variant_index,
+                MatchPattern::Wildcard(_, _) => true,
+            };
+            if matches {
+                match &arm.pattern {
+                    MatchPattern::Variant {
+                        variant_name,
+                        binding: Some((var, _ty)),
+                        ..
+                    } => {
+                        let dt = &self.module.datatypes[enum_name.as_str()];
+                        let fl = dt.fields.iter().find(|f| f.name == *variant_name).unwrap();
+                        self.vars.insert(*var, enum_base + fl.offset);
+                    }
+                    MatchPattern::Wildcard(var, _) => {
+                        self.vars.insert(*var, enum_base);
+                    }
+                    _ => {}
+                }
+                return self.exec_body(nodes, &arm.body, ret_dst);
+            }
+        }
+        unreachable!("no matching arm in match expression");
     }
 
     /// Run a loop body repeatedly until it breaks. `dst` is where `break <v>`

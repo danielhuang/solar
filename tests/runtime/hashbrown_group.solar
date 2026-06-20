@@ -1,0 +1,21 @@
+import group from "../../src/std/hashbrown/group.solar";
+import bitmask from "../../src/std/hashbrown/bitmask.solar";
+
+// Print each matched lane index, then a 99 separator.
+fn dump(m: bitmask::BitMask) {
+  while m.any_bit_set() {
+    println(m.lowest_set_bit_index());
+    m = m.remove_lowest_bit();
+  }
+  println(99);
+}
+
+fn main() {
+  // ctrl bytes: [0x05, 0x05, EMPTY, DELETED, 0x05, 0x07, EMPTY, DELETED]
+  let ctrl: [Uint8] = [5u8, 5u8, 255u8, 128u8, 5u8, 7u8, 255u8, 128u8];
+  let g = group::load(ctrl&, 0u);
+  dump(g.match_tag(5u8));            // 0, 1, 4
+  dump(g.match_empty());            // 2, 6
+  dump(g.match_empty_or_deleted()); // 2, 3, 6, 7
+  dump(g.match_full());             // 0, 1, 4, 5
+}

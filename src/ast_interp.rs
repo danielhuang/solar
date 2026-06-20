@@ -1286,6 +1286,54 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     LoopExit::Broke(_) => Flow::Normal,
                 }
             }
+            // A statement-position `if`/`match` expression (e.g. a trailing one
+            // in a loop body) must propagate control flow out of its branches,
+            // like the statement forms. Its value is discarded. Without this,
+            // `loop { … if c { break } else { … } }` never terminates.
+            StatementKind::Expression(expr) if matches!(expr.kind, ExprKind::If { .. }) => {
+                let (condition, then_body, else_body) = match &expr.kind {
+                    ExprKind::If {
+                        condition,
+                        then_body,
+                        else_body,
+                    } => (condition, then_body, else_body),
+                    _ => unreachable!(),
+                };
+                let val = self.eval_expr(condition);
+                match val {
+                    Value::Int(n) if n != 0 => {
+                        self.push_scope();
+                        let flow = self.exec_body(then_body);
+                        self.pop_scope();
+                        flow
+                    }
+                    _ => {
+                        if !else_body.is_empty() {
+                            self.push_scope();
+                            let flow = self.exec_body(else_body);
+                            self.pop_scope();
+                            flow
+                        } else {
+                            Flow::Normal
+                        }
+                    }
+                }
+            }
+            StatementKind::Expression(expr) if matches!(expr.kind, ExprKind::Match { .. }) => {
+                self.exec_match_stmt(expr)
+            }
+            // A bare block expression (e.g. a `match`/`if` arm body `{ break; }`)
+            // in statement position propagates control flow from its statements.
+            StatementKind::Expression(expr) if matches!(expr.kind, ExprKind::Block(_)) => {
+                let body = match &expr.kind {
+                    ExprKind::Block(body) => body,
+                    _ => unreachable!(),
+                };
+                self.push_scope();
+                let flow = self.exec_body(body);
+                self.pop_scope();
+                flow
+            }
             StatementKind::Expression(expr) => {
                 self.eval_expr(expr);
                 Flow::Normal
@@ -1297,6 +1345,58 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             StatementKind::Break(value) => Flow::Break(value.as_ref().map(|v| self.eval_expr(v))),
             StatementKind::Continue => Flow::Continue,
         }
+    }
+
+    /// Execute a statement-position `match`, propagating control flow out of the
+    /// taken arm (its value is discarded). Mirrors the `Match` value evaluation
+    /// but runs the arm body with `exec_body`.
+    fn exec_match_stmt(&mut self, expr: &Expr) -> Flow {
+        let (scrutinee, arms) = match &expr.kind {
+            ExprKind::Match { scrutinee, arms } => (scrutinee, arms),
+            _ => unreachable!(),
+        };
+        let enum_slot = self.eval_place(scrutinee);
+        let disc = {
+            let val = enum_slot.borrow();
+            match &*val {
+                Value::Enum { variant_index, .. } => *variant_index,
+                _ => unreachable!("match on non-enum value"),
+            }
+        };
+        for arm in arms {
+            let matches = match &arm.pattern {
+                TypedPattern::Variant { variant_index, .. } => disc == *variant_index,
+                TypedPattern::Wildcard(_, _) => true,
+            };
+            if matches {
+                self.push_scope();
+                match &arm.pattern {
+                    TypedPattern::Variant {
+                        binding: Some((bname, _)),
+                        ..
+                    } => {
+                        let inner_slot = {
+                            let val = enum_slot.borrow();
+                            match &*val {
+                                Value::Enum {
+                                    value: Some(slot), ..
+                                } => Rc::clone(slot),
+                                _ => unreachable!(),
+                            }
+                        };
+                        self.define_var(bname.clone(), inner_slot);
+                    }
+                    TypedPattern::Wildcard(name, _) => {
+                        self.define_var(name.clone(), Rc::clone(&enum_slot));
+                    }
+                    _ => {}
+                }
+                let flow = self.exec_body(&arm.body);
+                self.pop_scope();
+                return flow;
+            }
+        }
+        unreachable!("no matching arm in match expression");
     }
 
     /// Run a `loop` body until it breaks or returns.

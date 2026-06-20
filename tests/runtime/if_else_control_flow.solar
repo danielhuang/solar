@@ -1,0 +1,53 @@
+// Regression: `break`/`continue`/`return` inside an `if … { } else { }` (an
+// if-EXPRESSION, e.g. a trailing one in a loop body) must propagate out of the
+// enclosing loop/function in the interpreters, matching the compiled backend.
+
+enum E { Stop, Go(Int), }
+
+fn count_break() -> Int {
+  let x = 0;
+  loop { x = x + 1; if x >= 3 { break; } else { x = x + 0; } };
+  x
+}
+fn count_break_in_else() -> Int {
+  let x = 0;
+  loop { x = x + 1; if x < 3 { x = x + 0; } else { break; } };
+  x
+}
+fn sum_skip3() -> Int {
+  let i = 0;
+  let s = 0;
+  while i < 5 {
+    i = i + 1;
+    if i == 3 { s = s + 0; } else { s = s + i; }
+  }
+  s
+}
+fn early(n: Int) -> Int {
+  let i = 0;
+  while i < 10 {
+    if i == n { return i * 100; } else { i = i + 1; }
+  }
+  999
+}
+// break inside a statement-position match in a loop body.
+fn match_break() -> Int {
+  let x = 0;
+  loop {
+    x = x + 1;
+    let e = if x >= 3 { E::Stop } else { E::Go(x) };
+    match e {
+      E::Stop => { break; },
+      E::Go(n) => { x = x + 0; },
+    }
+  };
+  x
+}
+
+fn main() {
+  println(count_break());        // 3
+  println(count_break_in_else()); // 3
+  println(sum_skip3());          // 1+2+4+5 = 12
+  println(early(4));             // 400
+  println(match_break());        // 3
+}

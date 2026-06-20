@@ -1,7 +1,10 @@
+// Under a (v, idx, val) pattern, a unit variant binds `val` to the variant
+// index (a Uint), not a payload. So treating it as the data variant's payload
+// type (Int) is a type error in the duplicated unit arm.
 enum E { A, B(Int), }
 fn main() {
     let e = E::A;
     match.reflect_variant (v, idx, val) in e& {
-        let y = val + 1;
+        let y: Int = val;
     }
 }

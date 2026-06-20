@@ -1,0 +1,66 @@
+// `hash#[T]` feeds a value into a foldhash `Hasher`. The generic version uses
+// compile-time reflection: for a struct it hashes each field; for an enum it
+// hashes the active variant's index followed by its payload (`val`, which is
+// the index itself for unit variants — see `match.reflect_variant`). Primitive
+// types have concrete overloads, which win over the generic version.
+
+import fh from "foldhash.solar";
+
+// Generic reflective hash. Only instantiated for types without a concrete
+// `hash` overload (structs / enums); primitives dispatch to the overloads below.
+pub method hash#[T](self: &T, hasher: &fh::Hasher) {
+  match.reflect T {
+    "struct" => {
+      for.reflect_fields f in self {
+        f.1.hash(hasher);
+      }
+    },
+    "enum" => {
+      match.reflect_variant (name, idx, val) in self {
+        hasher.write_u64(Uint64(idx));
+        val&.hash(hasher);
+      }
+    },
+    _ => {},
+  };
+}
+
+// ── Primitive specializations ──────────────────────────────────────────────
+
+pub method hash(self: &Int, hasher: &fh::Hasher) {
+  hasher.write_u64(Uint64(self@));
+}
+pub method hash(self: &Uint, hasher: &fh::Hasher) {
+  hasher.write_u64(Uint64(self@));
+}
+pub method hash(self: &Int8, hasher: &fh::Hasher) {
+  hasher.write_u8(Uint8(self@));
+}
+pub method hash(self: &Int16, hasher: &fh::Hasher) {
+  hasher.write_u16(Uint16(self@));
+}
+pub method hash(self: &Int32, hasher: &fh::Hasher) {
+  hasher.write_u32(Uint32(self@));
+}
+pub method hash(self: &Int64, hasher: &fh::Hasher) {
+  hasher.write_u64(Uint64(self@));
+}
+pub method hash(self: &Uint8, hasher: &fh::Hasher) {
+  hasher.write_u8(self@);
+}
+pub method hash(self: &Uint16, hasher: &fh::Hasher) {
+  hasher.write_u16(self@);
+}
+pub method hash(self: &Uint32, hasher: &fh::Hasher) {
+  hasher.write_u32(self@);
+}
+pub method hash(self: &Uint64, hasher: &fh::Hasher) {
+  hasher.write_u64(self@);
+}
+pub method hash(self: &Bool, hasher: &fh::Hasher) {
+  if self@ { hasher.write_u8(1u8); } else { hasher.write_u8(0u8); }
+}
+// Byte slices (strings) hash their contents.
+pub method hash(self: &[Uint8], hasher: &fh::Hasher) {
+  hasher.write(self);
+}

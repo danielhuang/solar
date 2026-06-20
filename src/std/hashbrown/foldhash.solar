@@ -1,0 +1,247 @@
+// A port of foldhash's "fast" hasher (https://github.com/orlp/foldhash),
+// hardcoded to the deterministic FixedState seed. Bit-exact with upstream's
+// default 128-bit path: `folded_multiply` uses `Uint64::carrying_mul_add` for
+// the full 64x64->128 product, and the 128-bit `sponge` is represented as two
+// `Uint64` halves (lo, hi).
+//
+// NOTE: `&`/`^` directly before `(` parse as a postfix-reference call, so
+// sub-results are bound to temps. `|` has no such issue.
+
+import { u64_from_le, u32_from_le } from "@intrinsics";
+
+// Arbitrary high-entropy constants (hex digits of pi), from foldhash.
+const ARBITRARY1: Uint64 = 0x13198a2e03707344u64;
+const ARBITRARY3: Uint64 = 0x082efa98ec4e6c89u64;
+const ARBITRARY6: Uint64 = 0xc0ac29b7c97c50ddu64;
+const ARBITRARY7: Uint64 = 0x3f84d5b5b5470917u64;
+const ARBITRARY8: Uint64 = 0x9216d5d98979fb1bu64;
+const ARBITRARY9: Uint64 = 0xd1310ba698dfb5acu64;
+const ARBITRARY10: Uint64 = 0x2ffd72dbd01adfb7u64;
+const ARBITRARY11: Uint64 = 0xb8e1afed6a267e96u64;
+
+pub struct Hasher {
+  accumulator: Uint64,
+  sponge_lo: Uint64,
+  sponge_hi: Uint64,
+  sponge_len: Uint,
+  seeds: [Uint64; 6],
+}
+
+// A fresh hasher seeded with foldhash's fixed global seed.
+pub fn Hasher() -> Hasher {
+  Hasher {
+    accumulator: ARBITRARY3,
+    sponge_lo: 0u64,
+    sponge_hi: 0u64,
+    sponge_len: 0u,
+    seeds: [ARBITRARY6, ARBITRARY7, ARBITRARY8, ARBITRARY9, ARBITRARY10, ARBITRARY11],
+  }
+}
+
+// Full 64x64->128 multiply, folding the two halves together.
+fn folded_multiply(x: Uint64, y: Uint64) -> Uint64 {
+  let (lo, hi) = x.carrying_mul_add(y, 0u64, 0u64);
+  lo ^ hi
+}
+
+// Rotate `x` right by `r` bits (r taken mod 64).
+fn rotate_right(x: Uint64, r: Uint64) -> Uint64 {
+  let n = r & 63u64;
+  let right = x >> n;
+  let left_amt = 64u64 -- n;
+  let left = x << left_amt;   // n==0 => x<<64 == 0, so result is x
+  right | left
+}
+
+// Accumulate a `bits`-wide value into the 128-bit sponge, folding when full.
+method write_num(self: &Hasher, x: Uint64, bits: Uint) {
+  let new_len = self@.sponge_len + bits;
+  if new_len > 128u {
+    let acc = self@.accumulator;
+    let seed0 = self@.seeds[0u];
+    let a = self@.sponge_lo ^ acc;
+    let b = self@.sponge_hi ^ seed0;
+    self@.accumulator = folded_multiply(a, b);
+    self@.sponge_lo = x;
+    self@.sponge_hi = 0u64;
+    self@.sponge_len = bits;
+  } else {
+    let off = self@.sponge_len;
+    if off >= 64u {
+      let sh = off - 64u;
+      let shifted = x << sh;
+      self@.sponge_hi = self@.sponge_hi | shifted;
+    } else {
+      let shifted_lo = x << off;
+      self@.sponge_lo = self@.sponge_lo | shifted_lo;
+      let end = off + bits;
+      if end > 64u {
+        let rsh = 64u - off;
+        let shifted_hi = x >> rsh;
+        self@.sponge_hi = self@.sponge_hi | shifted_hi;
+      }
+    }
+    self@.sponge_len = new_len;
+  }
+}
+
+pub method write_u8(self: &Hasher, x: Uint8) {
+  self.write_num(Uint64(x), 8u);
+}
+pub method write_u16(self: &Hasher, x: Uint16) {
+  self.write_num(Uint64(x), 16u);
+}
+pub method write_u32(self: &Hasher, x: Uint32) {
+  self.write_num(Uint64(x), 32u);
+}
+pub method write_u64(self: &Hasher, x: Uint64) {
+  self.write_num(x, 64u);
+}
+
+// Load 8 bytes at `off` as a little-endian word.
+fn load8(bytes: &[Uint8], off: Uint) -> Uint64 {
+  let hi = off + 8u;
+  u64_from_le(bytes@[off..hi])
+}
+
+// Hash <= 16 bytes (overlapping reads).
+fn hash_bytes_short(bytes: &[Uint8], acc: Uint64, seeds: &[Uint64; 6]) -> Uint64 {
+  let len = bytes.len();
+  let s0 = acc;
+  let s1 = seeds@[1u];
+  if len >= 8u {
+    let lo = load8(bytes, 0u);
+    let hi_off = len - 8u;
+    let hi = load8(bytes, hi_off);
+    s0 = s0 ^ lo;
+    s1 = s1 ^ hi;
+  } else if len >= 4u {
+    let lo4 = u32_from_le(bytes@[0u..4u]);
+    let hi_off = len - 4u;
+    let hi_end = hi_off + 4u;
+    let hi4 = u32_from_le(bytes@[hi_off..hi_end]);
+    s0 = s0 ^ Uint64(lo4);
+    s1 = s1 ^ Uint64(hi4);
+  } else if len > 0u {
+    let lo = bytes@[0u];
+    let mid = bytes@[len / 2u];
+    let last_i = len - 1u;
+    let hi = bytes@[last_i];
+    s0 = s0 ^ Uint64(lo);
+    let hi_shifted = Uint64(hi) << 8u;
+    let combined = hi_shifted | Uint64(mid);
+    s1 = s1 ^ combined;
+  }
+  folded_multiply(s0, s1)
+}
+
+// Hash > 16 bytes. `base` tracks the current offset (Rust reslices `v`).
+fn hash_bytes_long(bytes: &[Uint8], acc: Uint64, seeds: &[Uint64; 6]) -> Uint64 {
+  let seed0 = seeds@[0u];
+  let s0 = acc;
+  let s1 = acc ++ seeds@[1u];
+  let base = 0u;
+  let remaining = bytes.len();
+
+  if remaining > 128u {
+    let s2 = acc ++ seeds@[2u];
+    let s3 = acc ++ seeds@[3u];
+    if remaining > 256u {
+      let s4 = acc ++ seeds@[4u];
+      let s5 = acc ++ seeds@[5u];
+      loop {
+        let a0 = load8(bytes, base) ^ s0;       let b0 = load8(bytes, base + 48u) ^ seed0;
+        let a1 = load8(bytes, base + 8u) ^ s1;  let b1 = load8(bytes, base + 56u) ^ seed0;
+        let a2 = load8(bytes, base + 16u) ^ s2; let b2 = load8(bytes, base + 64u) ^ seed0;
+        let a3 = load8(bytes, base + 24u) ^ s3; let b3 = load8(bytes, base + 72u) ^ seed0;
+        let a4 = load8(bytes, base + 32u) ^ s4; let b4 = load8(bytes, base + 80u) ^ seed0;
+        let a5 = load8(bytes, base + 40u) ^ s5; let b5 = load8(bytes, base + 88u) ^ seed0;
+        s0 = folded_multiply(a0, b0);
+        s1 = folded_multiply(a1, b1);
+        s2 = folded_multiply(a2, b2);
+        s3 = folded_multiply(a3, b3);
+        s4 = folded_multiply(a4, b4);
+        s5 = folded_multiply(a5, b5);
+        base = base + 96u;
+        remaining = remaining - 96u;
+        if remaining <= 256u { break; }
+      };
+      s0 = s0 ^ s4;
+      s1 = s1 ^ s5;
+    }
+    loop {
+      let a0 = load8(bytes, base) ^ s0;       let b0 = load8(bytes, base + 32u) ^ seed0;
+      let a1 = load8(bytes, base + 8u) ^ s1;  let b1 = load8(bytes, base + 40u) ^ seed0;
+      let a2 = load8(bytes, base + 16u) ^ s2; let b2 = load8(bytes, base + 48u) ^ seed0;
+      let a3 = load8(bytes, base + 24u) ^ s3; let b3 = load8(bytes, base + 56u) ^ seed0;
+      s0 = folded_multiply(a0, b0);
+      s1 = folded_multiply(a1, b1);
+      s2 = folded_multiply(a2, b2);
+      s3 = folded_multiply(a3, b3);
+      base = base + 64u;
+      remaining = remaining - 64u;
+      if remaining <= 128u { break; }
+    };
+    s0 = s0 ^ s2;
+    s1 = s1 ^ s3;
+  }
+
+  // Final block: remaining in (16, 128].
+  let e16 = base + remaining - 16u;
+  let e8 = base + remaining - 8u;
+  let fa0 = load8(bytes, base) ^ s0;      let fb0 = load8(bytes, e16) ^ seed0;
+  let fa1 = load8(bytes, base + 8u) ^ s1; let fb1 = load8(bytes, e8) ^ seed0;
+  s0 = folded_multiply(fa0, fb0);
+  s1 = folded_multiply(fa1, fb1);
+  if remaining >= 32u {
+    let e32 = base + remaining - 32u;
+    let e24 = base + remaining - 24u;
+    let ga0 = load8(bytes, base + 16u) ^ s0; let gb0 = load8(bytes, e32) ^ seed0;
+    let ga1 = load8(bytes, base + 24u) ^ s1; let gb1 = load8(bytes, e24) ^ seed0;
+    s0 = folded_multiply(ga0, gb0);
+    s1 = folded_multiply(ga1, gb1);
+    if remaining >= 64u {
+      let e48 = base + remaining - 48u;
+      let e40 = base + remaining - 40u;
+      let ha0 = load8(bytes, base + 32u) ^ s0; let hb0 = load8(bytes, e48) ^ seed0;
+      let ha1 = load8(bytes, base + 40u) ^ s1; let hb1 = load8(bytes, e40) ^ seed0;
+      s0 = folded_multiply(ha0, hb0);
+      s1 = folded_multiply(ha1, hb1);
+      if remaining >= 96u {
+        let e64 = base + remaining - 64u;
+        let e56 = base + remaining - 56u;
+        let ia0 = load8(bytes, base + 48u) ^ s0; let ib0 = load8(bytes, e64) ^ seed0;
+        let ia1 = load8(bytes, base + 56u) ^ s1; let ib1 = load8(bytes, e56) ^ seed0;
+        s0 = folded_multiply(ia0, ib0);
+        s1 = folded_multiply(ia1, ib1);
+      }
+    }
+  }
+  s0 ^ s1
+}
+
+pub method write(self: &Hasher, bytes: &[Uint8]) {
+  let len = bytes.len();
+  // Length-dependent rotation defeats trivial length-extension.
+  let rotated = rotate_right(self@.accumulator, Uint64(len));
+  self@.accumulator = rotated;
+  let seeds_ref = self@.seeds&;
+  if len <= 16u {
+    self@.accumulator = hash_bytes_short(bytes, self@.accumulator, seeds_ref);
+  } else {
+    self@.accumulator = hash_bytes_long(bytes, self@.accumulator, seeds_ref);
+  }
+}
+
+pub method finish(self: &Hasher) -> Uint64 {
+  let out = if self@.sponge_len > 0u {
+    let acc = self@.accumulator;
+    let seed0 = self@.seeds[0u];
+    let a = self@.sponge_lo ^ acc;
+    let b = self@.sponge_hi ^ seed0;
+    folded_multiply(a, b)
+  } else {
+    self@.accumulator
+  };
+  out
+}

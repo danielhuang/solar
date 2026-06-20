@@ -1,0 +1,19 @@
+import tag from "../../src/std/hashbrown/tag.solar";
+
+fn check(cond: Bool) {
+  if cond { println("1"&); } else { println("0"&); }
+}
+
+fn main() {
+  println(Uint(tag::EMPTY));                        // 255
+  println(Uint(tag::DELETED));                      // 128
+  println(Uint(tag::full(0xFFFFFFFFFFFFFFFFu64)));  // 127 (top 7 bits)
+  println(Uint(tag::full(0u64)));                   // 0
+
+  check(tag::is_full(0x42u8));        // 1 (top bit clear)
+  check(tag::is_full(tag::EMPTY));    // 0
+  check(tag::is_special(tag::EMPTY)); // 1
+  check(tag::is_special(0x42u8));     // 0
+  check(tag::special_is_empty(tag::EMPTY));    // 1
+  check(tag::special_is_empty(tag::DELETED));  // 0
+}

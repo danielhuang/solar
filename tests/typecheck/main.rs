@@ -335,7 +335,7 @@ fn bad_reflect_variant_not_ref() {
 // `val` is only bound in data-variant arms; using it with a unit variant
 // present is a compile error.
 #[test]
-#[should_panic(expected = "undefined variable: val")]
+#[should_panic(expected = "type mismatch in let: expected Int, got Uint")]
 fn bad_reflect_variant_unit_val() {
     compile(&fixture("typecheck_bad_reflect_variant_unit_val.solar"));
 }

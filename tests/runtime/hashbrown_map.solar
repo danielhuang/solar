@@ -1,0 +1,91 @@
+// HashMap comes via the implicit `import * from "@std"`. Results are matched
+// inside helper functions (matching a method-call result inline in `main` hits
+// an interpreter quirk).
+fn get_or#[K, V](m: &hashbrown::HashMap#[K, V], k: &K, dflt: Int) -> Int {
+  match m.get(k) {
+    Option#[&Int]::Some(v) => v@,
+    Option#[&Int]::None => dflt,
+  }
+}
+fn rem#[K, V](m: &hashbrown::HashMap#[K, V], k: &K) -> Int {
+  match m.remove(k) {
+    Option#[Int]::Some(v) => v,
+    Option#[Int]::None => 0 - 1,
+  }
+}
+fn sum_vals#[K, V](m: &hashbrown::HashMap#[K, V]) -> Int {
+  let total = 0;
+  m.for_each(\k: &Int, v: &Int { total = total + v@; });
+  total
+}
+
+pub struct Point { pub x: Int, pub y: Int, }
+method operator_eq(self: &Point, other: &Point) -> Bool {
+  let xe = self@.x == other@.x;
+  let ye = self@.y == other@.y;
+  xe && ye
+}
+fn pget(m: &hashbrown::HashMap#[Point, Int], k: &Point, dflt: Int) -> Int {
+  match m.get(k) {
+    Option#[&Int]::Some(v) => v@,
+    Option#[&Int]::None => dflt,
+  }
+}
+
+fn main() {
+  let m = hashbrown::HashMap#[Int, Int]();
+  println(m&.len());                 // 0
+
+  // Insert 30 keys (forces several resizes through the 7/8 load factor).
+  let i = 0u;
+  while i < 30u {
+    m&.insert(Int(i), Int(i) * 10);
+    i = i + 1u;
+  }
+  println(m&.len());                 // 30
+
+  // All present with correct values.
+  let ok = 0u;
+  let j = 0u;
+  while j < 30u {
+    if get_or(m&, Int(j)&, 777) == Int(j) * 10 { ok = ok + 1u; }
+    j = j + 1u;
+  }
+  println(ok);                       // 30
+
+  println(get_or(m&, 100&, 777));    // 777 (absent)
+  if m&.contains_key(5&) { println(1); } else { println(0); }    // 1
+  if m&.contains_key(100&) { println(1); } else { println(0); }  // 0
+
+  println(sum_vals(m&));             // 0+10+...+290 = 4350
+
+  // Remove and re-insert.
+  println(rem(m&, 5&));              // 50
+  println(rem(m&, 100&));            // -1 (absent)
+  println(m&.len());                 // 29
+  println(get_or(m&, 5&, 777));      // 777 (removed)
+  m&.insert(5, 5555);
+  println(get_or(m&, 5&, 777));      // 5555
+  println(m&.len());                 // 30
+
+  // Overwrite doesn't grow.
+  m&.insert(6, 6666);
+  println(get_or(m&, 6&, 777));      // 6666
+  println(m&.len());                 // 30
+
+  // Struct keys (operator_eq + reflective hash over pub fields).
+  let pm = hashbrown::HashMap#[Point, Int]();
+  let p1 = Point { x: 1, y: 2, };
+  let p2 = Point { x: 3, y: 4, };
+  pm&.insert(p1, 11);
+  pm&.insert(p2, 22);
+  let q1 = Point { x: 1, y: 2, };
+  let q3 = Point { x: 9, y: 9, };
+  println(pget(pm&, q1&, 777));      // 11
+  println(pget(pm&, q3&, 777));      // 777
+
+  // Clear.
+  m&.clear();
+  println(m&.len());                 // 0
+  if m&.is_empty() { println(1); } else { println(0); }   // 1
+}

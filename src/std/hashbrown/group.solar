@@ -1,0 +1,68 @@
+// A group of 8 control bytes scanned in parallel with SWAR (SIMD-within-a-
+// register) bit tricks. Ported from hashbrown `src/control/group/generic.rs`.
+// Solar has no SIMD, so the group is always a 64-bit word (8 lanes). All ops are
+// in native (little-endian) byte order, which the codebase assumes.
+//
+// NOTE: bitwise `&`/`^` directly before `(` parse as a postfix-reference call,
+// so every match expression binds its sub-results to temps first.
+
+import { u64_from_le } from "@intrinsics";
+import tag from "tag.solar";
+import bitmask from "bitmask.solar";
+
+pub const WIDTH: Uint = 8u;
+
+pub struct Group {
+  pub word: Uint64,
+}
+
+// Broadcast a byte across all 8 lanes of a word (0xAB -> 0xABABABAB_ABABABAB).
+fn repeat(byte: Uint8) -> Uint64 {
+  Uint64(byte) ** 0x0101010101010101u64
+}
+
+// Load the 8 control bytes starting at byte offset `pos`. The caller guarantees
+// `pos + 8 <= ctrl.len()` (the control array has a trailing mirror group), and
+// the slice + fixed-array coercion bounds-check it regardless.
+pub fn load(ctrl: &[Uint8], pos: Uint) -> Group {
+  let hi = pos + WIDTH;
+  Group { word: u64_from_le(ctrl@[pos..hi]) }
+}
+
+// Lanes that *may* hold the given tag (full buckets only; rare false positives
+// on the low bit are caught by the key comparison).
+pub method match_tag(self: Group, t: Uint8) -> bitmask::BitMask {
+  let cmp = self.word ^ repeat(t);
+  let ones = repeat(0x01u8);
+  let high = repeat(tag::DELETED);
+  let sub = cmp -- ones;
+  let notcmp = !cmp;
+  // (cmp - 0x0101..) & !cmp & 0x8080..
+  let lo = sub & notcmp;
+  let r = lo & high;
+  bitmask::BitMask { word: r }
+}
+
+// Lanes that are EMPTY (top two bits set).
+pub method match_empty(self: Group) -> bitmask::BitMask {
+  let shifted = self.word << 1u64;
+  let high = repeat(tag::DELETED);
+  let lo = self.word & shifted;
+  let r = lo & high;
+  bitmask::BitMask { word: r }
+}
+
+// Lanes that are EMPTY or DELETED (top bit set).
+pub method match_empty_or_deleted(self: Group) -> bitmask::BitMask {
+  let high = repeat(tag::DELETED);
+  let r = self.word & high;
+  bitmask::BitMask { word: r }
+}
+
+// Lanes that are full (top bit clear) — the complement of empty-or-deleted.
+pub method match_full(self: Group) -> bitmask::BitMask {
+  let eod = self.match_empty_or_deleted();
+  let all_high = 0x8080808080808080u64;
+  let r = eod.word ^ all_high;
+  bitmask::BitMask { word: r }
+}

@@ -1,0 +1,29 @@
+import fh from "../../src/std/hashbrown/foldhash.solar";
+import hash from "../../src/std/hashbrown/hash.solar";
+
+// NOTE: reflective field hashing requires `pub` fields (privacy applies
+// across modules), so struct keys expose their fields.
+pub struct Point { pub x: Int, pub y: Int, }
+enum Shape { Circle(Int), Square, }
+
+fn hash_of#[T](v: &T) -> Uint {
+  let h = fh::Hasher();
+  v.hash(h&);
+  Uint(h&.finish())
+}
+
+fn main() {
+  println(hash_of(42&));                  // 17103352462266903514 (== foldhash u64(42))
+  let p = Point { x: 1, y: 2, };
+  println(hash_of(p&));                    // 12646608726195247393 (== write_u64(1),write_u64(2))
+  let p2 = Point { x: 1, y: 2, };
+  println(hash_of(p2&));                   // same (deterministic)
+  let p3 = Point { x: 1, y: 3, };
+  println(hash_of(p3&));                   // 12056765366625275561 (differs)
+  let c = Shape::Circle(7);
+  println(hash_of(c&));                    // 5134803880729456624
+  let s = Shape::Square;
+  println(hash_of(s&));                    // 10895394381029562297
+  let str: [Uint8] = "hello";
+  println(hash_of(str&));                  // 2784080265892256596 (== foldhash bytes(hello))
+}

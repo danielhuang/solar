@@ -1,0 +1,40 @@
+// A bit mask: the result of a `Group` match. Each of the 8 byte-lanes that
+// matched has its high bit set; a lane is "in the mask" iff its byte is
+// non-zero. Iteration normalizes by dividing the bit position by the stride (8).
+// Ported from hashbrown `src/control/bitmask.rs` (generic/SWAR path, stride 8).
+//
+// Solar has no SIMD, so the underlying word is always 64-bit (8 lanes). We work
+// in native (little-endian) byte order throughout, which the codebase assumes.
+// `BitMask` is a tiny value type, so methods take `self` by value.
+
+const STRIDE: Uint = 8u;
+
+pub struct BitMask {
+  pub word: Uint64,
+}
+
+// Whether any lane matched.
+pub method any_bit_set(self: BitMask) -> Bool {
+  self.word != 0u64
+}
+
+// The lane index (0..8) of the lowest matched lane. Only meaningful when
+// `any_bit_set()` is true (when the word is 0 it returns 64 / 8 = 8).
+pub method lowest_set_bit_index(self: BitMask) -> Uint {
+  self.word.count_trailing_zeros() / STRIDE
+}
+
+// The mask with its lowest set bit cleared (`x & (x - 1)`). The RHS is bound to
+// a temp because `&` directly before `(` parses as a postfix-reference call.
+pub method remove_lowest_bit(self: BitMask) -> BitMask {
+  let dec = self.word -- 1u64;
+  BitMask { word: self.word & dec }
+}
+
+// Leading / trailing zero lanes (used by `erase` to decide EMPTY vs DELETED).
+pub method leading_zeros(self: BitMask) -> Uint {
+  self.word.count_leading_zeros() / STRIDE
+}
+pub method trailing_zeros(self: BitMask) -> Uint {
+  self.word.count_trailing_zeros() / STRIDE
+}

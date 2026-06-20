@@ -1,0 +1,122 @@
+// HashMap — a SwissTable hash map. Ported from hashbrown `src/map.rs` (a subset:
+// new/insert/get/get_mut/contains_key/remove/len/is_empty/clear). The default
+// hasher is foldhash with a fixed seed; keys are compared with `==` (so struct
+// keys need an `operator_eq`), and hashed via the reflective `hash` (so struct
+// keys need `pub` fields).
+
+import { Option } from "../lib.solar";
+import raw from "raw.solar";
+import tag from "tag.solar";
+
+pub struct HashMap#[K, V] {
+  table: raw::RawTable#[K, V],
+}
+
+pub fn HashMap#[K, V]() -> HashMap#[K, V] {
+  HashMap#[K, V] { table: raw::RawTable#[K, V](), }
+}
+
+pub method len#[K, V](self: &HashMap#[K, V]) -> Uint {
+  self@.table.items
+}
+
+pub method is_empty#[K, V](self: &HashMap#[K, V]) -> Bool {
+  self@.table.items == 0u
+}
+
+// Insert `key -> val`, returning the previous value if the key was present.
+pub method insert#[K, V](self: &HashMap#[K, V], key: K, val: V) -> Option#[V] {
+  let t = self@.table&;
+  let h = raw::key_hash(key&);
+  let existing = t.find(h, key&);
+  let result = match existing {
+    Option#[Uint]::Some(idx) => {
+      let s = t@.slots;
+      let old = s@[idx].val;
+      s@[idx].val = val;
+      Option#[V]::Some(old)
+    },
+    Option#[Uint]::None => {
+      if t@.growth_left == 0u {
+        let sample = raw::Entry#[K, V] { key: key, val: val, };
+        let need = t@.items + 1u;
+        t.resize(need, sample&);
+      }
+      let e = raw::Entry#[K, V] { key: key, val: val, };
+      t.insert_in_slot(h, e);
+      Option#[V]::None
+    },
+  };
+  result
+}
+
+// A reference to the value for `key`, or None.
+pub method get#[K, V](self: &HashMap#[K, V], key: &K) -> Option#[&V] {
+  let t = self@.table&;
+  let h = raw::key_hash(key);
+  let found = t.find(h, key);
+  let result = match found {
+    Option#[Uint]::Some(idx) => {
+      let s = t@.slots;
+      Option#[&V]::Some(s@[idx].val&)
+    },
+    Option#[Uint]::None => Option#[&V]::None,
+  };
+  result
+}
+
+pub method contains_key#[K, V](self: &HashMap#[K, V], key: &K) -> Bool {
+  let t = self@.table&;
+  let h = raw::key_hash(key);
+  let found = t.find(h, key);
+  let result = match found {
+    Option#[Uint]::Some(idx) => true,
+    Option#[Uint]::None => false,
+  };
+  result
+}
+
+// References in Solar are always mutable, so `get` already yields a mutable
+// value reference; `get_mut` is provided for parity with hashbrown.
+pub method get_mut#[K, V](self: &HashMap#[K, V], key: &K) -> Option#[&V] {
+  self.get(key)
+}
+
+// Remove `key`, returning its value if present.
+pub method remove#[K, V](self: &HashMap#[K, V], key: &K) -> Option#[V] {
+  let t = self@.table&;
+  let h = raw::key_hash(key);
+  let found = t.find(h, key);
+  let result = match found {
+    Option#[Uint]::Some(idx) => {
+      let s = t@.slots;
+      let v = s@[idx].val;
+      t.erase(idx);
+      Option#[V]::Some(v)
+    },
+    Option#[Uint]::None => Option#[V]::None,
+  };
+  result
+}
+
+// Remove all entries (keeps the allocated capacity).
+pub method clear#[K, V](self: &HashMap#[K, V]) {
+  let t = self@.table&;
+  t.clear();
+}
+
+// Call `f(key, val)` for every live entry, in unspecified order.
+pub method for_each#[K, V](self: &HashMap#[K, V], f: fn(&K, &V)) {
+  let t = self@.table&;
+  if t@.bucket_mask != 0u {
+    let buckets = t@.bucket_mask + 1u;
+    let s = t@.slots;
+    let i = 0u;
+    while i < buckets {
+      if tag::is_full(t@.ctrl@[i]) {
+        f(s@[i].key&, s@[i].val&);
+      }
+      i = i + 1u;
+    }
+  }
+}

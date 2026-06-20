@@ -5524,6 +5524,25 @@ impl<'a> Lowerer<'a> {
                             },
                             span,
                         });
+                    } else {
+                        // Unit variant: no payload. Bind `val` to the variant
+                        // index (a `Uint`) so a generic body that references
+                        // `val` (e.g. reflective hashing) still compiles for
+                        // enums that mix unit and data variants.
+                        arm_stmts.push(ast::Statement {
+                            kind: ast::StatementKind::Let {
+                                pattern: parts[2].clone(),
+                                ty: None,
+                                value: ast::Expr {
+                                    kind: ast::ExprKind::IntegerLiteral(
+                                        variant_index as i128,
+                                        ast::IntegerType::Uint,
+                                    ),
+                                    span,
+                                },
+                            },
+                            span,
+                        });
                     }
                 }
                 // any other pattern binds the (name, index, payload) tuple itself
