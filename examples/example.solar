@@ -83,12 +83,6 @@ struct Box#[T] {
   value: T,
 }
 
-// generic enum
-enum Option#[T] {
-  Some(T),
-  None,
-}
-
 // type aliases
 type Num = Int;
 type OptInt = Option#[Int];

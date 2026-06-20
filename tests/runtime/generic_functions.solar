@@ -27,11 +27,6 @@ fn double(x: Int) -> Int {
 }
 
 // generic function with enum
-enum Option#[T] {
-  Some(T),
-  None,
-}
-
 fn unwrap_or#[T](opt: Option#[T], default: T) -> T {
   match opt {
     Option#[T]::Some(v) => v,

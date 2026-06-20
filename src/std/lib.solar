@@ -4,6 +4,13 @@ pub import sync from "sync.solar";
 pub import thread from "thread.solar";
 pub import file from "file.solar";
 
+// The optional type: `Some(value)` or `None`. Available everywhere via the
+// implicit `import * from "@std"`.
+pub enum Option#[T] {
+  Some(T),
+  None,
+}
+
 // Decimal representation of x as a byte slice (no trailing newline). The buffer
 // is GC-allocated, so the returned reference keeps it alive. Digits are
 // extracted in the negative domain so Int's minimum value (which has no positive

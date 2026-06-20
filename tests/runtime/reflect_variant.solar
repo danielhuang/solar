@@ -9,11 +9,6 @@ enum Num {
     Big(Int),
 }
 
-enum Option#[T] {
-    Some(T),
-    None,
-}
-
 // Generic use: the dispatch sits inside match.reflect's "enum" branch, so
 // this compiles for every instantiation — erased for non-enums.
 fn variant_name#[T](o: &T) {

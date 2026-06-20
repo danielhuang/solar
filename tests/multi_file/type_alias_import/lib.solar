@@ -5,9 +5,4 @@ pub struct Point {
 
 pub type P = Point;
 
-pub enum Option#[T] {
-    Some(T),
-    None,
-}
-
 pub type OptInt = Option#[Int];

@@ -10,11 +10,6 @@ struct Point {
 type P = Point;
 
 // Generic target: alias to a concrete generic
-enum Option#[T] {
-    Some(T),
-    None,
-}
-
 type OptInt = Option#[Int];
 
 // Generic alias

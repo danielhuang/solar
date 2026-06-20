@@ -13,11 +13,6 @@ enum Shape {
     Empty,
 }
 
-enum Option#[T] {
-    Some(T),
-    None,
-}
-
 // One generic function exercising both reflection forms: structs take the
 // for.reflect_fields branch, enums the match.reflect_variant branch, and
 // everything else falls through — every instantiation compiles.
