@@ -2261,6 +2261,25 @@ impl<'a> Codegen<'a> {
                 let c_ty = self.c_int_type(result_ty);
                 self.linef(format!("*({c_ty}*){dst} = ({c_ty}){len};"));
             }
+            Intrinsic::U64FromLe | Intrinsic::U32FromLe => {
+                // Materialize the `[Uint8; N]` argument into a buffer, then copy
+                // its N bytes into the result storage (`dst` is exactly N bytes).
+                // On the little-endian target the byte copy IS the little-endian
+                // decode. In release the buffer + memcpy collapse to one load.
+                let n = if matches!(intrinsic, Intrinsic::U64FromLe) {
+                    8
+                } else {
+                    4
+                };
+                let arg_ty = nodes[args[0].0].ty.clone();
+                let s = self.type_size(&arg_ty);
+                let a = self.type_align(&arg_ty);
+                let mf = self.mark_fn_expr(&arg_ty);
+                let buf = self.fresh_tmp();
+                self.linef(format!("uint8_t* {buf} = sol_alloc({s}, {a}, {mf});"));
+                self.emit_into(nodes, args[0], &buf);
+                self.linef(format!("__builtin_memcpy({dst}, {buf}, {n});"));
+            }
             Intrinsic::AssertArrayLen => {
                 let expected = self.emit_load(nodes, args[1]);
                 let actual = if let Type::FixedArray(_, n) = &nodes[args[0].0].ty {

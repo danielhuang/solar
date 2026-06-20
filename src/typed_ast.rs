@@ -6630,9 +6630,14 @@ impl<'a> Lowerer<'a> {
         let mut lowered_args = Vec::with_capacity(arguments.len());
         let mut ref_inner: Option<Type> = None;
         for (i, (ast_arg, param)) in arguments.iter().zip(&spec.params).enumerate() {
-            let arg = self.lower_expr(ast_arg)?;
+            let mut arg = self.lower_expr(ast_arg)?;
             match param {
                 ParamRequirement::Exact(expected) => {
+                    // Coerce first so e.g. a `[Uint8]` slice argument coerces to
+                    // a `[Uint8; N]` fixed-array parameter (inserting the runtime
+                    // length assertion). `try_coerce` is the identity when the
+                    // types already match, so this is a no-op for other intrinsics.
+                    arg = self.try_coerce(arg, expected);
                     if arg.ty != *expected {
                         return Err(CompileError::new(
                             format!("{name}: expected {expected}, got {}", arg.ty),
@@ -6825,6 +6830,18 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
         | ast::Intrinsic::CountOnes => IntrinsicSpec {
             params: vec![IsInteger],
             ret: Fixed(Type::Uint),
+        },
+        // u64_from_le([Uint8; 8]) / u32_from_le([Uint8; 4]): decode a fixed byte
+        // array as a little-endian integer. Callers pass a slice that coerces to
+        // the fixed array (`u64_from_le(s[i..i+8u])`); the coercion's length
+        // assertion guarantees exactly N in-bounds bytes are read.
+        ast::Intrinsic::U64FromLe => IntrinsicSpec {
+            params: vec![Exact(Type::FixedArray(Box::new(Type::Uint8), 8))],
+            ret: Fixed(Type::Uint64),
+        },
+        ast::Intrinsic::U32FromLe => IntrinsicSpec {
+            params: vec![Exact(Type::FixedArray(Box::new(Type::Uint8), 4))],
+            ret: Fixed(Type::Uint32),
         },
         // carrying_mul_add(a, b, carry, add, out_lo, out_hi): computes the full
         // 128-bit product `a*b + carry + add` and writes the low/high 64-bit

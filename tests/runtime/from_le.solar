@@ -1,0 +1,11 @@
+import { u64_from_le, u32_from_le } from "@intrinsics";
+
+fn main() {
+  let arr: [Uint8] = [1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8, 10u8];
+  // Slice coerces to the fixed-array param; index is a runtime value.
+  let i = 1u;
+  println(Uint(u64_from_le(arr[i..i+8u])));   // bytes [2..9] LE = 650777868590383874
+  println(Uint(u32_from_le(arr[i..i+4u])));   // bytes [2..5] LE = 84148994
+  println(Uint(u64_from_le(arr[0u..8u])));    // bytes [1..8] LE = 578437695752307201
+  println(Uint(u32_from_le(arr[0u..4u])));    // bytes [1..4] LE = 67305985
+}

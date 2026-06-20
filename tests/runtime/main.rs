@@ -42,6 +42,15 @@ fn bit_count() {
 }
 
 #[test]
+fn from_le() {
+    let output = run(&fixture("from_le.solar"), "from_le");
+    assert_eq!(
+        output,
+        "650777868590383874\n84148994\n578437695752307201\n67305985\n"
+    );
+}
+
+#[test]
 fn carrying_mul_add() {
     let output = run(&fixture("carrying_mul_add.solar"), "carrying_mul_add");
     assert_eq!(

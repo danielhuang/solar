@@ -1268,6 +1268,21 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 };
                 self.scalar_store(dst, len as u64, result_ty);
             }
+            Intrinsic::U64FromLe | Intrinsic::U32FromLe => {
+                // Materialize the `[Uint8; N]` argument, then read N bytes — the
+                // memory loader assembles them via `u64::from_le_bytes`, so the
+                // loaded value is already the little-endian decode.
+                let n = if matches!(intrinsic, Intrinsic::U64FromLe) {
+                    8
+                } else {
+                    4
+                };
+                let arg_ty = nodes[args[0].0].ty.clone();
+                let addr = self.alloc_ty(&arg_ty);
+                self.eval_into(nodes, args[0], addr);
+                let val = self.mem.load(addr, n);
+                self.scalar_store(dst, val, result_ty);
+            }
             Intrinsic::AssertArrayLen => {
                 assert_eq!(*result_ty, Type::Unit);
                 let arr_id = args[0];

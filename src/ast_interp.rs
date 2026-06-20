@@ -1054,6 +1054,24 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     _ => unreachable!(),
                 }
             }
+            Intrinsic::U64FromLe | Intrinsic::U32FromLe => {
+                // Decode the `[Uint8; N]` argument as a little-endian integer.
+                let arr = self.eval_expr(&arguments[0]);
+                match arr {
+                    Value::Array(elements) => {
+                        let mut v: u64 = 0;
+                        for (k, slot) in elements.iter().enumerate() {
+                            let byte = match &*slot.borrow() {
+                                Value::Int(n) => *n as u8 as u64,
+                                _ => unreachable!("u*_from_le: expected byte"),
+                            };
+                            v |= byte << (8 * k);
+                        }
+                        Value::Int(v as i64)
+                    }
+                    _ => unreachable!(),
+                }
+            }
             Intrinsic::AssertArrayLen => {
                 let arr = self.eval_expr(&arguments[0]);
                 let expected = self.eval_expr(&arguments[1]);
