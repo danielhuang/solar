@@ -301,11 +301,6 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
       }
     }
 
-    if (NStore || NVec || NMem || NSkipStack)
-      errs() << "solar-write-barriers: " << NStore << " store, " << NVec
-             << " vector, " << NMem << " memcpy inserted; " << NSkipStack
-             << " stack/global skipped\n";
-
     return (NRaised || NStore || NVec || NMem) ? PreservedAnalyses::none()
                                                : PreservedAnalyses::all();
   }
