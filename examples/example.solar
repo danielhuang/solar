@@ -136,6 +136,10 @@ fn main() {
   println(256 >> 4);           // 16
   println(!0u);                // 18446744073709551615 (bitwise complement)
 
+  // wrapping arithmetic: doubled operators never panic on overflow
+  println(!0u ++ 1u);          // 0 (u64::MAX ++ 1 wraps)
+  println(!0u ** 2u);          // 18446744073709551614 (wraps mod 2^64)
+
   // array indexing
   let arr: [Int] = [10, 20, 30];
   println(arr[0u]);            // 10

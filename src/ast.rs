@@ -240,6 +240,11 @@ pub enum BinOp {
     BitXor,
     Shl,
     Shr,
+    /// Wrapping (two's-complement, overflow-never-panics) arithmetic, written
+    /// with a doubled operator: `++` `--` `**`.
+    WrapAdd,
+    WrapSub,
+    WrapMul,
 }
 
 #[derive(Debug, Clone)]

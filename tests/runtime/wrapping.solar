@@ -1,0 +1,25 @@
+fn check(cond: Bool) {
+  if cond { println("1"&); } else { println("0"&); }
+}
+
+fn main() {
+  // Wrapping `++`/`--`/`**` are two's-complement and never panic on overflow.
+  check((!0u) ++ 1u == 0u);                  // u64::MAX ++ 1 == 0
+  check(0u -- 1u == !0u);                    // 0 -- 1 wraps to u64::MAX
+  check((!0u) ** 2u == (!0u) -- 1u);         // wrapping mul wraps
+
+  // Signed 64-bit wrap: Int::MAX ++ 1 == Int::MIN.
+  check(9223372036854775807 ++ 1 == 0 - 9223372036854775807 - 1);
+
+  // Narrow widths wrap at the operand's width.
+  check(255u8 ++ 1u8 == 0u8);                // 256 -> 0
+  check(200u8 ++ 100u8 == 44u8);             // 300 -> 44
+  check(0u8 -- 1u8 == 255u8);                // underflow -> 255
+  check(16u8 ** 16u8 == 0u8);                // 256 -> 0
+  check(127i8 ++ 1i8 == 0i8 - 100i8 - 28i8); // Int8::MAX ++ 1 == -128
+  check((0i8 - 1i8) ** (0i8 - 1i8) == 1i8);  // (-1) ** (-1) == 1
+
+  // No overflow: identical to the checked operators.
+  println((10 ++ 5).to_string());            // 15
+  println((6 ** 7).to_string());             // 42
+}

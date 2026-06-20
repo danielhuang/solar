@@ -622,6 +622,21 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     self.eval_load(nodes, right)
                 }
             }
+            BinOp::WrapAdd | BinOp::WrapSub | BinOp::WrapMul => {
+                // Two's-complement wrapping is bit-identical for signed and
+                // unsigned, so compute on the raw 64-bit pattern and truncate to
+                // the operand's width (e.g. 255u8 ++ 1u8 == 0u8).
+                let ty = nodes[left.0].ty.clone();
+                let a = self.eval_load(nodes, left);
+                let b = self.eval_load(nodes, right);
+                let raw = match op {
+                    BinOp::WrapAdd => a.wrapping_add(b),
+                    BinOp::WrapSub => a.wrapping_sub(b),
+                    BinOp::WrapMul => a.wrapping_mul(b),
+                    _ => unreachable!(),
+                };
+                truncate_to_ty(raw, &ty)
+            }
             BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
                 // Bitwise ops work on the raw bit pattern; operands are loaded
                 // sign-extended (signed) or zero-extended (unsigned), and the
@@ -708,7 +723,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     | BinOp::BitOr
                     | BinOp::BitXor
                     | BinOp::Shl
-                    | BinOp::Shr => unreachable!(),
+                    | BinOp::Shr
+                    | BinOp::WrapAdd
+                    | BinOp::WrapSub
+                    | BinOp::WrapMul => unreachable!(),
                 }
             }
             _ => {
@@ -743,7 +761,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     | BinOp::BitOr
                     | BinOp::BitXor
                     | BinOp::Shl
-                    | BinOp::Shr => unreachable!(),
+                    | BinOp::Shr
+                    | BinOp::WrapAdd
+                    | BinOp::WrapSub
+                    | BinOp::WrapMul => unreachable!(),
                 }
             }
         }

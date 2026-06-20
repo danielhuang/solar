@@ -1068,6 +1068,9 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                 "^" => BinOp::BitXor,
                 "<<" => BinOp::Shl,
                 ">>" => BinOp::Shr,
+                "++" => BinOp::WrapAdd,
+                "--" => BinOp::WrapSub,
+                "**" => BinOp::WrapMul,
                 other => panic!("unexpected operator: {other}"),
             };
             ExprKind::BinaryOp {

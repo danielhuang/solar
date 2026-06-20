@@ -241,8 +241,10 @@ module.exports = grammar({
         [35, choice('^')],
         [40, choice('&')],
         [45, choice('<<', '>>')],
-        [50, choice('+', '-')],
-        [55, choice('*', '/', '%')],
+        // Doubled operators are wrapping (overflow-never-panics) arithmetic, at
+        // the same precedence as their checked single-character counterparts.
+        [50, choice('+', '-', '++', '--')],
+        [55, choice('*', '/', '%', '**')],
       ];
       return choice(...table.map(([p, op]) =>
         prec.left(p, seq(

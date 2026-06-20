@@ -1887,6 +1887,9 @@ impl<'a> Lowerer<'a> {
             ast::BinOp::BitXor => "operator_bitxor",
             ast::BinOp::Shl => "operator_shl",
             ast::BinOp::Shr => "operator_shr",
+            ast::BinOp::WrapAdd => "operator_wrapadd",
+            ast::BinOp::WrapSub => "operator_wrapsub",
+            ast::BinOp::WrapMul => "operator_wrapmul",
         }
     }
 
@@ -1915,7 +1918,10 @@ impl<'a> Lowerer<'a> {
             | ast::BinOp::BitOr
             | ast::BinOp::BitXor
             | ast::BinOp::Shl
-            | ast::BinOp::Shr => lhs_ty.is_integer(),
+            | ast::BinOp::Shr
+            | ast::BinOp::WrapAdd
+            | ast::BinOp::WrapSub
+            | ast::BinOp::WrapMul => lhs_ty.is_integer(),
         }
     }
 
@@ -4849,6 +4855,20 @@ impl<'a> Lowerer<'a> {
                         if !lhs.ty.is_integer() {
                             return Err(CompileError::new(
                                 format!("bitwise operators require integer types, got {}", lhs.ty),
+                                expr.span,
+                            ));
+                        }
+                        lhs.ty.clone()
+                    }
+                    ast::BinOp::WrapAdd | ast::BinOp::WrapSub | ast::BinOp::WrapMul => {
+                        // Wrapping `++`/`--`/`**` are integer-only (no array
+                        // concat like `+`); both operands share a type.
+                        if !lhs.ty.is_integer() {
+                            return Err(CompileError::new(
+                                format!(
+                                    "wrapping arithmetic operators require integer types, got {}",
+                                    lhs.ty
+                                ),
                                 expr.span,
                             ));
                         }

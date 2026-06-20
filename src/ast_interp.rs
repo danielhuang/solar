@@ -642,6 +642,15 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                                         let r = if b >= w { 0 } else { a >> (b as u32) };
                                         Value::Int(truncate_int(r, &left.ty))
                                     }
+                                    BinOp::WrapAdd => {
+                                        Value::Int(truncate_int(a.wrapping_add(b), &left.ty))
+                                    }
+                                    BinOp::WrapSub => {
+                                        Value::Int(truncate_int(a.wrapping_sub(b), &left.ty))
+                                    }
+                                    BinOp::WrapMul => {
+                                        Value::Int(truncate_int(a.wrapping_mul(b), &left.ty))
+                                    }
                                     BinOp::And | BinOp::Or => unreachable!(),
                                 }
                             }
@@ -700,6 +709,18 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                                         };
                                         Value::Int(truncate_int((a >> sh) as u64, &left.ty))
                                     }
+                                    BinOp::WrapAdd => Value::Int(truncate_int(
+                                        (a as u64).wrapping_add(b as u64),
+                                        &left.ty,
+                                    )),
+                                    BinOp::WrapSub => Value::Int(truncate_int(
+                                        (a as u64).wrapping_sub(b as u64),
+                                        &left.ty,
+                                    )),
+                                    BinOp::WrapMul => Value::Int(truncate_int(
+                                        (a as u64).wrapping_mul(b as u64),
+                                        &left.ty,
+                                    )),
                                     BinOp::And | BinOp::Or => unreachable!(),
                                 }
                             }

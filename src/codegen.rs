@@ -1284,6 +1284,20 @@ impl<'a> Codegen<'a> {
                             "{result_c_ty} {result} = ({result_c_ty})(({load_ty}){la} {c_op} ({load_ty}){ra});"
                         ));
                     }
+                    BinOp::WrapAdd | BinOp::WrapSub | BinOp::WrapMul => {
+                        // Compute in the unsigned 64-bit domain (defined wraparound,
+                        // unlike signed overflow which is UB in C); the cast back to
+                        // {result_c_ty} truncates to the operand's width.
+                        let c_op = match op {
+                            BinOp::WrapAdd => "+",
+                            BinOp::WrapSub => "-",
+                            BinOp::WrapMul => "*",
+                            _ => unreachable!(),
+                        };
+                        self.linef(format!(
+                            "{result_c_ty} {result} = ({result_c_ty})((uint64_t)({load_ty}){la} {c_op} (uint64_t)({load_ty}){ra});"
+                        ));
+                    }
                     BinOp::Shl => {
                         // Shift in the unsigned 64-bit domain to avoid C's UB on
                         // signed/overflowing shifts; a count reaching the value's

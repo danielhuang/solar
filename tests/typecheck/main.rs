@@ -73,6 +73,18 @@ fn not_non_integer() {
 }
 
 #[test]
+#[should_panic(expected = "binary op type mismatch: left is Uint8, right is Uint16")]
+fn wrap_type_mismatch() {
+    compile(&fixture("wrap_type_mismatch.solar"));
+}
+
+#[test]
+#[should_panic(expected = "wrapping arithmetic operators require integer types, got Bool")]
+fn wrap_non_integer() {
+    compile(&fixture("wrap_non_integer.solar"));
+}
+
+#[test]
 #[should_panic(expected = "cannot deref non-reference type Int")]
 fn bad_deref() {
     compile(&fixture("typecheck_bad_deref.solar"));

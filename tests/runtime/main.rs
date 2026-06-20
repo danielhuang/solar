@@ -36,6 +36,12 @@ fn bitwise() {
 }
 
 #[test]
+fn wrapping() {
+    let output = run(&fixture("wrapping.solar"), "wrapping");
+    assert_eq!(output, "1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n15\n42\n");
+}
+
+#[test]
 fn binop_comparison() {
     let output = run(&fixture("binop_comparison.solar"), "binop_comparison");
     assert_eq!(output, "1\n0\n1\n0\n1\n0\n1\n0\n1\n0\n1\n0\n");
