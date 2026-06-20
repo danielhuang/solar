@@ -378,11 +378,12 @@ fn main() {
   }
 
   // compile-time variant dispatch: desugars to a match over the enum with
-  // the body duplicated per arm; variant is the &[Uint8] name, val the
-  // payload (only bound in data-variant arms)
+  // the body duplicated per arm; variant is the &[Uint8] name, index the
+  // 0-based Uint discriminant, val the payload (only bound in data arms)
   let col = Color::Blue;
-  match.reflect_variant (variant, val) in col& {
+  match.reflect_variant (variant, index, val) in col& {
     println(variant);                      // Blue
+    println(index);                        // discriminant index of Blue
   }
 
   // nullable references: `&?T` may be null. `null#[T]` is the null value.

@@ -5467,11 +5467,11 @@ impl<'a> Lowerer<'a> {
 
         // { let tmp = object;
         //   match tmp@ {
-        //     E::Unit => { let variant = "Unit"&; body },
-        //     E::Data(b) => { let variant = "Data"&; let val = b; body },
+        //     E::Unit => { let variant = "Unit"&; let index = 0u; body },
+        //     E::Data(b) => { let variant = "Data"&; let index = 1u; let val = b; body },
         //   }; }
         let mut arms = Vec::new();
-        for (vname, has_data) in variants {
+        for (variant_index, (vname, has_data)) in variants.into_iter().enumerate() {
             let name_bytes: Vec<ast::Expr> = vname
                 .bytes()
                 .map(|b| ast::Expr {
@@ -5486,11 +5486,16 @@ impl<'a> Lowerer<'a> {
                 })),
                 span,
             };
+            // The variant's 0-based discriminant index as a compile-time Uint.
+            let index_lit = ast::Expr {
+                kind: ast::ExprKind::IntegerLiteral(variant_index as i128, ast::IntegerType::Uint),
+                span,
+            };
             let mut arm_stmts = Vec::new();
             match (pattern, has_data) {
-                // (variant, val) destructure: bind the parts separately so no
-                // tuple value needs to be constructed
-                (ast::DestructurePattern::Tuple(parts), _) if parts.len() == 2 => {
+                // (variant, index, val) destructure: bind the parts separately
+                // so no tuple value needs to be constructed
+                (ast::DestructurePattern::Tuple(parts), _) if parts.len() == 3 => {
                     arm_stmts.push(ast::Statement {
                         kind: ast::StatementKind::Let {
                             pattern: parts[0].clone(),
@@ -5499,10 +5504,18 @@ impl<'a> Lowerer<'a> {
                         },
                         span,
                     });
+                    arm_stmts.push(ast::Statement {
+                        kind: ast::StatementKind::Let {
+                            pattern: parts[1].clone(),
+                            ty: None,
+                            value: index_lit,
+                        },
+                        span,
+                    });
                     if has_data {
                         arm_stmts.push(ast::Statement {
                             kind: ast::StatementKind::Let {
-                                pattern: parts[1].clone(),
+                                pattern: parts[2].clone(),
                                 ty: None,
                                 value: ast::Expr {
                                     kind: ast::ExprKind::Identifier(binding_name.clone()),
@@ -5513,11 +5526,12 @@ impl<'a> Lowerer<'a> {
                         });
                     }
                 }
-                // any other pattern binds the (name, payload) tuple itself
+                // any other pattern binds the (name, index, payload) tuple itself
                 (_, true) => {
                     let tuple = ast::Expr {
                         kind: ast::ExprKind::TupleLiteral(vec![
                             name_ref,
+                            index_lit,
                             ast::Expr {
                                 kind: ast::ExprKind::Identifier(binding_name.clone()),
                                 span,

@@ -14,8 +14,9 @@ enum Num {
 fn variant_name#[T](o: &T) {
     match.reflect T {
         "enum" => {
-            match.reflect_variant (variant, val) in o {
+            match.reflect_variant (variant, index, val) in o {
                 println(variant);
+                println(index);
             }
         },
         _ => { println("not an enum"&); },
@@ -25,30 +26,35 @@ fn variant_name#[T](o: &T) {
 fn main() {
     // bare use, mixed unit/data variants — val unused so all arms compile
     let c = Color::Custom(42);
-    match.reflect_variant (variant, val) in c& {
+    match.reflect_variant (variant, index, val) in c& {
         println(variant);
+        println(index);
     }
     let r = Color::Red;
-    match.reflect_variant (variant, val) in r& {
+    match.reflect_variant (variant, index, val) in r& {
         println(variant);
+        println(index);
     }
 
     // all-data enum: val is the payload by value, body duplicated per arm
     let n = Num::Big(99);
-    match.reflect_variant (variant, val) in n& {
+    match.reflect_variant (variant, index, val) in n& {
         println(variant);
+        println(index);
         println(val);
     }
     let s = Num::Small(3);
-    match.reflect_variant (variant, val) in s& {
+    match.reflect_variant (variant, index, val) in s& {
         println(variant);
+        println(index);
         println(val);
     }
 
-    // a bare name binds the whole (name, payload) tuple in data arms
+    // a bare name binds the whole (name, index, payload) tuple in data arms
     match.reflect_variant v in n& {
         println(v.0);
         println(v.1);
+        println(v.2);
     }
 
     // with unit variants nothing is bound for a bare name — the body just
@@ -64,11 +70,13 @@ fn main() {
 
     // generic (monomorphized) enum
     let o = Option#[Int]::Some(7);
-    match.reflect_variant (variant, val) in o& {
+    match.reflect_variant (variant, index, val) in o& {
         println(variant);
+        println(index);
     }
     let e = Option#[Int]::None;
-    match.reflect_variant (variant, val) in e& {
+    match.reflect_variant (variant, index, val) in e& {
         println(variant);
+        println(index);
     }
 }

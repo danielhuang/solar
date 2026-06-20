@@ -462,11 +462,11 @@ fn reflect_variant() {
     let output = run(&fixture("reflect_variant.solar"), "reflect_variant");
     assert_eq!(
         output,
-        "Custom\nRed\n\
-         Big\n99\nSmall\n3\n\
-         Big\n99\n123\n\
-         Custom\nRed\nnot an enum\n\
-         Some\nNone\n"
+        "Custom\n2\nRed\n0\n\
+         Big\n1\n99\nSmall\n0\n3\n\
+         Big\n1\n99\n123\n\
+         Custom\n2\nRed\n0\nnot an enum\n\
+         Some\n0\nNone\n1\n"
     );
 }
 
@@ -476,11 +476,11 @@ fn reflect_combined() {
     assert_eq!(
         output,
         "struct:\nx\n1\ny\n2\n\
-         enum:\nSquare\n\
-         enum:\nEmpty\n\
+         enum:\nSquare\n1\n\
+         enum:\nEmpty\n2\n\
          other\n\
          struct:\nvalue\n99\n\
-         enum:\nSome\n"
+         enum:\nSome\n0\n"
     );
 }
 
