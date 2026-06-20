@@ -919,7 +919,10 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<String>) {
         ExprKind::FieldAccess { object, .. } => {
             rewrite_expr(object, ctx, locals);
         }
-        ExprKind::Deref(inner) | ExprKind::Reference(inner) | ExprKind::Unique(inner) => {
+        ExprKind::Deref(inner)
+        | ExprKind::Reference(inner)
+        | ExprKind::Unique(inner)
+        | ExprKind::Not(inner) => {
             rewrite_expr(inner, ctx, locals);
         }
         ExprKind::NullLiteral(ty) => {

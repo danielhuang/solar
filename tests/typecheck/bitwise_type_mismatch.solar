@@ -1,0 +1,4 @@
+// Bitwise operands must share a type: `1u8 | 2u16` is rejected.
+fn main() {
+  let x = 1u8 | 2u16;
+}

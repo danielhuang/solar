@@ -26,6 +26,16 @@ fn binop_arithmetic() {
 }
 
 #[test]
+fn bitwise() {
+    let output = run(&fixture("bitwise.solar"), "bitwise");
+    assert_eq!(
+        output,
+        "8\n14\n6\n16\n16\n0\n0\n8\n18446744073709551615\n3\n24\n5\n\
+         1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n"
+    );
+}
+
+#[test]
 fn binop_comparison() {
     let output = run(&fixture("binop_comparison.solar"), "binop_comparison");
     assert_eq!(output, "1\n0\n1\n0\n1\n0\n1\n0\n1\n0\n1\n0\n");

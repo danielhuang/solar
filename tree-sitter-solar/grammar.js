@@ -17,6 +17,14 @@ module.exports = grammar({
     [$.struct_pattern_field],
     [$.named_type, $.qualified_type],
     [$.struct_literal, $.path_segment],
+    // The bitwise `&`/`^` binary operators share their token with the postfix
+    // reference/unique operators; GLR resolves by which parse completes. The
+    // unary `!` adds a third interpretation (`!a ^ b` vs `!(a^)`), so its
+    // conflicts list all three rules.
+    [$.binary_expression, $.reference_expr],
+    [$.binary_expression, $.unique_expr],
+    [$.binary_expression, $.not_expression, $.reference_expr],
+    [$.binary_expression, $.not_expression, $.unique_expr],
   ],
 
   rules: {
@@ -192,6 +200,7 @@ module.exports = grammar({
         $.array_literal,
         $.array_repeat,
         $.binary_expression,
+        $.not_expression,
         $.if_expression,
         $.loop_expression,
         $.closure_expr,
@@ -216,14 +225,24 @@ module.exports = grammar({
     tuple_literal: ($) =>
       seq("(", $._expression_with_struct, ",", $._expression_with_struct, repeat(seq(",", $._expression_with_struct)), optional(","), ")"),
 
+    // Precedence follows Rust (loosest → tightest). All binary operators must
+    // stay below the postfix operators (deref/reference/unique at 70) so that
+    // `a@`, `a&`, `a^` bind tighter than any binary op. The bitwise `&` and `^`
+    // tokens are also postfix operators (reference/unique); the GLR conflicts
+    // declared above let tree-sitter pick the binary parse when a right operand
+    // follows and the postfix parse otherwise.
     binary_expression: ($) => {
       const table = [
         [10, choice('||')],
-        [20, choice('&&')],
-        [30, choice('==', '!=')],
-        [40, choice('<', '<=', '>', '>=')],
+        [15, choice('&&')],
+        [20, choice('==', '!=')],
+        [25, choice('<', '<=', '>', '>=')],
+        [30, choice('|')],
+        [35, choice('^')],
+        [40, choice('&')],
+        [45, choice('<<', '>>')],
         [50, choice('+', '-')],
-        [60, choice('*', '/', '%')],
+        [55, choice('*', '/', '%')],
       ];
       return choice(...table.map(([p, op]) =>
         prec.left(p, seq(
@@ -233,6 +252,13 @@ module.exports = grammar({
         ))
       ));
     },
+
+    // Unary `!`: logical not (Bool) or bitwise complement (integers). Binds
+    // looser than the postfix operators (so `!a.b` is `!(a.b)`, `!a@` is
+    // `!(a@)`) but tighter than every binary operator (so `!a & b` is
+    // `(!a) & b`), matching Rust.
+    not_expression: ($) =>
+      prec.right(65, seq('!', field('operand', $._expression))),
 
     field_access: ($) =>
       prec.left(80, seq(field("object", $._expression), ".", field("field", choice($.identifier, $.integer_literal)))),

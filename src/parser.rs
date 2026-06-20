@@ -1063,6 +1063,11 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                 ">=" => BinOp::Ge,
                 "&&" => BinOp::And,
                 "||" => BinOp::Or,
+                "&" => BinOp::BitAnd,
+                "|" => BinOp::BitOr,
+                "^" => BinOp::BitXor,
+                "<<" => BinOp::Shl,
+                ">>" => BinOp::Shr,
                 other => panic!("unexpected operator: {other}"),
             };
             ExprKind::BinaryOp {
@@ -1070,6 +1075,10 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                 left: Box::new(left),
                 right: Box::new(right),
             }
+        }
+        "not_expression" => {
+            let operand = convert_expr(node.child_by_field_name("operand").unwrap(), source);
+            ExprKind::Not(Box::new(operand))
         }
         other => panic!("unexpected expression node kind: {other}"),
     };

@@ -1,0 +1,40 @@
+fn check(cond: Bool) {
+  if cond { println("1"&); } else { println("0"&); }
+}
+
+fn main() {
+  // Basic bitwise on Int (signed, 64-bit).
+  println((0b1100 & 0b1010).to_string());   // 8
+  println((0b1100 | 0b1010).to_string());   // 14
+  println((0b1100 ^ 0b1010).to_string());   // 6
+  println((1 << 4).to_string());            // 16
+  println((256 >> 4).to_string());          // 16
+
+  // Shift counts reaching/exceeding the width overflow to 0.
+  println((1 << 100).to_string());          // 0
+  println((255 >> 100).to_string());        // 0
+
+  // Unsigned.
+  println((1u << 3u).to_string());          // 8
+  println((!0u).to_string());               // 18446744073709551615
+
+  // Precedence (matches Rust): & tighter than |, << tighter than +/-.
+  println((1 | 2 & 3).to_string());         // 1 | (2 & 3) = 3
+  println((1 + 2 << 3).to_string());        // (1 + 2) << 3 = 24
+  println((5 & 6 | 1).to_string());         // (5 & 6) | 1 = 5
+
+  // Narrow-width behavior via equality checks.
+  check((0xFFu8 & 0x0Fu8) == 15u8);         // 1
+  check((1u8 << 8u8) == 0u8);               // 1 (shl overflow)
+  check((!0u8) == 255u8);                   // 1 (bitwise not, width-masked)
+  check((!0i8) == 0i8 - 1i8);               // 1 (~0 == -1)
+  check((0i8 - 2i8) >> 1i8 == 0i8 - 1i8);   // 1 (arithmetic shr: -2 >> 1 == -1)
+  check((128u8 << 1u8) == 0u8);             // 1 (shl truncates)
+  check(!(1 == 2));                         // 1 (logical not still works)
+
+  // Shift counts may be any integer type (need not match the value's type).
+  check((1u64 << 4u) == 16u64);            // 1 (Uint64 value, Uint count)
+  check((255u8 >> 2u) == 63u8);            // 1 (Uint8 value, Uint count)
+  check((1 << 4u8) == 16);                 // 1 (Int value, Uint8 count)
+  check((1u8 << 300u16) == 0u8);           // 1 (wide count, still overflows)
+}

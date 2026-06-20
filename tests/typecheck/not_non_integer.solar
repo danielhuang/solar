@@ -1,0 +1,6 @@
+// Unary `!` requires a Bool or integer operand.
+struct Foo { x: Int, }
+fn main() {
+  let f = Foo { x: 1, };
+  let y = !f;
+}

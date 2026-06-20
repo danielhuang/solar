@@ -91,6 +91,18 @@ impl Type {
         )
     }
 
+    /// Bit width of an integer type (`Int`/`Uint` are pointer-width 64). Panics
+    /// on non-integer types.
+    pub fn int_bit_width(&self) -> u32 {
+        match self {
+            Type::Int8 | Type::Uint8 => 8,
+            Type::Int16 | Type::Uint16 => 16,
+            Type::Int32 | Type::Uint32 => 32,
+            Type::Int64 | Type::Uint64 | Type::Int | Type::Uint => 64,
+            other => panic!("int_bit_width on non-integer type {other}"),
+        }
+    }
+
     pub fn is_nullable_ref(&self) -> bool {
         matches!(self, Type::NullableRef(_) | Type::NullableRefUnsized(_))
     }
@@ -325,6 +337,9 @@ fn apply_subst_to_ast_expr(expr: &ast::Expr, subst: &HashMap<String, ast::Type>)
         }
         ast::ExprKind::Unique(inner) => {
             ast::ExprKind::Unique(Box::new(apply_subst_to_ast_expr(inner, subst)))
+        }
+        ast::ExprKind::Not(inner) => {
+            ast::ExprKind::Not(Box::new(apply_subst_to_ast_expr(inner, subst)))
         }
         ast::ExprKind::NullLiteral(ty) => {
             ast::ExprKind::NullLiteral(apply_subst_to_ast_type(ty, subst))
@@ -992,6 +1007,9 @@ pub enum ExprKind {
     Deref(Box<Expr>),
     Reference(Box<Expr>),
     Unique(Box<Expr>),
+    /// Unary `!`: logical not on `Bool`, bitwise complement on integers. The
+    /// expression's `ty` is the operand's type.
+    Not(Box<Expr>),
     /// `null#[T]` — a null nullable reference. The expression's `ty` carries the
     /// concrete `NullableRef`/`NullableRefUnsized` type.
     NullLiteral,
@@ -1864,6 +1882,11 @@ impl<'a> Lowerer<'a> {
             ast::BinOp::Ge => "operator_ge",
             ast::BinOp::And => "operator_and",
             ast::BinOp::Or => "operator_or",
+            ast::BinOp::BitAnd => "operator_bitand",
+            ast::BinOp::BitOr => "operator_bitor",
+            ast::BinOp::BitXor => "operator_bitxor",
+            ast::BinOp::Shl => "operator_shl",
+            ast::BinOp::Shr => "operator_shr",
         }
     }
 
@@ -1888,6 +1911,11 @@ impl<'a> Lowerer<'a> {
                 lhs_ty.is_integer()
             }
             ast::BinOp::And | ast::BinOp::Or => *lhs_ty == Type::Bool,
+            ast::BinOp::BitAnd
+            | ast::BinOp::BitOr
+            | ast::BinOp::BitXor
+            | ast::BinOp::Shl
+            | ast::BinOp::Shr => lhs_ty.is_integer(),
         }
     }
 
@@ -3930,6 +3958,25 @@ impl<'a> Lowerer<'a> {
                     span: expr.span,
                 })
             }
+            ast::ExprKind::Not(inner) => {
+                let inner_expr = self.lower_expr(inner)?;
+                // `!` is logical not on Bool and bitwise complement on integers;
+                // either way the result has the operand's type.
+                if inner_expr.ty != Type::Bool && !inner_expr.ty.is_integer() {
+                    return Err(CompileError::new(
+                        format!(
+                            "`!` requires a Bool or integer operand, got {}",
+                            inner_expr.ty
+                        ),
+                        expr.span,
+                    ));
+                }
+                Ok(Expr {
+                    ty: inner_expr.ty.clone(),
+                    kind: ExprKind::Not(Box::new(inner_expr)),
+                    span: expr.span,
+                })
+            }
             ast::ExprKind::NullLiteral(inner_ty) => {
                 // `null#[T]` — resolve T, then wrap as the nullable reference type.
                 // `resolve_refs` picks NullableRef vs NullableRefUnsized by sizedness.
@@ -4720,7 +4767,12 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                     _ => {
-                        if lhs.ty != rhs.ty {
+                        // Shifts allow the count (right operand) to be any
+                        // integer type — only its magnitude matters — so they
+                        // skip the same-type requirement. Every other binary op
+                        // requires both operands to share a type.
+                        let is_shift = matches!(op, ast::BinOp::Shl | ast::BinOp::Shr);
+                        if !is_shift && lhs.ty != rhs.ty {
                             return Err(CompileError::new(
                                 format!(
                                     "binary op type mismatch: left is {}, right is {}",
@@ -4792,6 +4844,32 @@ impl<'a> Lowerer<'a> {
                             ));
                         }
                         Type::Bool
+                    }
+                    ast::BinOp::BitAnd | ast::BinOp::BitOr | ast::BinOp::BitXor => {
+                        if !lhs.ty.is_integer() {
+                            return Err(CompileError::new(
+                                format!("bitwise operators require integer types, got {}", lhs.ty),
+                                expr.span,
+                            ));
+                        }
+                        lhs.ty.clone()
+                    }
+                    ast::BinOp::Shl | ast::BinOp::Shr => {
+                        // The value and the count are checked independently: both
+                        // must be integers, but their types need not match.
+                        if !lhs.ty.is_integer() {
+                            return Err(CompileError::new(
+                                format!("bitwise operators require integer types, got {}", lhs.ty),
+                                expr.span,
+                            ));
+                        }
+                        if !rhs.ty.is_integer() {
+                            return Err(CompileError::new(
+                                format!("shift count must be an integer, got {}", rhs.ty),
+                                expr.span,
+                            ));
+                        }
+                        lhs.ty.clone()
                     }
                 };
                 Ok(Expr {

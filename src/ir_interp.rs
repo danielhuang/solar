@@ -59,6 +59,24 @@ fn sign_extend(val: u64, size: usize) -> u64 {
     }
 }
 
+/// Truncate a raw bitwise/shift result to the integer type's width (sign-
+/// extending for signed types), mirroring what storing-then-reloading does. The
+/// compiled backend gets this truncation from the C cast to the result type;
+/// the interpreter must do it explicitly so a value used directly as an operand
+/// (e.g. `(!0u8) == 255u8`) compares with the right high bits.
+fn truncate_to_ty(val: u64, ty: &Type) -> u64 {
+    let bits = ty.int_bit_width();
+    if bits == 64 {
+        return val;
+    }
+    let masked = val & ((1u64 << bits) - 1);
+    if is_signed(ty) {
+        sign_extend(masked, (bits / 8) as usize)
+    } else {
+        masked
+    }
+}
+
 fn is_signed(ty: &Type) -> bool {
     matches!(
         ty,
@@ -554,8 +572,15 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             }
             NodeKind::Not(inner) => {
                 let inner = *inner;
+                let ty = nodes[inner.0].ty.clone();
                 let val = self.eval_load(nodes, inner);
-                if val == 0 { 1 } else { 0 }
+                if ty.is_integer() {
+                    // Bitwise complement, masked to the type's width.
+                    truncate_to_ty(!val, &ty)
+                } else {
+                    // Logical not on Bool.
+                    if val == 0 { 1 } else { 0 }
+                }
             }
             NodeKind::Ref(_)
             | NodeKind::Unique(_)
@@ -596,6 +621,41 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 } else {
                     self.eval_load(nodes, right)
                 }
+            }
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+                // Bitwise ops work on the raw bit pattern; operands are loaded
+                // sign-extended (signed) or zero-extended (unsigned), and the
+                // result is truncated to the type's width on store. Shifts whose
+                // count reaches the bit width overflow to 0 (arithmetic `>>` on a
+                // signed value fills with the sign bit).
+                let ty = nodes[left.0].ty.clone();
+                let width = ty.int_bit_width() as u64;
+                let a = self.eval_load(nodes, left);
+                let b = self.eval_load(nodes, right);
+                let raw = match op {
+                    BinOp::BitAnd => a & b,
+                    BinOp::BitOr => a | b,
+                    BinOp::BitXor => a ^ b,
+                    BinOp::Shl => {
+                        if b >= width {
+                            0
+                        } else {
+                            a << b
+                        }
+                    }
+                    BinOp::Shr => {
+                        if is_signed(&ty) {
+                            let sh = if b >= width { width - 1 } else { b };
+                            ((a as i64) >> sh) as u64
+                        } else if b >= width {
+                            0
+                        } else {
+                            a >> b
+                        }
+                    }
+                    _ => unreachable!(),
+                };
+                truncate_to_ty(raw, &ty)
             }
             _ if matches!(nodes[left.0].ty, Type::NullableRefUnsized(_)) => {
                 // Fat nullable reference: compare the pointer half (first 8 bytes).
@@ -642,7 +702,13 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     BinOp::Le => (a <= b) as u64,
                     BinOp::Gt => (a > b) as u64,
                     BinOp::Ge => (a >= b) as u64,
-                    BinOp::And | BinOp::Or => unreachable!(),
+                    BinOp::And
+                    | BinOp::Or
+                    | BinOp::BitAnd
+                    | BinOp::BitOr
+                    | BinOp::BitXor
+                    | BinOp::Shl
+                    | BinOp::Shr => unreachable!(),
                 }
             }
             _ => {
@@ -671,7 +737,13 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     BinOp::Le => (a <= b) as u64,
                     BinOp::Gt => (a > b) as u64,
                     BinOp::Ge => (a >= b) as u64,
-                    BinOp::And | BinOp::Or => unreachable!(),
+                    BinOp::And
+                    | BinOp::Or
+                    | BinOp::BitAnd
+                    | BinOp::BitOr
+                    | BinOp::BitXor
+                    | BinOp::Shl
+                    | BinOp::Shr => unreachable!(),
                 }
             }
         }
@@ -907,6 +979,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                         }
                     }
                 }
+            }
+            NodeKind::Not(_) => {
+                let result_ty = nodes[id.0].ty.clone();
+                let val = self.eval_load(nodes, id);
+                self.scalar_store(dst, val, &result_ty);
             }
             NodeKind::IfExpr {
                 condition,

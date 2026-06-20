@@ -1108,8 +1108,15 @@ impl<'a> Codegen<'a> {
             }
             NodeKind::Not(inner) => {
                 let inner = *inner;
+                let ty = nodes[inner.0].ty.clone();
                 let val = self.emit_load(nodes, inner);
-                format!("!(uint8_t){val}")
+                if ty.is_integer() {
+                    // Bitwise complement; the cast truncates to the type's width.
+                    let c_ty = self.c_int_type(&ty);
+                    format!("({c_ty})(~({c_ty}){val})")
+                } else {
+                    format!("!(uint8_t){val}")
+                }
             }
             NodeKind::IfExpr { .. } | NodeKind::Match { .. } => {
                 let ty = nodes[id.0].ty.clone();
@@ -1265,6 +1272,46 @@ impl<'a> Codegen<'a> {
                         self.linef(format!(
                             "{result_c_ty} {result} = (({load_ty}){la} {c_op} ({load_ty}){ra}) ? 1 : 0;"
                         ));
+                    }
+                    BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
+                        let c_op = match op {
+                            BinOp::BitAnd => "&",
+                            BinOp::BitOr => "|",
+                            BinOp::BitXor => "^",
+                            _ => unreachable!(),
+                        };
+                        self.linef(format!(
+                            "{result_c_ty} {result} = ({result_c_ty})(({load_ty}){la} {c_op} ({load_ty}){ra});"
+                        ));
+                    }
+                    BinOp::Shl => {
+                        // Shift in the unsigned 64-bit domain to avoid C's UB on
+                        // signed/overflowing shifts; a count reaching the value's
+                        // width (or negative, which casts to a huge unsigned)
+                        // overflows to 0. The cast back to {result_c_ty} truncates.
+                        // The count is cast through its *own* type (not the value's)
+                        // so a wider count isn't truncated before the width check.
+                        let width = self.type_size(left_ty) * 8;
+                        let count_c_ty = self.c_int_type(&nodes[right.0].ty);
+                        self.linef(format!(
+                            "{result_c_ty} {result} = ((uint64_t)({count_c_ty}){ra} >= {width}) ? 0 : ({result_c_ty})((uint64_t)({load_ty}){la} << ((uint64_t)({count_c_ty}){ra}));"
+                        ));
+                    }
+                    BinOp::Shr => {
+                        let width = self.type_size(left_ty) * 8;
+                        let count_c_ty = self.c_int_type(&nodes[right.0].ty);
+                        if left_ty.is_unsigned() {
+                            self.linef(format!(
+                                "{result_c_ty} {result} = ((uint64_t)({count_c_ty}){ra} >= {width}) ? 0 : ({result_c_ty})((uint64_t)({load_ty}){la} >> ((uint64_t)({count_c_ty}){ra}));"
+                            ));
+                        } else {
+                            // Arithmetic shift; a count reaching the width caps at
+                            // width-1 so the result fills with the sign bit.
+                            self.linef(format!(
+                                "{result_c_ty} {result} = ({result_c_ty})((int64_t)({load_ty}){la} >> (((uint64_t)({count_c_ty}){ra} >= {width}) ? {} : (uint64_t)({count_c_ty}){ra}));",
+                                width - 1
+                            ));
+                        }
                     }
                     _ => unreachable!(),
                 }
@@ -1787,6 +1834,12 @@ impl<'a> Codegen<'a> {
                     let c_ty = self.c_int_type(&result_ty);
                     self.linef(format!("*({c_ty}*){dst} = {val};"));
                 }
+            }
+            NodeKind::Not(_) => {
+                let result_ty = nodes[id.0].ty.clone();
+                let val = self.emit_load(nodes, id);
+                let c_ty = self.c_int_type(&result_ty);
+                self.linef(format!("*({c_ty}*){dst} = {val};"));
             }
             NodeKind::IfExpr {
                 condition,

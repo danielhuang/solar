@@ -49,6 +49,30 @@ fn bad_assign() {
 }
 
 #[test]
+#[should_panic(expected = "binary op type mismatch: left is Uint8, right is Uint16")]
+fn bitwise_type_mismatch() {
+    compile(&fixture("bitwise_type_mismatch.solar"));
+}
+
+#[test]
+#[should_panic(expected = "binary op type mismatch: left is Uint8, right is Int8")]
+fn bitwise_signedness_mismatch() {
+    compile(&fixture("bitwise_signedness_mismatch.solar"));
+}
+
+#[test]
+#[should_panic(expected = "bitwise operators require integer types, got Bool")]
+fn bitwise_non_integer() {
+    compile(&fixture("bitwise_non_integer.solar"));
+}
+
+#[test]
+#[should_panic(expected = "`!` requires a Bool or integer operand, got Foo")]
+fn not_non_integer() {
+    compile(&fixture("not_non_integer.solar"));
+}
+
+#[test]
 #[should_panic(expected = "cannot deref non-reference type Int")]
 fn bad_deref() {
     compile(&fixture("typecheck_bad_deref.solar"));

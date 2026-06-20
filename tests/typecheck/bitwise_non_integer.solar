@@ -1,0 +1,4 @@
+// Bitwise operators require integer types, not Bool.
+fn main() {
+  let x = true & false;
+}

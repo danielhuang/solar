@@ -274,7 +274,8 @@ fn collect_closure_captures_expr(
         }
         typed_ast::ExprKind::Deref(inner)
         | typed_ast::ExprKind::Reference(inner)
-        | typed_ast::ExprKind::Unique(inner) => {
+        | typed_ast::ExprKind::Unique(inner)
+        | typed_ast::ExprKind::Not(inner) => {
             collect_closure_captures_expr(inner, map);
         }
         typed_ast::ExprKind::Call { arguments, .. } => {
@@ -775,6 +776,14 @@ impl<'a> FunctionLowerer<'a> {
                 self.push(Node {
                     ty: expr.ty.clone(),
                     kind: NodeKind::Deref(id),
+                    span: expr.span,
+                })
+            }
+            typed_ast::ExprKind::Not(inner) => {
+                let id = self.lower_expr(inner);
+                self.push(Node {
+                    ty: expr.ty.clone(),
+                    kind: NodeKind::Not(id),
                     span: expr.span,
                 })
             }

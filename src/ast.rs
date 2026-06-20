@@ -235,6 +235,11 @@ pub enum BinOp {
     Ge,
     And,
     Or,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 #[derive(Debug, Clone)]
@@ -255,6 +260,8 @@ pub enum ExprKind {
     Deref(Box<Expr>),
     Reference(Box<Expr>),
     Unique(Box<Expr>),
+    /// Unary `!`: logical not on `Bool`, bitwise complement on integers.
+    Not(Box<Expr>),
     /// `null#[T]` — the null value of the nullable reference type `&?T`.
     NullLiteral(Type),
     Call {

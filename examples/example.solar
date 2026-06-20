@@ -128,6 +128,14 @@ fn main() {
     println(1);                // 1
   }
 
+  // bitwise operators (Rust precedence; operands must share a type)
+  println(0b1100 & 0b1010);    // 8
+  println(0b1100 | 0b1010);    // 14
+  println(0b1100 ^ 0b1010);    // 6
+  println(1 << 4);             // 16 (shift count reaching the width gives 0)
+  println(256 >> 4);           // 16
+  println(!0u);                // 18446744073709551615 (bitwise complement)
+
   // array indexing
   let arr: [Int] = [10, 20, 30];
   println(arr[0u]);            // 10

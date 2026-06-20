@@ -1,0 +1,4 @@
+// Mixing signedness is also a type mismatch: `1u8 & 2i8`.
+fn main() {
+  let x = 1u8 & 2i8;
+}

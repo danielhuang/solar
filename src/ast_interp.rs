@@ -39,6 +39,24 @@ fn is_float(ty: &Type) -> bool {
     matches!(ty, Type::Float32 | Type::Float64)
 }
 
+/// Truncate a raw bitwise/shift result to an integer type's width, sign-
+/// extending for signed types. Mirrors the width-masking the IR interpreter and
+/// the compiled backend apply, so e.g. `128u8 << 1u8` is `0`, not `256`.
+fn truncate_int(val: u64, ty: &Type) -> i64 {
+    let bits = ty.int_bit_width();
+    if bits == 64 {
+        return val as i64;
+    }
+    let mask = (1u64 << bits) - 1;
+    let t = val & mask;
+    if ty.is_unsigned() {
+        t as i64
+    } else {
+        let sign = 1u64 << (bits - 1);
+        (if t & sign != 0 { t | !mask } else { t }) as i64
+    }
+}
+
 fn cast_numeric_ast(raw: u64, src: &Type, dst: &Type) -> u64 {
     match (is_float(src), is_float(dst)) {
         (false, false) => raw,
@@ -457,6 +475,33 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let val = self.eval_expr(inner);
                 Value::Unique(Rc::new(RefCell::new(val)))
             }
+            ExprKind::Not(inner) => {
+                let val = self.eval_expr(inner);
+                match val {
+                    Value::Int(v) if inner.ty.is_integer() => {
+                        // Bitwise complement, masked to the operand's width.
+                        let w = inner.ty.int_bit_width();
+                        let mask = if w == 64 { u64::MAX } else { (1u64 << w) - 1 };
+                        let complement = (!(v as u64)) & mask;
+                        if inner.ty.is_unsigned() {
+                            Value::Int(complement as i64)
+                        } else {
+                            // Sign-extend the width-masked result.
+                            let sign = 1u64 << (w - 1);
+                            let ext = if complement & sign != 0 {
+                                complement | !mask
+                            } else {
+                                complement
+                            };
+                            Value::Int(ext as i64)
+                        }
+                    }
+                    // Logical not on Bool.
+                    Value::Int(0) => Value::Int(1),
+                    Value::Int(_) => Value::Int(0),
+                    other => panic!("`!` on non-integer/bool value: {other:?}"),
+                }
+            }
             ExprKind::StructLiteral { name, fields } => {
                 let mut field_map = HashMap::new();
                 for fi in fields {
@@ -584,6 +629,19 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                                     BinOp::Le => Value::Int((a <= b) as i64),
                                     BinOp::Gt => Value::Int((a > b) as i64),
                                     BinOp::Ge => Value::Int((a >= b) as i64),
+                                    BinOp::BitAnd => Value::Int(truncate_int(a & b, &left.ty)),
+                                    BinOp::BitOr => Value::Int(truncate_int(a | b, &left.ty)),
+                                    BinOp::BitXor => Value::Int(truncate_int(a ^ b, &left.ty)),
+                                    BinOp::Shl => {
+                                        let w = left.ty.int_bit_width() as u64;
+                                        let r = if b >= w { 0 } else { a << (b as u32) };
+                                        Value::Int(truncate_int(r, &left.ty))
+                                    }
+                                    BinOp::Shr => {
+                                        let w = left.ty.int_bit_width() as u64;
+                                        let r = if b >= w { 0 } else { a >> (b as u32) };
+                                        Value::Int(truncate_int(r, &left.ty))
+                                    }
                                     BinOp::And | BinOp::Or => unreachable!(),
                                 }
                             }
@@ -617,6 +675,31 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                                     BinOp::Le => Value::Int(if a <= b { 1 } else { 0 }),
                                     BinOp::Gt => Value::Int(if a > b { 1 } else { 0 }),
                                     BinOp::Ge => Value::Int(if a >= b { 1 } else { 0 }),
+                                    BinOp::BitAnd => {
+                                        Value::Int(truncate_int((a & b) as u64, &left.ty))
+                                    }
+                                    BinOp::BitOr => {
+                                        Value::Int(truncate_int((a | b) as u64, &left.ty))
+                                    }
+                                    BinOp::BitXor => {
+                                        Value::Int(truncate_int((a ^ b) as u64, &left.ty))
+                                    }
+                                    BinOp::Shl => {
+                                        let w = left.ty.int_bit_width() as u64;
+                                        let r = if (b as u64) >= w { 0 } else { a << (b as u32) };
+                                        Value::Int(truncate_int(r as u64, &left.ty))
+                                    }
+                                    BinOp::Shr => {
+                                        // Arithmetic shift; count reaching the
+                                        // width fills with the sign bit.
+                                        let w = left.ty.int_bit_width();
+                                        let sh = if (b as u64) >= w as u64 {
+                                            w - 1
+                                        } else {
+                                            b as u32
+                                        };
+                                        Value::Int(truncate_int((a >> sh) as u64, &left.ty))
+                                    }
                                     BinOp::And | BinOp::Or => unreachable!(),
                                 }
                             }
