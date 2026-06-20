@@ -36,6 +36,12 @@ fn bitwise() {
 }
 
 #[test]
+fn bit_count() {
+    let output = run(&fixture("bit_count.solar"), "bit_count");
+    assert_eq!(output, "3\n64\n0\n63\n64\n64\n3\n3\n8\n7\n8\n8\n3\n8\n31\n");
+}
+
+#[test]
 fn wrapping() {
     let output = run(&fixture("wrapping.solar"), "wrapping");
     assert_eq!(output, "1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n15\n42\n");

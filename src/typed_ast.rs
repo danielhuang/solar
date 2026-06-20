@@ -1529,23 +1529,6 @@ impl<'a> Lowerer<'a> {
                             m.span,
                         ));
                     }
-                    if !m.type_params.is_empty() {
-                        // Validate first param type doesn't use type params
-                        let self_type = &m.parameters[0].ty;
-                        let uses_type_param = match self_type {
-                            ast::Type::Named(name) => m.type_params.contains(name),
-                            _ => false,
-                        };
-                        if uses_type_param {
-                            return Err(CompileError::new(
-                                format!(
-                                    "method `{}`: first parameter type must be concrete (not a type parameter)",
-                                    m.name
-                                ),
-                                m.parameters[0].span,
-                            ));
-                        }
-                    }
                     let mut m = m.clone();
                     prepare_keyword_params(&mut m)?;
                     display_names.insert(m.name.clone(), m.display_name.clone());
@@ -6655,6 +6638,18 @@ impl<'a> Lowerer<'a> {
                         ));
                     }
                 }
+                ParamRequirement::IsInteger => {
+                    if !arg.ty.is_integer() {
+                        return Err(CompileError::new(
+                            format!(
+                                "{name}: argument {} must be an integer type, got {}",
+                                i + 1,
+                                arg.ty
+                            ),
+                            span,
+                        ));
+                    }
+                }
                 ParamRequirement::RefToAtomic => {
                     let inner_ty = match &arg.ty {
                         Type::Ref(inner) => (**inner).clone(),
@@ -6711,6 +6706,7 @@ impl<'a> Lowerer<'a> {
 enum ParamRequirement {
     Exact(Type),
     IsArray,
+    IsInteger,
     RefToAtomic,
     MatchesRefInner,
 }
@@ -6807,6 +6803,13 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
         },
         ast::Intrinsic::FileWritePartial => IntrinsicSpec {
             params: vec![Exact(Type::FileDesc), byte_slice()],
+            ret: Fixed(Type::Uint),
+        },
+        // Bit-counting intrinsics: take any integer, return a count as `Uint`.
+        ast::Intrinsic::CountTrailingZeros
+        | ast::Intrinsic::CountLeadingZeros
+        | ast::Intrinsic::CountOnes => IntrinsicSpec {
+            params: vec![IsInteger],
             ret: Fixed(Type::Uint),
         },
     }

@@ -1129,6 +1129,39 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             Intrinsic::FutexWake => {
                 panic!("futex_wake not implemented in AST interpreter");
             }
+            Intrinsic::CountTrailingZeros | Intrinsic::CountLeadingZeros | Intrinsic::CountOnes => {
+                let width = arguments[0].ty.int_bit_width();
+                let val = self.eval_expr(&arguments[0]);
+                let raw = match val {
+                    Value::Int(n) => n as u64,
+                    _ => unreachable!(),
+                };
+                let mask = if width == 64 {
+                    u64::MAX
+                } else {
+                    (1u64 << width) - 1
+                };
+                let v = raw & mask;
+                let count = match intrinsic {
+                    Intrinsic::CountTrailingZeros => {
+                        if v == 0 {
+                            width
+                        } else {
+                            v.trailing_zeros()
+                        }
+                    }
+                    Intrinsic::CountLeadingZeros => {
+                        if v == 0 {
+                            width
+                        } else {
+                            v.leading_zeros() - (64 - width)
+                        }
+                    }
+                    Intrinsic::CountOnes => v.count_ones(),
+                    _ => unreachable!(),
+                };
+                Value::Int(count as i64)
+            }
             Intrinsic::Cast(_, _) => {
                 let val = self.eval_expr(&arguments[0]);
                 let src_ty = &arguments[0].ty;

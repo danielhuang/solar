@@ -1,0 +1,26 @@
+fn main() {
+  // count_trailing_zeros (full width on zero input)
+  println(8u.count_trailing_zeros());      // 3
+  println(0u.count_trailing_zeros());      // 64
+  println(1u.count_trailing_zeros());      // 0
+
+  // count_leading_zeros
+  println(1u.count_leading_zeros());       // 63
+  println(0u.count_leading_zeros());       // 64
+
+  // count_ones (population count)
+  println((!0u).count_ones());             // 64
+  println(0b1011u.count_ones());           // 3
+
+  // narrow widths count over the type's width
+  println(8u8.count_trailing_zeros());     // 3
+  println(0u8.count_trailing_zeros());     // 8
+  println(1u8.count_leading_zeros());      // 7
+  println(255u8.count_ones());             // 8
+  println(256u16.count_trailing_zeros());  // 8
+
+  // signed integers
+  println(8i32.count_trailing_zeros());    // 3
+  println((0i8 - 1i8).count_ones());       // 8
+  println(1i32.count_leading_zeros());     // 31
+}

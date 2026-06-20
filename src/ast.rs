@@ -404,6 +404,9 @@ pub enum Intrinsic {
     FileStdout,
     FileRead,
     FileWritePartial,
+    CountTrailingZeros,
+    CountLeadingZeros,
+    CountOnes,
     Cast(NumericType, NumericType),
 }
 
@@ -424,6 +427,9 @@ const INTRINSIC_NAMES: &[(&str, Intrinsic)] = &[
     ("file_stdout", Intrinsic::FileStdout),
     ("file_read", Intrinsic::FileRead),
     ("file_write_partial", Intrinsic::FileWritePartial),
+    ("count_trailing_zeros", Intrinsic::CountTrailingZeros),
+    ("count_leading_zeros", Intrinsic::CountLeadingZeros),
+    ("count_ones", Intrinsic::CountOnes),
 ];
 
 impl Intrinsic {

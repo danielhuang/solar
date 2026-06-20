@@ -2381,6 +2381,40 @@ impl<'a> Codegen<'a> {
                     "sol_futex_wake((uint32_t*){ptr}, (uint32_t){count});"
                 ));
             }
+            Intrinsic::CountTrailingZeros | Intrinsic::CountLeadingZeros | Intrinsic::CountOnes => {
+                // Lower to the clang/gcc builtins, which become llvm.cttz/ctlz/
+                // ctpop and thus a single tzcnt/lzcnt/popcnt. The value is masked
+                // to the operand's width; cttz/ctlz are guarded against 0 (their
+                // builtins are undefined there) and return the full width instead.
+                let arg_ty = nodes[args[0].0].ty.clone();
+                let width = self.type_size(&arg_ty) * 8;
+                let load_ty = self.c_int_type(&arg_ty);
+                let val = self.emit_load(nodes, args[0]);
+                let dst_c_ty = self.c_int_type(result_ty);
+                let mask = if width == 64 {
+                    "~(uint64_t)0".to_string()
+                } else {
+                    format!("(((uint64_t)1 << {width}) - 1)")
+                };
+                let tmp = self.fresh_tmp();
+                self.linef(format!(
+                    "uint64_t {tmp} = (uint64_t)({load_ty}){val} & {mask};"
+                ));
+                let expr = match intrinsic {
+                    Intrinsic::CountTrailingZeros => {
+                        format!(
+                            "({tmp} == 0 ? (uint64_t){width} : (uint64_t)__builtin_ctzll({tmp}))"
+                        )
+                    }
+                    Intrinsic::CountLeadingZeros => format!(
+                        "({tmp} == 0 ? (uint64_t){width} : (uint64_t)(__builtin_clzll({tmp}) - {}))",
+                        64 - width
+                    ),
+                    Intrinsic::CountOnes => format!("(uint64_t)__builtin_popcountll({tmp})"),
+                    _ => unreachable!(),
+                };
+                self.linef(format!("*({dst_c_ty}*){dst} = ({dst_c_ty}){expr};"));
+            }
             Intrinsic::Cast(_, _) => {
                 let val = self.emit_load(nodes, args[0]);
                 let src_ty = &nodes[args[0].0].ty;

@@ -1335,6 +1335,35 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             Intrinsic::FutexWake => {
                 panic!("futex_wake not implemented in IR interpreter");
             }
+            Intrinsic::CountTrailingZeros | Intrinsic::CountLeadingZeros | Intrinsic::CountOnes => {
+                let width = nodes[args[0].0].ty.int_bit_width();
+                let raw = self.eval_load(nodes, args[0]);
+                let mask = if width == 64 {
+                    u64::MAX
+                } else {
+                    (1u64 << width) - 1
+                };
+                let v = raw & mask;
+                let count = match intrinsic {
+                    Intrinsic::CountTrailingZeros => {
+                        if v == 0 {
+                            width
+                        } else {
+                            v.trailing_zeros()
+                        }
+                    }
+                    Intrinsic::CountLeadingZeros => {
+                        if v == 0 {
+                            width
+                        } else {
+                            v.leading_zeros() - (64 - width)
+                        }
+                    }
+                    Intrinsic::CountOnes => v.count_ones(),
+                    _ => unreachable!(),
+                };
+                self.scalar_store(dst, count as u64, result_ty);
+            }
             Intrinsic::Cast(_, _) => {
                 assert!(result_ty.is_numeric(), "cast must return numeric type");
                 let src_ty = &nodes[args[0].0].ty;

@@ -57,6 +57,22 @@ pub method len#[T](self: &[T]) -> Uint {
   intrinsics::array_len(self@)
 }
 
+// Bit-counting methods on integers (any integer type `T`). The count is taken
+// over `T`'s bit width: `count_trailing_zeros`/`count_leading_zeros` return the
+// full width for a zero input, and `count_ones` is the population count. These
+// lower to single machine instructions (tzcnt/lzcnt/popcnt) in compiled code.
+pub method count_trailing_zeros#[T](self: T) -> Uint {
+  intrinsics::count_trailing_zeros(self)
+}
+
+pub method count_leading_zeros#[T](self: T) -> Uint {
+  intrinsics::count_leading_zeros(self)
+}
+
+pub method count_ones#[T](self: T) -> Uint {
+  intrinsics::count_ones(self)
+}
+
 pub fn write_stdout(s: &[Uint8]) {
   file::stdout().write(s);
 }
