@@ -1019,12 +1019,17 @@ impl<'a> FunctionLowerer<'a> {
                 else_body,
             } => {
                 let cond = self.lower_expr(condition);
+                // Stash the condition's setup statements so the branch bodies'
+                // `lower_body` doesn't drain them into a branch; restored below to
+                // run before the if. (Same pattern as the statement-level `if`.)
+                let cond_pending = self.drain_pending();
                 self.push_scope();
                 let lowered_then = self.lower_body(then_body);
                 self.pop_scope();
                 self.push_scope();
                 let lowered_else = self.lower_body(else_body);
                 self.pop_scope();
+                self.pending_stmts.extend(cond_pending);
                 self.push(Node {
                     ty: expr.ty.clone(),
                     kind: NodeKind::IfExpr {
@@ -1097,6 +1102,11 @@ impl<'a> FunctionLowerer<'a> {
             }
             typed_ast::ExprKind::Match { scrutinee, arms } => {
                 let scrut = self.lower_expr(scrutinee);
+                // Stash the scrutinee's setup statements (e.g. reference temps)
+                // so the arms' `lower_body` doesn't drain them into an arm body;
+                // they're restored below to run before the match. (Same pattern
+                // as the statement-level `if`/`while`.)
+                let scrut_pending = self.drain_pending();
                 let lowered_arms: Vec<MatchArm> = arms
                     .iter()
                     .map(|arm| {
@@ -1129,6 +1139,7 @@ impl<'a> FunctionLowerer<'a> {
                         MatchArm { pattern, body }
                     })
                     .collect();
+                self.pending_stmts.extend(scrut_pending);
                 self.push(Node {
                     ty: expr.ty.clone(),
                     kind: NodeKind::Match {

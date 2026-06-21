@@ -1,8 +1,10 @@
 // HashMap — a SwissTable hash map. Ported from hashbrown `src/map.rs` (a subset:
 // new/insert/get/get_mut/contains_key/remove/len/is_empty/clear). The default
-// hasher is foldhash with a fixed seed; keys are compared with `==` (so struct
-// keys need an `operator_eq`), and hashed via the reflective `hash` (so struct
-// keys need `pub` fields).
+// hasher is foldhash with a fixed seed; keys are compared with `==` and hashed
+// via the reflective `hash`. Both come for free from the stdlib's blanket
+// `operator_eq`/`hash` for any struct/enum with `pub` fields — a struct key
+// needs no hand-written impl (though a concrete `operator_eq` overrides the
+// blanket if provided).
 
 import { Option } from "../lib.solar";
 import raw from "raw.solar";

@@ -49,6 +49,24 @@ fn hashbrown_map() {
 }
 
 #[test]
+fn match_call() {
+    let output = run(&fixture("match_call.solar"), "match_call");
+    assert_eq!(output, "150\n1\n0\n");
+}
+
+#[test]
+fn match_call_basic() {
+    let output = run(&fixture("match_call_basic.solar"), "match_call_basic");
+    assert_eq!(output, "5\n15\n1\n0\n");
+}
+
+#[test]
+fn reflect_eq() {
+    let output = run(&fixture("reflect_eq.solar"), "reflect_eq");
+    assert_eq!(output, "1\n0\n1\n1\n0\n1\n0\n1\n0\n1\n0\n1\n0\n");
+}
+
+#[test]
 fn hashbrown_foldhash() {
     // Values are bit-exact with upstream foldhash's fixed-seed `FoldHasher`.
     let output = run(&fixture("hashbrown_foldhash.solar"), "hashbrown_foldhash");

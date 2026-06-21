@@ -205,11 +205,17 @@ pub enum StatementKind {
         pattern: DestructurePattern,
         object: Expr,
         body: Vec<Statement>,
+        /// `for.reflect_fields_pair`: reflect two values of the same struct in
+        /// lockstep. `object` is then a 2-tuple `(a, b)`.
+        paired: bool,
     },
     MatchReflectVariant {
         pattern: DestructurePattern,
         object: Expr,
         body: Vec<Statement>,
+        /// `match.reflect_variant_pair`: reflect two values of the same enum in
+        /// lockstep. `object` is then a 2-tuple `(a, b)`.
+        paired: bool,
     },
     Expression(Expr),
     Return(Expr),

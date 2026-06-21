@@ -1,0 +1,249 @@
+// HashMap performance benchmark.
+//
+// Exercises the stdlib SwissTable (`hashbrown::HashMap`, foldhash hasher) across
+// several key datatypes, using the language's default hashing: primitive keys
+// dispatch to the concrete `hash` overloads, while struct keys go through the
+// compile-time-reflective generic `hash` (it hashes each `pub` field) and an
+// `operator_eq` for key comparison.
+//
+// Each phase inserts N entries, then does N hit lookups and N miss lookups, and
+// prints a checksum (sum of looked-up values + map length + miss count). The
+// checksum is hasher-independent, so it matches the Rust reference benchmark in
+// bench/rust — a cross-implementation correctness check.
+//
+// Built to be compiled (the interpreter is far too slow for these sizes):
+//   cargo run --bin compile -- examples/hashmap.solar target/hashmap
+//   target/hashmap < /dev/null          # run every phase
+//   echo 2 | target/hashmap             # run only phase 2
+// A phase index on stdin selects a single phase; EOF (e.g. < /dev/null) runs all.
+
+const N: Uint = 1000000u;
+
+// ── splitmix64 PRNG ─────────────────────────────────────────────────────────
+// Deterministic so the Rust reference benchmark reproduces the exact key stream
+// (and therefore the exact checksums). Uses wrapping add/mul (`++`/`**`).
+fn rng_next(state: &Uint64) -> Uint64 {
+  let s = state@ ++ 0x9E3779B97F4A7C15u64;
+  state@ = s;
+  // `^` directly before `(` parses as a postfix unique-pointer op, so bind the
+  // shifted sub-results to temps first.
+  let a = s >> 30u64;
+  let z1 = s ^ a;
+  let z2 = z1 ** 0xBF58476D1CE4E5B9u64;
+  let b = z2 >> 27u64;
+  let z3 = z2 ^ b;
+  let z4 = z3 ** 0x94D049BB133111EBu64;
+  let d = z4 >> 31u64;
+  z4 ^ d
+}
+
+// ── Struct key types ────────────────────────────────────────────────────────
+// `pub` fields so reflection can read them. Both hashing and equality come for
+// free from the stdlib's reflective `hash` and `operator_eq` — no per-type
+// boilerplate needed.
+
+pub struct Point {
+  pub x: Int64,
+  pub y: Int64,
+}
+
+pub struct Mixed {
+  pub a: Uint64,
+  pub b: Uint32,
+  pub c: Bool,
+}
+
+// ── Phases ──────────────────────────────────────────────────────────────────
+
+// Uint64 keys (full 64-bit, primitive hash via write_u64).
+fn bench_u64(n: Uint) -> Uint64 {
+  let m = hashbrown::HashMap#[Uint64, Uint64]();
+  let st = 0x1234567u64;
+  let i = 0u;
+  while i < n {
+    let r = rng_next(st&);
+    m&.insert(r, r);
+    i = i + 1u;
+  }
+  st = 0x1234567u64;
+  let sum = 0u64;
+  i = 0u;
+  while i < n {
+    let r = rng_next(st&);
+    match m&.get(r&) {
+      Option#[&Uint64]::Some(v) => { sum = sum ++ v@; },
+      Option#[&Uint64]::None => {},
+    };
+    i = i + 1u;
+  }
+  let miss_st = 0xDEADBEEFu64;
+  let misses = 0u64;
+  i = 0u;
+  while i < n {
+    let r = rng_next(miss_st&);
+    match m&.get(r&) {
+      Option#[&Uint64]::Some(v) => {},
+      Option#[&Uint64]::None => { misses = misses ++ 1u64; },
+    };
+    i = i + 1u;
+  }
+  sum ++ Uint64(m&.len()) ++ misses
+}
+
+// Uint32 keys (32-bit, primitive hash via write_u32).
+fn bench_u32(n: Uint) -> Uint64 {
+  let m = hashbrown::HashMap#[Uint32, Uint64]();
+  let st = 0x1234567u64;
+  let i = 0u;
+  while i < n {
+    let r = rng_next(st&);
+    let k = Uint32(r & 0xFFFFFFFFu64);
+    m&.insert(k, r);
+    i = i + 1u;
+  }
+  st = 0x1234567u64;
+  let sum = 0u64;
+  i = 0u;
+  while i < n {
+    let r = rng_next(st&);
+    let k = Uint32(r & 0xFFFFFFFFu64);
+    match m&.get(k&) {
+      Option#[&Uint64]::Some(v) => { sum = sum ++ v@; },
+      Option#[&Uint64]::None => {},
+    };
+    i = i + 1u;
+  }
+  let miss_st = 0xDEADBEEFu64;
+  let misses = 0u64;
+  i = 0u;
+  while i < n {
+    let r = rng_next(miss_st&);
+    let k = Uint32(r & 0xFFFFFFFFu64);
+    match m&.get(k&) {
+      Option#[&Uint64]::Some(v) => {},
+      Option#[&Uint64]::None => { misses = misses ++ 1u64; },
+    };
+    i = i + 1u;
+  }
+  sum ++ Uint64(m&.len()) ++ misses
+}
+
+// Point struct keys (reflective hash over two Int64 fields + operator_eq).
+fn bench_point(n: Uint) -> Uint64 {
+  let m = hashbrown::HashMap#[Point, Uint64]();
+  let mask = 0x3FFFFFFFFFFFFFFFu64;
+  let st = 0x1234567u64;
+  let i = 0u;
+  while i < n {
+    let r = rng_next(st&);
+    let r2 = rng_next(st&);
+    let k = Point { x: Int64(r & mask), y: Int64(r2 & mask), };
+    m&.insert(k, r);
+    i = i + 1u;
+  }
+  st = 0x1234567u64;
+  let sum = 0u64;
+  i = 0u;
+  while i < n {
+    let r = rng_next(st&);
+    let r2 = rng_next(st&);
+    let k = Point { x: Int64(r & mask), y: Int64(r2 & mask), };
+    match m&.get(k&) {
+      Option#[&Uint64]::Some(v) => { sum = sum ++ v@; },
+      Option#[&Uint64]::None => {},
+    };
+    i = i + 1u;
+  }
+  let miss_st = 0xDEADBEEFu64;
+  let misses = 0u64;
+  i = 0u;
+  while i < n {
+    let r = rng_next(miss_st&);
+    let r2 = rng_next(miss_st&);
+    let k = Point { x: Int64(r & mask), y: Int64(r2 & mask), };
+    match m&.get(k&) {
+      Option#[&Uint64]::Some(v) => {},
+      Option#[&Uint64]::None => { misses = misses ++ 1u64; },
+    };
+    i = i + 1u;
+  }
+  sum ++ Uint64(m&.len()) ++ misses
+}
+
+// Mixed struct keys (reflective hash over Uint64 + Uint32 + Bool fields).
+fn bench_mixed(n: Uint) -> Uint64 {
+  let m = hashbrown::HashMap#[Mixed, Uint64]();
+  let st = 0x1234567u64;
+  let i = 0u;
+  while i < n {
+    let r = rng_next(st&);
+    let r2 = rng_next(st&);
+    let k = Mixed { a: r, b: Uint32(r2 & 0xFFFFFFFFu64), c: (r & 1u64) == 0u64, };
+    m&.insert(k, r);
+    i = i + 1u;
+  }
+  st = 0x1234567u64;
+  let sum = 0u64;
+  i = 0u;
+  while i < n {
+    let r = rng_next(st&);
+    let r2 = rng_next(st&);
+    let k = Mixed { a: r, b: Uint32(r2 & 0xFFFFFFFFu64), c: (r & 1u64) == 0u64, };
+    match m&.get(k&) {
+      Option#[&Uint64]::Some(v) => { sum = sum ++ v@; },
+      Option#[&Uint64]::None => {},
+    };
+    i = i + 1u;
+  }
+  let miss_st = 0xDEADBEEFu64;
+  let misses = 0u64;
+  i = 0u;
+  while i < n {
+    let r = rng_next(miss_st&);
+    let r2 = rng_next(miss_st&);
+    let k = Mixed { a: r, b: Uint32(r2 & 0xFFFFFFFFu64), c: (r & 1u64) == 0u64, };
+    match m&.get(k&) {
+      Option#[&Uint64]::Some(v) => {},
+      Option#[&Uint64]::None => { misses = misses ++ 1u64; },
+    };
+    i = i + 1u;
+  }
+  sum ++ Uint64(m&.len()) ++ misses
+}
+
+// ── Driver ──────────────────────────────────────────────────────────────────
+
+fn print_result(label: &[Uint8], c: Uint64) {
+  write_stdout(label);
+  write_stdout(": "&);
+  println(Uint(c));
+}
+
+// Read an optional phase index from stdin. Returns -1 (run all) on EOF / no
+// leading digit, otherwise the parsed integer.
+fn read_phase() -> Int {
+  let buf = file::stdin().read(16u);
+  let n = buf.len();
+  let val = 0;
+  let any = false;
+  let i = 0u;
+  while i < n {
+    let c = buf@[i];
+    if c >= 48u8 && c <= 57u8 {
+      val = val * 10 + Int(c - 48u8);
+      any = true;
+    } else {
+      if any { i = n; }
+    }
+    i = i + 1u;
+  }
+  if any { val } else { 0 - 1 }
+}
+
+fn main() {
+  let phase = read_phase();
+  if phase == 0 - 1 || phase == 0 { print_result("u64  "&, bench_u64(N)); }
+  if phase == 0 - 1 || phase == 1 { print_result("u32  "&, bench_u32(N)); }
+  if phase == 0 - 1 || phase == 2 { print_result("point"&, bench_point(N)); }
+  if phase == 0 - 1 || phase == 3 { print_result("mixed"&, bench_mixed(N)); }
+}

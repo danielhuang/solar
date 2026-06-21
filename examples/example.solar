@@ -377,6 +377,13 @@ fn main() {
     println(f.1@);                       // 5
   }
 
+  // paired field iteration over two values of the same struct: binds
+  // (&[Uint8], &F, &F) per field — the name and both objects' field refs
+  let boxed2 = Box#[Int] { value: 5 };
+  for.reflect_fields_pair (name, p, q) in (boxed&, boxed2&) {
+    if p@ == q@ { println(1); }           // 1 — the `value` fields are equal
+  }
+
   // compile-time variant dispatch: desugars to a match over the enum with
   // the body duplicated per arm; variant is the &[Uint8] name, index the
   // 0-based Uint discriminant, val the payload (only bound in data arms)
@@ -384,6 +391,13 @@ fn main() {
   match.reflect_variant (variant, index, val) in col& {
     println(variant);                      // Blue
     println(index);                        // discriminant index of Blue
+  }
+
+  // paired variant reflection over two enums: the body runs only when both
+  // hold the same variant; binds name, index, and both payloads
+  let col2 = Color::Blue;
+  match.reflect_variant_pair (variant, index, a, b) in (col&, col2&) {
+    println(variant);                      // Blue (both are Blue)
   }
 
   // nullable references: `&?T` may be null. `null#[T]` is the null value.

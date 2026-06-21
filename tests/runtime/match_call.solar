@@ -1,0 +1,30 @@
+// Regression: matching directly on a method-call expression (and an
+// if-EXPRESSION whose condition is such a call) used to mis-scope the call's
+// reference temporaries — the IR drained the scrutinee/condition's pending
+// setup statements into a branch body instead of before the match/if.
+
+fn main() {
+  let m = hashbrown::HashMap#[Uint32, Uint64]();
+  m&.insert(5u32, 50u64);
+
+  // Direct `match` on `m&.get(k&)` (receiver + arg references), in a loop.
+  let sum = 0u64;
+  let i = 0u;
+  while i < 3u {
+    let k = Uint32(5u64);
+    match m&.get(k&) {
+      Option#[&Uint64]::Some(v) => { sum = sum ++ v@; },
+      Option#[&Uint64]::None => {},
+    };
+    i = i + 1u;
+  }
+  println(Uint(sum));   // 150
+
+  // if-EXPRESSION with a reference-bearing call in the condition.
+  let k2 = Uint32(5u64);
+  let present = if m&.contains_key(k2&) { 1 } else { 0 };
+  println(present);     // 1
+  let k3 = Uint32(9u64);
+  let absent = if m&.contains_key(k3&) { 1 } else { 0 };
+  println(absent);      // 0
+}

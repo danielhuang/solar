@@ -1,4 +1,6 @@
 # Build artifacts
+rust/target/
+__pycache__/
 java/*.class
 c/allocs3
 c/threads_list2

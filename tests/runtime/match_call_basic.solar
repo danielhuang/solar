@@ -1,0 +1,47 @@
+// Regression (no stdlib dependency): matching directly on a function-call
+// expression — and an if-EXPRESSION whose condition is such a call — used to
+// mis-scope the call's reference-argument temporaries. The call args below are
+// `&Int` references, which create the pending setup statements that triggered
+// the bug.
+
+enum Maybe { Yes(Int), No, }
+
+fn pick(a: &Int, b: &Int) -> Maybe {
+  if a@ > b@ { Maybe::Yes(a@) } else { Maybe::No }
+}
+
+fn both_positive(a: &Int, b: &Int) -> Bool {
+  a@ > 0 && b@ > 0
+}
+
+fn main() {
+  let x = 5;
+  let y = 3;
+
+  // Direct `match` on a call with reference args.
+  let r = 0;
+  match pick(x&, y&) {
+    Maybe::Yes(v) => { r = v; },
+    Maybe::No => { r = 0 - 1; },
+  };
+  println(r);    // 5
+
+  // Same, inside a loop (mirrors the original failure shape).
+  let sum = 0;
+  let i = 0;
+  while i < 3 {
+    match pick(x&, y&) {
+      Maybe::Yes(v) => { sum = sum + v; },
+      Maybe::No => {},
+    };
+    i = i + 1;
+  }
+  println(sum);  // 15
+
+  // if-EXPRESSION whose condition is a call with reference args.
+  let p = if both_positive(x&, y&) { 1 } else { 0 };
+  println(p);    // 1
+  let neg = 0 - 4;
+  let q = if both_positive(x&, neg&) { 1 } else { 0 };
+  println(q);    // 0
+}

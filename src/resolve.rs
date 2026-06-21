@@ -16,6 +16,10 @@ struct ParsedFile {
     ast: SourceFile,
 }
 
+fn is_method_export(kind: &ExportKind) -> bool {
+    matches!(kind, ExportKind::Method)
+}
+
 #[derive(Debug, Clone)]
 enum ExportKind {
     Struct,
@@ -272,6 +276,10 @@ impl Resolver {
 
         // Collect this file's own definitions
         let mut local_defs: HashSet<String> = HashSet::new();
+        // Methods are resolved globally by bare name as overload sets (their
+        // definitions are never renamed), so a method import sharing a name with
+        // a local method is not a real clash — the two simply overload.
+        let mut local_method_defs: HashSet<String> = HashSet::new();
         for item in &file.ast.items {
             match item {
                 TopLevelItem::Struct(s) => {
@@ -294,6 +302,7 @@ impl Resolver {
                 }
                 TopLevelItem::Method(m) => {
                     local_defs.insert(m.name.clone());
+                    local_method_defs.insert(m.name.clone());
                     // Methods get renamed via self-type mangling in typed_ast,
                     // but the name itself needs prefixing for the resolve stage
                     if !prefix.is_empty() {
@@ -433,11 +442,21 @@ impl Resolver {
                                         imp.span,
                                     )]);
                                 }
-                                if local_defs.contains(&local) && !rename_map.contains_key(&local) {
+                                let method_overload = local_method_defs.contains(&local)
+                                    && exports
+                                        .get(&local)
+                                        .is_some_and(|ks| ks.iter().any(is_method_export));
+                                if local_defs.contains(&local)
+                                    && !rename_map.contains_key(&local)
+                                    && !method_overload
+                                {
                                     return Err(vec![CompileError::new(
                                         format!("import `{local}` conflicts with local definition"),
                                         imp.span,
                                     )]);
+                                }
+                                if method_overload {
+                                    continue;
                                 }
                                 rename_map.insert(local.clone(), format!("{source_prefix}{local}"));
                             }
@@ -448,7 +467,15 @@ impl Resolver {
                             .insert(alias.clone(), (source_file_id, source_prefix.clone()));
                     }
                     ImportKind::Wildcard => {
-                        for name in exports.keys() {
+                        for (name, kinds) in &exports {
+                            // A method name shared with a local method just adds
+                            // overloads (methods resolve globally), so it is not a
+                            // conflict and needs no rename entry.
+                            if local_method_defs.contains(name)
+                                && kinds.iter().any(is_method_export)
+                            {
+                                continue;
+                            }
                             if local_defs.contains(name) && !rename_map.contains_key(name) {
                                 return Err(vec![CompileError::new(
                                     format!(
@@ -857,11 +884,13 @@ fn rewrite_statement(stmt: &mut Statement, ctx: &RewriteCtx, locals: &mut HashSe
             pattern,
             object,
             body,
+            paired: _,
         }
         | StatementKind::MatchReflectVariant {
             pattern,
             object,
             body,
+            paired: _,
         } => {
             collect_pattern_names(pattern, locals);
             rewrite_destructure_pattern(pattern, ctx.rename_map, ctx.module_aliases);

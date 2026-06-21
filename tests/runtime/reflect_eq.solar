@@ -1,0 +1,47 @@
+// Blanket reflective `operator_eq` from @std: structural equality for structs
+// and enums with no hand-written impl. Exercises heterogeneous fields, nested
+// structs, byte-slice fields, enum data/unit variants, and a concrete override.
+
+pub struct Inner { pub p: Int32, pub q: Bool, }
+pub struct Mixed { pub a: Uint64, pub b: Uint32, pub c: Bool, pub d: Inner, }
+pub struct Named { pub n: Int, pub name: [Uint8], }
+pub enum Shape { Dot, Circle(Uint64), Rect(Mixed), }
+
+// Concrete override: equal iff x matches (ignores y), to prove it wins over the
+// blanket.
+pub struct OnlyX { pub x: Int, pub y: Int, }
+method operator_eq(self: &OnlyX, other: &OnlyX) -> Bool {
+  self@.x == other@.x
+}
+
+fn b(x: Bool) { if x { println(1); } else { println(0); } }
+
+fn main() {
+  let i1 = Inner { p: 5i32, q: true, };
+  let i2 = Inner { p: 5i32, q: false, };
+  let m1 = Mixed { a: 1u64, b: 2u32, c: true, d: i1, };
+  let m2 = Mixed { a: 1u64, b: 2u32, c: true, d: i1, };
+  let m3 = Mixed { a: 1u64, b: 2u32, c: true, d: i2, };
+  b(m1 == m2);   // 1  (all fields equal, incl. nested Inner)
+  b(m1 == m3);   // 0  (nested Inner.q differs)
+  b(m1 != m3);   // 1  (operator_ne via the same reflection — derived)
+
+  // Byte-slice field equality (content-based).
+  let n1 = Named { name: "hi", n: 7, };
+  let n2 = Named { name: "hi", n: 7, };
+  let n3 = Named { name: "ho", n: 7, };
+  b(n1 == n2);   // 1
+  b(n1 == n3);   // 0
+
+  // Enums: same variant + equal payload.
+  b(Shape::Circle(7u64) == Shape::Circle(7u64));   // 1
+  b(Shape::Circle(7u64) == Shape::Circle(9u64));   // 0
+  b(Shape::Dot == Shape::Dot);                     // 1
+  b(Shape::Circle(7u64) == Shape::Dot);            // 0  (variant differs)
+  b(Shape::Rect(m1) == Shape::Rect(m2));           // 1  (struct payload)
+  b(Shape::Rect(m1) == Shape::Rect(m3));           // 0
+
+  // Concrete override beats the blanket.
+  b((OnlyX { x: 1, y: 2, }) == (OnlyX { x: 1, y: 9, }));   // 1  (y ignored)
+  b((OnlyX { x: 1, y: 2, }) == (OnlyX { x: 9, y: 2, }));   // 0
+}

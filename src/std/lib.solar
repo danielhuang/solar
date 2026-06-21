@@ -86,6 +86,69 @@ pub method carrying_mul_add(self: Uint64, rhs: Uint64, carry: Uint64, add: Uint6
   (lo, hi)
 }
 
+// Structural equality by compile-time reflection — the default `==` for any
+// struct or enum (so `a == b` works without a hand-written `operator_eq`). It
+// mirrors the reflective `hash`: two structs are equal iff every field is equal;
+// two enums iff they hold the same variant with equal payloads. Fields are
+// compared with `==`, so a primitive field uses the built-in comparison, a
+// struct/enum field recurses through this method, and a byte-slice field uses
+// the overload below. A concrete `operator_eq` (e.g. on a specific struct) is
+// more specific and overrides this generic. Keys with field types that are
+// neither sized primitives, structs/enums, nor byte slices are not supported.
+pub method operator_eq#[T](self: &T, other: &T) -> Bool {
+  let eq = true;
+  match.reflect T {
+    "struct" => {
+      for.reflect_fields_pair (name, a, b) in (self, other) {
+        let e = a@ == b@;
+        if !e { eq = false; }
+      }
+    },
+    "enum" => {
+      // Discriminants first; only equal variants compare payloads (the paired
+      // reflection's body is a no-op when the variants differ).
+      let si = 0u;
+      let oi = 0u;
+      match.reflect_variant (n, idx, v) in self { si = idx; }
+      match.reflect_variant (n, idx, v) in other { oi = idx; }
+      if si != oi {
+        eq = false;
+      } else {
+        match.reflect_variant_pair (n, idx, sval, oval) in (self, other) {
+          let e = sval == oval;
+          if !e { eq = false; }
+        }
+      }
+    },
+    _ => {},
+  };
+  eq
+}
+
+// Content equality for byte slices (e.g. `String` fields). Distinct from the
+// reference identity `==` on `&[Uint8]`.
+pub method operator_eq(self: &[Uint8], other: &[Uint8]) -> Bool {
+  let n = self.len();
+  let eq = n == other.len();
+  let i = 0u;
+  while i < n {
+    if self@[i] != other@[i] {
+      eq = false;
+      i = n;
+    } else {
+      i = i + 1u;
+    }
+  }
+  eq
+}
+
+// `!=` for any struct/enum (and byte slices) — the negation of `==`, so it
+// respects a concrete `operator_eq` override too.
+pub method operator_ne#[T](self: &T, other: &T) -> Bool {
+  let e = self.operator_eq(other);
+  !e
+}
+
 pub fn write_stdout(s: &[Uint8]) {
   file::stdout().write(s);
 }

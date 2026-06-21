@@ -136,7 +136,7 @@ module.exports = grammar({
 
     // ── Statements ──────────────────────────────────────────
     _statement: ($) =>
-      choice($.let_statement, $.assignment_statement, $.expression_statement, $.if_statement, $.while_statement, $.for_statement, $.reflect_fields_statement, $.reflect_variant_statement, $.return_statement, $.break_statement, $.continue_statement, $.function_def, $.const_def),
+      choice($.let_statement, $.assignment_statement, $.expression_statement, $.if_statement, $.while_statement, $.for_statement, $.reflect_fields_statement, $.reflect_fields_pair_statement, $.reflect_variant_statement, $.reflect_variant_pair_statement, $.return_statement, $.break_statement, $.continue_statement, $.function_def, $.const_def),
 
     return_statement: ($) =>
       seq("return", field("value", $._expression_with_struct), ";"),
@@ -381,12 +381,26 @@ module.exports = grammar({
       seq("for", ".", "reflect_fields", field("variable", $._destructure_target), "in",
         field("object", $._expression), field("body", $.block)),
 
+    // for.reflect_fields_pair (name, a, b) in (x, y) { ... } — reflects two
+    // values of the SAME struct in lockstep; `object` is a 2-tuple `(x, y)` and
+    // the body binds ([Uint8]&, F&, F&) per field (name + both field refs).
+    reflect_fields_pair_statement: ($) =>
+      seq("for", ".", "reflect_fields_pair", field("variable", $._destructure_target), "in",
+        field("object", $._expression), field("body", $.block)),
+
     // match.reflect_variant (variant, val) in o { ... } — desugars to a match
     // over the enum behind `o` with the body duplicated in every arm; binds
     // the ([Uint8]&, Payload) tuple of variant name and payload (a bare name
     // binds the whole tuple; unit variants bind only the name part)
     reflect_variant_statement: ($) =>
       seq("match", ".", "reflect_variant", field("pattern", $._destructure_target), "in",
+        field("object", $._expression), field("body", $.block)),
+
+    // match.reflect_variant_pair (name, idx, a, b) in (x, y) { ... } — reflects
+    // two values of the SAME enum in lockstep; `object` is a 2-tuple `(x, y)`.
+    // The body runs once per variant, only when both hold that variant.
+    reflect_variant_pair_statement: ($) =>
+      seq("match", ".", "reflect_variant_pair", field("pattern", $._destructure_target), "in",
         field("object", $._expression), field("body", $.block)),
 
     reflect_match_arm_list: ($) =>

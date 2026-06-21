@@ -505,10 +505,16 @@ fn convert_block(node: tree_sitter::Node, source: &str) -> Vec<Statement> {
             "while_statement" => stmts.push(convert_while_statement(child, source)),
             "for_statement" => stmts.push(convert_for_statement(child, source)),
             "reflect_fields_statement" => {
-                stmts.push(convert_reflect_fields_statement(child, source))
+                stmts.push(convert_reflect_fields_statement(child, source, false))
+            }
+            "reflect_fields_pair_statement" => {
+                stmts.push(convert_reflect_fields_statement(child, source, true))
             }
             "reflect_variant_statement" => {
-                stmts.push(convert_reflect_variant_statement(child, source))
+                stmts.push(convert_reflect_variant_statement(child, source, false))
+            }
+            "reflect_variant_pair_statement" => {
+                stmts.push(convert_reflect_variant_statement(child, source, true))
             }
             "return_statement" => stmts.push(convert_return_statement(child, source)),
             "break_statement" => stmts.push(Statement {
@@ -643,7 +649,11 @@ fn convert_for_statement(node: tree_sitter::Node, source: &str) -> Statement {
     }
 }
 
-fn convert_reflect_fields_statement(node: tree_sitter::Node, source: &str) -> Statement {
+fn convert_reflect_fields_statement(
+    node: tree_sitter::Node,
+    source: &str,
+    paired: bool,
+) -> Statement {
     let span = source_span(node);
     let pattern =
         convert_destructure_pattern(node.child_by_field_name("variable").unwrap(), source);
@@ -654,12 +664,17 @@ fn convert_reflect_fields_statement(node: tree_sitter::Node, source: &str) -> St
             pattern,
             object,
             body,
+            paired,
         },
         span,
     }
 }
 
-fn convert_reflect_variant_statement(node: tree_sitter::Node, source: &str) -> Statement {
+fn convert_reflect_variant_statement(
+    node: tree_sitter::Node,
+    source: &str,
+    paired: bool,
+) -> Statement {
     let span = source_span(node);
     let pattern = convert_destructure_pattern(node.child_by_field_name("pattern").unwrap(), source);
     let object = convert_expr(node.child_by_field_name("object").unwrap(), source);
@@ -669,6 +684,7 @@ fn convert_reflect_variant_statement(node: tree_sitter::Node, source: &str) -> S
             pattern,
             object,
             body,
+            paired,
         },
         span,
     }

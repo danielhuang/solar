@@ -1,0 +1,16 @@
+[package]
+name = "hashmap-bench"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone crate — intentionally NOT part of the Solar workspace. The empty
+# [workspace] table makes this directory its own workspace root so `cargo` does
+# not try to attach it to /workspaces/solar.
+[workspace]
+
+[dependencies]
+foldhash = "0.1"
+
+[profile.release]
+lto = true
+codegen-units = 1

@@ -206,3 +206,89 @@ Parallel) choke on the growing live set; a fully-concurrent collector tuned for
 latency (Go) chokes on the allocation *rate*; and moving reclamation onto the
 mutator (C) or stopping the world briefly (Solar) trades latency for the best
 throughput on high-churn allocation.
+
+---
+
+# HashMap: Solar vs Rust + foldhash
+
+Compares Solar's standard-library `hashbrown::HashMap` (a memory-safe SwissTable
+port with the foldhash hasher and the concurrent GC) against Rust's
+`std::collections::HashMap` using the same
+[foldhash](https://crates.io/crates/foldhash) hasher.
+
+Both use the **language's default hashing**:
+
+- **Solar** — a single blanket `hash#[T]` / `operator_eq#[T]` in the stdlib,
+  implemented with compile-time reflection. Struct keys get hashing and equality
+  for free from their `pub` fields; no per-type boilerplate.
+- **Rust** — `#[derive(Hash, PartialEq, Eq)]` on the key structs.
+
+Sources: [`examples/hashmap.solar`](../examples/hashmap.solar) and
+[`bench/rust/`](rust/) (a standalone crate, not part of the Solar workspace).
+
+## Workload
+
+Four key datatypes, each run in its own process:
+
+| phase | key type | hashing path |
+|-------|----------|--------------|
+| `u64`   | `Uint64` | concrete primitive `hash` overload (`write_u64`) |
+| `u32`   | `Uint32` | concrete primitive `hash` overload (`write_u32`) |
+| `point` | `struct { x: Int64, y: Int64 }` | reflective `hash` over fields |
+| `mixed` | `struct { a: Uint64, b: Uint32, c: Bool }` | reflective `hash` over fields |
+
+Each phase, for **N = 1,000,000** keys drawn from a shared splitmix64 stream,
+inserts `N` entries, performs `N` lookups that hit, then `N` lookups that miss,
+and prints a checksum (`Σ looked-up values + len + miss count`, all wrapping).
+The checksum is **hasher-independent** — it depends only on the key set and
+lookup outcomes — so it is identical across the two implementations and serves as
+a cross-implementation correctness check (the harness verifies it; all four
+match).
+
+## How to reproduce
+
+```bash
+bench/run.sh        # builds both (release) and prints the table below
+```
+
+`run.sh` builds the Solar runtime, compiles `examples/hashmap.solar` via
+`--bin compile` (LLVM LTO + GC passes), builds the Rust crate (`lto = true`), and
+runs `bench/run.py`. The harness launches each phase as its own process (phase
+index on stdin) and reports the best wall-clock of 7 runs plus peak RSS
+(`wait4` `ru_maxrss`).
+
+- CPU: Intel Core Ultra 9 275HX (24 threads); rustc 1.98.0-nightly, LLVM 22.1.6
+- foldhash 0.1.5 (`fast::FixedState`)
+
+## Throughput & peak memory (best of 7, lower is better)
+
+1,000,000 keys per phase (insert + hit + miss).
+
+| phase | Solar (ms) | Rust (ms) | Solar/Rust | Solar RSS (MB) | Rust RSS (MB) | checksum match |
+|-------|-----------:|----------:|-----------:|---------------:|--------------:|:--------------:|
+| u64       | 914.8  | 119.2 | 7.68x | 175.5 | 52.9 | yes |
+| u32       | 908.2  | 117.5 | 7.73x | 169.5 | 53.0 | yes |
+| point     | 1045.5 | 164.0 | 6.37x | 349.2 | 76.8 | yes |
+| mixed     | 1089.1 | 165.9 | 6.56x | 349.9 | 76.8 | yes |
+| **total** | **3957.7** | **566.6** | **6.99x** | | | |
+
+## Takeaways
+
+1. **~7× slower, ~3× more memory.** The gap is the cost of Solar's
+   memory-safety guarantees over `std`'s hand-tuned, `unsafe`-heavy table: every
+   slot access is bounds-checked, the table is two GC allocations (`ctrl` +
+   `slots`) rather than one `unsafe` block, and each insert touches the GC
+   (allocation accounting, born-black marking, write barriers). The struct phases
+   cost more on both sides (larger keys, more hashing) and roughly double Solar's
+   RSS (16-byte `Entry` slots plus control bytes).
+
+2. **The GC is not the bottleneck.** Re-running with `SOLAR_DISABLE_GC=1` (bump
+   allocator, never frees) is *slower* — e.g. `u64` 938 → 1262 ms, `point`
+   1008 → 1389 ms — because unreclaimed garbage from table resizes blows up the
+   working set. The concurrent collector keeps the live set cache-resident.
+
+3. **Reflection has no runtime cost.** The blanket `hash` / `operator_eq` are
+   resolved and fully unrolled at compile time into the same field-by-field code a
+   hand-written impl would emit, so the reflective struct phases are competitive
+   with the primitive phases on both sides — the per-phase deltas track key size
+   and hashed bytes, not hashing strategy.
