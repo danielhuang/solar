@@ -49,6 +49,18 @@ fn hashbrown_map() {
 }
 
 #[test]
+fn hoist_capture() {
+    let output = run(&fixture("hoist_capture.solar"), "hoist_capture");
+    assert_eq!(output, "0\n10\n20\n30\n");
+}
+
+#[test]
+fn inline_attr() {
+    let output = run(&fixture("inline_attr.solar"), "inline_attr");
+    assert_eq!(output, "25\n6\n21\n42\n");
+}
+
+#[test]
 fn match_call() {
     let output = run(&fixture("match_call.solar"), "match_call");
     assert_eq!(output, "150\n1\n0\n");

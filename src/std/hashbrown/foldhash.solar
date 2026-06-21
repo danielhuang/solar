@@ -54,7 +54,9 @@ fn rotate_right(x: Uint64, r: Uint64) -> Uint64 {
 }
 
 // Accumulate a `bits`-wide value into the 128-bit sponge, folding when full.
-method write_num(self: &Hasher, x: Uint64, bits: Uint) {
+// `(inline)`: its cost sits just over the default inliner threshold, so without
+// the hint the per-lookup `Hasher` it mutates can't be promoted off the heap.
+method(inline) write_num(self: &Hasher, x: Uint64, bits: Uint) {
   let new_len = self@.sponge_len + bits;
   if new_len > 128u {
     let acc = self@.accumulator;

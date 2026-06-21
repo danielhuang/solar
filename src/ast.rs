@@ -132,6 +132,9 @@ pub struct FunctionDef {
     pub return_type_span: Option<SourceSpan>,
     pub body: Vec<Statement>,
     pub is_pub: bool,
+    /// `fn(inline)` / `method(inline)`: a hint that codegen should mark this
+    /// function for inlining. Ignored by the interpreters.
+    pub inline_hint: bool,
     pub span: SourceSpan,
 }
 

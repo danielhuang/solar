@@ -1,0 +1,18 @@
+// `fn(inline)` / `method(inline)` attribute: interpreters ignore it, codegen
+// emits an inline hint. Behaviour must be identical across all backends.
+
+fn(inline) square(x: Int) -> Int { x * x }
+
+pub fn(inline) add3(a: Int, b: Int, c: Int) -> Int { a + b + c }
+
+method(inline) triple(self: Int) -> Int { self * 3 }
+
+// Generic + inline hint together.
+fn(inline) id#[T](x: T) -> T { x }
+
+fn main() {
+  println(square(5));            // 25
+  println(add3(1, 2, 3));        // 6
+  println(7.triple());           // 21
+  println(id#[Int](42));         // 42
+}

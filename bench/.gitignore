@@ -6,3 +6,4 @@ c/allocs3
 c/threads_list2
 go/allocs3
 go/threads_list2
+c/libbump.so

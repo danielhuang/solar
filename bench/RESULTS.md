@@ -207,6 +207,97 @@ latency (Go) chokes on the allocation *rate*; and moving reclamation onto the
 mutator (C) or stopping the world briefly (Solar) trades latency for the best
 throughput on high-churn allocation.
 
+(The "beating C on both" above is specifically vs the C port's **glibc**
+`malloc`/`free`. Swapping in a modern allocator changes the picture — see the
+next section: jemalloc and mimalloc beat Solar's throughput on both benchmarks.)
+
+---
+
+# C allocator comparison: glibc vs jemalloc vs tcmalloc vs mimalloc vs bump
+
+The C ports above use glibc `malloc`/`free`. The same two binaries, unchanged,
+run here under four other allocators swapped in by `LD_PRELOAD` — to separate
+"what the C *language* costs" from "what glibc's allocator costs", and to put a
+hard floor under the numbers with a no-op-`free` bump allocator.
+
+The contenders: **glibc** (baseline, no preload), **jemalloc** 5.3,
+**tcmalloc** (gperftools `tcmalloc_minimal` 2.16), **mimalloc** 3.0, and
+**bump** (`bench/c/bump.c`, built to `libbump.so`) — a per-thread arena
+allocator where each thread bump-points a thread-local cursor with no atomics
+and `free` is a no-op. The bump allocator is the manual-memory analogue of
+Solar's `SOLAR_DISABLE_GC=1` mode: pure allocation throughput, zero reclamation.
+
+## How to reproduce
+
+```bash
+# Debian/Ubuntu: the three shared allocators
+sudo apt-get install -y libjemalloc2 libmimalloc3 libtcmalloc-minimal4t64
+# the bump allocator (initial-exec TLS so the per-thread cursor isn't a
+# __tls_get_addr call in the preloaded lib)
+clang -O3 -fPIC -ftls-model=initial-exec -shared -o bench/c/libbump.so bench/c/bump.c
+make -C bench/c                                  # the two benchmark binaries
+ROUNDS=3 python3 bench/c/alloc_matrix.py         # interleaved matrix, the table below
+```
+
+## Throughput & peak memory (median of 3 interleaved rounds, lower is better)
+
+| allocator        | allocs3 wall | allocs3 RSS | threads wall | threads RSS |
+|------------------|-------------:|------------:|-------------:|------------:|
+| glibc            | 2.35 s       | 3053 MB     | 4.28 s       | **97 MB**   |
+| jemalloc         | 0.73 s       | 794 MB      | 1.20 s       | 55 MB       |
+| tcmalloc (min)   | 0.71 s       | 775 MB      | 90.62 s²     | **53 MB**   |
+| mimalloc         | **0.56 s**   | 766 MB      | **0.85 s**   | 54 MB       |
+| bump (no-op free)| 0.57 s       | **764 MB**  | 2.83 s       | 15030 MB¹   |
+| *Solar (ref)*    | *1.08 s*     | *785 MB*    | *1.94 s*     | *1183 MB*   |
+
+*Solar (ref)* is from the throughput table further up — a **different session**,
+shown only for scale, not measured interleaved with these. ¹ bump never frees,
+so `threads` RSS is the high-water of all ~1.6 B allocations (≈15 GB). ² not a
+typo and not noise: tcmalloc_minimal is reproducibly ~90 s on `threads` across
+all three rounds at 53 MB RSS — CPU/lock-bound, not swapping (see takeaway 4).
+
+## Takeaways
+
+1. **glibc is the slow one; the C *language* is not.** On `allocs3` (pure
+   `malloc`, never frees) jemalloc/tcmalloc/mimalloc are **~3–4× faster than
+   glibc** (0.56–0.73 s vs 2.35 s) and pack the 8-byte node at 8 bytes (~766 MB)
+   instead of glibc's 32-byte minimum chunk (3 GB). So the earlier "C malloc is
+   ~2× slower than Solar" result is a **glibc** result: against mimalloc the same
+   benchmark is ~2× *faster* than Solar (0.56 s vs 1.08 s).
+
+2. **mimalloc beats Solar on both benchmarks' throughput.** mimalloc is fastest
+   everywhere (0.56 s / 0.85 s); jemalloc is close (0.73 s / 1.20 s). Both beat
+   Solar's 1.08 s / 1.94 s. Solar's GC throughput lead held against glibc and Go,
+   but a state-of-the-art thread-caching allocator that reuses freed memory is
+   faster here — and on `threads` it does so at **~55 MB vs Solar's 1183 MB**,
+   because it reclaims immediately rather than at the next GC cycle.
+
+3. **The bump floor: fastest only when nothing is freed.** With a no-op `free`,
+   `allocs3` hits the theoretical minimum (0.57 s / 764 MB — a dead heat with
+   mimalloc, since `allocs3` frees nothing anyway). But on the high-churn
+   `threads` bench the bump is **slower than mimalloc *and* glibc** (2.83 s) even
+   though allocation itself is just a pointer add: never freeing inflates the
+   working set to 15 GB, so the mutators eat page-fault and cache-miss cost that
+   reuse-based allocators avoid. This is exactly the effect Solar's HashMap
+   takeaway #2 reports for `SOLAR_DISABLE_GC=1` — past a point, *not* reclaiming
+   is a throughput loss, not a win. Allocation is cheap; memory traffic is not.
+
+4. **tcmalloc_minimal collapses on this workload.** ~90 s on `threads` (vs
+   mimalloc's 0.85 s), reproducibly, at the leanest RSS of the field (53 MB). The
+   gperftools `_minimal` build aggressively returns freed pages to the OS; under
+   16 threads churning 1.6 B short-lived nodes that becomes a storm of
+   page-release / re-fault syscalls on the mutators. Lean but pathological here —
+   a reminder that allocator behavior is workload-shaped, not a single ranking.
+
+**Net:** the right read of the GC section's "Solar beats C" is "Solar beats
+**glibc**." Against modern allocators the throughput crown on these two
+benchmarks goes to mimalloc, with jemalloc second; Solar sits between the modern
+allocators and glibc. Solar's distinct advantage is elsewhere — automatic
+reclamation with no manual `free` and no use-after-free (the C `threads` port has
+to carefully free only its own per-thread lists to avoid racing), competitive
+throughput, and on the retained `allocs3` chain an RSS (785 MB) on par with the
+best 8-byte-packing allocators.
+
 ---
 
 # HashMap: Solar vs Rust + foldhash
@@ -266,11 +357,16 @@ index on stdin) and reports the best wall-clock of 7 runs plus peak RSS
 
 | phase | Solar (ms) | Rust (ms) | Solar/Rust | Solar RSS (MB) | Rust RSS (MB) | checksum match |
 |-------|-----------:|----------:|-----------:|---------------:|--------------:|:--------------:|
-| u64       | 914.8  | 119.2 | 7.68x | 175.5 | 52.9 | yes |
-| u32       | 908.2  | 117.5 | 7.73x | 169.5 | 53.0 | yes |
-| point     | 1045.5 | 164.0 | 6.37x | 349.2 | 76.8 | yes |
-| mixed     | 1089.1 | 165.9 | 6.56x | 349.9 | 76.8 | yes |
-| **total** | **3957.7** | **566.6** | **6.99x** | | | |
+| u64       | 650.8 | 111.4 | 5.84x | 135.2 | 53.0 | yes |
+| u32       | 629.5 | 111.2 | 5.66x | 137.8 | 52.9 | yes |
+| point     | 727.1 | 161.2 | 4.51x | 253.5 | 76.8 | yes |
+| mixed     | 765.1 | 161.0 | 4.75x | 269.1 | 76.8 | yes |
+| **total** | **2772.4** | **544.8** | **5.09x** | | | |
+
+(Earlier this was 6.99x total / 175 MB on `u64`; two codegen changes — the
+`(inline)` hint on foldhash's `write_num` and hoisting non-address-taken `let`
+allocations to function entry — cut it to 5.09x and ~25-30% less RSS. See "Where
+the gap comes from" for the mechanism.)
 
 ## Takeaways
 
@@ -292,3 +388,93 @@ index on stdin) and reports the best wall-clock of 7 runs plus peak RSS
    hand-written impl would emit, so the reflective struct phases are competitive
    with the primitive phases on both sides — the per-phase deltas track key size
    and hashed bytes, not hashing strategy.
+
+## Where the gap comes from (profiled)
+
+`perf record` flat profiles of a single phase (Solar `target/hashmap`, Rust
+release), plus `objdump`/`SOLAR_PRINT_GC_STATS`. Three causes, in order of
+impact:
+
+1. **Allocation of value-type temporaries dominates.** Solar's codegen
+   lowers every IR `Let` to a `sol_alloc`, so each *intermediate* value — the
+   per-lookup foldhash `Hasher` (a 48-byte `[Uint64; 6]` seed array + scalars),
+   each `Group`/`BitMask` produced inside the probe, the `Option` result, and the
+   boxed `self&`/`key&` method arguments — is heap-allocated. The `u64` phase does
+   **27.9 M allocations for 3 M operations (~9 per op)**; Rust does on the order of
+   a *dozen* (only the backing-array resizes — its hasher state lives on the stack
+   and the probe runs in registers). In the Solar profile this shows up as
+   `sol_alloc` **17–19 % self**, plus kernel page traffic from heap growth
+   (`get_page_from_freelist` + `__rmqueue_pcplist` + `_raw_spin_lock` ≈ 5 %) and
+   the concurrent collector's CPU (~30 cycles/phase, mostly off the critical path).
+
+   *Why doesn't LLVM elide them?* The `solar-lower-gc-alloc` pass rewrites each
+   `sol_alloc` to a recognized `calloc` precisely so LLVM's allocator-aware
+   SROA/DSE *can* drop non-escaping ones — and for simple code it works
+   completely: `examples/loop2fn5.solar` (closures, HOFs, per-iteration arrays in
+   a 10⁹-iteration loop) optimizes down to **2 static allocations in the whole
+   module and 0 surviving heap boxes in its hot loop**. So LLVM is capable; the
+   hashmap hits two specific walls.
+
+   - **Loop-carried per-iteration boxes (the dominant survivor).** Solar's
+     codegen allocates a fresh `sol_alloc` for each loop-body `let` temporary
+     *every iteration*, and threads it via a pointer-phi across the back-edge. In
+     `find` the probe loop's index buffer becomes `%31 = phi ptr [%93 (back-edge
+     calloc), %17 (preheader calloc)]` — a `calloc(1, 8)` per probe step that is
+     **written once and never read** (a dead allocation), yet LLVM won't remove
+     it: its DSE/allocation-elision is conservative about a loop-carried pointer
+     phi that merges *distinct* heap allocations. loop2fn5 never hits this because
+     its per-iteration allocations are created-and-killed within one fully-inlined
+     iteration (no loop-carried pointer phi), so SROA/DSE delete them. This is why
+     aggressive inlining only recovers ~24 % (below): the bulk aren't an inlining
+     problem at all.
+
+   - **An inline-cost near-miss for the `Hasher`.** The per-lookup foldhash
+     `Hasher` `calloc(1, 80)` escapes into `write_num`, which has inline cost
+     **exactly 250 = the default `-O3` threshold** (LLVM inlines only when
+     cost *<* threshold, so it misses by one unit); `find→get` is genuinely big
+     (cost ~985). Re-running the post-lowering bitcode with
+     `opt -O3 -inline-threshold=10000` inlines these and drops runtime allocations
+     **27.9 M → 21.1 M**, `u64` **852 → 667 ms (−22 %)**, `point`
+     **1013 → 769 ms (−24 %)**, identical checksums — but ~20 M (the loop-carried
+     boxes above) remain.
+
+   Both walls are now fixed, codegen-side:
+
+   - *Wall 1* — codegen hoists a `let`'s allocation to the function entry block
+     when the variable's **address is never taken** (so reusing one box across
+     iterations can't alias; captured/`&`-taken loop-locals are excluded and stay
+     per-iteration — see `tests/runtime/hoist_capture.solar`). That replaces the
+     loop-carried phi of distinct `calloc`s with a single non-escaping allocation,
+     which `opt -O3` then promotes to stack/SSA exactly like `found`. The probe's
+     per-iteration `Group` box (`let g`) disappears.
+   - *Wall 2* — the `(inline)` attribute (`method(inline) write_num` in
+     `foldhash.solar`) emits `static inline` → LLVM `inlinehint`, raising that
+     function past its cost-250 so the whole `key_hash` chain inlines and the
+     per-lookup `Hasher` `calloc(80)` is promoted away.
+
+   Together they drop the `u64` phase **27.9 M → 19.7 M** allocations and
+   **867 → 651 ms**, and the whole benchmark from **6.99x → 5.09x** vs Rust
+   (table above), identical checksums. What remains of the gap is the scalar SWAR
+   probe (Wall 2 of the SIMD section) and the residual method-boundary boxing.
+
+2. **No SIMD in the probe (the suspected cause — confirmed).** Rust's hashbrown
+   scans **16 control bytes per step with one `pcmpeqb` + `pmovmskb`** (the SSE2
+   SwissTable group scan: `objdump` shows 24×`pcmpeqb`, 32×`pmovmskb`, 18×`movdqu`
+   inlined into `main`). Solar has **no vector instructions** — `group::load` is a
+   scalar 8-byte SWAR word (`GROUP_WIDTH = 8`, *half* Rust's group width) processed
+   with `imul`/`shr`/`and` + a `tzcnt`. So Solar does ~2× the probe iterations and
+   far more ALU work per iteration. `find` is the single hottest function at
+   **36–37 %** of Solar's time; in Rust the probe is inlined into `main` and never
+   appears as its own symbol.
+
+3. **Bounds + null checks.** Each `ctrl`/`slots` access in `find` is
+   bounds-checked and `slots` is a `&?` nullable deref (the cold
+   `panic_*`/`expect_failed` call sites visible in `find`'s disassembly are these
+   guards' failure branches); Rust's table uses unchecked `unsafe` indexing. Minor
+   next to (1) and (2), but it adds a compare+branch to every slot touch.
+
+Not the cause: hashing (`write_num` is only 3–4 %, and foldhash is bit-exact
+across both), and the GC pauses (concurrent; see takeaway 2). Both sides pay
+similar first-touch page-fault cost for fresh backing memory. **The ~7× is
+mostly (1) temporary boxing and (2) the scalar-vs-SSE probe; a SIMD `Group` and
+stack/register temporaries would close most of it.**

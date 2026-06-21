@@ -675,6 +675,7 @@ fn apply_subst_to_ast_statement(
                     .map(|s| apply_subst_to_ast_statement(s, subst))
                     .collect(),
                 is_pub: fdef.is_pub,
+                inline_hint: fdef.inline_hint,
                 span: fdef.span,
             })
         }
@@ -951,6 +952,8 @@ pub struct FunctionDef {
     pub parameters: Vec<Parameter>,
     pub return_type: Type,
     pub body: Vec<Statement>,
+    /// `fn(inline)` hint, carried through to codegen. Interpreters ignore it.
+    pub inline_hint: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -3068,6 +3071,7 @@ impl<'a> Lowerer<'a> {
             parameters,
             return_type,
             body,
+            inline_hint: func.inline_hint,
         })
     }
 
@@ -6142,6 +6146,7 @@ impl<'a> Lowerer<'a> {
             parameters: typed_params.clone(),
             return_type: fn_return_type.clone(),
             body: lowered_body,
+            inline_hint: false,
         };
         self.pending_closures.push(synthetic_fn);
 

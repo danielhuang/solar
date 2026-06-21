@@ -1,0 +1,29 @@
+// Regression for the codegen alloc-hoist optimization: a `let` whose address is
+// never taken gets one box at function entry (reused across iterations), but a
+// loop-local captured by a closure (address taken) must keep PER-ITERATION
+// identity. If the hoist wrongly reused one box for `x`, all three closures
+// would observe the last value (20). Correct output is 0/10/20.
+
+fn main() {
+  let fns: [fn() -> Int; 3] = [\ 0, \ 0, \ 0];
+  let i = 0u;
+  while i < 3u {
+    let x = Int(i) * 10;
+    fns[i] = \ x;
+    i = i + 1u;
+  }
+  println(fns[0u]());   // 0
+  println(fns[1u]());   // 10
+  println(fns[2u]());   // 20
+
+  // A non-captured, non-address-taken loop temp (gets hoisted): plain reuse is
+  // fine because each iteration overwrites before reading.
+  let sum = 0;
+  let j = 0u;
+  while j < 5u {
+    let t = Int(j) * Int(j);
+    sum = sum + t;
+    j = j + 1u;
+  }
+  println(sum);          // 0+1+4+9+16 = 30
+}

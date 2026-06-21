@@ -91,10 +91,14 @@ module.exports = grammar({
       seq(field("name", $.identifier), optional(seq("(", field("inner_type", $._type), ")"))),
 
     // ── Function ────────────────────────────────────────────
+    // Optional inline hint: `fn(inline) name(...)` / `method(inline) name(...)`.
+    inline_attr: ($) => seq("(", "inline", ")"),
+
     function_def: ($) =>
       seq(
         optional("pub"),
         "fn",
+        optional(field("attr", $.inline_attr)),
         field("name", $.identifier),
         optional(field("type_params", $.type_params)),
         "(",
@@ -108,6 +112,7 @@ module.exports = grammar({
       seq(
         optional("pub"),
         "method",
+        optional(field("attr", $.inline_attr)),
         field("name", $.identifier),
         optional(field("type_params", $.type_params)),
         "(",

@@ -56,6 +56,8 @@ pub struct Function {
     pub nodes: Vec<Node>,
     pub body: Vec<NodeId>,
     pub env_captures: Vec<EnvCapture>,
+    /// `fn(inline)` hint, consumed by codegen (emits an inline marker).
+    pub inline_hint: bool,
 }
 
 #[derive(Debug)]
@@ -1360,5 +1362,6 @@ fn lower_function(
         nodes: lowerer.nodes,
         body,
         env_captures,
+        inline_hint: func.inline_hint,
     }
 }

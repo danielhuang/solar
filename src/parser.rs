@@ -46,6 +46,7 @@ pub fn generate_numeric_constructors(items: &mut Vec<TopLevelItem>) {
                     span,
                 }],
                 is_pub: false,
+                inline_hint: false,
                 span,
             }));
         }
@@ -368,6 +369,9 @@ fn convert_function_def(node: tree_sitter::Node, source: &str) -> FunctionDef {
     let body_node = node.child_by_field_name("body").unwrap();
     let body = convert_block(body_node, source);
 
+    // `fn(inline)` / `method(inline)`
+    let inline_hint = node.child_by_field_name("attr").is_some();
+
     FunctionDef {
         display_name: name.clone(),
         name,
@@ -377,6 +381,7 @@ fn convert_function_def(node: tree_sitter::Node, source: &str) -> FunctionDef {
         return_type_span,
         body,
         is_pub,
+        inline_hint,
         span: source_span(node),
     }
 }

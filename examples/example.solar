@@ -39,8 +39,10 @@ fn print_test_struct(x: &TestStruct) {
   // print impl is todo
 }
 
-// return type can be inferred from the tail expression
-pub fn add(a: Int, b: Int) {
+// return type can be inferred from the tail expression. The optional `(inline)`
+// attribute (also valid on `method`) hints codegen to mark it for inlining; the
+// interpreters ignore it.
+pub fn(inline) add(a: Int, b: Int) {
   a + b
 }
 
@@ -432,8 +434,8 @@ fn second#[A, B](a: A, b: B) -> B {
   b
 }
 
-// method on Int
-method double(self: Int) -> Int {
+// method on Int (with an `(inline)` hint)
+method(inline) double(self: Int) -> Int {
   self * 2
 }
 
