@@ -357,16 +357,26 @@ index on stdin) and reports the best wall-clock of 7 runs plus peak RSS
 
 | phase | Solar (ms) | Rust (ms) | Solar/Rust | Solar RSS (MB) | Rust RSS (MB) | checksum match |
 |-------|-----------:|----------:|-----------:|---------------:|--------------:|:--------------:|
-| u64       | 650.8 | 111.4 | 5.84x | 135.2 | 53.0 | yes |
-| u32       | 629.5 | 111.2 | 5.66x | 137.8 | 52.9 | yes |
-| point     | 727.1 | 161.2 | 4.51x | 253.5 | 76.8 | yes |
-| mixed     | 765.1 | 161.0 | 4.75x | 269.1 | 76.8 | yes |
-| **total** | **2772.4** | **544.8** | **5.09x** | | | |
+| u64       | 202.2 | 103.4 | 1.96x | 78.5  | 52.9 | yes |
+| u32       | 205.2 | 101.1 | 2.03x | 78.7  | 52.9 | yes |
+| point     | 399.1 | 139.6 | 2.86x | 191.5 | 76.8 | yes |
+| mixed     | 379.4 | 144.9 | 2.62x | 195.4 | 76.8 | yes |
+| **total** | **1185.8** | **489.0** | **2.43x** | | | |
 
-(Earlier this was 6.99x total / 175 MB on `u64`; two codegen changes — the
-`(inline)` hint on foldhash's `write_num` and hoisting non-address-taken `let`
-allocations to function entry — cut it to 5.09x and ~25-30% less RSS. See "Where
-the gap comes from" for the mechanism.)
+(This started at 6.99x total / 175 MB on `u64`. A series of changes brought it to
+2.43x: the `(inline)` hint on foldhash's `write_num`; an `ir_opt` escape analysis
+that places non-escaping locals/params on the C stack instead of GC-heap-boxing
+them (`NodeKind::Let { noescape }` + `param_noescape`, run to a fixpoint with a
+transitive rule so HashMap keys flow `get → find`/`key_hash` to the stack);
+binding a non-place `match` scrutinee to a `Let` so `match call()` stacks its
+result; and route-checking field-rooted refs (`e.key&`) so the resize loop's
+per-entry copy stays on the stack. The `u64`/`u32` phases are now essentially
+allocation-free per operation (only the table's backing arrays remain), within
+~2x of Rust. `point`/`mixed` still allocate per lookup — the reflective `hash#[T]`
+desugars `for.reflect_fields f in self` to `let tmp = self; …tmp@.field…`, and
+that copy of `self` breaks the non-escape chain for struct keys, so `key_hash`'s
+parameter isn't provably non-escaping there. Fixing it needs the reflective
+desugar to deref the object in place (or copy-aliasing in the analysis).)
 
 ## Takeaways
 

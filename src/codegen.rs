@@ -4,120 +4,10 @@ use crate::error::SourceMap;
 use crate::ir::*;
 use std::collections::{HashMap, HashSet};
 
-/// Collect every `Local(var)` reachable from `id` (the full subtree). Used on
-/// the operand of a `Ref`/`Unique` to find which variables have their address
-/// taken (conservatively — a by-value sub-expression like an array index counts
-/// too, which only ever forgoes an optimization, never breaks one).
-fn collect_locals(nodes: &[Node], id: NodeId, out: &mut HashSet<VarId>) {
-    match &nodes[id.0].kind {
-        NodeKind::Local(var) => {
-            out.insert(*var);
-        }
-        NodeKind::FieldAccess { object, .. } => collect_locals(nodes, *object, out),
-        NodeKind::Deref(n)
-        | NodeKind::Ref(n)
-        | NodeKind::Unique(n)
-        | NodeKind::Not(n)
-        | NodeKind::Expr(n)
-        | NodeKind::Return(n)
-        | NodeKind::ArraySizeCoerce { value: n, .. } => collect_locals(nodes, *n, out),
-        NodeKind::Index { object, index } => {
-            collect_locals(nodes, *object, out);
-            collect_locals(nodes, *index, out);
-        }
-        NodeKind::Slice { object, start, end } => {
-            collect_locals(nodes, *object, out);
-            collect_locals(nodes, *start, out);
-            collect_locals(nodes, *end, out);
-        }
-        NodeKind::ArrayRepeat { element, count } => {
-            collect_locals(nodes, *element, out);
-            collect_locals(nodes, *count, out);
-        }
-        NodeKind::ArrayInit { count, init } => {
-            collect_locals(nodes, *count, out);
-            collect_locals(nodes, *init, out);
-        }
-        NodeKind::BinaryOp { left, right, .. } => {
-            collect_locals(nodes, *left, out);
-            collect_locals(nodes, *right, out);
-        }
-        NodeKind::Call { args, .. } | NodeKind::IntrinsicCall { args, .. } => {
-            for a in args {
-                collect_locals(nodes, *a, out);
-            }
-        }
-        NodeKind::CallIndirect { callee, args } => {
-            collect_locals(nodes, *callee, out);
-            for a in args {
-                collect_locals(nodes, *a, out);
-            }
-        }
-        NodeKind::MakeClosure { captures, .. } => {
-            for c in captures {
-                collect_locals(nodes, *c, out);
-            }
-        }
-        NodeKind::ArrayLiteral(elems) => {
-            for e in elems {
-                collect_locals(nodes, *e, out);
-            }
-        }
-        NodeKind::StructLiteral { fields, .. } => {
-            for (_, f) in fields {
-                collect_locals(nodes, *f, out);
-            }
-        }
-        NodeKind::EnumVariant { value, .. } => {
-            if let Some(v) = value {
-                collect_locals(nodes, *v, out);
-            }
-        }
-        NodeKind::Let { value, .. } => collect_locals(nodes, *value, out),
-        NodeKind::Assign { target, value } => {
-            collect_locals(nodes, *target, out);
-            collect_locals(nodes, *value, out);
-        }
-        NodeKind::Break(v) => {
-            if let Some(v) = v {
-                collect_locals(nodes, *v, out);
-            }
-        }
-        NodeKind::If {
-            condition,
-            then_body,
-            else_body,
-        }
-        | NodeKind::IfExpr {
-            condition,
-            then_body,
-            else_body,
-        } => {
-            collect_locals(nodes, *condition, out);
-            for s in then_body.iter().chain(else_body) {
-                collect_locals(nodes, *s, out);
-            }
-        }
-        NodeKind::Loop { body } => {
-            for s in body {
-                collect_locals(nodes, *s, out);
-            }
-        }
-        NodeKind::Match { scrutinee, arms } => {
-            collect_locals(nodes, *scrutinee, out);
-            for arm in arms {
-                for s in &arm.body {
-                    collect_locals(nodes, *s, out);
-                }
-            }
-        }
-        NodeKind::IntegerLiteral(_)
-        | NodeKind::BooleanLiteral(_)
-        | NodeKind::Null
-        | NodeKind::FunctionRef(_)
-        | NodeKind::Continue => {}
-    }
-}
+/// Upper size bound for placing a non-escaping local/param on the C stack. Above
+/// this it stays a heap box, so a large non-escaping value in deep recursion
+/// can't overflow the stack where a heap allocation would not.
+const STACK_ALLOC_MAX: usize = 4096;
 
 pub fn generate(module: &Module, source_file: &str, source_map: &SourceMap) -> String {
     let mut cg = Codegen {
@@ -130,7 +20,6 @@ pub fn generate(module: &Module, source_file: &str, source_map: &SourceMap) -> S
         emitted_mark_fns: HashSet::new(),
         loop_dst: Vec::new(),
         cur_loc: None,
-        hoisted_vars: HashSet::new(),
     };
     cg.emit_module();
     cg.out
@@ -158,13 +47,6 @@ struct Codegen<'a> {
     /// `line()` pins them all to the statement's own line. `None` = synthetic glue,
     /// emitted with no directive.
     cur_loc: Option<(usize, String)>,
-    /// Locals (per current function) whose box is allocated once at function
-    /// entry and reused, instead of a fresh `sol_alloc` at each `Let` execution.
-    /// Eligible when the variable's address is never taken (so iterations can't
-    /// alias) — this turns a per-iteration loop-body box (which LLVM can't
-    /// promote, being a loop-carried phi of distinct allocations) into a single
-    /// non-escaping allocation that `opt -O3` SROAs onto the stack / into SSA.
-    hoisted_vars: HashSet<VarId>,
 }
 
 impl<'a> Codegen<'a> {
@@ -726,37 +608,13 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    /// `Let`-bound locals (with their value type) whose box can be allocated
-    /// once at function entry and reused: sized, and with their address never
-    /// taken (no `&`/`^`/capture), so reusing one box across loop iterations
-    /// can't alias. Presenting LLVM a single non-escaping allocation (instead of
-    /// a fresh one per `Let` execution joined by a loop-carried pointer phi) lets
-    /// its `calloc`→stack/SSA promotion fire.
-    fn compute_hoisted(&self, func: &Function) -> Vec<(VarId, Type)> {
-        let nodes = &func.nodes;
-        let mut taken: HashSet<VarId> = HashSet::new();
-        for n in nodes {
-            if let NodeKind::Ref(op) | NodeKind::Unique(op) = &n.kind {
-                collect_locals(nodes, *op, &mut taken);
-            }
-        }
-        let mut seen: HashSet<VarId> = HashSet::new();
-        let mut result = Vec::new();
-        for n in nodes {
-            if let NodeKind::Let { var, value } = &n.kind {
-                let ty = &nodes[value.0].ty;
-                // FixedArray carries an extra `_vm` meta (its constant length);
-                // skip it to keep the hoist a single plain box.
-                if self.is_sized(ty)
-                    && !matches!(ty, Type::FixedArray(_, _))
-                    && !taken.contains(var)
-                    && seen.insert(*var)
-                {
-                    result.push((*var, ty.clone()));
-                }
-            }
-        }
-        result
+    /// Whether a non-escaping value of type `ty` may be placed on the C stack
+    /// (a sized, non-`FixedArray` value within the size cap). The escape proof is
+    /// the caller's responsibility (`noescape` flag / `param_noescape`).
+    fn stack_eligible(&self, ty: &Type) -> bool {
+        self.is_sized(ty)
+            && !matches!(ty, Type::FixedArray(_, _))
+            && (1..=STACK_ALLOC_MAX).contains(&self.type_size(ty))
     }
 
     fn emit_function(&mut self, func: &Function) {
@@ -775,35 +633,29 @@ impl<'a> Codegen<'a> {
             ));
         }
 
-        // Bind params: every param gets a heap slot, so a `&`/`^` of it (e.g. a
-        // closure capturing it by reference, or a `^param`) is a valid, traceable
-        // GC pointer that stays live if it escapes. A param whose address never
-        // escapes is a non-escaping `sol_alloc`, which the GC-alloc lowering turns
-        // into a recognized `calloc` that `opt -O3` SROAs back into registers — so
-        // this is free in release; only unoptimized debug builds keep the slot.
+        // Bind params: each gets a slot so a `&`/`^` of it is a valid pointer.
+        // A param the escape analysis proved non-escaping (`param_noescape`) gets
+        // a C stack buffer — its address can't outlive the call, so it needn't be
+        // a GC heap box (embedded pointers stay reachable via the conservative
+        // stack scan). Otherwise it's a `sol_alloc`; the GC-alloc lowering turns a
+        // non-escaping one into a `calloc` that `opt -O3` may SROA into registers.
         for (i, param) in func.params.iter().enumerate() {
             let s = self.type_size(&param.ty);
             let a = self.type_align(&param.ty);
             let var_id = param.var.0;
             let ty = param.ty.clone();
-            let mf = self.mark_fn_expr(&ty);
-            self.linef(format!("uint8_t* _v{var_id} = sol_alloc({s}, {a}, {mf});"));
+            if func.param_noescape[i] && self.stack_eligible(&ty) {
+                self.linef(format!(
+                    "uint8_t _v{var_id}_stk[{s}] __attribute__((aligned({a})));"
+                ));
+                self.linef(format!("uint8_t* _v{var_id} = _v{var_id}_stk;"));
+            } else {
+                let mf = self.mark_fn_expr(&ty);
+                self.linef(format!("uint8_t* _v{var_id} = sol_alloc({s}, {a}, {mf});"));
+            }
             let dst_str = format!("_v{var_id}");
             let src_str = format!("(uint8_t*)&_p{i}");
             self.emit_copy(&dst_str, &src_str, &ty, &s.to_string());
-        }
-
-        // Hoist non-address-taken `Let` boxes: allocate once here, reuse across
-        // executions (the `Let` then just stores into the existing box). Turns a
-        // per-iteration loop-body allocation into a single non-escaping one that
-        // `opt -O3` promotes to stack/SSA.
-        let hoisted = self.compute_hoisted(func);
-        self.hoisted_vars = hoisted.iter().map(|(v, _)| *v).collect();
-        for (var, ty) in &hoisted {
-            let s = self.type_size(ty);
-            let a = self.type_align(ty);
-            let mf = self.mark_fn_expr(ty);
-            self.linef(format!("uint8_t* _v{} = sol_alloc({s}, {a}, {mf});", var.0));
         }
 
         let nodes = &func.nodes;
@@ -844,7 +696,6 @@ impl<'a> Codegen<'a> {
         self.indent -= 1;
         self.line("}");
         self.line("");
-        self.hoisted_vars.clear();
     }
 
     /// Returns (ptr_expr, Option<meta_expr>) — C expressions for address and optional metadata.
@@ -2685,12 +2536,30 @@ impl<'a> Codegen<'a> {
     fn emit_stmt(&mut self, nodes: &[Node], id: NodeId) {
         self.emit_line_directive(nodes, id);
         match &nodes[id.0].kind {
-            NodeKind::Let { var, value } => {
+            NodeKind::Let {
+                var,
+                value,
+                noescape,
+            } => {
                 let var = *var;
                 let value = *value;
+                let noescape = *noescape;
                 let ty = nodes[value.0].ty.clone();
-                if self.hoisted_vars.contains(&var) {
-                    // Box pre-allocated at function entry; just store into it.
+                // A proven-non-escaping sized binding goes on the C stack: every
+                // pointer to it only flows into non-escaping callee params (or its
+                // address is never taken at all), so it need not be
+                // GC-heap-allocated. `_vN` still points at its storage (now a
+                // stack buffer), so `&binding` and field/deref access are
+                // unchanged. Embedded GC pointers stay reachable via the
+                // collector's conservative stack scan.
+                if noescape && self.stack_eligible(&ty) {
+                    let size = self.type_size(&ty);
+                    let align = self.type_align(&ty);
+                    self.linef(format!(
+                        "uint8_t _v{}_stk[{size}] __attribute__((aligned({align})));",
+                        var.0
+                    ));
+                    self.linef(format!("uint8_t* _v{} = _v{}_stk;", var.0, var.0));
                     self.emit_into(nodes, value, &format!("_v{}", var.0));
                 } else if self.is_sized(&ty) {
                     let size = self.type_size(&ty);

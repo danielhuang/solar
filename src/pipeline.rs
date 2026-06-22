@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::error::{CompileError, SourceMap};
-use crate::{codegen, ir, resolve, typed_ast};
+use crate::{codegen, ir, ir_opt, resolve, typed_ast};
 
 /// Entry point: file path -> resolved + type-checked program.
 pub fn compile(file_path: &Path) -> Result<Typed, (Vec<CompileError>, SourceMap)> {
@@ -32,6 +32,14 @@ pub struct Ir {
 }
 
 impl Ir {
+    /// Run the IR optimization passes (`ir_opt`) in place, returning self for
+    /// chaining. This is part of the **release** pipeline only — the interpreters
+    /// and debug codegen run the un-optimized IR straight from `to_ir`.
+    pub fn optimized(mut self) -> Ir {
+        ir_opt::optimize(&mut self.ir);
+        self
+    }
+
     pub fn to_c(&self, source_file: &str) -> CSource {
         let c_source = codegen::generate(&self.ir, source_file, &self.source_map);
         CSource {

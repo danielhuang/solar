@@ -1,8 +1,8 @@
-// Regression for the codegen alloc-hoist optimization: a `let` whose address is
-// never taken gets one box at function entry (reused across iterations), but a
-// loop-local captured by a closure (address taken) must keep PER-ITERATION
-// identity. If the hoist wrongly reused one box for `x`, all three closures
-// would observe the last value (20). Correct output is 0/10/20.
+// Regression: a loop-local captured by a closure must keep PER-ITERATION
+// identity (each iteration's `x` is a distinct allocation). Storage-reuse
+// optimizations must exclude address-taken locals like this one — if one box
+// were reused for `x`, all three closures would observe the last value (20).
+// Correct output is 0/10/20.
 
 fn main() {
   let fns: [fn() -> Int; 3] = [\ 0, \ 0, \ 0];

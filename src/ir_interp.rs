@@ -1404,7 +1404,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
 
     fn exec_stmt(&mut self, nodes: &[Node], id: NodeId, ret_dst: usize) -> ControlFlow {
         match &nodes[id.0].kind {
-            NodeKind::Let { var, value } => {
+            NodeKind::Let { var, value, .. } => {
                 let var = *var;
                 let value = *value;
                 let ty = nodes[value.0].ty.clone();

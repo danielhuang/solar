@@ -58,6 +58,13 @@ pub struct Function {
     pub env_captures: Vec<EnvCapture>,
     /// `fn(inline)` hint, consumed by codegen (emits an inline marker).
     pub inline_hint: bool,
+    /// Per-parameter escape info, aligned with `params` (same length/order):
+    /// `param_noescape[i] == true` means parameter `i` is *proven* not to escape
+    /// the function — no pointer to its storage can outlive the call. The default
+    /// (set at lowering) is **all `false`** — i.e. conservatively assume every
+    /// parameter may escape. `ir_opt::analyze_escapes` refines this; it only ever
+    /// sets `true` when it can prove non-escape, so a `false` never lies.
+    pub param_noescape: Vec<bool>,
 }
 
 #[derive(Debug)]
@@ -155,6 +162,12 @@ pub enum NodeKind {
     Let {
         var: VarId,
         value: NodeId,
+        /// When `true`, this binding is proven not to escape (every pointer to
+        /// its storage only flows into calls whose parameter is itself
+        /// non-escaping). Codegen may then place it on the C stack instead of a
+        /// `sol_alloc` heap box. Default `false` (conservatively may escape);
+        /// set by `ir_opt::analyze_let_noescape`.
+        noescape: bool,
     },
     Assign {
         target: NodeId,
@@ -800,7 +813,11 @@ impl<'a> FunctionLowerer<'a> {
                     let var = self.fresh_var();
                     let let_node = self.push(Node {
                         ty: inner_ty.clone(),
-                        kind: NodeKind::Let { var, value: id },
+                        kind: NodeKind::Let {
+                            var,
+                            value: id,
+                            noescape: false,
+                        },
                         span: expr.span,
                     });
                     self.pending_stmts.push(let_node);
@@ -823,6 +840,7 @@ impl<'a> FunctionLowerer<'a> {
                     kind: NodeKind::Let {
                         var: ref_var,
                         value: ref_node,
+                        noescape: false,
                     },
                     span: expr.span,
                 });
@@ -842,7 +860,11 @@ impl<'a> FunctionLowerer<'a> {
                     let var = self.fresh_var();
                     let let_node = self.push(Node {
                         ty: inner_ty.clone(),
-                        kind: NodeKind::Let { var, value: id },
+                        kind: NodeKind::Let {
+                            var,
+                            value: id,
+                            noescape: false,
+                        },
                         span: expr.span,
                     });
                     self.pending_stmts.push(let_node);
@@ -864,6 +886,7 @@ impl<'a> FunctionLowerer<'a> {
                     kind: NodeKind::Let {
                         var: unique_var,
                         value: unique_node,
+                        noescape: false,
                     },
                     span: expr.span,
                 });
@@ -1103,7 +1126,32 @@ impl<'a> FunctionLowerer<'a> {
                 })
             }
             typed_ast::ExprKind::Match { scrutinee, arms } => {
-                let scrut = self.lower_expr(scrutinee);
+                let mut scrut = self.lower_expr(scrutinee);
+                // If the scrutinee isn't a place (e.g. a call result), bind it to
+                // a temp so codegen reads it from a named slot rather than boxing
+                // it inline — that slot is then a `Let` the escape analysis can
+                // stack-allocate (`match call()` matches `let t = call(); match
+                // t`). Done before draining pending so the new `Let` runs before
+                // the match, not inside an arm.
+                if !is_place(&self.nodes, scrut) {
+                    let scrut_ty = self.nodes[scrut.0].ty.clone();
+                    let var = self.fresh_var();
+                    let let_node = self.push(Node {
+                        ty: scrut_ty.clone(),
+                        kind: NodeKind::Let {
+                            var,
+                            value: scrut,
+                            noescape: false,
+                        },
+                        span: expr.span,
+                    });
+                    self.pending_stmts.push(let_node);
+                    scrut = self.push(Node {
+                        ty: scrut_ty,
+                        kind: NodeKind::Local(var),
+                        span: expr.span,
+                    });
+                }
                 // Stash the scrutinee's setup statements (e.g. reference temps)
                 // so the arms' `lower_body` doesn't drain them into an arm body;
                 // they're restored below to run before the match. (Same pattern
@@ -1191,7 +1239,11 @@ impl<'a> FunctionLowerer<'a> {
                 let var = self.define(name);
                 self.push(Node {
                     ty: ty.clone(),
-                    kind: NodeKind::Let { var, value: val },
+                    kind: NodeKind::Let {
+                        var,
+                        value: val,
+                        noescape: false,
+                    },
                     span: stmt.span,
                 })
             }
@@ -1355,6 +1407,7 @@ fn lower_function(
     let body = lowerer.lower_body(&func.body);
     lowerer.pop_scope();
 
+    let num_params = params.len();
     Function {
         name: func.name.clone(),
         params,
@@ -1363,5 +1416,8 @@ fn lower_function(
         body,
         env_captures,
         inline_hint: func.inline_hint,
+        // Conservative default: every parameter may escape. Refined by
+        // `ir_opt::analyze_escapes`.
+        param_noescape: vec![false; num_params],
     }
 }
