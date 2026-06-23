@@ -50,6 +50,7 @@
 #include "llvm/IR/PassManager.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Plugins/PassPlugin.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
 using namespace llvm;
@@ -78,9 +79,16 @@ struct SolarLowerGcAlloc : PassInfoMixin<SolarLowerGcAlloc> {
     LLVMContext &Ctx = M.getContext();
     Type *I64 = Type::getInt64Ty(Ctx);
     PointerType *PtrTy = PointerType::getUnqual(Ctx);
-    FunctionCallee Calloc = M.getOrInsertFunction(
-        "calloc", FunctionType::get(PtrTy, {I64, I64}, false));
-    Constant *One = ConstantInt::get(I64, 1);
+    // Model as `aligned_alloc(align, size)` (non-zeroing): codegen emits an
+    // explicit `memset` after every sol_alloc, so the zeroing is a separate
+    // DSE-able store rather than baked into the allocator. aligned_alloc is a
+    // TLI-recognized allocator (so non-escaping allocations still SROA/elide),
+    // but — unlike `malloc` — LLVM has no `aligned_alloc + memset -> calloc`
+    // fold, so the `!solar.alloc` metadata survives opt and `raiseGcAlloc` can
+    // always recover it. (A `malloc` placeholder gets refolded to `calloc` with
+    // the metadata dropped, which would silently bypass the GC.)
+    FunctionCallee AlignedAlloc = M.getOrInsertFunction(
+        "aligned_alloc", FunctionType::get(PtrTy, {I64, I64}, false));
 
     // sol_memcpy is a plain copy with no GC side effects; rewrite it to the
     // recognized llvm.memcpy intrinsic so the optimizer can DSE copies into
@@ -119,7 +127,7 @@ struct SolarLowerGcAlloc : PassInfoMixin<SolarLowerGcAlloc> {
           continue;
         }
         IRBuilder<> B(CI);
-        CallInst *NC = B.CreateCall(Calloc, {One, Size});
+        CallInst *NC = B.CreateCall(AlignedAlloc, {AlignC, Size});
         NC->setDebugLoc(CI->getDebugLoc());
         Metadata *Ops[] = {ConstantAsMetadata::get(AlignC),
                            ConstantAsMetadata::get(MarkC)};
@@ -151,7 +159,7 @@ struct SolarLowerGcAlloc : PassInfoMixin<SolarLowerGcAlloc> {
       appendToCompilerUsed(M, MarkFns);
 
     if (N || Skipped || NMemcpy)
-      errs() << "solar-lower-gc-alloc: " << N << " sol_alloc -> calloc, "
+      errs() << "solar-lower-gc-alloc: " << N << " sol_alloc -> aligned_alloc, "
              << Skipped << " left (non-constant align/mark), " << NMemcpy
              << " sol_memcpy -> llvm.memcpy\n";
     return (N || NMemcpy) ? PreservedAnalyses::none() : PreservedAnalyses::all();
@@ -160,9 +168,15 @@ struct SolarLowerGcAlloc : PassInfoMixin<SolarLowerGcAlloc> {
   static bool isRequired() { return true; }
 };
 
-// Raise surviving calloc+!solar.alloc back to sol_alloc. Returns count raised.
+// Raise surviving malloc+!solar.alloc placeholders back to sol_alloc. Returns
+// count raised. The placeholder is `malloc(size)`; the explicit zeroing memset
+// (emitted by codegen) lives separately in the IR and is DSE'd or kept by opt.
+// If InstCombine folded `malloc + memset` into `calloc` (i.e. the zeroing was
+// NOT dead), the explicit memset is gone, so we re-materialize it after the
+// raised sol_alloc (which does not zero).
 unsigned raiseGcAlloc(Module &M) {
   LLVMContext &Ctx = M.getContext();
+  Type *I8 = Type::getInt8Ty(Ctx);
   Type *I64 = Type::getInt64Ty(Ctx);
   PointerType *PtrTy = PointerType::getUnqual(Ctx);
   FunctionCallee SolAlloc = M.getOrInsertFunction(
@@ -182,18 +196,44 @@ unsigned raiseGcAlloc(Module &M) {
       MDNode *MD = CI->getMetadata("solar.alloc");
       auto *Align = mdconst::extract<ConstantInt>(MD->getOperand(0));
       auto *Mark = mdconst::extract<Constant>(MD->getOperand(1));
-      Value *Size = CI->getArgOperand(1); // calloc(1, size)
+      Function *Callee = CI->getCalledFunction();
+      StringRef CN = Callee ? Callee->getName() : "";
+      bool IsCalloc = CN == "calloc";
+      // malloc(size) -> arg0; aligned_alloc(align,size)/calloc(1,size) -> arg1.
+      Value *Size = CI->getArgOperand(CN == "malloc" ? 0 : 1);
       IRBuilder<> B(CI);
       CallInst *NA = B.CreateCall(SolAlloc, {Size, Align, Mark});
       NA->setDebugLoc(CI->getDebugLoc());
+      if (IsCalloc) {
+        // The fold consumed the zeroing into calloc; sol_alloc won't zero, so
+        // re-add the memset (which was demonstrably not dead, hence the fold).
+        B.CreateMemSet(NA, ConstantInt::get(I8, 0), Size, MaybeAlign());
+      }
       CI->replaceAllUsesWith(NA);
       CI->eraseFromParent();
       ++N;
     }
   }
+
+  // Safety net: a recognized allocator call must never survive in generated
+  // code — if a malloc/calloc lost its !solar.alloc metadata under some fold it
+  // would link to libc and silently bypass the GC. Fail the build instead.
+  for (Function &F : M) {
+    if (F.isDeclaration() || !isGeneratedFunc(F))
+      continue;
+    for (Instruction &I : instructions(F))
+      if (auto *CI = dyn_cast<CallInst>(&I))
+        if (Function *C = CI->getCalledFunction()) {
+          StringRef NM = C->getName();
+          if (NM == "malloc" || NM == "calloc" || NM == "aligned_alloc")
+            report_fatal_error("solar-write-barriers: un-raised allocator call "
+                               "in generated code (lost !solar.alloc metadata)");
+        }
+  }
+
   if (N)
     errs() << "solar-write-barriers: raised " << N
-           << " calloc -> sol_alloc\n";
+           << " malloc/calloc -> sol_alloc\n";
   return N;
 }
 

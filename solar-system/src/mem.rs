@@ -75,7 +75,8 @@ pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -
 }
 
 /// Allocate `size` bytes (rounded up to a power-of-2 size class) from the
-/// arena. Returns a pointer to zeroed, correctly-aligned memory.
+/// arena. Returns a correctly-aligned pointer to **uninitialized** memory; the
+/// caller (codegen) zeroes it with an explicit `memset` that LLVM can elide.
 unsafe fn arena_allocate(
     state: &mut ThreadAllocState,
     class: usize,
@@ -99,11 +100,12 @@ unsafe fn arena_allocate(
 
     let rbase = heap::region_base(class);
     let addr = heap::slot_addr(rbase, slot, class);
-    let ssz = heap::slot_size(class);
 
-    // Slots are recycled; codegen relies on `sol_alloc` returning zeroed
-    // memory (it's stamped `allockind(zeroed)`).
-    unsafe { std::ptr::write_bytes(addr as *mut u8, 0, ssz) };
+    // No zeroing here: codegen emits an explicit `memset(p, 0, size)` after every
+    // `sol_alloc` call, which LLVM dead-store-eliminates wherever the caller fully
+    // overwrites the object before it escapes, and keeps for any field left
+    // unwritten (so the GC never traces an uninitialized pointer field). Recycled
+    // slots therefore arrive non-zero; the caller's memset zeroes them.
 
     // Write metadata before publishing the allocated bit so any GC scan that
     // sees the slot as allocated also sees valid metadata.

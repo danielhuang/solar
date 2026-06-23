@@ -27,6 +27,17 @@ pub(crate) fn read_env_bool(name: &str) -> bool {
     }
 }
 
+/// Force-disable the GC (bump-allocator mode: allocate, never collect). Emitted
+/// by codegen into `main` *before* `sol_start` in the **debug** build only — that
+/// pipeline's simplified single-clang compile does not run the write-barrier
+/// pass, so a real collection could free live objects whose stored pointers were
+/// never shaded. `sol_start` OR-folds this into the `SOLAR_DISABLE_GC` env flag
+/// (rather than overwriting it) so a call here always sticks.
+#[unsafe(no_mangle)]
+pub extern "C" fn sol_disable_gc() {
+    gc::DISABLE_GC.store(true, Ordering::Relaxed);
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_start(solar_main: unsafe extern "C" fn(*mut c_void)) {
     let start = Instant::now();
@@ -34,7 +45,9 @@ pub unsafe extern "C" fn sol_start(solar_main: unsafe extern "C" fn(*mut c_void)
 
     gc::ENABLE_STAT_PRINTS.store(read_env_bool("SOLAR_PRINT_GC_STATS"), Ordering::Relaxed);
     gc::ENABLE_ALLOC_PRINTS.store(read_env_bool("SOLAR_PRINT_ALLOCS"), Ordering::Relaxed);
-    gc::DISABLE_GC.store(read_env_bool("SOLAR_DISABLE_GC"), Ordering::Relaxed);
+    // OR-fold so a prior `sol_disable_gc()` call (debug builds) is preserved
+    // rather than overwritten by the env flag.
+    gc::DISABLE_GC.fetch_or(read_env_bool("SOLAR_DISABLE_GC"), Ordering::Relaxed);
 
     gc::install_signal_handler();
     heap::init();

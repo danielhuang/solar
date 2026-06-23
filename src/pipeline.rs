@@ -151,72 +151,43 @@ fn lower_gc_alloc(in_bc: &Path, out_bc: &Path) {
 }
 
 fn compile_debug(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
-    let obj_path = dir.join(format!("{name}.o"));
     let bin_path = dir.join(name);
-    let bc_path = dir.join(format!("{name}.bc"));
-    let wb_path = dir.join(format!("{name}_wb.bc"));
 
-    // Emit LLVM bitcode (LTO defers optimization + ASAN instrumentation to link
-    // time, so this IR is un-instrumented), insert GC write barriers with the
-    // pass plugin, then compile the patched IR. This makes debug/ASAN test
-    // binaries exercise the concurrent collector with barriers active.
-    let emit = Command::new("clang")
+    // One clang invocation: compile the generated C with ASAN and link it
+    // directly against the once-built solar-system runtime. No LLVM barrier
+    // plugin and no per-test runtime rebuild, so the debug pipeline stays fast.
+    // The collector's correctness (write barriers, concurrent marking/sweeping)
+    // is exercised by the release pipeline through examples/, not by these
+    // output-equivalence tests — which allocate far too little to trigger a GC
+    // cycle, so the missing barriers don't affect their output. `sol_alloc`
+    // returns uninitialized memory; the explicit `memset` codegen emits after
+    // each allocation (un-elided at this -O0) provides the zeroing.
+    let out = Command::new("clang")
         .args([
             "-fsanitize=address",
             "-fno-omit-frame-pointer",
-            "-flto",
             "-g",
-            "-c",
-            "-emit-llvm",
+            // No write-barrier pass in this pipeline, so force bump-allocator
+            // mode (codegen guards the `sol_disable_gc()` call on this macro).
+            "-DSOLAR_DEBUG_DISABLE_GC",
+            // lld: some of the runtime archive's dependency-crate members are
+            // LLVM bitcode (fat LTO); GNU ld can't read those, lld LTO-compiles
+            // them at link time.
+            "-fuse-ld=lld",
             c_path.to_str().unwrap(),
-            "-o",
-            bc_path.to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        emit.status.success(),
-        "C->IR compilation failed for {name}:\n{}",
-        String::from_utf8_lossy(&emit.stderr)
-    );
-    insert_write_barriers(&bc_path, &wb_path);
-
-    let compile = Command::new("clang")
-        .args([
-            "-fsanitize=address",
-            "-fno-omit-frame-pointer",
-            "-flto",
-            "-g",
-            "-c",
-            wb_path.to_str().unwrap(),
-            "-o",
-            obj_path.to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        compile.status.success(),
-        "IR compilation failed for {name}:\n{}",
-        String::from_utf8_lossy(&compile.stderr)
-    );
-
-    let link = Command::new("clang")
-        .args([
-            "-fsanitize=address",
-            "-flto",
-            obj_path.to_str().unwrap(),
-            "-L",
-            "target/debug",
-            "-lsolar_system",
+            "target/debug/libsolar_system.a",
+            "-lm",
+            "-lpthread",
+            "-ldl",
             "-o",
             bin_path.to_str().unwrap(),
         ])
         .output()
         .unwrap();
     assert!(
-        link.status.success(),
-        "linking failed for {name}:\n{}",
-        String::from_utf8_lossy(&link.stderr)
+        out.status.success(),
+        "debug compile/link failed for {name}:\n{}",
+        String::from_utf8_lossy(&out.stderr)
     );
 
     bin_path
@@ -361,7 +332,7 @@ fn compile_release(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
                 let line = force_replace(
                     line,
                     "personality ptr @rust_eh_personality",
-                    "noinline allocsize(0) allockind(\"alloc,aligned,zeroed\") personality ptr @rust_eh_personality",
+                    "noinline allocsize(0) allockind(\"alloc,aligned\") personality ptr @rust_eh_personality",
                 );
                 let line = force_replace(
                     &line,

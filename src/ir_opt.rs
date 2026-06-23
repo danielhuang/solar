@@ -11,12 +11,12 @@ use crate::ir::{Module, Node, NodeId, NodeKind, Type, VarId};
 
 /// Run all IR optimization passes over `module` to a fixpoint, mutating it in
 /// place. Both passes only ever flip flags `false` → `true` (monotonic) and
-/// report whether they changed anything, so this terminates: `analyze_escapes`
+/// report whether they changed anything, so this terminates: `analyze_param_escapes`
 /// iterates until parameter-escape facts stabilize (its transitive rule means
 /// one param's result can depend on another's), then `analyze_let_noescape`
 /// consumes the stable facts.
 pub fn optimize(module: &mut Module) {
-    while analyze_escapes(module) || analyze_let_noescape(module) {}
+    while analyze_param_escapes(module) || analyze_let_noescape(module) {}
 }
 
 /// Snapshot of each function's `param_noescape`, for cross-function lookup
@@ -68,7 +68,7 @@ fn good_call_args(nodes: &[Node], noescape_params: &HashMap<String, Vec<bool>>) 
 /// Sound by monotone induction from the all-may-escape start: a param is marked
 /// only when justified by facts already established. Anything uncertain stays
 /// `false`, so the result never claims non-escape when escape is possible.
-pub fn analyze_escapes(module: &mut Module) -> bool {
+pub fn analyze_param_escapes(module: &mut Module) -> bool {
     let snapshot = param_noescape_snapshot(module);
     let mut changed = false;
     for func in &mut module.functions {
@@ -150,7 +150,7 @@ fn param_does_not_escape(
 ///   * routing `V&` through another binding first (`let r = V&; f(r)`), since the
 ///     reference temp is then used as something other than a direct call arg.
 ///
-/// Must run after `analyze_escapes` (it reads callees' `param_noescape`).
+/// Must run after `analyze_param_escapes` (it reads callees' `param_noescape`).
 /// Returns whether any `Let` flag flipped `false` → `true`.
 fn analyze_let_noescape(module: &mut Module) -> bool {
     let noescape_params = param_noescape_snapshot(module);
@@ -384,7 +384,7 @@ mod tests {
     use crate::{ir, pipeline};
 
     /// Compile `src` (a whole program) through to optimized IR. `to_ir` runs
-    /// `optimized()` runs `analyze_escapes`, so the returned module has
+    /// `optimized()` runs `analyze_param_escapes`, so the returned module has
     /// `param_noescape` populated (matching the release pipeline).
     fn ir_of(src: &str) -> ir::Module {
         use std::sync::atomic::{AtomicU64, Ordering};

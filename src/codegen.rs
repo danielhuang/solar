@@ -73,6 +73,24 @@ impl<'a> Codegen<'a> {
         self.line(&s);
     }
 
+    /// Emit a heap allocation: a `sol_alloc` call followed by an explicit
+    /// `memset` that zeroes it, as two separate statements. `sol_alloc` no longer
+    /// zeroes; emitting the zeroing as its own store lets LLVM dead-store-
+    /// eliminate it wherever the caller fully overwrites the object before it
+    /// escapes, while preserving it for any field left unwritten (so the GC never
+    /// traces an uninitialized pointer field).
+    fn emit_alloc(
+        &mut self,
+        var: impl std::fmt::Display,
+        size: impl std::fmt::Display,
+        align: impl std::fmt::Display,
+        mark_fn: impl std::fmt::Display,
+    ) {
+        let (var, size) = (var.to_string(), size.to_string());
+        self.linef(format!("uint8_t* {var} = sol_alloc({size}, {align}, {mark_fn});"));
+        self.linef(format!("memset({var}, 0, {size});"));
+    }
+
     fn fresh_tmp(&mut self) -> String {
         let n = self.tmp_counter;
         self.tmp_counter += 1;
@@ -511,6 +529,13 @@ impl<'a> Codegen<'a> {
         // Emit main
         self.line("int main(void) {");
         self.indent += 1;
+        // The debug compile pipeline (single clang, no write-barrier pass) emits
+        // no GC barriers, so a real collection could free live objects. Force
+        // bump-allocator mode there; `-DSOLAR_DEBUG_DISABLE_GC` is passed only by
+        // the debug build (release runs the collector normally).
+        self.raw_line("#ifdef SOLAR_DEBUG_DISABLE_GC");
+        self.raw_line("sol_disable_gc();");
+        self.raw_line("#endif");
         self.line("sol_start(solar_main);");
         self.line("return 0;");
         self.indent -= 1;
@@ -553,6 +578,7 @@ impl<'a> Codegen<'a> {
         self.line("extern uint8_t* sol_null_check(uint8_t* ptr);");
         self.line("extern void sol_assert_array_len(uint64_t actual, uint64_t expected);");
         self.line("extern void sol_start(void (*solar_main)(void*));");
+        self.line("extern void sol_disable_gc(void);");
         self.line("extern void sol_thread_spawn(void* fn_ptr, void* env);");
         // Tear-free but UNORDERED 16-byte moves: give a concurrent reader / the GC
         // marker a non-torn `{ptr,len}`, with no inter-thread ordering. Used only for
@@ -651,7 +677,7 @@ impl<'a> Codegen<'a> {
                 self.linef(format!("uint8_t* _v{var_id} = _v{var_id}_stk;"));
             } else {
                 let mf = self.mark_fn_expr(&ty);
-                self.linef(format!("uint8_t* _v{var_id} = sol_alloc({s}, {a}, {mf});"));
+                self.emit_alloc(format!("_v{var_id}"), s, a, &mf);
             }
             let dst_str = format!("_v{var_id}");
             let src_str = format!("(uint8_t*)&_p{i}");
@@ -747,7 +773,7 @@ impl<'a> Codegen<'a> {
                     let a = self.type_align(&ty);
                     let mf = self.mark_fn_expr(&ty);
                     let tmp = self.fresh_tmp();
-                    self.linef(format!("uint8_t* {tmp} = sol_alloc({s}, {a}, {mf});"));
+                    self.emit_alloc(&tmp, s, a, &mf);
                     self.emit_into(nodes, inner, &tmp);
                     tmp
                 };
@@ -908,7 +934,7 @@ impl<'a> Codegen<'a> {
                     let a = self.type_align(&enum_ty);
                     let mf = self.mark_fn_expr(&enum_ty);
                     let tmp = self.fresh_tmp();
-                    self.linef(format!("uint8_t* {tmp} = sol_alloc({s}, {a}, {mf});"));
+                    self.emit_alloc(&tmp, s, a, &mf);
                     self.emit_into(nodes, scrutinee, &tmp);
                     tmp
                 };
@@ -985,7 +1011,7 @@ impl<'a> Codegen<'a> {
                 let a = self.type_align(ty);
                 let mf = self.mark_fn_expr(ty);
                 let tmp = self.fresh_tmp();
-                self.linef(format!("uint8_t* {tmp} = sol_alloc({s}, {a}, {mf});"));
+                self.emit_alloc(&tmp, s, a, &mf);
                 self.emit_into(nodes, id, &tmp);
                 (tmp, None)
             }
@@ -1161,7 +1187,7 @@ impl<'a> Codegen<'a> {
                 let a = self.type_align(&ty);
                 let mf = self.mark_fn_expr(&ty);
                 let tmp = self.fresh_tmp();
-                self.linef(format!("uint8_t* {tmp} = sol_alloc({s}, {a}, {mf});"));
+                self.emit_alloc(&tmp, s, a, &mf);
                 self.emit_into(nodes, id, &tmp);
                 let c_ty = self.c_int_type(&ty);
                 format!("*({c_ty}*){tmp}")
@@ -1175,7 +1201,7 @@ impl<'a> Codegen<'a> {
                 let a = self.type_align(&ty);
                 let mf = self.mark_fn_expr(&ty);
                 let tmp = self.fresh_tmp();
-                self.linef(format!("uint8_t* {tmp} = sol_alloc({s}, {a}, {mf});"));
+                self.emit_alloc(&tmp, s, a, &mf);
                 self.emit_into(nodes, id, &tmp);
                 let c_ty = self.c_int_type(&ty);
                 format!("*({c_ty}*){tmp}")
@@ -1201,7 +1227,7 @@ impl<'a> Codegen<'a> {
                 let a = self.type_align(&result_ty);
                 let mf = self.mark_fn_expr(&result_ty);
                 let tmp = self.fresh_tmp();
-                self.linef(format!("uint8_t* {tmp} = sol_alloc({s}, {a}, {mf});"));
+                self.emit_alloc(&tmp, s, a, &mf);
                 self.emit_intrinsic(nodes, &intrinsic, &args, &result_ty, &tmp);
                 let c_ty = self.c_int_type(&result_ty);
                 format!("*({c_ty}*){tmp}")
@@ -1212,7 +1238,7 @@ impl<'a> Codegen<'a> {
                 let a = self.type_align(&ty);
                 let mf = self.mark_fn_expr(&ty);
                 let tmp = self.fresh_tmp();
-                self.linef(format!("uint8_t* {tmp} = sol_alloc({s}, {a}, {mf});"));
+                self.emit_alloc(&tmp, s, a, &mf);
                 self.emit_into(nodes, id, &tmp);
                 let c_ty = self.c_int_type(&ty);
                 format!("*({c_ty}*){tmp}")
@@ -1407,15 +1433,11 @@ impl<'a> Codegen<'a> {
                 };
                 let la_meta = self.emit_meta(nodes, left).unwrap();
                 let la_tmp = self.fresh_tmp();
-                self.linef(format!(
-                    "uint8_t* {la_tmp} = sol_alloc({la_meta} * {es}, {ea}, {mf});"
-                ));
+                self.emit_alloc(&la_tmp, format!("{la_meta} * {es}"), ea, mf);
                 self.emit_into(nodes, left, &la_tmp);
                 let ra_meta = self.emit_meta(nodes, right).unwrap();
                 let ra_tmp = self.fresh_tmp();
-                self.linef(format!(
-                    "uint8_t* {ra_tmp} = sol_alloc({ra_meta} * {es}, {ea}, {mf});"
-                ));
+                self.emit_alloc(&ra_tmp, format!("{ra_meta} * {es}"), ea, mf);
                 self.emit_into(nodes, right, &ra_tmp);
                 let eq_var = self.fresh_tmp();
                 self.linef(format!(
@@ -1493,9 +1515,7 @@ impl<'a> Codegen<'a> {
                 let align = self.type_align(inner);
                 let mf = self.mark_fn_expr(inner);
                 let new_ptr = self.fresh_tmp();
-                self.linef(format!(
-                    "uint8_t* {new_ptr} = sol_alloc({size}, {align}, {mf});"
-                ));
+                self.emit_alloc(&new_ptr, size, align, &mf);
                 let src_ptr = self.fresh_tmp();
                 self.linef(format!("uint8_t* {src_ptr} = *(uint8_t**){src};"));
                 self.emit_copy(&new_ptr, &src_ptr, inner, &size.to_string());
@@ -1518,9 +1538,7 @@ impl<'a> Codegen<'a> {
                 let inner_size = self.emit_full_size_expr(inner, &src_meta);
                 let mf = self.mark_fn_expr(inner);
                 let new_ptr = self.fresh_tmp();
-                self.linef(format!(
-                    "uint8_t* {new_ptr} = sol_alloc({inner_size}, {align}, {mf});"
-                ));
+                self.emit_alloc(&new_ptr, &inner_size, align, &mf);
                 self.emit_copy(&new_ptr, &src_ptr, inner, &inner_size);
                 let wide_tmp = self.fresh_tmp();
                 self.linef(format!(
@@ -1708,9 +1726,7 @@ impl<'a> Codegen<'a> {
                         let align = self.type_align(&inner_ty_clone);
                         let mf = self.mark_fn_expr(&inner_ty_clone);
                         let tmp = self.fresh_tmp();
-                        self.linef(format!(
-                            "uint8_t* {tmp} = sol_alloc({size}, {align}, {mf});"
-                        ));
+                        self.emit_alloc(&tmp, size, align, &mf);
                         self.emit_into(nodes, inner, &tmp);
                         self.linef(format!("*(uint8_t**){dst} = {tmp};"));
                     } else {
@@ -1719,9 +1735,7 @@ impl<'a> Codegen<'a> {
                         let mf = self.mark_fn_expr(&inner_ty_clone);
                         let size_expr = self.emit_full_size_expr(&inner_ty_clone, &meta);
                         let tmp = self.fresh_tmp();
-                        self.linef(format!(
-                            "uint8_t* {tmp} = sol_alloc({size_expr}, {align}, {mf});"
-                        ));
+                        self.emit_alloc(&tmp, &size_expr, align, &mf);
                         self.emit_into(nodes, inner, &tmp);
                         let wide_tmp = self.fresh_tmp();
                         self.linef(format!(
@@ -1742,9 +1756,7 @@ impl<'a> Codegen<'a> {
                     let align = self.type_align(&inner_ty_clone);
                     let mf = self.mark_fn_expr(&inner_ty_clone);
                     let tmp = self.fresh_tmp();
-                    self.linef(format!(
-                        "uint8_t* {tmp} = sol_alloc({size}, {align}, {mf});"
-                    ));
+                    self.emit_alloc(&tmp, size, align, &mf);
                     self.emit_into(nodes, inner, &tmp);
                     self.linef(format!("*(uint8_t**){dst} = {tmp};"));
                 } else {
@@ -1753,9 +1765,7 @@ impl<'a> Codegen<'a> {
                     let mf = self.mark_fn_expr(&inner_ty_clone);
                     let size_expr = self.emit_full_size_expr(&inner_ty_clone, &meta);
                     let tmp = self.fresh_tmp();
-                    self.linef(format!(
-                        "uint8_t* {tmp} = sol_alloc({size_expr}, {align}, {mf});"
-                    ));
+                    self.emit_alloc(&tmp, &size_expr, align, &mf);
                     self.emit_into(nodes, inner, &tmp);
                     let wide_tmp = self.fresh_tmp();
                     self.linef(format!(
@@ -1855,15 +1865,11 @@ impl<'a> Codegen<'a> {
                     };
                     let lm = self.emit_meta(nodes, left).unwrap();
                     let la_tmp = self.fresh_tmp();
-                    self.linef(format!(
-                        "uint8_t* {la_tmp} = sol_alloc({lm} * {es}, {ea}, {mf});"
-                    ));
+                    self.emit_alloc(&la_tmp, format!("{lm} * {es}"), ea, mf);
                     self.emit_into(nodes, left, &la_tmp);
                     let rm = self.emit_meta(nodes, right).unwrap();
                     let ra_tmp = self.fresh_tmp();
-                    self.linef(format!(
-                        "uint8_t* {ra_tmp} = sol_alloc({rm} * {es}, {ea}, {mf});"
-                    ));
+                    self.emit_alloc(&ra_tmp, format!("{rm} * {es}"), ea, mf);
                     self.emit_into(nodes, right, &ra_tmp);
                     let left_size = format!("{lm} * {es}");
                     self.emit_copy(
@@ -1969,7 +1975,7 @@ impl<'a> Codegen<'a> {
                     let a = self.type_align(&enum_ty);
                     let mf = self.mark_fn_expr(&enum_ty);
                     let tmp = self.fresh_tmp();
-                    self.linef(format!("uint8_t* {tmp} = sol_alloc({s}, {a}, {mf});"));
+                    self.emit_alloc(&tmp, s, a, &mf);
                     self.emit_into(nodes, scrutinee, &tmp);
                     tmp
                 };
@@ -2044,10 +2050,7 @@ impl<'a> Codegen<'a> {
                 ));
                 if n > 0 {
                     let env_tmp = self.fresh_tmp();
-                    self.linef(format!(
-                        "uint8_t* {env_tmp} = sol_alloc({}, 8, _mark_ptr_array);",
-                        n * 8
-                    ));
+                    self.emit_alloc(&env_tmp, n * 8, 8, "_mark_ptr_array");
                     for (i, &cap_id) in capture_ids.iter().enumerate() {
                         // Each capture is a Ref node — load the pointer value
                         let ptr_expr = self.emit_load(nodes, cap_id);
@@ -2103,9 +2106,7 @@ impl<'a> Codegen<'a> {
                 let cs = self.type_size(&callee_ty);
                 let ca = self.type_align(&callee_ty);
                 let callee_tmp = self.fresh_tmp();
-                self.linef(format!(
-                    "uint8_t* {callee_tmp} = sol_alloc({cs}, {ca}, _mark_fn_value);"
-                ));
+                self.emit_alloc(&callee_tmp, cs, ca, "_mark_fn_value");
                 self.emit_into(nodes, init, &callee_tmp);
                 let fp_var = self.fresh_tmp();
                 let env_var = self.fresh_tmp();
@@ -2154,9 +2155,7 @@ impl<'a> Codegen<'a> {
                 let cs = self.type_size(&callee_ty);
                 let ca = self.type_align(&callee_ty);
                 let callee_tmp = self.fresh_tmp();
-                self.linef(format!(
-                    "uint8_t* {callee_tmp} = sol_alloc({cs}, {ca}, _mark_fn_value);"
-                ));
+                self.emit_alloc(&callee_tmp, cs, ca, "_mark_fn_value");
                 self.emit_into(nodes, callee, &callee_tmp);
                 let fp_var = self.fresh_tmp();
                 let env_var = self.fresh_tmp();
@@ -2310,7 +2309,7 @@ impl<'a> Codegen<'a> {
                 let a = self.type_align(&arg_ty);
                 let mf = self.mark_fn_expr(&arg_ty);
                 let buf = self.fresh_tmp();
-                self.linef(format!("uint8_t* {buf} = sol_alloc({s}, {a}, {mf});"));
+                self.emit_alloc(&buf, s, a, &mf);
                 self.emit_into(nodes, args[0], &buf);
                 self.linef(format!("__builtin_memcpy({dst}, {buf}, {n});"));
             }
@@ -2566,9 +2565,7 @@ impl<'a> Codegen<'a> {
                     let align = self.type_align(&ty);
                     let mf = self.mark_fn_expr(&ty);
                     let tmp = self.fresh_tmp();
-                    self.linef(format!(
-                        "uint8_t* {tmp} = sol_alloc({size}, {align}, {mf});"
-                    ));
+                    self.emit_alloc(&tmp, size, align, &mf);
                     self.emit_into(nodes, value, &tmp);
                     self.linef(format!("uint8_t* _v{} = {tmp};", var.0));
                     // FixedArray: also emit meta variable (constant N)
@@ -2581,9 +2578,7 @@ impl<'a> Codegen<'a> {
                     let mf = self.mark_fn_expr(&ty);
                     let size_expr = self.emit_full_size_expr(&ty, &meta);
                     let tmp = self.fresh_tmp();
-                    self.linef(format!(
-                        "uint8_t* {tmp} = sol_alloc({size_expr}, {align}, {mf});"
-                    ));
+                    self.emit_alloc(&tmp, &size_expr, align, &mf);
                     self.emit_into(nodes, value, &tmp);
                     self.linef(format!("uint8_t* _v{} = {tmp};", var.0));
                     self.linef(format!("uint64_t _vm{} = {meta};", var.0));
@@ -2638,9 +2633,7 @@ impl<'a> Codegen<'a> {
                     let align = self.type_align(&ty);
                     let mf = self.mark_fn_expr(&ty);
                     let tmp = self.fresh_tmp();
-                    self.linef(format!(
-                        "uint8_t* {tmp} = sol_alloc({size}, {align}, {mf});"
-                    ));
+                    self.emit_alloc(&tmp, size, align, &mf);
                     tmp
                 };
                 self.loop_dst.push(dst);
@@ -2685,7 +2678,7 @@ impl<'a> Codegen<'a> {
                                 let intrinsic = intrinsic.clone();
                                 let args: Vec<NodeId> = args.clone();
                                 let tmp = self.fresh_tmp();
-                                self.linef(format!("uint8_t* {tmp} = sol_alloc({s}, {a}, {mf});"));
+                                self.emit_alloc(&tmp, s, a, &mf);
                                 self.emit_intrinsic(nodes, &intrinsic, &args, ty, &tmp);
                             } else if let NodeKind::Call { function, args } = &nodes[inner.0].kind {
                                 let function = function.clone();
@@ -2704,7 +2697,7 @@ impl<'a> Codegen<'a> {
                             let a = self.type_align(ty);
                             let mf = self.mark_fn_expr(ty);
                             let tmp = self.fresh_tmp();
-                            self.linef(format!("uint8_t* {tmp} = sol_alloc({s}, {a}, {mf});"));
+                            self.emit_alloc(&tmp, s, a, &mf);
                             self.emit_into(nodes, inner, &tmp);
                         }
                     }

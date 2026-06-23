@@ -62,7 +62,7 @@ pub struct Function {
     /// `param_noescape[i] == true` means parameter `i` is *proven* not to escape
     /// the function — no pointer to its storage can outlive the call. The default
     /// (set at lowering) is **all `false`** — i.e. conservatively assume every
-    /// parameter may escape. `ir_opt::analyze_escapes` refines this; it only ever
+    /// parameter may escape. `ir_opt::analyze_param_escapes` refines this; it only ever
     /// sets `true` when it can prove non-escape, so a `false` never lies.
     pub param_noescape: Vec<bool>,
 }
@@ -1417,7 +1417,7 @@ fn lower_function(
         env_captures,
         inline_hint: func.inline_hint,
         // Conservative default: every parameter may escape. Refined by
-        // `ir_opt::analyze_escapes`.
+        // `ir_opt::analyze_param_escapes`.
         param_noescape: vec![false; num_params],
     }
 }

@@ -6,11 +6,17 @@ use solar::pipeline::{CompileMode, Ir, Typed};
 
 static BUILD_RUNTIME: Once = Once::new();
 
-/// Ensure solar-system runtime is built (for test use only).
+/// Ensure the solar-system runtime is built once per test process (for test use
+/// only). Built **natively**, dropping the workspace's global
+/// `-Clinker-plugin-lto`: that flag emits LLVM bitcode archive members, which the
+/// debug link (`CompileMode::Debug`) would otherwise have to LTO-compile on every
+/// test — slow. A native `.a` links in milliseconds. (The release runtime, built
+/// separately, keeps linker-plugin-lto for cross-language LTO.)
 pub fn ensure_runtime_built() {
     BUILD_RUNTIME.call_once(|| {
         let status = Command::new("cargo")
             .args(["build", "-p", "solar-system"])
+            .env("RUSTFLAGS", "-Ctarget-cpu=native")
             .status()
             .unwrap();
         assert!(status.success(), "failed to build solar-system");
