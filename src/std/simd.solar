@@ -1,0 +1,36 @@
+// SIMD-style fixed-width vector types.
+//
+// The lane operations are backed by compiler intrinsics that lower to real SIMD
+// (the 16-lane byte ops below become SSE2 `vpbroadcastb`/`vpcmpeqb`/`vpmovmskb`).
+// Unlike an auto-vectorized scalar loop — which the optimizer only vectorizes in
+// simple contexts and scalarizes inside a complex caller — the intrinsics emit
+// explicit vector IR, so they stay vectorized wherever they're inlined. The
+// interpreters implement the same operations scalar-ly.
+//
+// Only the operations the SwissTable group scan needs are provided.
+
+import { simd_match_byte_x16, simd_match_high_bit_x16 } from "@intrinsics";
+
+// 16 lanes of `Uint8` — a 128-bit byte vector. This is the SwissTable
+// control-byte group.
+pub struct SimdUint8x16 {
+  pub lanes: [Uint8; 16],
+}
+
+// Load 16 consecutive lanes from `src` starting at byte offset `pos`. The slice
+// + fixed-array coercion bounds-checks `pos + 16 <= src.len()`.
+pub fn u8x16_load(src: &[Uint8], pos: Uint) -> SimdUint8x16 {
+  let hi = pos + 16u;
+  SimdUint8x16 { lanes: src@[pos..hi], }
+}
+
+// Bitmask (lane `i` -> bit `i`) of the lanes equal to `v` (broadcast + compare +
+// move-mask).
+pub method eq_mask(self: SimdUint8x16, v: Uint8) -> Uint {
+  simd_match_byte_x16(self.lanes, v)
+}
+
+// Bitmask of the lanes whose high (sign) bit is set (a bare move-mask).
+pub method high_bit_mask(self: SimdUint8x16) -> Uint {
+  simd_match_high_bit_x16(self.lanes)
+}

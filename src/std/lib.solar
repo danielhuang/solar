@@ -4,6 +4,7 @@ pub import sync from "sync.solar";
 pub import thread from "thread.solar";
 pub import file from "file.solar";
 pub import iter from "iter.solar";
+pub import simd from "simd.solar";
 pub import hashbrown from "hashbrown/map.solar";
 
 // The optional type: `Some(value)` or `None`. Available everywhere via the

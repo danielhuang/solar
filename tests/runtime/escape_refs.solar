@@ -1,0 +1,42 @@
+// Each of these makes a reference outlive the scope of the local it points at.
+// A sound escape analysis must keep every such pointee on the GC heap; if any
+// were wrongly stack-allocated, the debug (ASAN) build would report a
+// use-after-scope / use-after-return, or the value read back would be wrong.
+
+pub struct RefBox { pub r: &Int, }
+
+// escape via return
+fn ret_ref() -> &Int { let x = 111; x& }
+
+// escape via a returned struct field
+fn ret_struct() -> RefBox { let x = 222; RefBox { r: x&, } }
+
+// escape via an escaping closure capturing a local by reference
+fn ret_closure() -> fn() -> Int { let x = 333; \ x }
+
+// indirect escape: ref routed through a local binding, then returned
+fn ret_ref_indirect() -> &Int { let z = 444; let rz = z&; rz }
+
+fn main() {
+  let a = ret_ref();
+  println(a@);                         // 111
+
+  let b = ret_struct();
+  println(b.r@);                       // 222
+
+  let f = ret_closure();
+  println(f());                        // 333
+
+  let c = ret_ref_indirect();
+  println(c@);                         // 444
+
+  // reference escapes an inner loop-body scope via assignment to an outer binding
+  let keep: &?Int = null#[Int];
+  let i = 0;
+  while i < 3 {
+    let x = 500 + i;
+    keep = x&;
+    i = i + 1;
+  }
+  println(keep@);                      // 502
+}

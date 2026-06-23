@@ -48,22 +48,166 @@ fn good_call_args(nodes: &[Node], noescape_params: &HashMap<String, Vec<bool>>) 
     good
 }
 
+fn is_reference_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Ref(_) | Type::RefUnsized(_) | Type::NullableRef(_) | Type::NullableRefUnsized(_)
+    )
+}
+
+/// Structural escape facts for one function, independent of the cross-function
+/// `param_noescape` snapshot (so they're gathered once per function per round,
+/// shared by both passes; only the snapshot-dependent `contained` set below is
+/// derived on top).
+struct FnFacts {
+    /// Node indices that are the direct operand of a `Deref` (read/written
+    /// through, so a pointer used there isn't itself leaked).
+    deref_operand: HashSet<usize>,
+    /// `value` node index -> the `Let` var bound to it. Identifies the reference
+    /// temp a `Ref` result flows into.
+    let_var_of_value: HashMap<usize, VarId>,
+    /// `Let` var -> its defining node index.
+    let_node_of_var: HashMap<VarId, usize>,
+    /// Reference-typed `Let` vars — the candidate pointer-holders for `contained`.
+    ref_let_vars: Vec<VarId>,
+    /// Every `Local(var)` use site, grouped by var.
+    local_uses: HashMap<VarId, Vec<usize>>,
+    /// `Ref` node indices addressing a var's *own* storage (`var&`, `var.f&`, …,
+    /// not through a deref), grouped by that var.
+    direct_refs: HashMap<VarId, Vec<usize>>,
+    /// Vars to give up on (their address reaches a `^` move/deep-copy).
+    bad: HashSet<VarId>,
+    /// Vars whose address is taken anywhere in a `Ref`/`Unique` operand subtree.
+    addr_taken: HashSet<VarId>,
+}
+
+/// Gather the per-function structural facts in a single pass over `nodes`.
+fn collect_fn_facts(nodes: &[Node]) -> FnFacts {
+    let mut f = FnFacts {
+        deref_operand: HashSet::new(),
+        let_var_of_value: HashMap::new(),
+        let_node_of_var: HashMap::new(),
+        ref_let_vars: Vec::new(),
+        local_uses: HashMap::new(),
+        direct_refs: HashMap::new(),
+        bad: HashSet::new(),
+        addr_taken: HashSet::new(),
+    };
+    for (idx, node) in nodes.iter().enumerate() {
+        match &node.kind {
+            NodeKind::Let { var, value, .. } => {
+                f.let_var_of_value.insert(value.0, *var);
+                f.let_node_of_var.insert(*var, idx);
+                if is_reference_type(&nodes[value.0].ty) {
+                    f.ref_let_vars.push(*var);
+                }
+            }
+            NodeKind::Local(v) => f.local_uses.entry(*v).or_default().push(idx),
+            NodeKind::Deref(op) => {
+                f.deref_operand.insert(op.0);
+            }
+            NodeKind::Ref(op) => {
+                // A ref of a place rooted at a local `V` (`V`, `V.field`, `V[i]`,
+                // … but not through a deref) addresses `V`'s own storage. A ref
+                // reached through a deref points into a pointee — a different
+                // allocation — so it can't make any local's storage escape.
+                collect_locals(nodes, *op, &mut f.addr_taken);
+                if let Some(v) = ref_root_local(nodes, *op) {
+                    f.direct_refs.entry(v).or_default().push(idx);
+                }
+            }
+            NodeKind::Unique(op) => {
+                // `^place` moves/deep-copies; conservatively give up on its locals.
+                let mut s = HashSet::new();
+                collect_locals(nodes, *op, &mut s);
+                f.addr_taken.extend(&s);
+                f.bad.extend(s);
+            }
+            _ => {}
+        }
+    }
+    f
+}
+
+/// Fixpoint over reference-holding `Let` bindings that are "contained" — analogous
+/// to a scope-local lifetime. `r` is contained iff (1) no reference to `r`'s
+/// storage escapes (`refs_to_storage_contained`) and (2) `r`'s *contents* (the
+/// pointer it holds) only reach non-escaping places: every `Local(r)` use is the
+/// operand of a `Deref`, an argument to a non-escaping callee param (`good_use`),
+/// or copied into another contained binding (`let w = r` with `w` contained).
+/// Storing a reference into a contained binding therefore doesn't let it escape.
+/// Monotonic (`contained` only grows), so this terminates.
+fn compute_contained(facts: &FnFacts, good_use: &HashSet<usize>) -> HashSet<VarId> {
+    let mut contained: HashSet<VarId> = HashSet::new();
+    loop {
+        let mut changed = false;
+        for &r in &facts.ref_let_vars {
+            if contained.contains(&r) || facts.bad.contains(&r) {
+                continue;
+            }
+            if !refs_to_storage_contained(
+                r,
+                &facts.direct_refs,
+                &facts.let_var_of_value,
+                &contained,
+            ) {
+                continue;
+            }
+            let contents_ok = facts.local_uses.get(&r).is_none_or(|uses| {
+                uses.iter().all(|&u| {
+                    facts.deref_operand.contains(&u)
+                        || good_use.contains(&u)
+                        || facts
+                            .let_var_of_value
+                            .get(&u)
+                            .is_some_and(|w| contained.contains(w))
+                })
+            });
+            if contents_ok {
+                contained.insert(r);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    contained
+}
+
+/// Whether a binding's own storage can sit on the stack: it isn't given up on,
+/// and every reference to its storage is a contained temp (no escaping reference
+/// to it). Vacuously true when its address is never taken. Used for both `Let`
+/// bindings and **value** parameters — a value param whose address is taken (e.g.
+/// `key&` forwarded to a non-escaping `key_hash`/`find`) qualifies here even
+/// though it once didn't, eliminating the per-call box.
+fn storage_noescape(var: VarId, facts: &FnFacts, contained: &HashSet<VarId>) -> bool {
+    !facts.bad.contains(&var)
+        && refs_to_storage_contained(var, &facts.direct_refs, &facts.let_var_of_value, contained)
+}
+
+/// Whether a **reference** parameter's held pointer can't escape: (b) its own
+/// storage is never addressed (which would re-expose the pointer, e.g. `(p@)&`)
+/// and (a) every `Local(param)` use is either the direct operand of a `Deref` or
+/// forwarded into an already-non-escaping callee param (the transitive case, e.g.
+/// `f(p: &T) { g(p) }` once `g`'s param is non-escaping).
+fn reference_param_noescape(var: VarId, facts: &FnFacts, good_use: &HashSet<usize>) -> bool {
+    !facts.addr_taken.contains(&var)
+        && facts.local_uses.get(&var).is_none_or(|uses| {
+            uses.iter()
+                .all(|&u| facts.deref_operand.contains(&u) || good_use.contains(&u))
+        })
+}
+
 /// Refine each function's `param_noescape` (one fixpoint round); returns whether
 /// any flag flipped `false` → `true`. `param_noescape[i] == true` means an
 /// argument passed to parameter `i` cannot escape the call. Two cases, by type:
 ///
-/// * **Value parameter** (`Int`, a struct, …): non-escaping iff its address is
-///   never taken (no `Local(param)` beneath a `Ref`/`Unique`, closure captures
-///   included). Copies of its value can never make its storage escape.
+/// * **Value parameter** (`Int`, a struct, …): non-escaping when its storage
+///   doesn't escape (`storage_noescape`) — its address is never taken, or every
+///   `param&` is a contained temp flowing only into non-escaping callees.
 /// * **Reference parameter** (`&T`, `&?T`): the parameter *holds a pointer* that
-///   must not escape (else a caller passing `&stack_local` would dangle).
-///   Non-escaping iff (b) its own storage is never addressed (which would
-///   re-expose the pointer, e.g. `(p@)&`) and (a) every `Local(param)` use is
-///   either the direct operand of a `Deref` (only read/written through) **or** an
-///   argument passed to *another* parameter already known non-escaping. The
-///   second alternative is the **transitive** case (`f(p: &T) { g(p) }` is
-///   non-escaping once `g`'s parameter is), and is why this must reach a fixpoint
-///   — a chain like `get → find`/`key_hash → hash` resolves over several rounds.
+///   must not escape (`reference_param_noescape`).
 ///
 /// Sound by monotone induction from the all-may-escape start: a param is marked
 /// only when justified by facts already established. Anything uncertain stays
@@ -72,31 +216,18 @@ pub fn analyze_param_escapes(module: &mut Module) -> bool {
     let snapshot = param_noescape_snapshot(module);
     let mut changed = false;
     for func in &mut module.functions {
-        let nodes = &func.nodes;
-        // Variables whose address is taken (operand subtree of any Ref/Unique).
-        let mut addr_taken: HashSet<VarId> = HashSet::new();
-        // Node indices that are the direct operand of a `Deref` (read/written
-        // through, rather than the pointer value itself being consumed).
-        let mut deref_operand: HashSet<usize> = HashSet::new();
-        for node in nodes {
-            match &node.kind {
-                NodeKind::Ref(op) | NodeKind::Unique(op) => {
-                    collect_locals(nodes, *op, &mut addr_taken);
-                }
-                NodeKind::Deref(op) => {
-                    deref_operand.insert(op.0);
-                }
-                _ => {}
-            }
-        }
-        // Uses that forward the pointer into an already-non-escaping callee param.
-        let good_use = good_call_args(nodes, &snapshot);
-
+        let facts = collect_fn_facts(&func.nodes);
+        let good_use = good_call_args(&func.nodes, &snapshot);
+        let contained = compute_contained(&facts, &good_use);
         let results: Vec<bool> = func
             .params
             .iter()
             .map(|p| {
-                param_does_not_escape(nodes, p.var, &p.ty, &addr_taken, &deref_operand, &good_use)
+                if is_reference_type(&p.ty) {
+                    reference_param_noescape(p.var, &facts, &good_use)
+                } else {
+                    storage_noescape(p.var, &facts, &contained)
+                }
             })
             .collect();
         for (i, r) in results.into_iter().enumerate() {
@@ -110,36 +241,6 @@ pub fn analyze_param_escapes(module: &mut Module) -> bool {
     changed
 }
 
-fn is_reference_type(ty: &Type) -> bool {
-    matches!(
-        ty,
-        Type::Ref(_) | Type::RefUnsized(_) | Type::NullableRef(_) | Type::NullableRefUnsized(_)
-    )
-}
-
-fn param_does_not_escape(
-    nodes: &[Node],
-    var: VarId,
-    ty: &Type,
-    addr_taken: &HashSet<VarId>,
-    deref_operand: &HashSet<usize>,
-    good_use: &HashSet<usize>,
-) -> bool {
-    if is_reference_type(ty) {
-        // (b) storage never addressed, and (a) every value use is either a deref
-        // or forwarded into a non-escaping callee param.
-        !addr_taken.contains(&var)
-            && nodes.iter().enumerate().all(|(idx, n)| match &n.kind {
-                NodeKind::Local(v) if *v == var => {
-                    deref_operand.contains(&idx) || good_use.contains(&idx)
-                }
-                _ => true,
-            })
-    } else {
-        !addr_taken.contains(&var)
-    }
-}
-
 /// Mark `Let` bindings that provably don't escape so codegen can place them on
 /// the C stack. A binding `V` is non-escaping when **every** pointer to its
 /// storage is `V&` taken *directly as a call argument* whose callee parameter is
@@ -151,12 +252,21 @@ fn param_does_not_escape(
 ///     reference temp is then used as something other than a direct call arg.
 ///
 /// Must run after `analyze_param_escapes` (it reads callees' `param_noescape`).
-/// Returns whether any `Let` flag flipped `false` → `true`.
+/// Returns whether any `Let` flag flipped `false` → `true`. A `Let` is marked
+/// when its storage doesn't escape — the same `storage_noescape` test the value-
+/// parameter case uses, over the shared per-function `FnFacts`/`contained`.
 fn analyze_let_noescape(module: &mut Module) -> bool {
     let noescape_params = param_noescape_snapshot(module);
     let mut changed = false;
     for func in &mut module.functions {
-        let to_mark = compute_noescape_lets(&func.nodes, &noescape_params);
+        let facts = collect_fn_facts(&func.nodes);
+        let good_use = good_call_args(&func.nodes, &noescape_params);
+        let contained = compute_contained(&facts, &good_use);
+        let to_mark: Vec<usize> = facts
+            .let_node_of_var
+            .iter()
+            .filter_map(|(&v, &idx)| storage_noescape(v, &facts, &contained).then_some(idx))
+            .collect();
         for idx in to_mark {
             if let NodeKind::Let { noescape, .. } = &mut func.nodes[idx].kind
                 && !*noescape
@@ -184,83 +294,23 @@ fn ref_root_local(nodes: &[Node], id: NodeId) -> Option<VarId> {
     }
 }
 
-/// Returns the node indices of the `Let` bindings in `nodes` that can be marked
-/// non-escaping. Pure analysis over an immutable borrow.
-fn compute_noescape_lets(
-    nodes: &[Node],
-    noescape_params: &HashMap<String, Vec<bool>>,
-) -> Vec<usize> {
-    // Node indices that appear as a call argument bound for a non-escaping param.
-    let good_arg = good_call_args(nodes, noescape_params);
-
-    // value node -> the `Let` var bound to it; var -> its defining `Let` node.
-    let mut let_var_of_value: HashMap<usize, VarId> = HashMap::new();
-    let mut let_node_of_var: HashMap<VarId, usize> = HashMap::new();
-    // All `Local(var)` use sites, grouped by var.
-    let mut local_uses: HashMap<VarId, Vec<usize>> = HashMap::new();
-    for (idx, node) in nodes.iter().enumerate() {
-        match &node.kind {
-            NodeKind::Let { var, value, .. } => {
-                let_var_of_value.insert(value.0, *var);
-                let_node_of_var.insert(*var, idx);
-            }
-            NodeKind::Local(v) => local_uses.entry(*v).or_default().push(idx),
-            _ => {}
-        }
-    }
-
-    // For each binding V: the `Ref` nodes addressing V's own storage, plus a
-    // "give up" set for addressing we don't handle.
-    let mut direct_refs: HashMap<VarId, Vec<usize>> = HashMap::new();
-    let mut bad: HashSet<VarId> = HashSet::new();
-    for (idx, node) in nodes.iter().enumerate() {
-        match &node.kind {
-            NodeKind::Ref(op) => {
-                // A ref of a place rooted at a local `V` (`V`, `V.field`, `V[i]`,
-                // … but not reached through a deref) addresses `V`'s own storage,
-                // so route-check it for `V`. A ref reached through a deref points
-                // into a pointee — a different allocation — so it can't make any
-                // local's storage escape and is ignored here.
-                if let Some(v) = ref_root_local(nodes, *op) {
-                    direct_refs.entry(v).or_default().push(idx);
-                }
-            }
-            NodeKind::Unique(op) => {
-                // `^place` moves/deep-copies; conservatively give up on its locals.
-                let mut s = HashSet::new();
-                collect_locals(nodes, *op, &mut s);
-                bad.extend(s);
-            }
-            _ => {}
-        }
-    }
-
-    let mut result = Vec::new();
-    for (v, &idx) in &let_node_of_var {
-        if bad.contains(v) {
-            continue;
-        }
-        // Every direct `V&` must route to a non-escaping call argument. When the
-        // address is never taken (`direct_refs` has no entry) this is vacuously
-        // true — a binding nothing points at cannot escape.
-        let refs = direct_refs.get(v).map(Vec::as_slice).unwrap_or(&[]);
-        let ok = refs.iter().all(|&ref_idx| {
-            // The `V&` result must be bound to a reference temp RT, and every use
-            // of RT must be a non-escaping call argument — so the pointer only
-            // ever flows into a non-escaping callee param, never elsewhere.
-            let Some(&rt) = let_var_of_value.get(&ref_idx) else {
-                return false;
-            };
-            match local_uses.get(&rt) {
-                Some(uses) if !uses.is_empty() => uses.iter().all(|u| good_arg.contains(u)),
-                _ => false,
-            }
-        });
-        if ok {
-            result.push(idx);
-        }
-    }
-    result
+/// Whether every pointer to `v`'s own storage (`v&`, `v.field&`, …) is a
+/// reference temp that is itself `contained` — i.e. no reference to `v` escapes.
+/// Vacuously true when `v`'s address is never taken.
+fn refs_to_storage_contained(
+    v: VarId,
+    direct_refs: &HashMap<VarId, Vec<usize>>,
+    let_var_of_value: &HashMap<usize, VarId>,
+    contained: &HashSet<VarId>,
+) -> bool {
+    direct_refs.get(&v).is_none_or(|refs| {
+        refs.iter().all(|ref_idx| {
+            // The `v&` result must be bound to a reference temp that is contained.
+            let_var_of_value
+                .get(ref_idx)
+                .is_some_and(|rt| contained.contains(rt))
+        })
+    })
 }
 
 /// Collect every `Local(var)` reachable from `id`'s subtree into `out`. Used on
@@ -471,6 +521,24 @@ mod tests {
         assert!(!int_let_noescape(&m, "main", 2));
     }
 
+    #[test]
+    fn noescape_value_param_addr_to_noescape_callee() {
+        // A *value* parameter whose address is taken only to forward it into a
+        // non-escaping callee is itself non-escaping — the `insert(key) ->
+        // key_hash(key&)/find(key&)` pattern. `x&` flows to `reads` (which only
+        // derefs), so `x` needs no per-call box. `leaktaker` forwards `y&` to
+        // `leaks` (which returns it), so `y` stays escaping.
+        let m = ir_of(
+            "fn reads(p: &Int) -> Int { p@ }\n\
+             fn leaks(p: &Int) -> &Int { p }\n\
+             fn taker(x: Int) -> Int { reads(x&) }\n\
+             fn leaktaker(y: Int) -> &Int { leaks(y&) }\n\
+             fn main() { println(taker(3)); println(leaktaker(4)@); }\n",
+        );
+        assert_eq!(noescape_of(&m, "taker"), vec![true]);
+        assert_eq!(noescape_of(&m, "leaktaker"), vec![false]);
+    }
+
     /// Whether the `let = <n>` binding (the `Let` whose value is the integer
     /// literal `n`) in function `name` is marked non-escaping. Targets the data
     /// binding specifically, ignoring compiler-generated reference temps.
@@ -515,27 +583,46 @@ mod tests {
     }
 
     #[test]
-    fn let_noescape_indirect_not_marked() {
-        // Routing `b&` through a named binding first means the reference temp is
-        // used as a `let` value, not a direct call arg -> `b` not marked.
+    fn let_noescape_indirect_via_contained_binding() {
+        // Routing `b&` through a named binding `rb` is fine: `rb` is contained —
+        // its only use forwards the pointer to `reads`' non-escaping param — so
+        // storing `b&` into `rb` doesn't let `b` escape. `b` and the two-hop `c`
+        // are both stack-allocatable.
         let m = ir_of(
             "fn reads(p: &Int) -> Int { p@ }\n\
-             fn caller() -> Int { let b = 20; let rb = b&; reads(rb) }\n\
+             fn caller() -> Int {\n\
+               let b = 20; let rb = b&; let x = reads(rb);\n\
+               let c = 30; let r1 = c&; let r2 = r1; let y = reads(r2);\n\
+               x + y\n\
+             }\n\
              fn main() { println(caller()); }\n",
         );
-        assert!(!int_let_noescape(&m, "caller", 20));
+        assert!(int_let_noescape(&m, "caller", 20));
+        assert!(int_let_noescape(&m, "caller", 30));
     }
 
     #[test]
-    fn let_noescape_escaping_callee_not_marked() {
-        // `leaks` returns its pointer param -> the param escapes, so passing
-        // `c&` to it does not make `c` non-escaping.
+    fn let_noescape_indirect_escaping_not_marked() {
+        // `leaks` returns its pointer param (escapes). Routing `c&` through a
+        // binding `rc` that then feeds `leaks` does NOT make `c` non-escaping —
+        // `rc` isn't contained (its contents reach an escaping place).
+        let m = ir_of(
+            "fn leaks(p: &Int) -> &Int { p }\n\
+             fn caller() -> Int { let c = 30; let rc = c&; leaks(rc)@ }\n\
+             fn main() { println(caller()); }\n",
+        );
+        assert_eq!(noescape_of(&m, "leaks"), vec![false]);
+        assert!(!int_let_noescape(&m, "caller", 30));
+    }
+
+    #[test]
+    fn let_noescape_direct_escaping_callee_not_marked() {
+        // Direct `c&` to an escaping callee is still not marked.
         let m = ir_of(
             "fn leaks(p: &Int) -> &Int { p }\n\
              fn caller() -> Int { let c = 30; leaks(c&)@ }\n\
              fn main() { println(caller()); }\n",
         );
-        assert_eq!(noescape_of(&m, "leaks"), vec![false]);
         assert!(!int_let_noescape(&m, "caller", 30));
     }
 }

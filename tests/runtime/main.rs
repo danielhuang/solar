@@ -24,7 +24,7 @@ fn hashbrown_group() {
     let output = run(&fixture("hashbrown_group.solar"), "hashbrown_group");
     assert_eq!(
         output,
-        "0\n1\n4\n99\n2\n6\n99\n2\n3\n6\n7\n99\n0\n1\n4\n5\n99\n"
+        "0\n1\n4\n99\n2\n6\n99\n2\n3\n6\n7\n99\n0\n1\n4\n5\n8\n9\n10\n11\n12\n13\n14\n15\n99\n"
     );
 }
 
@@ -64,6 +64,17 @@ fn inline_attr() {
 fn match_call() {
     let output = run(&fixture("match_call.solar"), "match_call");
     assert_eq!(output, "150\n1\n0\n");
+}
+
+// Escaping references (returned, in a returned struct, captured by an escaping
+// closure, returned via an indirect binding, or assigned out of a loop body).
+// `run` applies `ir_opt` and builds with ASAN, so an unsound escape analysis
+// that stack-allocated any of these pointees would trip use-after-scope/return
+// (or return a wrong value); a sound one keeps them on the GC heap.
+#[test]
+fn escape_refs() {
+    let output = run(&fixture("escape_refs.solar"), "escape_refs");
+    assert_eq!(output, "111\n222\n333\n444\n502\n");
 }
 
 #[test]

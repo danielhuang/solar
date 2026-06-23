@@ -7226,6 +7226,21 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
             params: vec![Exact(Type::FixedArray(Box::new(Type::Uint8), 4))],
             ret: Fixed(Type::Uint32),
         },
+        // simd_match_byte_x16([Uint8; 16], tag) / simd_match_high_bit_x16([Uint8; 16]):
+        // SwissTable group scans over a 16-lane byte vector. Return a compact
+        // 16-bit match mask (`Uint`). Lowered to a real SSE2 compare + move-mask
+        // so they vectorize regardless of caller context.
+        ast::Intrinsic::SimdMatchByteX16 => IntrinsicSpec {
+            params: vec![
+                Exact(Type::FixedArray(Box::new(Type::Uint8), 16)),
+                Exact(Type::Uint8),
+            ],
+            ret: Fixed(Type::Uint),
+        },
+        ast::Intrinsic::SimdMatchHighBitX16 => IntrinsicSpec {
+            params: vec![Exact(Type::FixedArray(Box::new(Type::Uint8), 16))],
+            ret: Fixed(Type::Uint),
+        },
         // carrying_mul_add(a, b, carry, add, out_lo, out_hi): computes the full
         // 128-bit product `a*b + carry + add` and writes the low/high 64-bit
         // halves through the two `&Uint64` out-params. Returns Unit.

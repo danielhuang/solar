@@ -1283,6 +1283,29 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let val = self.mem.load(addr, n);
                 self.scalar_store(dst, val, result_ty);
             }
+            Intrinsic::SimdMatchByteX16 | Intrinsic::SimdMatchHighBitX16 => {
+                // Scalar reference for the SSE2 group scan: read the 16 lanes and
+                // build the compact match mask (bit i <-> lane i).
+                let arg_ty = nodes[args[0].0].ty.clone();
+                let addr = self.alloc_ty(&arg_ty);
+                self.eval_into(nodes, args[0], addr);
+                let mut mask: u64 = 0;
+                if matches!(intrinsic, Intrinsic::SimdMatchByteX16) {
+                    let tag = self.eval_load(nodes, args[1]) as u8;
+                    for i in 0..16usize {
+                        if self.mem.load(addr + i, 1) as u8 == tag {
+                            mask |= 1 << i;
+                        }
+                    }
+                } else {
+                    for i in 0..16usize {
+                        if self.mem.load(addr + i, 1) as u8 & 0x80 != 0 {
+                            mask |= 1 << i;
+                        }
+                    }
+                }
+                self.scalar_store(dst, mask, result_ty);
+            }
             Intrinsic::AssertArrayLen => {
                 assert_eq!(*result_ty, Type::Unit);
                 let arr_id = args[0];

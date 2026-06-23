@@ -1,16 +1,13 @@
 import bitmask from "../../src/std/hashbrown/bitmask.solar";
 
 fn main() {
-  // Lanes 0, 2, 5 have their high bit set.
-  let a = 0x80u64 << 0u64;
-  let b = 0x80u64 << 16u64;
-  let c = 0x80u64 << 40u64;
-  let w = a | b | c;
-  let bm = bitmask::BitMask { word: w };
+  // Lanes 0, 2, 5 set. The mask is compact (one bit per lane).
+  let w = (1u << 0u) | (1u << 2u) | (1u << 5u);
+  let bm = bitmask::BitMask { mask: w };
   while bm.any_bit_set() {
     println(bm.lowest_set_bit_index());   // 0, 2, 5
     bm = bm.remove_lowest_bit();
   }
-  let empty = bitmask::BitMask { word: 0u64 };
+  let empty = bitmask::BitMask { mask: 0u };
   if empty.any_bit_set() { println(1); } else { println(0); }  // 0
 }

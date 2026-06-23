@@ -1072,6 +1072,39 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     _ => unreachable!(),
                 }
             }
+            Intrinsic::SimdMatchByteX16 | Intrinsic::SimdMatchHighBitX16 => {
+                // Scalar reference for the SSE2 group scan: build the compact
+                // match mask (bit i <-> lane i) over the 16-lane byte vector.
+                let arr = self.eval_expr(&arguments[0]);
+                let elements = match arr {
+                    Value::Array(e) => e,
+                    _ => unreachable!("simd group scan: expected [Uint8; 16]"),
+                };
+                let byte_at = |slot: &std::rc::Rc<std::cell::RefCell<Value>>| match &*slot.borrow()
+                {
+                    Value::Int(n) => *n as u8,
+                    _ => unreachable!("simd group scan: expected byte"),
+                };
+                let mut mask: u64 = 0;
+                if matches!(intrinsic, Intrinsic::SimdMatchByteX16) {
+                    let tag = match self.eval_expr(&arguments[1]) {
+                        Value::Int(n) => n as u8,
+                        _ => unreachable!(),
+                    };
+                    for (i, slot) in elements.iter().enumerate() {
+                        if byte_at(slot) == tag {
+                            mask |= 1 << i;
+                        }
+                    }
+                } else {
+                    for (i, slot) in elements.iter().enumerate() {
+                        if byte_at(slot) & 0x80 != 0 {
+                            mask |= 1 << i;
+                        }
+                    }
+                }
+                Value::Int(mask as i64)
+            }
             Intrinsic::AssertArrayLen => {
                 let arr = self.eval_expr(&arguments[0]);
                 let expected = self.eval_expr(&arguments[1]);

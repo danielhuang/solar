@@ -87,7 +87,9 @@ impl<'a> Codegen<'a> {
         mark_fn: impl std::fmt::Display,
     ) {
         let (var, size) = (var.to_string(), size.to_string());
-        self.linef(format!("uint8_t* {var} = sol_alloc({size}, {align}, {mark_fn});"));
+        self.linef(format!(
+            "uint8_t* {var} = sol_alloc({size}, {align}, {mark_fn});"
+        ));
         self.linef(format!("memset({var}, 0, {size});"));
     }
 
@@ -592,6 +594,24 @@ impl<'a> Codegen<'a> {
         self.line("extern void sol_atomic_compare_exchange_128_acq_rel(uint8_t* dst, uint8_t* ref, const uint8_t* expected, const uint8_t* new_val);");
         self.line("extern void sol_futex_wait(uint32_t* ptr, uint32_t expected);");
         self.line("extern void sol_futex_wake(uint32_t* ptr, uint32_t count);");
+        self.line("");
+        // SIMD group-scan helpers (the SwissTable hot path). Written with vector
+        // extensions + an explicit move-mask so they stay vectorized into SSE2
+        // (vpbroadcastb/vpcmpeqb/vpmovmskb) regardless of caller context — unlike
+        // an auto-vectorized scalar loop, which scalarizes inside a complex probe.
+        self.line("typedef unsigned char _sol_v16qi __attribute__((vector_size(16)));");
+        self.line(
+            "static inline uint64_t _sol_simd_match_byte_x16(const uint8_t* p, uint8_t tag) {",
+        );
+        self.line("  _sol_v16qi g; __builtin_memcpy(&g, p, 16);");
+        self.line("  _sol_v16qi t = tag - (_sol_v16qi){0};");
+        self.line("  _sol_v16qi eq = (g == t);");
+        self.line("  return (uint64_t)(uint32_t)__builtin_ia32_pmovmskb128((char __attribute__((vector_size(16)))) eq);");
+        self.line("}");
+        self.line("static inline uint64_t _sol_simd_match_high_bit_x16(const uint8_t* p) {");
+        self.line("  _sol_v16qi g; __builtin_memcpy(&g, p, 16);");
+        self.line("  return (uint64_t)(uint32_t)__builtin_ia32_pmovmskb128((char __attribute__((vector_size(16)))) g);");
+        self.line("}");
         self.line("");
     }
 
@@ -2312,6 +2332,25 @@ impl<'a> Codegen<'a> {
                 self.emit_alloc(&buf, s, a, &mf);
                 self.emit_into(nodes, args[0], &buf);
                 self.linef(format!("__builtin_memcpy({dst}, {buf}, {n});"));
+            }
+            Intrinsic::SimdMatchByteX16 | Intrinsic::SimdMatchHighBitX16 => {
+                // Materialize the 16-lane byte vector into a buffer, then run the
+                // SSE2 group-scan helper. In release the buffer collapses into a
+                // single vector load feeding vpcmpeqb/vpmovmskb.
+                let arg_ty = nodes[args[0].0].ty.clone();
+                let s = self.type_size(&arg_ty);
+                let a = self.type_align(&arg_ty);
+                let mf = self.mark_fn_expr(&arg_ty);
+                let buf = self.fresh_tmp();
+                self.emit_alloc(&buf, s, a, &mf);
+                self.emit_into(nodes, args[0], &buf);
+                let call = if matches!(intrinsic, Intrinsic::SimdMatchByteX16) {
+                    let tag = self.emit_load(nodes, args[1]);
+                    format!("_sol_simd_match_byte_x16({buf}, (uint8_t)({tag}))")
+                } else {
+                    format!("_sol_simd_match_high_bit_x16({buf})")
+                };
+                self.linef(format!("*(uint64_t*){dst} = {call};"));
             }
             Intrinsic::AssertArrayLen => {
                 let expected = self.emit_load(nodes, args[1]);

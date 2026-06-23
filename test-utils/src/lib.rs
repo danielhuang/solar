@@ -23,6 +23,22 @@ pub fn ensure_runtime_built() {
     });
 }
 
+static BUILD_RELEASE_RUNTIME: Once = Once::new();
+
+/// Ensure the **release** solar-system runtime (`target/release/libsolar_system.a`)
+/// is built — required by `CompileMode::Release` builds, which (unlike debug)
+/// apply the GC LLVM passes, so it's the only pipeline where the collector
+/// actually runs. Keeps the workspace's default flags (cross-language LTO).
+pub fn ensure_release_runtime_built() {
+    BUILD_RELEASE_RUNTIME.call_once(|| {
+        let status = Command::new("cargo")
+            .args(["build", "--release", "-p", "solar-system"])
+            .status()
+            .unwrap();
+        assert!(status.success(), "failed to build release solar-system");
+    });
+}
+
 pub fn run_ast(typed: &Typed) -> String {
     let mut buf = Vec::new();
     solar::ast_interp::interpret_to(&typed.typed, std::io::empty(), &mut buf);
@@ -64,7 +80,10 @@ pub fn run(file_path: &Path, test_name: &str) -> String {
     ensure_runtime_built();
     let typed = solar::pipeline::compile(file_path).unwrap();
     let ast_out = run_ast(&typed);
-    let ir = typed.to_ir();
+    // `optimized()` runs `ir_opt`, so the debug-codegen build below exercises the
+    // escape analysis / stack placement under ASAN — a wrongly-stacked escaping
+    // value then surfaces as a use-after-scope/return (or a wrong result).
+    let ir = typed.to_ir().optimized();
     let ir_out = run_ir(&ir);
     assert_eq!(
         ast_out, ir_out,

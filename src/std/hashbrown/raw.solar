@@ -22,7 +22,7 @@ pub fn key_hash#[K](key: &K) -> Uint64 {
   h&.finish()
 }
 
-const GROUP_WIDTH: Uint = 8u;
+const GROUP_WIDTH: Uint = 16u;
 
 pub struct Entry#[K, V] {
   pub key: K,
@@ -65,7 +65,7 @@ fn next_power_of_two(x: Uint) -> Uint {
 }
 
 fn capacity_to_buckets(cap: Uint) -> Uint {
-  let out = if cap < 4u {
+  let needed = if cap < 4u {
     4u
   } else if cap < 8u {
     8u
@@ -75,7 +75,11 @@ fn capacity_to_buckets(cap: Uint) -> Uint {
     let adjusted = scaled / 7u;
     next_power_of_two(adjusted)
   };
-  out
+  // A group spans GROUP_WIDTH buckets, so the table must have at least that many:
+  // otherwise a group load would read past the real buckets into never-mirrored
+  // padding and the scan would consider stale lanes. (hashbrown's smaller
+  // minimums assume a group no wider than the smallest table.)
+  if needed < GROUP_WIDTH { GROUP_WIDTH } else { needed }
 }
 
 fn bucket_mask_to_capacity(bucket_mask: Uint) -> Uint {
@@ -119,8 +123,9 @@ pub method find#[K, V](self: &RawTable#[K, V], hash: Uint64, key: &K) -> Option#
     // Bind the nullable reference (a cheap fat-pointer copy), then deref-index
     // it via `s@[..]`. Binding `self@.slots@` would instead copy the whole array.
     let s = self@.slots;
+    let ctrl = self@.ctrl;
     loop {
-      let g = group::load(self@.ctrl, pos);
+      let g = group::load(ctrl, pos);
       let m = g.match_tag(h2);
       while m.any_bit_set() {
         let bit = m.lowest_set_bit_index();

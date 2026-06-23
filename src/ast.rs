@@ -419,6 +419,8 @@ pub enum Intrinsic {
     CarryingMulAdd,
     U64FromLe,
     U32FromLe,
+    SimdMatchByteX16,
+    SimdMatchHighBitX16,
     Cast(NumericType, NumericType),
 }
 
@@ -445,6 +447,8 @@ const INTRINSIC_NAMES: &[(&str, Intrinsic)] = &[
     ("carrying_mul_add", Intrinsic::CarryingMulAdd),
     ("u64_from_le", Intrinsic::U64FromLe),
     ("u32_from_le", Intrinsic::U32FromLe),
+    ("simd_match_byte_x16", Intrinsic::SimdMatchByteX16),
+    ("simd_match_high_bit_x16", Intrinsic::SimdMatchHighBitX16),
 ];
 
 impl Intrinsic {
