@@ -624,11 +624,13 @@ impl<'a> Codegen<'a> {
     }
 
     /// Storage/inline qualifiers for a generated function. A `fn(inline)` hint
-    /// becomes `static inline`, which clang lowers to the LLVM `inlinehint`
-    /// attribute (raising the inliner's cost threshold for this function).
+    /// becomes `static inline __attribute__((always_inline))`, which clang lowers
+    /// to the LLVM `alwaysinline` attribute — forcing the function to be inlined
+    /// at every call site regardless of the inliner's cost model (not merely
+    /// raising its threshold, as `inlinehint` would).
     fn func_qualifiers(func: &Function) -> &'static str {
         if func.inline_hint {
-            "static inline"
+            "static inline __attribute__((always_inline))"
         } else {
             "static"
         }
