@@ -10,7 +10,7 @@ Solar's syntax is similar to Rust (with a few differences); see [`example.solar`
 
 ## Performance
 
-Solar's performance is equivalent to C in programs that are not allocation heavy, like [`sieve.solar`](examples/sieve.solar). Solar's memory management with GC is ~2x faster than C and Java for allocation-heavy workloads (see [`bench/RESULTS.md`](bench/RESULTS.md) for details).
+Solar's performance is equivalent to C in programs that are not allocation heavy, like [`sieve.solar`](examples/sieve.solar). Solar's memory management with GC is ~2x faster than C and Java for allocation-heavy workloads (see [`bench/README.md`](bench/README.md) for details).
 
 ## Sum types
 

@@ -31,7 +31,7 @@ bench/
   go/        allocs3.go, threads_list2.go, go.mod   (go build before running)
   bench.py   interleaved harness — throughput (median wall + peak RSS) and
              GC-pause latency (Solar pause1+pause2; Java safepoint; Go gctrace)
-  RESULTS.md this file
+  README.md  this file
 ```
 
 ## How to reproduce
@@ -53,7 +53,7 @@ javac bench/java/Allocs3.java bench/java/ThreadsList2.java
 
 # Full interleaved matrix (Solar + C + Go + 5 JVM collectors x 2 benchmarks):
 bench/bench.py                 # throughput + latency, 3 rounds, interleaved
-bench/bench.py --markdown      # also print these RESULTS.md tables
+bench/bench.py --markdown      # also print these README.md tables
 bench/bench.py --rounds 5 --only latency   # e.g. more rounds, latency only
 ```
 

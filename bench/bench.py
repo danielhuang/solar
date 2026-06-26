@@ -7,7 +7,7 @@ STW stall). Contenders are **interleaved**: every round runs each language once
 before the next round begins, so background-load drift over the session is
 spread evenly across languages rather than penalizing whichever ran last.
 
-Prereqs (see RESULTS.md "How to reproduce"):
+Prereqs (see README.md "How to reproduce"):
   Solar  target/{allocs3,threads_list2}        (cargo ... --bin compile)
   C      bench/c/{allocs3,threads_list2}        (make -C bench/c)
   Go     bench/go/{allocs3,threads_list2}       (go build)
@@ -18,7 +18,7 @@ Usage:
   bench/bench.py --rounds 5      # more rounds
   bench/bench.py --only throughput
   bench/bench.py --only latency
-  bench/bench.py --markdown      # also emit RESULTS.md-style tables
+  bench/bench.py --markdown      # also emit README.md-style tables
 """
 from __future__ import annotations
 
@@ -152,7 +152,7 @@ def main():
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--only", choices=["throughput", "latency"], default=None)
     ap.add_argument("--markdown", action="store_true",
-                    help="also print RESULTS.md-style transposed tables")
+                    help="also print README.md-style transposed tables")
     args = ap.parse_args()
 
     do_tp = args.only in (None, "throughput")
