@@ -1,0 +1,61 @@
+// Single-threaded port of the "vanilla" binary-trees C benchmark
+// (bau-lang's binaryTrees.c) — plain per-node malloc/free, no arena, no
+// threads. Here each tree is GC-allocated and simply dropped (the GC plays
+// the role of the C version's recursive `clear`/`free`). Structurally 1:1
+// with the C so the comparison is allocator-vs-GC, single-threaded.
+
+const MIN_DEPTH = 4;
+const N = 21; // tree depth (argv[1] in the C; defaults to 10 there)
+
+struct Tree {
+    left: &?Tree,
+    right: &?Tree,
+}
+
+fn build_tree(depth: Int) -> &Tree {
+    if depth == 0 {
+        (Tree { left: null#[Tree], right: null#[Tree] })&
+    } else {
+        (Tree { left: build_tree(depth - 1), right: build_tree(depth - 1) })&
+    }
+}
+
+fn node_count(t: &Tree) -> Int {
+    let result = 1;
+    if t@.left != null#[Tree] {
+        result = result + node_count(t@.left@&);
+    }
+    if t@.right != null#[Tree] {
+        result = result + node_count(t@.right@&);
+    }
+    result
+}
+
+fn count(depth: Int) -> Int {
+    node_count(build_tree(depth))
+}
+
+fn main() {
+    let max_depth = if MIN_DEPTH + 2 > N { MIN_DEPTH + 2 } else { N };
+    let stretch_depth = max_depth + 1;
+
+    write_stdout(("stretch tree of depth " + stretch_depth.to_string()@
+        + "\t check: " + count(stretch_depth).to_string()@ + "\n")&);
+
+    let long_lived = build_tree(max_depth);
+
+    let depth = MIN_DEPTH;
+    while depth <= max_depth {
+        let iterations = 1 << (max_depth - depth + MIN_DEPTH);
+        let sum = 0;
+        for _ in 0..iterations {
+            sum = sum + count(depth);
+        }
+        write_stdout((iterations.to_string()@ + "\t trees of depth " + depth.to_string()@
+            + "\t check: " + sum.to_string()@ + "\n")&);
+        depth = depth + 2;
+    }
+
+    write_stdout(("long lived tree of depth " + max_depth.to_string()@
+        + "\t check: " + node_count(long_lived).to_string()@ + "\n")&);
+}

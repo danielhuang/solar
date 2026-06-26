@@ -1,0 +1,81 @@
+// Port of the Computer Language Benchmarks Game `binary-trees` program
+// (binarytrees-gpp-7, the C++ entry by Danial Klimkin et al.).
+//
+// The original uses per-thread monotonic memory pools and parallel STL
+// algorithms. Solar has a concurrent garbage collector, so trees are just
+// GC-allocated `&Tree` nodes and the per-depth work is parallelised across
+// worker threads (one per depth), mirroring the `std::for_each(par, ...)`.
+
+const MIN_DEPTH = 4;
+const N = 21; // tree depth (argv[1] in the original; defaults to 10 there)
+
+struct Tree {
+    left: &?Tree,
+    right: &?Tree,
+}
+
+// Build a complete binary tree of depth `d`. `&Tree` coerces to the `&?Tree`
+// fields; leaves store `null`.
+fn make(d: Int) -> &Tree {
+    if d > 0 {
+        (Tree { left: make(d - 1), right: make(d - 1) })&
+    } else {
+        (Tree { left: null#[Tree], right: null#[Tree] })&
+    }
+}
+
+// Count nodes: 1 for a leaf, else 1 + both subtrees.
+fn check(t: &Tree) -> Int {
+    if t@.left == null#[Tree] {
+        1
+    } else {
+        check(t@.left@&) + 1 + check(t@.right@&)
+    }
+}
+
+// Sum `check(make(d))` over `1 << (max_depth - d + MIN_DEPTH)` iterations,
+// storing the result into `res[idx]`. Run on its own thread per depth.
+fn spawn_depth(d: Int, max_depth: Int, res: &[Int], idx: Uint) -> thread::Thread {
+    thread::spawn(\ {
+        let iters = 1 << (max_depth - d + MIN_DEPTH);
+        let sum = 0;
+        for _ in 0..iters {
+            sum = sum + check(make(d));
+        }
+        res@[idx] = sum;
+    })
+}
+
+fn main() {
+    let max_depth = if N > MIN_DEPTH + 2 { N } else { MIN_DEPTH + 2 };
+    let stretch_depth = max_depth + 1;
+
+    // Allocate then discard a "stretch" tree one level deeper than the rest.
+    let stretch = make(stretch_depth);
+    write_stdout(("stretch tree of depth " + stretch_depth.to_string()@
+        + "\t check: " + check(stretch).to_string()@ + "\n")&);
+
+    // A long-lived tree that survives the whole run (kept reachable below).
+    let long_lived = make(max_depth);
+
+    let num_depths = Uint((max_depth - MIN_DEPTH) / 2 + 1);
+    let results: [Int] = [0; num_depths];
+    let res = results&;
+
+    // One worker thread per depth (4, 6, 8, ...). The array-init closure spawns
+    // each thread eagerly and collects its handle.
+    let threads = [num_depths; \i: Uint spawn_depth(Int(i) * 2 + MIN_DEPTH, max_depth, res, i)];
+    for i in 0u..num_depths {
+        threads[i].join();
+    }
+
+    for i in 0u..num_depths {
+        let d = Int(i) * 2 + MIN_DEPTH;
+        let iters = 1 << (max_depth - d + MIN_DEPTH);
+        write_stdout((iters.to_string()@ + "\t trees of depth " + d.to_string()@
+            + "\t check: " + res@[i].to_string()@ + "\n")&);
+    }
+
+    write_stdout(("long lived tree of depth " + max_depth.to_string()@
+        + "\t check: " + check(long_lived).to_string()@ + "\n")&);
+}

@@ -488,3 +488,95 @@ across both), and the GC pauses (concurrent; see takeaway 2). Both sides pay
 similar first-touch page-fault cost for fresh backing memory. **The ~7× is
 mostly (1) temporary boxing and (2) the scalar-vs-SSE probe; a SIMD `Group` and
 stack/register temporaries would close most of it.**
+
+---
+
+# binary-trees — Solar vs C/C++ (arena & vanilla malloc)
+
+A separate study, using the Computer Language Benchmarks Game
+[`binary-trees`](https://benchmarksgame-team.pages.debian.net/benchmarksgame/)
+program. It allocates an enormous number of tiny 2-pointer tree nodes, so it is
+almost entirely an allocator/reclaimer stress test. Solar uses its concurrent
+GC with no manual freeing; the two C/C++ baselines sit at opposite ends of the
+allocation spectrum:
+
+- an **arena** version (best case — bump-pointer alloc, bulk free), and
+- a **vanilla** version (realistic case — general-purpose per-node
+  `malloc`/`free`).
+
+## Files
+
+| File | What it is | Source |
+| --- | --- | --- |
+| [`../examples/binarytrees.solar`](../examples/binarytrees.solar) | Solar, multi-threaded (one worker thread per depth) | this repo |
+| [`../examples/binarytrees_st.solar`](../examples/binarytrees_st.solar) | Solar, single-threaded (1:1 with the vanilla C) | this repo |
+| [`binarytrees_arena.cpp`](binarytrees_arena.cpp) | C++ arena (`std::pmr::monotonic_buffer_resource`) | [benchmarksgame `binarytrees-gpp-7`](https://benchmarksgame-team.pages.debian.net/benchmarksgame/program/binarytrees-gpp-7.html) — adapted (see header) |
+| [`binaryTrees_vanilla.c`](binaryTrees_vanilla.c) | Vanilla C (`malloc`/`free`, single-threaded) | [bau-lang `binaryTrees.c`](https://raw.githubusercontent.com/thomasmueller/bau-lang/refs/heads/main/src/test/resources/org/bau/benchmarks/c/binaryTrees.c) — verbatim |
+
+> **C++ adaptation note.** Upstream `binarytrees-gpp-7` uses
+> `boost::counting_iterator` and TBB-backed parallel STL (`std::execution::par`),
+> neither available here. The parallel `for_each` over depths is replaced with
+> one `std::thread` per depth, each with its own `monotonic_buffer_resource` —
+> structurally identical to the Solar multi-threaded port. The arena allocation
+> that defines the entry's performance is unchanged.
+
+All four produce byte-identical tree output (the vanilla C additionally prints a
+leading `C` line).
+
+## How to reproduce
+
+```sh
+# Solar (release runtime + compile)
+cargo build --release -p solar-system
+cargo run --bin compile -- examples/binarytrees.solar    target/binarytrees
+cargo run --bin compile -- examples/binarytrees_st.solar target/binarytrees_st
+
+# baselines
+g++ -O3 -march=native -std=c++17 bench/binarytrees_arena.cpp -o /tmp/bt_arena   -lpthread
+gcc -O3 -march=native            bench/binaryTrees_vanilla.c -o /tmp/bt_vanilla -lm
+
+# run (N = 21)
+target/binarytrees;  target/binarytrees_st;  /tmp/bt_arena 21;  /tmp/bt_vanilla 21
+```
+
+## Results
+
+- **Workload:** `N = 21` (max depth 21, stretch 22)
+- **Machine:** Intel Core Ultra 9 275HX, 24 logical cores, Linux
+- **Toolchain:** gcc/g++ 14.2.0 `-O3 -march=native`; Solar release (LTO)
+- 3 runs each; representative numbers below.
+
+| Variant | Threads | Wall | CPU (user+sys) | Max RSS |
+| --- | --- | ---: | ---: | ---: |
+| C++ arena (`pmr` bump, threaded) | 9 | **0.42 s** | 1.6 s | 134 MB |
+| Solar, multi-threaded | 9 | **1.8 s** | ~22 s | ~1.0 GB |
+| Vanilla C (`malloc`/`free`) | 1 | **8.9 s** | 8.7 s | 264 MB |
+| Solar, single-threaded | 1 (+ GC threads) | **5.7 s** | ~48 s | ~0.3 GB |
+
+### Head-to-head (same threading model)
+
+| Comparison | Wall | Memory |
+| --- | --- | --- |
+| Solar threaded **vs** C++ arena threaded | Solar **~4× slower** | Solar ~7× |
+| Solar single-thread **vs** vanilla C `malloc`/`free` | Solar **~1.5× faster** | Solar ~1.2–1.5× |
+
+## Takeaways
+
+1. **Against a hand-rolled bump arena (C++), Solar's GC is uncompetitive
+   (~4× slower, ~7× memory).** The arena is the ideal allocator for this shape:
+   allocation is a pointer increment and the whole tree is freed at once with no
+   per-node bookkeeping. Solar instead allocates each node as an individually
+   traced, GC-managed object and keeps far more headroom live between cycles.
+
+2. **Against general-purpose `malloc`/`free` (vanilla C), Solar wins on
+   wall-clock (~1.5×) — but by spending CPU.** The vanilla C uses ~8.7 CPU-s on
+   one core; single-threaded Solar uses ~48 CPU-s across many cores and finishes
+   in 5.7 s wall. The C bottleneck is its recursive per-node `free()`, which is
+   serial and unavoidable. Solar never frees individually — allocation is a
+   born-black bump, and reclamation runs in bulk on background mark/sweep threads
+   that overlap the mutator, moving "free is expensive and serial" off the
+   critical path at the cost of total CPU and some memory.
+
+3. **Per-core efficiency still favors C** in both comparisons. Solar's edge over
+   vanilla C comes entirely from parallelizing reclamation across the 24-core
+   machine; on a single core the vanilla C would win.
