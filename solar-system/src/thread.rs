@@ -1,7 +1,7 @@
 use std::arch::asm;
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
 use rustix_futex_sync::RwLock;
 
@@ -32,7 +32,7 @@ fn register_thread(stack_base: *mut usize) {
         alloc: UnsafeCell::new(ThreadAllocState::new()),
         // Pre-reserve so the write barrier never reallocates on its hot path.
         gray_buf: UnsafeCell::new(Vec::with_capacity(crate::gc::GRAY_BUF_CAP)),
-        in_critical_section: AtomicBool::new(false),
+        in_critical_section: UnsafeCell::new(0),
         gc_pending_epoch: AtomicU64::new(0),
         gc_waiting_epoch: AtomicU64::new(0),
     });

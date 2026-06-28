@@ -194,35 +194,71 @@ unsafe fn gray_enqueue_raw(slot: &ThreadSlot, v: usize) {
     }
 }
 
+/// Enter a GC critical section: bump `in_critical_section` so a STW signal
+/// arriving while we update per-thread GC structures defers (records
+/// `gc_pending_epoch`) instead of parking us mid-update. Pairs with
+/// `end_critical_section`; sections may nest.
+///
+/// The increment is a single `inc` instruction because a signal is only
+/// delivered between instructions: the same-thread handler therefore never
+/// reads a half-updated count. A plain `*p += 1` could compile to
+/// load/inc/store and let the handler observe a stale value.
+///
+/// The `asm!` has a memory operand and no `nomem`, so it is itself a compiler
+/// barrier: the protected work can't be hoisted ahead of the bump.
+#[inline]
+pub(crate) unsafe fn begin_critical_section(slot: &ThreadSlot) {
+    unsafe {
+        asm!(
+            "inc qword ptr [{p}]",
+            p = in(reg) slot.in_critical_section.get(),
+            options(nostack),
+        );
+    }
+}
+
+/// Leave a GC critical section entered by `begin_critical_section`. The
+/// decrement is a single `dec` instruction (same signal-safety reason as the
+/// increment); we read its zero flag to learn whether this was the outermost
+/// section. Only then do we honor a deferred stop.
+///
+/// The `asm!` (memory operand, no `nomem`) is a compiler barrier, so the
+/// `gc_pending_epoch` load stays ordered *after* the decrement: otherwise the
+/// compiler could hoist the load before it, opening a window where a signal
+/// sees the count still nonzero, defers into `gc_pending_epoch`, and this load
+/// misses it — so the thread never acks the GC and the collector hangs forever.
+#[inline]
+pub(crate) unsafe fn end_critical_section(slot: &ThreadSlot) {
+    let outermost: u8;
+    unsafe {
+        asm!(
+            "dec qword ptr [{p}]",
+            "setz {z}",
+            p = in(reg) slot.in_critical_section.get(),
+            z = out(reg_byte) outermost,
+            options(nostack),
+        );
+    }
+    if outermost != 0 {
+        // `gc_pending_epoch` is only written by this thread's own GC signal
+        // handler (and only while the count was nonzero), so a plain load +
+        // reset suffices — no atomic RMW.
+        let pending = slot.gc_pending_epoch.load(Ordering::Acquire);
+        if pending != 0 {
+            slot.gc_pending_epoch.store(0, Ordering::Relaxed);
+            unsafe { self_suspend(slot, pending) };
+        }
+    }
+}
+
 /// Run `f` inside a GC critical section and return its result. Shared by
 /// `sol_alloc` and the barrier / `sol_memcpy` gray-buffer updates — anything
-/// that touches per-thread GC structures (and may lock `GRAY`). While
-/// `in_critical_section` is set, the STW signal handler records
-/// `gc_pending_epoch` instead of parking us mid-update; we honor that stop by
-/// self-suspending cleanly at the end.
-///
-/// The `compiler_fence`s keep the `gc_pending_epoch` load ordered *after* the
-/// `in_critical_section` store: otherwise the compiler could hoist the load
-/// before the store, opening a window where a signal sees `in_critical_section
-/// == true`, defers into `gc_pending_epoch`, and this load misses it — so the
-/// thread never acks the GC and the collector hangs forever. The handler runs
-/// on this same thread, so a compiler fence (not a full barrier) is enough.
+/// that touches per-thread GC structures (and may lock `GRAY`).
 #[inline]
 pub(crate) unsafe fn with_signal_deferred<R>(slot: &ThreadSlot, f: impl FnOnce() -> R) -> R {
-    slot.in_critical_section.store(true, Ordering::Relaxed);
-    std::sync::atomic::compiler_fence(Ordering::SeqCst);
+    unsafe { begin_critical_section(slot) };
     let r = f();
-    std::sync::atomic::compiler_fence(Ordering::SeqCst);
-    slot.in_critical_section.store(false, Ordering::Release);
-    std::sync::atomic::compiler_fence(Ordering::SeqCst);
-    // `gc_pending_epoch` is only written by this thread's own GC signal handler
-    // (and only while `in_critical_section` is true), so a plain load + reset
-    // suffices — no atomic RMW.
-    let pending = slot.gc_pending_epoch.load(Ordering::Acquire);
-    if pending != 0 {
-        slot.gc_pending_epoch.store(0, Ordering::Relaxed);
-        unsafe { self_suspend(slot, pending) };
-    }
+    unsafe { end_critical_section(slot) };
     r
 }
 
@@ -268,11 +304,14 @@ pub(crate) struct ThreadSlot {
     /// `sol_memcpy`). Flushed to `GRAY` at capacity by the owner, and drained
     /// by the GC thread at STW pause 2 while this thread is stopped.
     pub(crate) gray_buf: UnsafeCell<Vec<usize>>,
-    /// True while a GC critical section (`with_signal_deferred`) is updating
-    /// per-thread structures. If the GC signal arrives then, the handler defers
-    /// (stores `gc_pending_epoch`) and the critical section self-suspends at its
-    /// end.
-    pub(crate) in_critical_section: AtomicBool,
+    /// Nonzero while this thread is inside one or more nested GC critical
+    /// sections (`begin_critical_section`/`end_critical_section`) updating
+    /// per-thread structures. A nesting counter rather than a flag; it is
+    /// bumped with a single `inc`/`dec` instruction so the same-thread GC signal
+    /// handler never observes a torn value. If the GC signal arrives while it is
+    /// nonzero, the handler defers (stores `gc_pending_epoch`) and the outermost
+    /// `end_critical_section` self-suspends.
+    pub(crate) in_critical_section: UnsafeCell<u64>,
     pub(crate) gc_pending_epoch: AtomicU64,
     /// Set to epoch N when this thread acknowledges GC cycle N and is stopped.
     /// Monotonically increases.
@@ -344,7 +383,7 @@ unsafe extern "C" fn gc_signal_handler(
     }
     let slot = unsafe { &*slot };
 
-    if slot.in_critical_section.load(Ordering::Acquire) {
+    if unsafe { core::ptr::read_volatile(slot.in_critical_section.get()) } != 0 {
         slot.gc_pending_epoch.store(wait_epoch, Ordering::Release);
         return;
     }
