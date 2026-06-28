@@ -1,0 +1,7 @@
+// The `catch` binding must be `&[Uint8]`; an explicit wrong annotation is a
+// type error (the handler desugars to a `fn(Int)`, but `try` wants `fn(&[Uint8])`).
+fn main() {
+    try {
+    } catch (e: Int) {
+    }
+}

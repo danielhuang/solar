@@ -1,0 +1,14 @@
+// The `&[Uint8]` bound in `catch` must alias the reference passed to `throw`
+// (no copy): mutating through the caught reference is visible in the original.
+fn main() {
+    let buf = [65u8, 66u8, 67u8];   // "ABC"
+    let original = buf&;
+    try {
+        throw(original);
+    } catch (e) {
+        println(e);                 // "ABC" — the thrown bytes
+        e@[0u] = 90u8;              // mutate through the caught reference -> 'Z'
+    }
+    // Aliasing => buf's first byte is now 'Z'; a copy would leave it 'A'.
+    println(buf&);                  // "ZBC"
+}

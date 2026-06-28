@@ -144,7 +144,12 @@ enum ControlFlow {
 /// `Err` of `Eval` through every evaluation step until a `try` handler catches
 /// it (or it escapes `main`, which aborts). Mirrors the compiled backend's
 /// `sol_throw`/`sol_try` (Rust panic + `catch_unwind`).
-struct Thrown(Vec<u8>);
+struct Thrown {
+    /// Data address (offset into `mem.data`) and length of the thrown `&[Uint8]`
+    /// — the reference itself, so a `catch` binding aliases the thrown slice.
+    ptr: usize,
+    len: usize,
+}
 
 /// Result of any evaluation that may propagate a `throw`.
 type Eval<T> = Result<T, Thrown>;
@@ -1436,8 +1441,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let (ref_addr, _) = self.eval_place(nodes, args[0])?;
                 let data_ptr = self.mem.load(ref_addr, 8) as usize;
                 let data_len = self.mem.load(ref_addr + 8, 8) as usize;
-                let bytes = self.mem.data[data_ptr..data_ptr + data_len].to_vec();
-                return Err(Thrown(bytes));
+                return Err(Thrown {
+                    ptr: data_ptr,
+                    len: data_len,
+                });
             }
             Intrinsic::Try => {
                 // args[0] = body fn(), args[1] = handler fn(&[Uint8]).
@@ -1453,16 +1460,14 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let h_idx = self.mem.load(h_addr, 8) as usize;
                 let h_env = self.mem.load(h_addr + 8, 8);
 
-                // Run the body; on a throw, hand the message to the handler as a
-                // fresh `&[Uint8]` (fat pointer into newly-allocated bytes).
-                if let Err(Thrown(bytes)) = self.invoke_fn_value(body_idx, body_env, &[], dst) {
-                    let data = self.mem.alloc(bytes.len().max(1), 1);
-                    for (i, b) in bytes.iter().enumerate() {
-                        self.mem.store(data + i, *b as u64, 1);
-                    }
+                // Run the body; on a throw, hand the handler a `&[Uint8]` whose
+                // fat pointer is the thrown one (same ptr/len) — so it aliases
+                // the slice passed to `throw`, no copy.
+                if let Err(Thrown { ptr, len }) = self.invoke_fn_value(body_idx, body_env, &[], dst)
+                {
                     let arg_addr = self.mem.alloc(16, 8);
-                    self.mem.store(arg_addr, data as u64, 8);
-                    self.mem.store(arg_addr + 8, bytes.len() as u64, 8);
+                    self.mem.store(arg_addr, ptr as u64, 8);
+                    self.mem.store(arg_addr + 8, len as u64, 8);
                     self.invoke_fn_value(h_idx, h_env, &[arg_addr], dst)?;
                 }
             }
@@ -1770,9 +1775,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             .get("main")
             .unwrap_or_else(|| panic!("no main function"));
         assert!(main_func.params.is_empty(), "main must take no parameters");
-        if let Err(Thrown(bytes)) = self.exec_function_body(main_func, 0) {
+        if let Err(Thrown { ptr, len }) = self.exec_function_body(main_func, 0) {
             // A `throw` that escapes `main` is uncaught; mirror the compiled
             // runtime, which aborts with the message.
+            let bytes = self.mem.data[ptr..ptr + len].to_vec();
             let msg = String::from_utf8_lossy(&bytes);
             panic!("uncaught exception: {msg}");
         }

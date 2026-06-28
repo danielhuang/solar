@@ -649,3 +649,9 @@ fn throw_try() {
         "checked ok\nno throw\ncaught:\ntoo big\ncaught nested:\ntoo big\ndone\n"
     );
 }
+
+#[test]
+fn throw_alias() {
+    let output = run(&fixture("throw_alias.solar"), "throw_alias");
+    assert_eq!(output, "ABC\nZBC\n");
+}

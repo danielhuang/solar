@@ -141,7 +141,7 @@ module.exports = grammar({
 
     // ── Statements ──────────────────────────────────────────
     _statement: ($) =>
-      choice($.let_statement, $.assignment_statement, $.expression_statement, $.if_statement, $.while_statement, $.for_statement, $.reflect_fields_statement, $.reflect_fields_pair_statement, $.reflect_variant_statement, $.reflect_variant_pair_statement, $.return_statement, $.break_statement, $.continue_statement, $.function_def, $.const_def),
+      choice($.let_statement, $.assignment_statement, $.expression_statement, $.if_statement, $.while_statement, $.for_statement, $.reflect_fields_statement, $.reflect_fields_pair_statement, $.reflect_variant_statement, $.reflect_variant_pair_statement, $.return_statement, $.break_statement, $.continue_statement, $.try_statement, $.function_def, $.const_def),
 
     return_statement: ($) =>
       seq("return", field("value", $._expression_with_struct), ";"),
@@ -164,6 +164,18 @@ module.exports = grammar({
 
     while_statement: ($) =>
       seq("while", field("condition", $._expression), field("body", $.block)),
+
+    // `try { … } catch (e) { … }` — desugars in the parser to a call of the
+    // `try` intrinsic with two closures (body `\ { … }`, handler `\ e { … }`).
+    // The binding `e` is a `&[Uint8]` (the thrown message); its type annotation
+    // is optional and, if present, must be `&[Uint8]`.
+    try_statement: ($) =>
+      seq("try", field("body", $.block),
+          "catch", "(",
+          field("binding", $.identifier),
+          optional(seq(":", field("binding_type", $._type))),
+          ")",
+          field("handler", $.block)),
 
     // `loop` is an expression (it can yield a value via `break <v>`), but it may
     // also stand alone as a statement without a trailing semicolon, like `while`.

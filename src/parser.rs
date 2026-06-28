@@ -406,6 +406,58 @@ fn convert_parameter(node: tree_sitter::Node, source: &str) -> Parameter {
     }
 }
 
+/// Desugar `try { body } catch (e[: T]) { handler }` into a call of the `try`
+/// intrinsic with two closures: `intrinsics::try(\ { body }, \ e: &[Uint8] { handler })`.
+/// The handler's parameter type is synthesized as `&[Uint8]` when omitted; an
+/// explicit annotation is kept (and the intrinsic's signature enforces it must
+/// be `&[Uint8]`).
+fn convert_try_statement(node: tree_sitter::Node, source: &str) -> Statement {
+    let span = source_span(node);
+    let body = convert_block(node.child_by_field_name("body").unwrap(), source);
+    let handler_body = convert_block(node.child_by_field_name("handler").unwrap(), source);
+    let binding = node_text(node.child_by_field_name("binding").unwrap(), source).to_string();
+    let binding_ty = match node.child_by_field_name("binding_type") {
+        Some(t) => convert_type(t, source),
+        // `&[Uint8]`
+        None => Type::Reference(Box::new(Type::Slice(Box::new(Type::Named(
+            "Uint8".to_string(),
+        ))))),
+    };
+
+    let body_closure = Expr {
+        kind: ExprKind::Closure {
+            parameters: Vec::new(),
+            return_type: None,
+            body,
+        },
+        span,
+    };
+    let handler_closure = Expr {
+        kind: ExprKind::Closure {
+            parameters: vec![Parameter {
+                pattern: DestructurePattern::Name(binding),
+                ty: binding_ty,
+                default: None,
+                span,
+            }],
+            return_type: None,
+            body: handler_body,
+        },
+        span,
+    };
+
+    Statement {
+        kind: StatementKind::Expression(Expr {
+            kind: ExprKind::IntrinsicCall {
+                intrinsic: Intrinsic::Try,
+                arguments: vec![body_closure, handler_closure],
+            },
+            span,
+        }),
+        span,
+    }
+}
+
 fn convert_closure_parameter(node: tree_sitter::Node, source: &str) -> Parameter {
     let name = node_text(node.child_by_field_name("name").unwrap(), source).to_string();
     let ty = match node.child_by_field_name("type") {
@@ -534,6 +586,7 @@ fn convert_block(node: tree_sitter::Node, source: &str) -> Vec<Statement> {
                 kind: StatementKind::Continue,
                 span: source_span(child),
             }),
+            "try_statement" => stmts.push(convert_try_statement(child, source)),
             "function_def" => {
                 let span = source_span(child);
                 stmts.push(Statement {

@@ -169,3 +169,10 @@ pub fn panic(s: &[Uint8]) {
     intrinsics::panic(s);
 }
 
+// Throw a recoverable exception carrying `s` as its message; it unwinds to the
+// nearest enclosing `try { … } catch (e) { … }` (where `e` binds `s`). Unlike
+// `panic`, a `throw` can be caught.
+pub fn throw(s: &[Uint8]) {
+    intrinsics::throw(s);
+}
+

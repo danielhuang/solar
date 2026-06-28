@@ -37,6 +37,12 @@ fn bad_let() {
 }
 
 #[test]
+#[should_panic(expected = "try: expected fn(&[Uint8]), got fn(Int)")]
+fn try_catch_bad_binding_type() {
+    compile(&fixture("try_catch_bad_binding_type.solar"));
+}
+
+#[test]
 #[should_panic(expected = "type mismatch in argument `n` of takes_int: expected Int, got Foo")]
 fn bad_arg() {
     compile(&fixture("typecheck_bad_arg.solar"));

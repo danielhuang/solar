@@ -1,38 +1,38 @@
-import intrinsics from "@intrinsics";
-
 // Throws when its argument is too big; otherwise returns normally.
+// `throw` is the `@std` wrapper over the intrinsic.
 fn checked(n: Int) {
     if n > 10 {
-        intrinsics::throw("too big"&);
+        throw("too big"&);
     }
     println("checked ok"&);
 }
 
 fn main() {
     // 1. Body completes without throwing — handler not run.
-    intrinsics::try(\ {
+    try {
         checked(3);
         println("no throw"&);
-    }, \ msg: &[Uint8] {
+    } catch (e) {
         println("UNEXPECTED handler"&);
-    });
+    }
 
     // 2. Body throws — handler runs with the message, then control resumes.
-    intrinsics::try(\ {
+    try {
         checked(99);
         println("UNREACHABLE after throw"&);
-    }, \ msg: &[Uint8] {
+    } catch (e) {
         println("caught:"&);
-        println(msg);
-    });
+        println(e);
+    }
 
     // 3. Throw from a nested call across a closure boundary, caught here.
-    intrinsics::try(\ {
+    // (Explicit binding type — must be &[Uint8].)
+    try {
         checked(50);
-    }, \ msg: &[Uint8] {
+    } catch (e: &[Uint8]) {
         println("caught nested:"&);
-        println(msg);
-    });
+        println(e);
+    }
 
     println("done"&);
 }

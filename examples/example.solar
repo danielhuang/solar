@@ -413,6 +413,16 @@ fn main() {
   if nothing == null#[Int] {
     println(0);                          // 0
   }
+
+  // exceptions: `try { … } catch (e) { … }`. A `throw` (carrying a `&[Uint8]`
+  // message) unwinds to the nearest enclosing `catch`; `e` binds the message
+  // (a `&[Uint8]`; an explicit annotation is optional and must be `&[Uint8]`).
+  // Desugars to the `try` intrinsic called with a body and handler closure.
+  try {
+    throw("caught exception"&);
+  } catch (e) {
+    println(e);                          // caught exception
+  }
 }
 
 // works with generics: each instantiation takes its own branch

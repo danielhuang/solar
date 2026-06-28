@@ -110,16 +110,6 @@ fn slice_to_bytes(val: &Value) -> Vec<u8> {
     }
 }
 
-/// Build a `&[Uint8]` value (a ref to a fresh byte array) from raw bytes — the
-/// `try` handler's argument.
-fn bytes_to_slice_value(bytes: &[u8]) -> Value {
-    let slots: Vec<Slot> = bytes
-        .iter()
-        .map(|b| Rc::new(RefCell::new(Value::Int(*b as i64))))
-        .collect();
-    Value::Ref(Rc::new(RefCell::new(Value::Array(slots))))
-}
-
 fn deep_copy_value(val: &Value) -> Value {
     match val {
         Value::Int(n) => Value::Int(*n),
@@ -313,7 +303,7 @@ enum LoopExit {
 /// `Err` of `Eval` through every evaluation step until a `try` handler catches
 /// it (or it escapes `main`, which aborts). This mirrors the compiled backend's
 /// `sol_throw`/`sol_try` (Rust panic + `catch_unwind`).
-struct Thrown(Vec<u8>);
+struct Thrown(Value);
 
 /// Result of any evaluation that may propagate a `throw`.
 type Eval<T> = Result<T, Thrown>;
@@ -1277,18 +1267,18 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 Value::Unit
             }
             Intrinsic::Throw => {
-                // Evaluate the &[Uint8] message and unwind with its bytes.
+                // Unwind carrying the `&[Uint8]` reference itself (not a copy), so
+                // the value `catch` receives aliases the one passed to `throw`.
                 let val = self.eval_expr(&arguments[0])?;
-                return Err(Thrown(slice_to_bytes(&val)));
+                return Err(Thrown(val));
             }
             Intrinsic::Try => {
                 // try(body, handler): run `body`; if it throws, run `handler`
-                // with the thrown message as a `&[Uint8]`.
+                // with the thrown `&[Uint8]` reference (same slot — it aliases).
                 let body = self.eval_expr(&arguments[0])?;
                 let handler = self.eval_expr(&arguments[1])?;
-                if let Err(Thrown(bytes)) = self.call_function_value(body, vec![]) {
-                    let msg = bytes_to_slice_value(&bytes);
-                    self.call_function_value(handler, vec![msg])?;
+                if let Err(Thrown(reference)) = self.call_function_value(body, vec![]) {
+                    self.call_function_value(handler, vec![reference])?;
                 }
                 Value::Unit
             }
@@ -1590,9 +1580,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         self.push_scope();
         let result = self.exec_function_body(&main_func.body, &main_func.return_type);
         self.pop_scope();
-        if let Err(Thrown(bytes)) = result {
+        if let Err(Thrown(reference)) = result {
             // A `throw` that escapes `main` is uncaught; mirror the compiled
             // runtime, which aborts with the message.
+            let bytes = slice_to_bytes(&reference);
             let msg = String::from_utf8_lossy(&bytes);
             panic!("uncaught exception: {msg}");
         }
