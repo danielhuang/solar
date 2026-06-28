@@ -93,6 +93,33 @@ fn cast_numeric_ast(raw: u64, src: &Type, dst: &Type) -> u64 {
     }
 }
 
+/// Extract the bytes of a `&[Uint8]`/`^[Uint8]` value (a ref to a byte array).
+fn slice_to_bytes(val: &Value) -> Vec<u8> {
+    match val {
+        Value::Ref(slot) | Value::Unique(slot) => match &*slot.borrow() {
+            Value::Array(elements) => elements
+                .iter()
+                .map(|s| match &*s.borrow() {
+                    Value::Int(n) => *n as u8,
+                    _ => unreachable!(),
+                })
+                .collect(),
+            _ => unreachable!(),
+        },
+        _ => unreachable!(),
+    }
+}
+
+/// Build a `&[Uint8]` value (a ref to a fresh byte array) from raw bytes — the
+/// `try` handler's argument.
+fn bytes_to_slice_value(bytes: &[u8]) -> Value {
+    let slots: Vec<Slot> = bytes
+        .iter()
+        .map(|b| Rc::new(RefCell::new(Value::Int(*b as i64))))
+        .collect();
+    Value::Ref(Rc::new(RefCell::new(Value::Array(slots))))
+}
+
 fn deep_copy_value(val: &Value) -> Value {
     match val {
         Value::Int(n) => Value::Int(*n),
@@ -282,6 +309,15 @@ enum LoopExit {
     Returned(Value),
 }
 
+/// A propagating Solar `throw`: the thrown message bytes. It unwinds as the
+/// `Err` of `Eval` through every evaluation step until a `try` handler catches
+/// it (or it escapes `main`, which aborts). This mirrors the compiled backend's
+/// `sol_throw`/`sol_try` (Rust panic + `catch_unwind`).
+struct Thrown(Vec<u8>);
+
+/// Result of any evaluation that may propagate a `throw`.
+type Eval<T> = Result<T, Thrown>;
+
 struct Interpreter<'a, 'io> {
     functions: HashMap<String, &'a FunctionDef>,
     scopes: ScopeStack<Slot>,
@@ -322,11 +358,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         )
     }
 
-    fn eval_place(&mut self, expr: &Expr) -> Slot {
-        match &expr.kind {
+    fn eval_place(&mut self, expr: &Expr) -> Eval<Slot> {
+        Ok(match &expr.kind {
             ExprKind::Identifier(name) => self.lookup_var(name),
             ExprKind::FieldAccess { object, field } => {
-                let obj_slot = self.eval_place(object);
+                let obj_slot = self.eval_place(object)?;
                 let obj_ref = obj_slot.borrow();
                 match &*obj_ref {
                     Value::Struct { fields, .. } => Rc::clone(&fields[field.as_str()]),
@@ -334,7 +370,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 }
             }
             ExprKind::Deref(inner) => {
-                let inner_slot = self.eval_place(inner);
+                let inner_slot = self.eval_place(inner)?;
                 let inner_ref = inner_slot.borrow();
                 match &*inner_ref {
                     Value::Ref(target) | Value::Unique(target) => Rc::clone(target),
@@ -343,8 +379,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 }
             }
             ExprKind::Index { object, index } => {
-                let arr_slot = self.eval_place(object);
-                let idx_val = self.eval_expr(index);
+                let arr_slot = self.eval_place(object)?;
+                let idx_val = self.eval_expr(index)?;
                 let idx = match idx_val {
                     Value::Int(n) => n as usize,
                     _ => unreachable!("type checker guarantees integer index"),
@@ -356,12 +392,12 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 }
             }
             ExprKind::Slice { object, start, end } => {
-                let arr_slot = self.eval_place(object);
-                let s = match self.eval_expr(start) {
+                let arr_slot = self.eval_place(object)?;
+                let s = match self.eval_expr(start)? {
                     Value::Int(n) => n as usize,
                     _ => unreachable!(),
                 };
-                let e = match self.eval_expr(end) {
+                let e = match self.eval_expr(end)? {
                     Value::Int(n) => n as usize,
                     _ => unreachable!(),
                 };
@@ -381,18 +417,18 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 then_body,
                 else_body,
             } => {
-                let cond = self.eval_expr(condition);
+                let cond = self.eval_expr(condition)?;
                 let branch = match cond {
                     Value::Int(n) if n != 0 => then_body,
                     _ => else_body,
                 };
                 self.push_scope();
-                let result = self.exec_body_place(branch);
+                let result = self.exec_body_place(branch)?;
                 self.pop_scope();
                 result
             }
             ExprKind::Match { scrutinee, arms } => {
-                let enum_slot = self.eval_place(scrutinee);
+                let enum_slot = self.eval_place(scrutinee)?;
                 let disc = {
                     let val = enum_slot.borrow();
                     match &*val {
@@ -428,24 +464,24 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                             }
                             _ => {}
                         }
-                        let result = self.exec_body_place(&arm.body);
+                        let result = self.exec_body_place(&arm.body)?;
                         self.pop_scope();
-                        return result;
+                        return Ok(result);
                     }
                 }
                 unreachable!("no matching arm in match expression");
             }
             _ => {
-                let val = self.eval_expr(expr);
+                let val = self.eval_expr(expr)?;
                 Rc::new(RefCell::new(val))
             }
-        }
+        })
     }
 
-    fn exec_body_place(&mut self, body: &[Statement]) -> Slot {
+    fn exec_body_place(&mut self, body: &[Statement]) -> Eval<Slot> {
         let (init, tail) = body.split_at(body.len() - 1);
         for stmt in init {
-            self.exec_statement(stmt);
+            self.exec_statement(stmt)?;
         }
         match &tail[0].kind {
             StatementKind::Expression(expr) => self.eval_place(expr),
@@ -453,14 +489,14 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         }
     }
 
-    fn eval_expr(&mut self, expr: &Expr) -> Value {
-        match &expr.kind {
+    fn eval_expr(&mut self, expr: &Expr) -> Eval<Value> {
+        Ok(match &expr.kind {
             ExprKind::Identifier(_)
             | ExprKind::FieldAccess { .. }
             | ExprKind::Deref(_)
             | ExprKind::Index { .. }
             | ExprKind::Slice { .. } => {
-                let slot = self.eval_place(expr);
+                let slot = self.eval_place(expr)?;
                 let val = slot.borrow();
                 deep_copy_value(&val)
             }
@@ -468,15 +504,15 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             ExprKind::BooleanLiteral(b) => Value::Int(if *b { 1 } else { 0 }),
             ExprKind::NullLiteral => Value::Null,
             ExprKind::Reference(inner) => {
-                let slot = self.eval_place(inner);
+                let slot = self.eval_place(inner)?;
                 Value::Ref(slot)
             }
             ExprKind::Unique(inner) => {
-                let val = self.eval_expr(inner);
+                let val = self.eval_expr(inner)?;
                 Value::Unique(Rc::new(RefCell::new(val)))
             }
             ExprKind::Not(inner) => {
-                let val = self.eval_expr(inner);
+                let val = self.eval_expr(inner)?;
                 match val {
                     Value::Int(v) if inner.ty.is_integer() => {
                         // Bitwise complement, masked to the operand's width.
@@ -505,7 +541,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             ExprKind::StructLiteral { name, fields } => {
                 let mut field_map = HashMap::new();
                 for fi in fields {
-                    let val = self.eval_expr(&fi.value);
+                    let val = self.eval_expr(&fi.value)?;
                     field_map.insert(fi.name.clone(), Rc::new(RefCell::new(val)));
                 }
                 Value::Struct {
@@ -514,18 +550,16 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 }
             }
             ExprKind::ArrayLiteral(elements) => {
-                let slots = elements
-                    .iter()
-                    .map(|e| {
-                        let val = self.eval_expr(e);
-                        Rc::new(RefCell::new(val))
-                    })
-                    .collect();
+                let mut slots = Vec::with_capacity(elements.len());
+                for e in elements {
+                    let val = self.eval_expr(e)?;
+                    slots.push(Rc::new(RefCell::new(val)));
+                }
                 Value::Array(slots)
             }
             ExprKind::ArrayRepeat { element, count } => {
-                let elem_val = self.eval_expr(element);
-                let n = match self.eval_expr(count) {
+                let elem_val = self.eval_expr(element)?;
+                let n = match self.eval_expr(count)? {
                     Value::Int(n) => n as usize,
                     _ => unreachable!(),
                 };
@@ -536,11 +570,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 Value::Array(slots)
             }
             ExprKind::ArrayInit { count, init } => {
-                let n = match self.eval_expr(count) {
+                let n = match self.eval_expr(count)? {
                     Value::Int(n) => n as usize,
                     _ => unreachable!(),
                 };
-                let init_val = self.eval_expr(init);
+                let init_val = self.eval_expr(init)?;
                 let (func_name, captured_slots) = match init_val {
                     Value::Function { name, captures } => (name, captures),
                     _ => unreachable!("array init must be a function"),
@@ -559,14 +593,14 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                         func_def.parameters[0].name.clone(),
                         Rc::new(RefCell::new(Value::Int(i as i64))),
                     );
-                    let result = self.exec_function_body(&func_def.body, &func_def.return_type);
+                    let result = self.exec_function_body(&func_def.body, &func_def.return_type)?;
                     self.pop_scope();
                     slots.push(Rc::new(RefCell::new(result)));
                 }
                 Value::Array(slots)
             }
             ExprKind::ArraySizeCoerce { expr, size } => {
-                let val = self.eval_expr(expr);
+                let val = self.eval_expr(expr)?;
                 match &val {
                     Value::Array(elements) => {
                         assert!(
@@ -584,23 +618,23 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 use crate::ast::BinOp;
                 match op {
                     BinOp::And => {
-                        let lv = self.eval_expr(left);
+                        let lv = self.eval_expr(left)?;
                         match lv {
                             Value::Int(0) => Value::Int(0),
-                            _ => self.eval_expr(right),
+                            _ => self.eval_expr(right)?,
                         }
                     }
                     BinOp::Or => {
-                        let lv = self.eval_expr(left);
+                        let lv = self.eval_expr(left)?;
                         match lv {
-                            Value::Int(0) => self.eval_expr(right),
+                            Value::Int(0) => self.eval_expr(right)?,
                             _ => lv,
                         }
                     }
                     _ => {
                         let unsigned = left.ty.is_unsigned();
-                        let lv = self.eval_expr(left);
-                        let rv = self.eval_expr(right);
+                        let lv = self.eval_expr(left)?;
+                        let rv = self.eval_expr(right)?;
                         match (&lv, &rv) {
                             (Value::Int(a), Value::Int(b)) if unsigned => {
                                 // Unsigned operands are stored as u64 bit patterns in i64
@@ -771,19 +805,19 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 then_body,
                 else_body,
             } => {
-                let cond = self.eval_expr(condition);
+                let cond = self.eval_expr(condition)?;
                 let branch = match cond {
                     Value::Int(n) if n != 0 => then_body,
                     _ => else_body,
                 };
                 self.push_scope();
-                let result = self.exec_function_body(branch, &expr.ty);
+                let result = self.exec_function_body(branch, &expr.ty)?;
                 self.pop_scope();
                 result
             }
             ExprKind::Block(stmts) => {
                 self.push_scope();
-                let result = self.exec_function_body(stmts, &expr.ty);
+                let result = self.exec_function_body(stmts, &expr.ty)?;
                 self.pop_scope();
                 result
             }
@@ -791,7 +825,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 // Loop expression: its value comes from `break <v>`. (As with
                 // other expression-position bodies, `return` inside is not
                 // propagated by the interpreter.)
-                match self.run_loop(body) {
+                match self.run_loop(body)? {
                     LoopExit::Broke(v) => v,
                     LoopExit::Returned(v) => v,
                 }
@@ -802,10 +836,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 variant_index,
                 value,
             } => {
-                let val_slot = value.as_ref().map(|v| {
-                    let val = self.eval_expr(v);
-                    Rc::new(RefCell::new(val))
-                });
+                let val_slot = match value.as_ref() {
+                    Some(v) => Some(Rc::new(RefCell::new(self.eval_expr(v)?))),
+                    None => None,
+                };
                 Value::Enum {
                     enum_name: enum_name.clone(),
                     variant_name: variant_name.clone(),
@@ -815,7 +849,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             }
             ExprKind::Match { scrutinee, arms } => {
                 // Get the scrutinee as a place (shared slot)
-                let enum_slot = self.eval_place(scrutinee);
+                let enum_slot = self.eval_place(scrutinee)?;
                 let disc = {
                     let val = enum_slot.borrow();
                     match &*val {
@@ -853,9 +887,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                             }
                             _ => {}
                         }
-                        let result = self.exec_function_body(&arm.body, &expr.ty);
+                        let result = self.exec_function_body(&arm.body, &expr.ty)?;
                         self.pop_scope();
-                        return result;
+                        return Ok(result);
                     }
                 }
                 unreachable!("no matching arm in match expression");
@@ -873,21 +907,24 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     .get(function.as_str())
                     .unwrap_or_else(|| panic!("undefined function: {function}"));
 
-                let arg_values: Vec<Value> = arguments.iter().map(|a| self.eval_expr(a)).collect();
+                let mut arg_values: Vec<Value> = Vec::with_capacity(arguments.len());
+                for a in arguments {
+                    arg_values.push(self.eval_expr(a)?);
+                }
 
                 self.push_scope();
                 for (param, val) in func_def.parameters.iter().zip(arg_values) {
                     self.define_var(param.name.clone(), Rc::new(RefCell::new(val)));
                 }
 
-                let result = self.exec_function_body(&func_def.body, &func_def.return_type);
+                let result = self.exec_function_body(&func_def.body, &func_def.return_type)?;
                 self.pop_scope();
                 result
             }
             ExprKind::IntrinsicCall {
                 intrinsic,
                 arguments,
-            } => self.exec_intrinsic(intrinsic, arguments, &expr.ty),
+            } => self.exec_intrinsic(intrinsic, arguments, &expr.ty)?,
             ExprKind::Closure {
                 synthetic_fn,
                 captures,
@@ -905,7 +942,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 }
             }
             ExprKind::CallIndirect { callee, arguments } => {
-                let callee_val = self.eval_expr(callee);
+                let callee_val = self.eval_expr(callee)?;
                 let (func_name, captured_slots) = match callee_val {
                     Value::Function { name, captures } => (name, captures),
                     _ => unreachable!("type checker guarantees function"),
@@ -916,7 +953,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     .get(func_name.as_str())
                     .unwrap_or_else(|| panic!("undefined function: {func_name}"));
 
-                let arg_values: Vec<Value> = arguments.iter().map(|a| self.eval_expr(a)).collect();
+                let mut arg_values: Vec<Value> = Vec::with_capacity(arguments.len());
+                for a in arguments {
+                    arg_values.push(self.eval_expr(a)?);
+                }
 
                 self.push_scope();
                 // Define captured variables first (shared slots from enclosing scope)
@@ -927,11 +967,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     self.define_var(param.name.clone(), Rc::new(RefCell::new(val)));
                 }
 
-                let result = self.exec_function_body(&func_def.body, &func_def.return_type);
+                let result = self.exec_function_body(&func_def.body, &func_def.return_type)?;
                 self.pop_scope();
                 result
             }
-        }
+        })
     }
 
     fn exec_intrinsic(
@@ -939,10 +979,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         intrinsic: &Intrinsic,
         arguments: &[Expr],
         result_ty: &Type,
-    ) -> Value {
-        match intrinsic {
+    ) -> Eval<Value> {
+        Ok(match intrinsic {
             Intrinsic::Panic => {
-                let val = self.eval_expr(&arguments[0]);
+                let val = self.eval_expr(&arguments[0])?;
                 match &val {
                     Value::Ref(slot) | Value::Unique(slot) => {
                         let inner = slot.borrow();
@@ -968,7 +1008,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 }
             }
             Intrinsic::FileOpen => {
-                let val = self.eval_expr(&arguments[0]);
+                let val = self.eval_expr(&arguments[0])?;
                 let bytes: Vec<u8> = match &val {
                     Value::Ref(slot) | Value::Unique(slot) => match &*slot.borrow() {
                         Value::Array(elements) => elements
@@ -983,11 +1023,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     _ => unreachable!(),
                 };
                 let path = String::from_utf8_lossy(&bytes).into_owned();
-                let flags = match self.eval_expr(&arguments[1]) {
+                let flags = match self.eval_expr(&arguments[1])? {
                     Value::Int(n) => n,
                     _ => unreachable!(),
                 };
-                let mode = match self.eval_expr(&arguments[2]) {
+                let mode = match self.eval_expr(&arguments[2])? {
                     Value::Int(n) => n as u32,
                     _ => unreachable!(),
                 };
@@ -999,17 +1039,17 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             Intrinsic::FileClose => {
                 // The virtual table keeps the stream alive (no auto-close in the
                 // interpreters); evaluate the argument for any side effects.
-                self.eval_expr(&arguments[0]);
+                self.eval_expr(&arguments[0])?;
                 Value::Unit
             }
             Intrinsic::FileStdin => Value::Int(STDIN as i64),
             Intrinsic::FileStdout => Value::Int(STDOUT as i64),
             Intrinsic::FileRead => {
-                let fd = match self.eval_expr(&arguments[0]) {
+                let fd = match self.eval_expr(&arguments[0])? {
                     Value::Int(n) => n as usize,
                     _ => unreachable!(),
                 };
-                let dst = self.eval_expr(&arguments[1]);
+                let dst = self.eval_expr(&arguments[1])?;
                 match &dst {
                     Value::Ref(slot) | Value::Unique(slot) => match &*slot.borrow() {
                         Value::Array(elements) => {
@@ -1026,11 +1066,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 }
             }
             Intrinsic::FileWritePartial => {
-                let fd = match self.eval_expr(&arguments[0]) {
+                let fd = match self.eval_expr(&arguments[0])? {
                     Value::Int(n) => n as usize,
                     _ => unreachable!(),
                 };
-                let src = self.eval_expr(&arguments[1]);
+                let src = self.eval_expr(&arguments[1])?;
                 let bytes: Vec<u8> = match &src {
                     Value::Ref(slot) | Value::Unique(slot) => match &*slot.borrow() {
                         Value::Array(elements) => elements
@@ -1048,7 +1088,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 Value::Int(n as i64)
             }
             Intrinsic::ArrayLen => {
-                let arr = self.eval_expr(&arguments[0]);
+                let arr = self.eval_expr(&arguments[0])?;
                 match arr {
                     Value::Array(elements) => Value::Int(elements.len() as i64),
                     _ => unreachable!(),
@@ -1056,7 +1096,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             }
             Intrinsic::U64FromLe | Intrinsic::U32FromLe => {
                 // Decode the `[Uint8; N]` argument as a little-endian integer.
-                let arr = self.eval_expr(&arguments[0]);
+                let arr = self.eval_expr(&arguments[0])?;
                 match arr {
                     Value::Array(elements) => {
                         let mut v: u64 = 0;
@@ -1075,7 +1115,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             Intrinsic::SimdMatchByteX16 | Intrinsic::SimdMatchHighBitX16 => {
                 // Scalar reference for the SSE2 group scan: build the compact
                 // match mask (bit i <-> lane i) over the 16-lane byte vector.
-                let arr = self.eval_expr(&arguments[0]);
+                let arr = self.eval_expr(&arguments[0])?;
                 let elements = match arr {
                     Value::Array(e) => e,
                     _ => unreachable!("simd group scan: expected [Uint8; 16]"),
@@ -1087,7 +1127,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 };
                 let mut mask: u64 = 0;
                 if matches!(intrinsic, Intrinsic::SimdMatchByteX16) {
-                    let tag = match self.eval_expr(&arguments[1]) {
+                    let tag = match self.eval_expr(&arguments[1])? {
                         Value::Int(n) => n as u8,
                         _ => unreachable!(),
                     };
@@ -1106,8 +1146,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 Value::Int(mask as i64)
             }
             Intrinsic::AssertArrayLen => {
-                let arr = self.eval_expr(&arguments[0]);
-                let expected = self.eval_expr(&arguments[1]);
+                let arr = self.eval_expr(&arguments[0])?;
+                let expected = self.eval_expr(&arguments[1])?;
                 let expected_len = match expected {
                     Value::Int(n) => n as usize,
                     _ => unreachable!(),
@@ -1127,7 +1167,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             }
             Intrinsic::AtomicLoad => {
                 // In single-threaded interpreter, atomic load is just a deref
-                let val = self.eval_expr(&arguments[0]);
+                let val = self.eval_expr(&arguments[0])?;
                 match val {
                     Value::Ref(slot) => deep_copy_value(&slot.borrow()),
                     _ => unreachable!("atomic_load: expected ref"),
@@ -1135,8 +1175,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             }
             Intrinsic::AtomicStore => {
                 // In single-threaded interpreter, atomic store is just a write through ref
-                let ptr_val = self.eval_expr(&arguments[0]);
-                let new_val = self.eval_expr(&arguments[1]);
+                let ptr_val = self.eval_expr(&arguments[0])?;
+                let new_val = self.eval_expr(&arguments[1])?;
                 match ptr_val {
                     Value::Ref(slot) => {
                         *slot.borrow_mut() = new_val;
@@ -1147,8 +1187,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             }
             Intrinsic::AtomicExchange => {
                 // In single-threaded interpreter, exchange is load old + store new
-                let ptr_val = self.eval_expr(&arguments[0]);
-                let new_val = self.eval_expr(&arguments[1]);
+                let ptr_val = self.eval_expr(&arguments[0])?;
+                let new_val = self.eval_expr(&arguments[1])?;
                 match ptr_val {
                     Value::Ref(slot) => {
                         let old = deep_copy_value(&slot.borrow());
@@ -1160,9 +1200,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             }
             Intrinsic::AtomicCompareExchange => {
                 // In single-threaded interpreter, CAS is load + conditional store
-                let ptr_val = self.eval_expr(&arguments[0]);
-                let expected = self.eval_expr(&arguments[1]);
-                let new_val = self.eval_expr(&arguments[2]);
+                let ptr_val = self.eval_expr(&arguments[0])?;
+                let expected = self.eval_expr(&arguments[1])?;
+                let new_val = self.eval_expr(&arguments[2])?;
                 match ptr_val {
                     Value::Ref(slot) => {
                         let old = deep_copy_value(&slot.borrow());
@@ -1182,7 +1222,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             }
             Intrinsic::CountTrailingZeros | Intrinsic::CountLeadingZeros | Intrinsic::CountOnes => {
                 let width = arguments[0].ty.int_bit_width();
-                let val = self.eval_expr(&arguments[0]);
+                let val = self.eval_expr(&arguments[0])?;
                 let raw = match val {
                     Value::Int(n) => n as u64,
                     _ => unreachable!(),
@@ -1220,13 +1260,13 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     Value::Int(n) => *n as u64,
                     _ => unreachable!("carrying_mul_add: expected integer"),
                 };
-                let a = as_u64(&self.eval_expr(&arguments[0]));
-                let b = as_u64(&self.eval_expr(&arguments[1]));
-                let carry = as_u64(&self.eval_expr(&arguments[2]));
-                let add = as_u64(&self.eval_expr(&arguments[3]));
+                let a = as_u64(&self.eval_expr(&arguments[0])?);
+                let b = as_u64(&self.eval_expr(&arguments[1])?);
+                let carry = as_u64(&self.eval_expr(&arguments[2])?);
+                let add = as_u64(&self.eval_expr(&arguments[3])?);
                 let (lo_val, hi_val) = a.carrying_mul_add(b, carry, add);
-                let lo = self.eval_expr(&arguments[4]);
-                let hi = self.eval_expr(&arguments[5]);
+                let lo = self.eval_expr(&arguments[4])?;
+                let hi = self.eval_expr(&arguments[5])?;
                 match (lo, hi) {
                     (Value::Ref(lo_slot), Value::Ref(hi_slot)) => {
                         *lo_slot.borrow_mut() = Value::Int(lo_val as i64);
@@ -1236,8 +1276,24 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 }
                 Value::Unit
             }
+            Intrinsic::Throw => {
+                // Evaluate the &[Uint8] message and unwind with its bytes.
+                let val = self.eval_expr(&arguments[0])?;
+                return Err(Thrown(slice_to_bytes(&val)));
+            }
+            Intrinsic::Try => {
+                // try(body, handler): run `body`; if it throws, run `handler`
+                // with the thrown message as a `&[Uint8]`.
+                let body = self.eval_expr(&arguments[0])?;
+                let handler = self.eval_expr(&arguments[1])?;
+                if let Err(Thrown(bytes)) = self.call_function_value(body, vec![]) {
+                    let msg = bytes_to_slice_value(&bytes);
+                    self.call_function_value(handler, vec![msg])?;
+                }
+                Value::Unit
+            }
             Intrinsic::Cast(_, _) => {
-                let val = self.eval_expr(&arguments[0]);
+                let val = self.eval_expr(&arguments[0])?;
                 let src_ty = &arguments[0].ty;
                 match val {
                     Value::Int(n) => {
@@ -1248,20 +1304,43 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     _ => unreachable!(),
                 }
             }
+        })
+    }
+
+    /// Call a Solar function value (closure) with already-evaluated arguments,
+    /// propagating a `throw` from its body. Used by `CallIndirect` and `try`.
+    fn call_function_value(&mut self, callee: Value, args: Vec<Value>) -> Eval<Value> {
+        let (func_name, captured_slots) = match callee {
+            Value::Function { name, captures } => (name, captures),
+            _ => unreachable!("type checker guarantees function"),
+        };
+        let func_def = *self
+            .functions
+            .get(func_name.as_str())
+            .unwrap_or_else(|| panic!("undefined function: {func_name}"));
+        self.push_scope();
+        for (name, slot) in &captured_slots {
+            self.define_var(name.clone(), Rc::clone(slot));
         }
+        for (param, val) in func_def.parameters.iter().zip(args) {
+            self.define_var(param.name.clone(), Rc::new(RefCell::new(val)));
+        }
+        let result = self.exec_function_body(&func_def.body, &func_def.return_type);
+        self.pop_scope();
+        result
     }
 
     /// Execute one statement, returning how control flow should proceed.
-    fn exec_statement(&mut self, stmt: &Statement) -> Flow {
-        match &stmt.kind {
+    fn exec_statement(&mut self, stmt: &Statement) -> Eval<Flow> {
+        Ok(match &stmt.kind {
             StatementKind::Let { name, value, .. } => {
-                let val = self.eval_expr(value);
+                let val = self.eval_expr(value)?;
                 self.define_var(name.clone(), Rc::new(RefCell::new(val)));
                 Flow::Normal
             }
             StatementKind::Assignment { target, value } => {
-                let val = self.eval_expr(value);
-                let slot = self.eval_place(target);
+                let val = self.eval_expr(value)?;
+                let slot = self.eval_place(target)?;
                 assign_value_in_place(&slot, val);
                 Flow::Normal
             }
@@ -1270,20 +1349,20 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 body,
                 else_body,
             } => {
-                let val = self.eval_expr(condition);
+                let val = self.eval_expr(condition)?;
                 match val {
                     Value::Int(n) if n != 0 => {
                         self.push_scope();
                         let flow = self.exec_body(body);
                         self.pop_scope();
-                        flow
+                        flow?
                     }
                     _ => {
                         if !else_body.is_empty() {
                             self.push_scope();
                             let flow = self.exec_body(else_body);
                             self.pop_scope();
-                            flow
+                            flow?
                         } else {
                             Flow::Normal
                         }
@@ -1291,14 +1370,14 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 }
             }
             StatementKind::While { condition, body } => loop {
-                let val = self.eval_expr(condition);
+                let val = self.eval_expr(condition)?;
                 match val {
                     Value::Int(n) if n != 0 => {
                         self.push_scope();
                         let flow = self.exec_body(body);
                         self.pop_scope();
-                        match flow {
-                            Flow::Return(v) => return Flow::Return(v),
+                        match flow? {
+                            Flow::Return(v) => return Ok(Flow::Return(v)),
                             Flow::Break(_) => break Flow::Normal,
                             // A `continue` or fall-through starts the next iteration.
                             Flow::Continue | Flow::Normal => {}
@@ -1314,7 +1393,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     ExprKind::Loop(body) => body,
                     _ => unreachable!(),
                 };
-                match self.run_loop(body) {
+                match self.run_loop(body)? {
                     LoopExit::Returned(v) => Flow::Return(v),
                     LoopExit::Broke(_) => Flow::Normal,
                 }
@@ -1332,20 +1411,20 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     } => (condition, then_body, else_body),
                     _ => unreachable!(),
                 };
-                let val = self.eval_expr(condition);
+                let val = self.eval_expr(condition)?;
                 match val {
                     Value::Int(n) if n != 0 => {
                         self.push_scope();
                         let flow = self.exec_body(then_body);
                         self.pop_scope();
-                        flow
+                        flow?
                     }
                     _ => {
                         if !else_body.is_empty() {
                             self.push_scope();
                             let flow = self.exec_body(else_body);
                             self.pop_scope();
-                            flow
+                            flow?
                         } else {
                             Flow::Normal
                         }
@@ -1353,7 +1432,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 }
             }
             StatementKind::Expression(expr) if matches!(expr.kind, ExprKind::Match { .. }) => {
-                self.exec_match_stmt(expr)
+                self.exec_match_stmt(expr)?
             }
             // A bare block expression (e.g. a `match`/`if` arm body `{ break; }`)
             // in statement position propagates control flow from its statements.
@@ -1365,30 +1444,33 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 self.push_scope();
                 let flow = self.exec_body(body);
                 self.pop_scope();
-                flow
+                flow?
             }
             StatementKind::Expression(expr) => {
-                self.eval_expr(expr);
+                self.eval_expr(expr)?;
                 Flow::Normal
             }
             StatementKind::Return(expr) => {
-                let val = self.eval_expr(expr);
+                let val = self.eval_expr(expr)?;
                 Flow::Return(val)
             }
-            StatementKind::Break(value) => Flow::Break(value.as_ref().map(|v| self.eval_expr(v))),
+            StatementKind::Break(value) => Flow::Break(match value.as_ref() {
+                Some(v) => Some(self.eval_expr(v)?),
+                None => None,
+            }),
             StatementKind::Continue => Flow::Continue,
-        }
+        })
     }
 
     /// Execute a statement-position `match`, propagating control flow out of the
     /// taken arm (its value is discarded). Mirrors the `Match` value evaluation
     /// but runs the arm body with `exec_body`.
-    fn exec_match_stmt(&mut self, expr: &Expr) -> Flow {
+    fn exec_match_stmt(&mut self, expr: &Expr) -> Eval<Flow> {
         let (scrutinee, arms) = match &expr.kind {
             ExprKind::Match { scrutinee, arms } => (scrutinee, arms),
             _ => unreachable!(),
         };
-        let enum_slot = self.eval_place(scrutinee);
+        let enum_slot = self.eval_place(scrutinee)?;
         let disc = {
             let val = enum_slot.borrow();
             match &*val {
@@ -1433,33 +1515,33 @@ impl<'a, 'io> Interpreter<'a, 'io> {
     }
 
     /// Run a `loop` body until it breaks or returns.
-    fn run_loop(&mut self, body: &[Statement]) -> LoopExit {
+    fn run_loop(&mut self, body: &[Statement]) -> Eval<LoopExit> {
         loop {
             self.push_scope();
             let flow = self.exec_body(body);
             self.pop_scope();
-            match flow {
-                Flow::Break(v) => return LoopExit::Broke(v.unwrap_or(Value::Unit)),
-                Flow::Return(v) => return LoopExit::Returned(v),
+            match flow? {
+                Flow::Break(v) => return Ok(LoopExit::Broke(v.unwrap_or(Value::Unit))),
+                Flow::Return(v) => return Ok(LoopExit::Returned(v)),
                 Flow::Continue | Flow::Normal => {}
             }
         }
     }
 
     /// Execute a list of statements, propagating any early exit.
-    fn exec_body(&mut self, body: &[Statement]) -> Flow {
+    fn exec_body(&mut self, body: &[Statement]) -> Eval<Flow> {
         for stmt in body {
-            match self.exec_statement(stmt) {
+            match self.exec_statement(stmt)? {
                 Flow::Normal => {}
-                flow => return flow,
+                flow => return Ok(flow),
             }
         }
-        Flow::Normal
+        Ok(Flow::Normal)
     }
 
     /// Execute a function body, returning the function's return value.
     /// If return_type is non-Unit, the last Expression statement is the implicit return.
-    fn exec_function_body(&mut self, body: &[Statement], return_type: &Type) -> Value {
+    fn exec_function_body(&mut self, body: &[Statement], return_type: &Type) -> Eval<Value> {
         let has_tail = *return_type != Type::Unit
             && body
                 .last()
@@ -1474,8 +1556,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
 
         // Execute all statements before the tail
         for stmt in init {
-            match self.exec_statement(stmt) {
-                Flow::Return(val) => return val, // early return
+            match self.exec_statement(stmt)? {
+                Flow::Return(val) => return Ok(val), // early return
                 Flow::Normal => {}
                 Flow::Break(_) => unreachable!("break outside loop"),
                 Flow::Continue => unreachable!("continue outside loop"),
@@ -1490,7 +1572,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         {
             self.eval_expr(expr)
         } else {
-            Value::Unit
+            Ok(Value::Unit)
         }
     }
 
@@ -1506,8 +1588,14 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         );
 
         self.push_scope();
-        self.exec_function_body(&main_func.body, &main_func.return_type);
+        let result = self.exec_function_body(&main_func.body, &main_func.return_type);
         self.pop_scope();
+        if let Err(Thrown(bytes)) = result {
+            // A `throw` that escapes `main` is uncaught; mirror the compiled
+            // runtime, which aborts with the message.
+            let msg = String::from_utf8_lossy(&bytes);
+            panic!("uncaught exception: {msg}");
+        }
     }
 }
 

@@ -167,6 +167,10 @@ fn compile_debug(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
             "-fsanitize=address",
             "-fno-omit-frame-pointer",
             "-g",
+            // Emit unwind tables and don't mark functions `nounwind`, so a Solar
+            // `throw` (a Rust panic from `sol_throw`) can unwind back through
+            // these C frames to the nearest `sol_try` / `catch_unwind`.
+            "-fexceptions",
             // No write-barrier pass in this pipeline, so force bump-allocator
             // mode (codegen guards the `sol_disable_gc()` call on this macro).
             "-DSOLAR_DEBUG_DISABLE_GC",
@@ -294,7 +298,17 @@ fn compile_release(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
     eprintln!("=== Compiling generated C to bitcode ===");
     let c_bc = dir.join(format!("{name}_c.bc"));
     {
-        let mut clang_args = vec!["-flto=full", "-c", "-march=native", "-O3", "-g"];
+        // `-fexceptions`: emit unwind tables and keep functions unwindable (not
+        // `nounwind`) so a Solar `throw` can unwind through these C frames to the
+        // nearest `sol_try` (`catch_unwind`). Without it C frames abort the unwind.
+        let mut clang_args = vec![
+            "-flto=full",
+            "-fexceptions",
+            "-c",
+            "-march=native",
+            "-O3",
+            "-g",
+        ];
         if ATTRIBUTOR_ENABLE_ALL {
             clang_args.extend(["-mllvm", "-attributor-enable=all"]);
         }

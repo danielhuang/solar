@@ -284,8 +284,18 @@ pub unsafe extern "C" fn sol_panic(msg: *const u8, len: usize) -> ! {
 
 /// Install a panic hook that uses `sol_panic_internal` for nice Solar stack traces.
 /// Called from `sol_start`.
+///
+/// A Solar `throw` (a `SolarException` payload) is deliberately skipped: it is a
+/// recoverable unwind meant to be caught by `sol_try`, so the hook must let it
+/// propagate rather than print a trace and abort. Every other payload is a real
+/// panic — print the Solar backtrace and abort, as before. (If the throw is
+/// never caught, the unwind reaches `sol_try`'s outer frame / thread entry and
+/// aborts there.)
 pub fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
+        if info.payload().is::<SolarException>() {
+            return;
+        }
         let msg = if let Some(s) = info.payload().downcast_ref::<&str>() {
             s.to_string()
         } else if let Some(s) = info.payload().downcast_ref::<String>() {
@@ -295,6 +305,79 @@ pub fn install_panic_hook() {
         };
         sol_panic_internal(&msg);
     }));
+}
+
+/// The payload of a Solar `throw`: the thrown message, copied into Rust-owned
+/// memory so it survives the unwind regardless of the GC (the source `&[Uint8]`
+/// may be a GC slice that becomes unreachable once the throwing frame unwinds).
+struct SolarException {
+    ptr: *const u8,
+    len: usize,
+}
+
+// The payload is moved through `panic_any` (which requires `Send`) but only ever
+// within a single thread's unwind — it is never actually sent across threads.
+unsafe impl Send for SolarException {}
+
+/// A Solar `&[Uint8]` slice (fat pointer) passed by value across the FFI ABI:
+/// 16 bytes, two integer eightbytes, matching codegen's `_v16_8`.
+#[repr(C)]
+pub struct SolSlice {
+    ptr: *const u8,
+    len: usize,
+}
+
+/// `throw msg`: unwind the stack with `msg` (a `&[Uint8]`, possibly a GC slice)
+/// as a `SolarException`. `extern "C-unwind"` so the unwind may legally pass back
+/// through the generated C frames to the nearest `sol_try`.
+///
+/// The message is carried by raw pointer — no copy. While unwinding it lives only
+/// in the panic payload, off the conservatively-scanned mutator stack, so a
+/// concurrent GC could otherwise reclaim it. We hold a GC critical section across
+/// the unwind (it blocks any cycle from completing — see `gc::signal_and_wait`);
+/// `sol_try` releases it once the pointer is back in a stack local.
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_throw(ptr: *const u8, len: usize) -> ! {
+    let slot = crate::gc::MY_SLOT.get();
+    if !slot.is_null() {
+        unsafe { crate::gc::begin_critical_section(&*slot) };
+    }
+    std::panic::panic_any(SolarException { ptr, len });
+}
+
+/// `try(body, handler)`: run `body`; if it throws, run `handler` with the thrown
+/// message. Both are Solar function values split into (code ptr, env ptr).
+/// `catch_unwind` catches the `throw`; any other panic (a real, fatal one) is
+/// re-raised so it still aborts even inside a `try`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_try(
+    body_fn: unsafe extern "C-unwind" fn(*mut std::ffi::c_void),
+    body_env: *mut std::ffi::c_void,
+    handler_fn: unsafe extern "C-unwind" fn(*mut std::ffi::c_void, SolSlice),
+    handler_env: *mut std::ffi::c_void,
+) {
+    let body = std::panic::AssertUnwindSafe(|| unsafe { body_fn(body_env) });
+    if let Err(payload) = std::panic::catch_unwind(body) {
+        match payload.downcast::<SolarException>() {
+            Ok(exc) => {
+                // Reading the pointer into this stack local re-roots it (the
+                // conservative stack scan covers `slice`). Now we can release the
+                // critical section `sol_throw` entered and let the GC run again
+                // before the handler — which receives the original GC slice and
+                // keeps it rooted as its argument.
+                let slice = SolSlice {
+                    ptr: exc.ptr,
+                    len: exc.len,
+                };
+                let slot = crate::gc::MY_SLOT.get();
+                if !slot.is_null() {
+                    unsafe { crate::gc::end_critical_section(&*slot) };
+                }
+                unsafe { handler_fn(handler_env, slice) };
+            }
+            Err(other) => std::panic::resume_unwind(other),
+        }
+    }
 }
 
 #[cfg(test)]

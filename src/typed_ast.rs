@@ -7140,11 +7140,31 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
             return_type: Box::new(Type::Unit),
         })
     };
+    // `fn(&[Uint8])` — the `try` exception handler: takes the thrown message.
+    let fn_byte_slice = || {
+        Exact(Type::Function {
+            params: vec![Type::RefUnsized(Box::new(Type::Array(Box::new(
+                Type::Uint8,
+            ))))],
+            return_type: Box::new(Type::Unit),
+        })
+    };
 
     match intrinsic {
         ast::Intrinsic::Panic => IntrinsicSpec {
             params: vec![byte_slice()],
             ret: Fixed(Type::Never),
+        },
+        // throw(msg: &[Uint8]): unwind with a string payload; diverges.
+        ast::Intrinsic::Throw => IntrinsicSpec {
+            params: vec![byte_slice()],
+            ret: Fixed(Type::Never),
+        },
+        // try(body: fn(), handler: fn(&[Uint8])): run `body`; if it throws,
+        // run `handler` with the thrown message.
+        ast::Intrinsic::Try => IntrinsicSpec {
+            params: vec![fn_unit(), fn_byte_slice()],
+            ret: Fixed(Type::Unit),
         },
         ast::Intrinsic::Cast(from_nt, to_nt) => IntrinsicSpec {
             params: vec![Exact(from_nt.into())],

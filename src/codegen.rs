@@ -582,6 +582,10 @@ impl<'a> Codegen<'a> {
         self.line("extern void sol_start(void (*solar_main)(void*));");
         self.line("extern void sol_disable_gc(void);");
         self.line("extern void sol_thread_spawn(void* fn_ptr, void* env);");
+        self.line("extern void sol_throw(const uint8_t* ptr, size_t len);");
+        self.line(
+            "extern void sol_try(void* body_fn, void* body_env, void* handler_fn, void* handler_env);",
+        );
         // Tear-free but UNORDERED 16-byte moves: give a concurrent reader / the GC
         // marker a non-torn `{ptr,len}`, with no inter-thread ordering. Used only for
         // plain value copies (`a = b`) of fat pointers / function values. Real atomics
@@ -2246,6 +2250,36 @@ impl<'a> Codegen<'a> {
                     "uint64_t {data_len} = *(uint64_t*)({ref_place} + 8);"
                 ));
                 self.linef(format!("sol_panic({data_ptr}, {data_len});"));
+            }
+            Intrinsic::Throw => {
+                // arg[0] is a &[Uint8] fat pointer (ptr + len). Unwind with it.
+                let (ref_place, _) = self.emit_place(nodes, args[0]);
+                let data_ptr = self.fresh_tmp();
+                let data_len = self.fresh_tmp();
+                self.linef(format!("uint8_t* {data_ptr} = *(uint8_t**){ref_place};"));
+                self.linef(format!(
+                    "uint64_t {data_len} = *(uint64_t*)({ref_place} + 8);"
+                ));
+                self.linef(format!("sol_throw({data_ptr}, {data_len});"));
+            }
+            Intrinsic::Try => {
+                // args are two 16-byte function values (code ptr + env ptr):
+                // [0] body fn(), [1] handler fn(&[Uint8]).
+                let (body_place, _) = self.emit_place(nodes, args[0]);
+                let (handler_place, _) = self.emit_place(nodes, args[1]);
+                let body_fn = self.fresh_tmp();
+                let body_env = self.fresh_tmp();
+                let handler_fn = self.fresh_tmp();
+                let handler_env = self.fresh_tmp();
+                self.linef(format!("void* {body_fn} = *(void**){body_place};"));
+                self.linef(format!("void* {body_env} = *(void**)({body_place} + 8);"));
+                self.linef(format!("void* {handler_fn} = *(void**){handler_place};"));
+                self.linef(format!(
+                    "void* {handler_env} = *(void**)({handler_place} + 8);"
+                ));
+                self.linef(format!(
+                    "sol_try({body_fn}, {body_env}, {handler_fn}, {handler_env});"
+                ));
             }
             Intrinsic::FileOpen => {
                 // args: &[Uint8] path (fat pointer), Int flags, Uint mode.

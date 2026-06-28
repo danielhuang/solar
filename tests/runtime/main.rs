@@ -640,3 +640,12 @@ fn file_open_flags() {
     let output = run(&fixture("file_open_flags.solar"), "file_open_flags");
     assert_eq!(output, "xyz\n");
 }
+
+#[test]
+fn throw_try() {
+    let output = run(&fixture("throw_try.solar"), "throw_try");
+    assert_eq!(
+        output,
+        "checked ok\nno throw\ncaught:\ntoo big\ncaught nested:\ntoo big\ndone\n"
+    );
+}

@@ -140,6 +140,15 @@ enum ControlFlow {
     Continue,
 }
 
+/// A propagating Solar `throw`: the thrown message bytes. It unwinds as the
+/// `Err` of `Eval` through every evaluation step until a `try` handler catches
+/// it (or it escapes `main`, which aborts). Mirrors the compiled backend's
+/// `sol_throw`/`sol_try` (Rust panic + `catch_unwind`).
+struct Thrown(Vec<u8>);
+
+/// Result of any evaluation that may propagate a `throw`.
+type Eval<T> = Result<T, Thrown>;
+
 struct Interpreter<'a, 'io> {
     module: &'a Module,
     functions: HashMap<&'a str, &'a Function>,
@@ -295,27 +304,27 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         self.mem.store(addr, val, size);
     }
 
-    fn compute_meta(&mut self, nodes: &[Node], id: NodeId) -> Option<usize> {
+    fn compute_meta(&mut self, nodes: &[Node], id: NodeId) -> Eval<Option<usize>> {
         let ty = &nodes[id.0].ty;
         // For FixedArray, the meta is known statically
         if let Type::FixedArray(_, n) = ty {
-            return Some(*n as usize);
+            return Ok(Some(*n as usize));
         }
         if is_sized(ty, &self.module.datatypes) {
-            return None;
+            return Ok(None);
         }
-        match &nodes[id.0].kind {
+        Ok(match &nodes[id.0].kind {
             NodeKind::ArrayLiteral(elems) => Some(elems.len()),
             NodeKind::ArrayRepeat { count, .. } | NodeKind::ArrayInit { count, .. } => {
                 let count = *count;
-                Some(self.eval_load(nodes, count) as usize)
+                Some(self.eval_load(nodes, count)? as usize)
             }
             NodeKind::ArraySizeCoerce { size, .. } => Some(*size as usize),
             NodeKind::BinaryOp { op, left, right } if *op == BinOp::Add => {
                 let left = *left;
                 let right = *right;
-                let lm = self.compute_meta(nodes, left).unwrap();
-                let rm = self.compute_meta(nodes, right).unwrap();
+                let lm = self.compute_meta(nodes, left)?.unwrap();
+                let rm = self.compute_meta(nodes, right)?.unwrap();
                 Some(lm + rm)
             }
             NodeKind::StructLiteral { name, fields } => {
@@ -323,16 +332,16 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let last_field_name = dt.fields.last().unwrap().name.clone();
                 let last_init = fields.iter().find(|(n, _)| *n == last_field_name).unwrap();
                 let last_id = last_init.1;
-                self.compute_meta(nodes, last_id)
+                self.compute_meta(nodes, last_id)?
             }
             NodeKind::Local(var) => self.var_meta.get(var).copied(),
             NodeKind::FieldAccess { object, .. } => {
                 let object = *object;
-                self.compute_meta(nodes, object)
+                self.compute_meta(nodes, object)?
             }
             NodeKind::Deref(inner) => {
                 let inner = *inner;
-                let (ref_place, _) = self.eval_place(nodes, inner);
+                let (ref_place, _) = self.eval_place(nodes, inner)?;
                 match &nodes[inner.0].ty {
                     Type::RefUnsized(_) | Type::UniqueUnsized(_) | Type::NullableRefUnsized(_) => {
                         Some(self.mem.load(ref_place + 8, 8) as usize)
@@ -343,16 +352,16 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             NodeKind::Slice { start, end, .. } => {
                 let start = *start;
                 let end = *end;
-                let s = self.eval_load(nodes, start) as usize;
-                let e = self.eval_load(nodes, end) as usize;
+                let s = self.eval_load(nodes, start)? as usize;
+                let e = self.eval_load(nodes, end)? as usize;
                 Some(e - s)
             }
             _ => None,
-        }
+        })
     }
 
-    fn eval_place(&mut self, nodes: &[Node], id: NodeId) -> (usize, Option<usize>) {
-        match &nodes[id.0].kind {
+    fn eval_place(&mut self, nodes: &[Node], id: NodeId) -> Eval<(usize, Option<usize>)> {
+        Ok(match &nodes[id.0].kind {
             NodeKind::Local(var) => {
                 let addr = self.vars[var];
                 let meta = self.var_meta.get(var).copied();
@@ -361,7 +370,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             NodeKind::FieldAccess { object, field } => {
                 let object = *object;
                 let field = field.clone();
-                let (base, base_meta) = self.eval_place(nodes, object);
+                let (base, base_meta) = self.eval_place(nodes, object)?;
                 let struct_name = match &nodes[object.0].ty {
                     Type::Struct(n) => n.as_str(),
                     _ => unreachable!(),
@@ -378,12 +387,12 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             NodeKind::Deref(inner) => {
                 let inner = *inner;
                 let ref_place = if is_place(nodes, inner) {
-                    let (addr, _) = self.eval_place(nodes, inner);
+                    let (addr, _) = self.eval_place(nodes, inner)?;
                     addr
                 } else {
                     let ty = nodes[inner.0].ty.clone();
                     let tmp = self.alloc_ty(&ty);
-                    self.eval_into(nodes, inner, tmp);
+                    self.eval_into(nodes, inner, tmp)?;
                     tmp
                 };
                 match &nodes[inner.0].ty {
@@ -413,18 +422,16 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             NodeKind::Index { object, index } => {
                 let object = *object;
                 let index = *index;
-                let (base, meta) = self.eval_place(nodes, object);
-                let idx = self.eval_load(nodes, index) as i64;
-                let len = meta
-                    .or_else(|| {
-                        // For FixedArray, length is known from the type
-                        if let Type::FixedArray(_, n) = &nodes[object.0].ty {
-                            Some(*n as usize)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or_else(|| self.compute_meta(nodes, object).unwrap());
+                let (base, meta) = self.eval_place(nodes, object)?;
+                let idx = self.eval_load(nodes, index)? as i64;
+                let len = match meta {
+                    Some(m) => m,
+                    // For FixedArray, length is known from the type
+                    None => match &nodes[object.0].ty {
+                        Type::FixedArray(_, n) => *n as usize,
+                        _ => self.compute_meta(nodes, object)?.unwrap(),
+                    },
+                };
                 assert!(
                     idx >= 0 && (idx as usize) < len,
                     "index out of bounds: index is {idx} but length is {len}"
@@ -438,18 +445,16 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let object = *object;
                 let start = *start;
                 let end = *end;
-                let (base, meta) = self.eval_place(nodes, object);
-                let s = self.eval_load(nodes, start) as usize;
-                let e = self.eval_load(nodes, end) as usize;
-                let len = meta
-                    .or_else(|| {
-                        if let Type::FixedArray(_, n) = &nodes[object.0].ty {
-                            Some(*n as usize)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or_else(|| self.compute_meta(nodes, object).unwrap());
+                let (base, meta) = self.eval_place(nodes, object)?;
+                let s = self.eval_load(nodes, start)? as usize;
+                let e = self.eval_load(nodes, end)? as usize;
+                let len = match meta {
+                    Some(m) => m,
+                    None => match &nodes[object.0].ty {
+                        Type::FixedArray(_, n) => *n as usize,
+                        _ => self.compute_meta(nodes, object)?.unwrap(),
+                    },
+                };
                 assert!(s <= e, "slice start ({s}) > end ({e})");
                 assert!(e <= len, "slice end ({e}) > length ({len})");
                 let elem_ty = match &nodes[id.0].ty {
@@ -467,20 +472,20 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let condition = *condition;
                 let then_body = then_body.clone();
                 let else_body = else_body.clone();
-                let cond = self.eval_load(nodes, condition);
+                let cond = self.eval_load(nodes, condition)?;
                 let branch = if cond != 0 { &then_body } else { &else_body };
-                self.exec_branch_place(nodes, branch)
+                self.exec_branch_place(nodes, branch)?
             }
             NodeKind::Match { scrutinee, arms } => {
                 let scrutinee = *scrutinee;
                 let arms = arms.clone();
                 let enum_base = if is_place(nodes, scrutinee) {
-                    let (addr, _) = self.eval_place(nodes, scrutinee);
+                    let (addr, _) = self.eval_place(nodes, scrutinee)?;
                     addr
                 } else {
                     let ty = nodes[scrutinee.0].ty.clone();
                     let tmp = self.alloc_ty(&ty);
-                    self.eval_into(nodes, scrutinee, tmp);
+                    self.eval_into(nodes, scrutinee, tmp)?;
                     tmp
                 };
                 let disc = self.mem.load(enum_base, 8);
@@ -517,13 +522,17 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 unreachable!("no matching arm in match expression");
             }
             _ => unreachable!("eval_place on non-place node: {:?}", nodes[id.0].kind),
-        }
+        })
     }
 
-    fn exec_branch_place(&mut self, nodes: &[Node], body: &[NodeId]) -> (usize, Option<usize>) {
+    fn exec_branch_place(
+        &mut self,
+        nodes: &[Node],
+        body: &[NodeId],
+    ) -> Eval<(usize, Option<usize>)> {
         let (init, tail) = body.split_at(body.len() - 1);
         for &id in init {
-            self.exec_stmt(nodes, id, 0);
+            self.exec_stmt(nodes, id, 0)?;
         }
         match &nodes[tail[0].0].kind {
             NodeKind::Expr(inner) => self.eval_place(nodes, *inner),
@@ -531,8 +540,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         }
     }
 
-    fn eval_load(&mut self, nodes: &[Node], id: NodeId) -> u64 {
-        match &nodes[id.0].kind {
+    fn eval_load(&mut self, nodes: &[Node], id: NodeId) -> Eval<u64> {
+        Ok(match &nodes[id.0].kind {
             NodeKind::IntegerLiteral(n) => *n as u64,
             // A sized `null#[T]` is the zero pointer.
             NodeKind::Null => 0,
@@ -553,7 +562,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             | NodeKind::Index { .. }
             | NodeKind::Slice { .. } => {
                 let ty = nodes[id.0].ty.clone();
-                let (addr, _) = self.eval_place(nodes, id);
+                let (addr, _) = self.eval_place(nodes, id)?;
                 self.scalar_load(addr, &ty)
             }
             NodeKind::BinaryOp { op, left, right } => {
@@ -564,16 +573,16 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 if matches!(left_ty, Type::Array(_) | Type::FixedArray(_, _)) {
                     let result_ty = nodes[id.0].ty.clone();
                     let tmp = self.alloc_ty(&result_ty);
-                    self.eval_into(nodes, id, tmp);
+                    self.eval_into(nodes, id, tmp)?;
                     self.scalar_load(tmp, &result_ty)
                 } else {
-                    self.eval_load_binop(nodes, op, left, right)
+                    self.eval_load_binop(nodes, op, left, right)?
                 }
             }
             NodeKind::Not(inner) => {
                 let inner = *inner;
                 let ty = nodes[inner.0].ty.clone();
-                let val = self.eval_load(nodes, inner);
+                let val = self.eval_load(nodes, inner)?;
                 if ty.is_integer() {
                     // Bitwise complement, masked to the type's width.
                     truncate_to_ty(!val, &ty)
@@ -588,7 +597,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             | NodeKind::MakeClosure { .. } => {
                 let ty = nodes[id.0].ty.clone();
                 let tmp = self.alloc_ty(&ty);
-                self.eval_into(nodes, id, tmp);
+                self.eval_into(nodes, id, tmp)?;
                 self.scalar_load(tmp, &ty)
             }
             NodeKind::Call { .. }
@@ -597,29 +606,35 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             | NodeKind::Match { .. } => {
                 let ty = nodes[id.0].ty.clone();
                 let tmp = self.alloc_ty(&ty);
-                self.eval_into(nodes, id, tmp);
+                self.eval_into(nodes, id, tmp)?;
                 self.scalar_load(tmp, &ty)
             }
             _ => unreachable!("eval_load on non-scalar node: {:?}", nodes[id.0].kind),
-        }
+        })
     }
 
-    fn eval_load_binop(&mut self, nodes: &[Node], op: BinOp, left: NodeId, right: NodeId) -> u64 {
-        match op {
+    fn eval_load_binop(
+        &mut self,
+        nodes: &[Node],
+        op: BinOp,
+        left: NodeId,
+        right: NodeId,
+    ) -> Eval<u64> {
+        Ok(match op {
             BinOp::And => {
-                let lv = self.eval_load(nodes, left);
+                let lv = self.eval_load(nodes, left)?;
                 if lv == 0 {
                     0
                 } else {
-                    self.eval_load(nodes, right)
+                    self.eval_load(nodes, right)?
                 }
             }
             BinOp::Or => {
-                let lv = self.eval_load(nodes, left);
+                let lv = self.eval_load(nodes, left)?;
                 if lv != 0 {
                     lv
                 } else {
-                    self.eval_load(nodes, right)
+                    self.eval_load(nodes, right)?
                 }
             }
             BinOp::WrapAdd | BinOp::WrapSub | BinOp::WrapMul => {
@@ -627,8 +642,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 // unsigned, so compute on the raw 64-bit pattern and truncate to
                 // the operand's width (e.g. 255u8 ++ 1u8 == 0u8).
                 let ty = nodes[left.0].ty.clone();
-                let a = self.eval_load(nodes, left);
-                let b = self.eval_load(nodes, right);
+                let a = self.eval_load(nodes, left)?;
+                let b = self.eval_load(nodes, right)?;
                 let raw = match op {
                     BinOp::WrapAdd => a.wrapping_add(b),
                     BinOp::WrapSub => a.wrapping_sub(b),
@@ -645,8 +660,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 // signed value fills with the sign bit).
                 let ty = nodes[left.0].ty.clone();
                 let width = ty.int_bit_width() as u64;
-                let a = self.eval_load(nodes, left);
-                let b = self.eval_load(nodes, right);
+                let a = self.eval_load(nodes, left)?;
+                let b = self.eval_load(nodes, right)?;
                 let raw = match op {
                     BinOp::BitAnd => a & b,
                     BinOp::BitOr => a | b,
@@ -676,9 +691,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 // Fat nullable reference: compare the pointer half (first 8 bytes).
                 let ty = nodes[left.0].ty.clone();
                 let lt = self.alloc_ty(&ty);
-                self.eval_into(nodes, left, lt);
+                self.eval_into(nodes, left, lt)?;
                 let rt = self.alloc_ty(&ty);
-                self.eval_into(nodes, right, rt);
+                self.eval_into(nodes, right, rt)?;
                 let a = self.mem.load(lt, 8);
                 let b = self.mem.load(rt, 8);
                 match op {
@@ -688,8 +703,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 }
             }
             _ if is_signed(&nodes[left.0].ty) => {
-                let a = self.eval_load(nodes, left) as i64;
-                let b = self.eval_load(nodes, right) as i64;
+                let a = self.eval_load(nodes, left)? as i64;
+                let b = self.eval_load(nodes, right)? as i64;
                 match op {
                     BinOp::Add => a
                         .checked_add(b)
@@ -731,8 +746,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             }
             _ => {
                 // Unsigned (and Bool) operands: full-range u64 semantics
-                let a = self.eval_load(nodes, left);
-                let b = self.eval_load(nodes, right);
+                let a = self.eval_load(nodes, left)?;
+                let b = self.eval_load(nodes, right)?;
                 match op {
                     BinOp::Add => a
                         .checked_add(b)
@@ -767,10 +782,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     | BinOp::WrapMul => unreachable!(),
                 }
             }
-        }
+        })
     }
 
-    fn eval_into(&mut self, nodes: &[Node], id: NodeId, dst: usize) {
+    fn eval_into(&mut self, nodes: &[Node], id: NodeId, dst: usize) -> Eval<()> {
         match &nodes[id.0].kind {
             NodeKind::Local(_)
             | NodeKind::FieldAccess { .. }
@@ -778,8 +793,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             | NodeKind::Index { .. }
             | NodeKind::Slice { .. } => {
                 let ty = nodes[id.0].ty.clone();
-                let meta = self.compute_meta(nodes, id);
-                let (src, _) = self.eval_place(nodes, id);
+                let meta = self.compute_meta(nodes, id)?;
+                let (src, _) = self.eval_place(nodes, id)?;
                 self.copy_value(dst, src, &ty, meta);
             }
             NodeKind::IntegerLiteral(n) => {
@@ -800,7 +815,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let inner = *inner;
                 let inner_ty = &nodes[inner.0].ty;
                 if is_place(nodes, inner) {
-                    let (target, target_meta) = self.eval_place(nodes, inner);
+                    let (target, target_meta) = self.eval_place(nodes, inner)?;
                     if is_sized(inner_ty, &self.module.datatypes) {
                         self.mem.store(dst, target as u64, 8);
                     } else {
@@ -812,12 +827,12 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     let inner_ty = inner_ty.clone();
                     if is_sized(&inner_ty, &self.module.datatypes) {
                         let tmp = self.alloc_ty(&inner_ty);
-                        self.eval_into(nodes, inner, tmp);
+                        self.eval_into(nodes, inner, tmp)?;
                         self.mem.store(dst, tmp as u64, 8);
                     } else {
-                        let meta = self.compute_meta(nodes, inner).unwrap();
+                        let meta = self.compute_meta(nodes, inner)?.unwrap();
                         let tmp = self.alloc_unsized(&inner_ty, meta);
-                        self.eval_into(nodes, inner, tmp);
+                        self.eval_into(nodes, inner, tmp)?;
                         self.mem.store(dst, tmp as u64, 8);
                         self.mem.store(dst + 8, meta as u64, 8);
                     }
@@ -831,14 +846,14 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     let size = type_size(&inner_ty, &self.module.datatypes);
                     let align = type_align(&inner_ty, &self.module.datatypes);
                     let ptr = self.mem.alloc(size, align);
-                    self.eval_into(nodes, inner, ptr);
+                    self.eval_into(nodes, inner, ptr)?;
                     self.mem.store(dst, ptr as u64, 8);
                 } else {
-                    let meta = self.compute_meta(nodes, inner).unwrap();
+                    let meta = self.compute_meta(nodes, inner)?.unwrap();
                     let size = full_size(&inner_ty, &self.module.datatypes, meta);
                     let align = type_align(&inner_ty, &self.module.datatypes);
                     let ptr = self.mem.alloc(size, align);
-                    self.eval_into(nodes, inner, ptr);
+                    self.eval_into(nodes, inner, ptr)?;
                     self.mem.store(dst, ptr as u64, 8);
                     self.mem.store(dst + 8, meta as u64, 8);
                 }
@@ -853,7 +868,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                         .find(|f| f.name == *fname)
                         .unwrap();
                     let offset = fl.offset;
-                    self.eval_into(nodes, *fnode, dst + offset);
+                    self.eval_into(nodes, *fnode, dst + offset)?;
                 }
             }
             NodeKind::ArrayLiteral(elements) => {
@@ -864,7 +879,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 };
                 let es = type_size(&elem_ty, &self.module.datatypes);
                 for (i, eid) in elem_ids.iter().enumerate() {
-                    self.eval_into(nodes, *eid, dst + i * es);
+                    self.eval_into(nodes, *eid, dst + i * es)?;
                 }
             }
             NodeKind::ArrayRepeat { element, count } => {
@@ -874,11 +889,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     Type::Array(inner) | Type::FixedArray(inner, _) => (**inner).clone(),
                     _ => unreachable!(),
                 };
-                let n = self.eval_load(nodes, count) as usize;
+                let n = self.eval_load(nodes, count)? as usize;
                 let es = type_size(&elem_ty, &self.module.datatypes);
                 if n > 0 {
                     // Evaluate element into first slot
-                    self.eval_into(nodes, element, dst);
+                    self.eval_into(nodes, element, dst)?;
                     // Copy first slot to remaining slots
                     for i in 1..n {
                         self.mem.memcpy(dst + i * es, dst, es);
@@ -892,13 +907,13 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     Type::Array(inner) | Type::FixedArray(inner, _) => (**inner).clone(),
                     _ => unreachable!(),
                 };
-                let n = self.eval_load(nodes, count) as usize;
+                let n = self.eval_load(nodes, count)? as usize;
                 let es = type_size(&elem_ty, &self.module.datatypes);
 
                 // Eval init closure into a 16-byte tmp
                 let callee_ty = nodes[init.0].ty.clone();
                 let callee_addr = self.alloc_ty(&callee_ty);
-                self.eval_into(nodes, init, callee_addr);
+                self.eval_into(nodes, init, callee_addr)?;
                 let fn_idx = self.mem.load(callee_addr, 8) as usize;
                 let env_ptr = self.mem.load(callee_addr + 8, 8);
 
@@ -923,7 +938,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     // Set up parameter (single Uint param)
                     self.vars.insert(func.params[0].var, arg_addr);
 
-                    self.exec_function_body(func, dst + i * es);
+                    self.exec_function_body(func, dst + i * es)?;
 
                     self.vars = saved_vars;
                     self.var_meta = saved_meta;
@@ -932,8 +947,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             NodeKind::ArraySizeCoerce { value, size } => {
                 let value = *value;
                 let size = *size;
-                self.eval_into(nodes, value, dst);
-                let actual_meta = self.compute_meta(nodes, value).unwrap();
+                self.eval_into(nodes, value, dst)?;
+                let actual_meta = self.compute_meta(nodes, value)?.unwrap();
                 assert!(
                     actual_meta == size as usize,
                     "array size coercion failed: expected {size} elements, got {actual_meta}"
@@ -951,18 +966,18 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 };
                 match left_inner {
                     None => {
-                        let result = self.eval_load_binop(nodes, op, left, right);
+                        let result = self.eval_load_binop(nodes, op, left, right)?;
                         self.scalar_store(dst, result, &result_ty);
                     }
                     Some(inner) => {
                         let es = type_size(&inner, &self.module.datatypes);
-                        let la_meta = self.compute_meta(nodes, left).unwrap();
-                        let ra_meta = self.compute_meta(nodes, right).unwrap();
+                        let la_meta = self.compute_meta(nodes, left)?.unwrap();
+                        let ra_meta = self.compute_meta(nodes, right)?.unwrap();
                         let ea = type_align(&inner, &self.module.datatypes);
                         let la = self.mem.alloc(la_meta * es, ea);
-                        self.eval_into(nodes, left, la);
+                        self.eval_into(nodes, left, la)?;
                         let ra = self.mem.alloc(ra_meta * es, ea);
-                        self.eval_into(nodes, right, ra);
+                        self.eval_into(nodes, right, ra)?;
                         match op {
                             BinOp::Add => {
                                 let left_bytes = la_meta * es;
@@ -1003,7 +1018,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             }
             NodeKind::Not(_) => {
                 let result_ty = nodes[id.0].ty.clone();
-                let val = self.eval_load(nodes, id);
+                let val = self.eval_load(nodes, id)?;
                 self.scalar_store(dst, val, &result_ty);
             }
             NodeKind::IfExpr {
@@ -1014,16 +1029,16 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let condition = *condition;
                 let then_body = then_body.clone();
                 let else_body = else_body.clone();
-                let cond = self.eval_load(nodes, condition);
+                let cond = self.eval_load(nodes, condition)?;
                 let branch = if cond != 0 { &then_body } else { &else_body };
-                self.exec_branch_into(nodes, branch, dst);
+                self.exec_branch_into(nodes, branch, dst)?;
             }
             NodeKind::Loop { body } => {
                 // Loop expression: `break <v>` writes its value into `dst`. (As
                 // with other expression-position bodies, `return` from inside is
                 // not propagated by the interpreter.)
                 let body = body.clone();
-                self.run_loop(nodes, &body, dst, dst);
+                self.run_loop(nodes, &body, dst, dst)?;
             }
             NodeKind::EnumVariant {
                 enum_name,
@@ -1041,7 +1056,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 if let Some(val_id) = value {
                     let dt = &self.module.datatypes[enum_name.as_str()];
                     let fl = dt.fields.iter().find(|f| f.name == variant_name).unwrap();
-                    self.eval_into(nodes, val_id, dst + fl.offset);
+                    self.eval_into(nodes, val_id, dst + fl.offset)?;
                 }
             }
             NodeKind::Match { scrutinee, arms } => {
@@ -1049,12 +1064,12 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let arms = arms.clone();
                 // Get the scrutinee's place (address in memory)
                 let enum_base = if is_place(nodes, scrutinee) {
-                    let (addr, _) = self.eval_place(nodes, scrutinee);
+                    let (addr, _) = self.eval_place(nodes, scrutinee)?;
                     addr
                 } else {
                     let ty = nodes[scrutinee.0].ty.clone();
                     let tmp = self.alloc_ty(&ty);
-                    self.eval_into(nodes, scrutinee, tmp);
+                    self.eval_into(nodes, scrutinee, tmp)?;
                     tmp
                 };
                 // Read discriminant
@@ -1088,8 +1103,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                             }
                             _ => {}
                         }
-                        self.exec_branch_into(nodes, &arm.body, dst);
-                        return;
+                        self.exec_branch_into(nodes, &arm.body, dst)?;
+                        return Ok(());
                     }
                 }
                 unreachable!("no matching arm in match expression");
@@ -1109,7 +1124,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     let env = self.mem.alloc(n_captures * 8, 8);
                     for (i, &cap_id) in capture_ids.iter().enumerate() {
                         // Each capture is a Ref node — eval_load gives us the address
-                        let addr = self.eval_load(nodes, cap_id);
+                        let addr = self.eval_load(nodes, cap_id)?;
                         self.mem.store(env + i * 8, addr, 8);
                     }
                     env as u64
@@ -1123,13 +1138,13 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             NodeKind::Call { function, args } => {
                 let function = function.clone();
                 let args: Vec<NodeId> = args.clone();
-                self.call_function_by_name(nodes, &function, &args, 0, dst);
+                self.call_function_by_name(nodes, &function, &args, 0, dst)?;
             }
             NodeKind::IntrinsicCall { intrinsic, args } => {
                 let intrinsic = intrinsic.clone();
                 let args: Vec<NodeId> = args.clone();
                 let result_ty = nodes[id.0].ty.clone();
-                self.exec_intrinsic(nodes, &intrinsic, &args, &result_ty, dst);
+                self.exec_intrinsic(nodes, &intrinsic, &args, &result_ty, dst)?;
             }
             NodeKind::CallIndirect { callee, args } => {
                 let callee = *callee;
@@ -1138,15 +1153,16 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 // Load 16-byte function value
                 let callee_ty = nodes[callee.0].ty.clone();
                 let callee_addr = self.alloc_ty(&callee_ty);
-                self.eval_into(nodes, callee, callee_addr);
+                self.eval_into(nodes, callee, callee_addr)?;
                 let fn_idx = self.mem.load(callee_addr, 8) as usize;
                 let env_ptr = self.mem.load(callee_addr + 8, 8);
                 let func_name = self.fn_index_to_name[fn_idx].to_string();
 
-                self.call_function_by_name(nodes, &func_name, &args, env_ptr, dst);
+                self.call_function_by_name(nodes, &func_name, &args, env_ptr, dst)?;
             }
             _ => unreachable!("eval_into on statement node"),
         }
+        Ok(())
     }
 
     fn call_function_by_name(
@@ -1156,27 +1172,25 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         args: &[NodeId],
         env_value: u64,
         dst: usize,
-    ) {
+    ) -> Eval<()> {
         let func = *self.functions.get(function).unwrap();
-        let param_addrs: Vec<usize> = func
-            .params
-            .iter()
-            .zip(args.iter())
-            .map(|(param, &arg)| {
-                let ty = &param.ty;
-                let meta = self.compute_meta(nodes, arg);
-                let addr = match meta {
-                    Some(m) => self.alloc_unsized(ty, m),
-                    None => self.alloc_ty(ty),
-                };
-                self.eval_into(nodes, arg, addr);
-                addr
-            })
-            .collect();
-        let param_metas: Vec<Option<usize>> = args
-            .iter()
-            .map(|&arg| self.compute_meta(nodes, arg))
-            .collect();
+        // Args are evaluated in the caller's scope; a `throw` here propagates
+        // before we swap in the callee's vars (so nothing to restore).
+        let mut param_addrs: Vec<usize> = Vec::with_capacity(func.params.len());
+        for (param, &arg) in func.params.iter().zip(args.iter()) {
+            let ty = &param.ty;
+            let meta = self.compute_meta(nodes, arg)?;
+            let addr = match meta {
+                Some(m) => self.alloc_unsized(ty, m),
+                None => self.alloc_ty(ty),
+            };
+            self.eval_into(nodes, arg, addr)?;
+            param_addrs.push(addr);
+        }
+        let mut param_metas: Vec<Option<usize>> = Vec::with_capacity(args.len());
+        for &arg in args {
+            param_metas.push(self.compute_meta(nodes, arg)?);
+        }
 
         let saved_vars = std::mem::take(&mut self.vars);
         let saved_meta = std::mem::take(&mut self.var_meta);
@@ -1194,9 +1208,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 self.var_meta.insert(param.var, m);
             }
         }
-        self.exec_function_body(func, dst);
+        // Restore the caller's vars even if the body throws.
+        let result = self.exec_function_body(func, dst);
         self.vars = saved_vars;
         self.var_meta = saved_meta;
+        result
     }
 
     fn exec_intrinsic(
@@ -1206,11 +1222,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         args: &[NodeId],
         result_ty: &Type,
         dst: usize,
-    ) {
+    ) -> Eval<()> {
         match intrinsic {
             Intrinsic::Panic => {
                 assert_eq!(*result_ty, Type::Never);
-                let (ref_addr, _) = self.eval_place(nodes, args[0]);
+                let (ref_addr, _) = self.eval_place(nodes, args[0])?;
                 let data_ptr = self.mem.load(ref_addr, 8) as usize;
                 let data_len = self.mem.load(ref_addr + 8, 8) as usize;
                 let bytes = self.mem.data[data_ptr..data_ptr + data_len].to_vec();
@@ -1218,13 +1234,13 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 panic!("{msg}");
             }
             Intrinsic::FileOpen => {
-                let (ref_addr, _) = self.eval_place(nodes, args[0]);
+                let (ref_addr, _) = self.eval_place(nodes, args[0])?;
                 let data_ptr = self.mem.load(ref_addr, 8) as usize;
                 let data_len = self.mem.load(ref_addr + 8, 8) as usize;
                 let bytes = self.mem.data[data_ptr..data_ptr + data_len].to_vec();
                 let path = String::from_utf8_lossy(&bytes).into_owned();
-                let flags = self.eval_load(nodes, args[1]) as i64;
-                let mode = self.eval_load(nodes, args[2]) as u32;
+                let flags = self.eval_load(nodes, args[1])? as i64;
+                let mode = self.eval_load(nodes, args[2])? as u32;
                 // No fd arena / GC here: the FileDesc is an index into a virtual
                 // table of boxed streams (the compiled runtime uses a real fd).
                 let fd = self.files.open(&path, flags, mode);
@@ -1233,7 +1249,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             Intrinsic::FileClose => {
                 // The virtual table keeps the stream alive (no auto-close in the
                 // interpreters); evaluate the argument for any side effects.
-                let _ = self.eval_load(nodes, args[0]);
+                let _ = self.eval_load(nodes, args[0])?;
             }
             Intrinsic::FileStdin => {
                 self.scalar_store(dst, STDIN as u64, result_ty);
@@ -1242,8 +1258,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 self.scalar_store(dst, STDOUT as u64, result_ty);
             }
             Intrinsic::FileRead => {
-                let fd = self.eval_load(nodes, args[0]) as usize;
-                let (ref_addr, _) = self.eval_place(nodes, args[1]);
+                let fd = self.eval_load(nodes, args[0])? as usize;
+                let (ref_addr, _) = self.eval_place(nodes, args[1])?;
                 let data_ptr = self.mem.load(ref_addr, 8) as usize;
                 let data_len = self.mem.load(ref_addr + 8, 8) as usize;
                 let mut buf = vec![0u8; data_len];
@@ -1252,8 +1268,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 self.scalar_store(dst, n as u64, result_ty);
             }
             Intrinsic::FileWritePartial => {
-                let fd = self.eval_load(nodes, args[0]) as usize;
-                let (ref_addr, _) = self.eval_place(nodes, args[1]);
+                let fd = self.eval_load(nodes, args[0])? as usize;
+                let (ref_addr, _) = self.eval_place(nodes, args[1])?;
                 let data_ptr = self.mem.load(ref_addr, 8) as usize;
                 let data_len = self.mem.load(ref_addr + 8, 8) as usize;
                 let bytes = self.mem.data[data_ptr..data_ptr + data_len].to_vec();
@@ -1264,7 +1280,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let len = if let Type::FixedArray(_, n) = &nodes[args[0].0].ty {
                     *n as usize
                 } else {
-                    self.compute_meta(nodes, args[0]).unwrap()
+                    self.compute_meta(nodes, args[0])?.unwrap()
                 };
                 self.scalar_store(dst, len as u64, result_ty);
             }
@@ -1279,7 +1295,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 };
                 let arg_ty = nodes[args[0].0].ty.clone();
                 let addr = self.alloc_ty(&arg_ty);
-                self.eval_into(nodes, args[0], addr);
+                self.eval_into(nodes, args[0], addr)?;
                 let val = self.mem.load(addr, n);
                 self.scalar_store(dst, val, result_ty);
             }
@@ -1288,10 +1304,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 // build the compact match mask (bit i <-> lane i).
                 let arg_ty = nodes[args[0].0].ty.clone();
                 let addr = self.alloc_ty(&arg_ty);
-                self.eval_into(nodes, args[0], addr);
+                self.eval_into(nodes, args[0], addr)?;
                 let mut mask: u64 = 0;
                 if matches!(intrinsic, Intrinsic::SimdMatchByteX16) {
-                    let tag = self.eval_load(nodes, args[1]) as u8;
+                    let tag = self.eval_load(nodes, args[1])? as u8;
                     for i in 0..16usize {
                         if self.mem.load(addr + i, 1) as u8 == tag {
                             mask |= 1 << i;
@@ -1309,11 +1325,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             Intrinsic::AssertArrayLen => {
                 assert_eq!(*result_ty, Type::Unit);
                 let arr_id = args[0];
-                let expected_len = self.eval_load(nodes, args[1]) as usize;
+                let expected_len = self.eval_load(nodes, args[1])? as usize;
                 let actual_len = if let Type::FixedArray(_, n) = &nodes[arr_id.0].ty {
                     *n as usize
                 } else {
-                    self.compute_meta(nodes, arr_id).unwrap()
+                    self.compute_meta(nodes, arr_id)?.unwrap()
                 };
                 assert!(
                     actual_len == expected_len,
@@ -1325,41 +1341,41 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             }
             Intrinsic::AtomicLoad => {
                 // In single-threaded interpreter, atomic load is just a regular load via ref
-                let ref_addr = self.eval_load(nodes, args[0]) as usize;
+                let ref_addr = self.eval_load(nodes, args[0])? as usize;
                 let size = type_size(result_ty, &self.module.datatypes);
                 self.mem.memcpy(dst, ref_addr, size);
             }
             Intrinsic::AtomicStore => {
                 // In single-threaded interpreter, atomic store is just a regular store via ref
-                let ref_addr = self.eval_load(nodes, args[0]) as usize;
+                let ref_addr = self.eval_load(nodes, args[0])? as usize;
                 let val_ty = &nodes[args[1].0].ty;
                 let size = type_size(val_ty, &self.module.datatypes);
                 let val_addr = self.alloc_ty(val_ty);
-                self.eval_into(nodes, args[1], val_addr);
+                self.eval_into(nodes, args[1], val_addr)?;
                 self.mem.memcpy(ref_addr, val_addr, size);
             }
             Intrinsic::AtomicExchange => {
                 // In single-threaded interpreter, exchange is load old + store new
-                let ref_addr = self.eval_load(nodes, args[0]) as usize;
+                let ref_addr = self.eval_load(nodes, args[0])? as usize;
                 let size = type_size(result_ty, &self.module.datatypes);
                 // Load old value into dst
                 self.mem.memcpy(dst, ref_addr, size);
                 // Store new value
                 let val_ty = &nodes[args[1].0].ty;
                 let val_addr = self.alloc_ty(val_ty);
-                self.eval_into(nodes, args[1], val_addr);
+                self.eval_into(nodes, args[1], val_addr)?;
                 self.mem.memcpy(ref_addr, val_addr, size);
             }
             Intrinsic::AtomicCompareExchange => {
                 // In single-threaded interpreter, CAS is load + memcmp + conditional store
-                let ref_addr = self.eval_load(nodes, args[0]) as usize;
+                let ref_addr = self.eval_load(nodes, args[0])? as usize;
                 let size = type_size(result_ty, &self.module.datatypes);
                 let exp_ty = &nodes[args[1].0].ty;
                 let new_ty = &nodes[args[2].0].ty;
                 let exp_addr = self.alloc_ty(exp_ty);
                 let new_addr = self.alloc_ty(new_ty);
-                self.eval_into(nodes, args[1], exp_addr);
-                self.eval_into(nodes, args[2], new_addr);
+                self.eval_into(nodes, args[1], exp_addr)?;
+                self.eval_into(nodes, args[2], new_addr)?;
                 // Return the old value
                 self.mem.memcpy(dst, ref_addr, size);
                 // Conditionally swap
@@ -1375,7 +1391,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             }
             Intrinsic::CountTrailingZeros | Intrinsic::CountLeadingZeros | Intrinsic::CountOnes => {
                 let width = nodes[args[0].0].ty.int_bit_width();
-                let raw = self.eval_load(nodes, args[0]);
+                let raw = self.eval_load(nodes, args[0])?;
                 let mask = if width == 64 {
                     u64::MAX
                 } else {
@@ -1405,38 +1421,102 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             Intrinsic::CarryingMulAdd => {
                 // a*b + carry + add as a 128-bit value; write low/high halves
                 // through the two `&Uint64` out-params.
-                let a = self.eval_load(nodes, args[0]);
-                let b = self.eval_load(nodes, args[1]);
-                let carry = self.eval_load(nodes, args[2]);
-                let add = self.eval_load(nodes, args[3]);
+                let a = self.eval_load(nodes, args[0])?;
+                let b = self.eval_load(nodes, args[1])?;
+                let carry = self.eval_load(nodes, args[2])?;
+                let add = self.eval_load(nodes, args[3])?;
                 let (lo, hi) = a.carrying_mul_add(b, carry, add);
-                let lo_addr = self.eval_load(nodes, args[4]) as usize;
-                let hi_addr = self.eval_load(nodes, args[5]) as usize;
+                let lo_addr = self.eval_load(nodes, args[4])? as usize;
+                let hi_addr = self.eval_load(nodes, args[5])? as usize;
                 self.scalar_store(lo_addr, lo, &Type::Uint64);
                 self.scalar_store(hi_addr, hi, &Type::Uint64);
+            }
+            Intrinsic::Throw => {
+                assert_eq!(*result_ty, Type::Never);
+                let (ref_addr, _) = self.eval_place(nodes, args[0])?;
+                let data_ptr = self.mem.load(ref_addr, 8) as usize;
+                let data_len = self.mem.load(ref_addr + 8, 8) as usize;
+                let bytes = self.mem.data[data_ptr..data_ptr + data_len].to_vec();
+                return Err(Thrown(bytes));
+            }
+            Intrinsic::Try => {
+                // args[0] = body fn(), args[1] = handler fn(&[Uint8]).
+                let body_ty = nodes[args[0].0].ty.clone();
+                let body_addr = self.alloc_ty(&body_ty);
+                self.eval_into(nodes, args[0], body_addr)?;
+                let body_idx = self.mem.load(body_addr, 8) as usize;
+                let body_env = self.mem.load(body_addr + 8, 8);
+
+                let h_ty = nodes[args[1].0].ty.clone();
+                let h_addr = self.alloc_ty(&h_ty);
+                self.eval_into(nodes, args[1], h_addr)?;
+                let h_idx = self.mem.load(h_addr, 8) as usize;
+                let h_env = self.mem.load(h_addr + 8, 8);
+
+                // Run the body; on a throw, hand the message to the handler as a
+                // fresh `&[Uint8]` (fat pointer into newly-allocated bytes).
+                if let Err(Thrown(bytes)) = self.invoke_fn_value(body_idx, body_env, &[], dst) {
+                    let data = self.mem.alloc(bytes.len().max(1), 1);
+                    for (i, b) in bytes.iter().enumerate() {
+                        self.mem.store(data + i, *b as u64, 1);
+                    }
+                    let arg_addr = self.mem.alloc(16, 8);
+                    self.mem.store(arg_addr, data as u64, 8);
+                    self.mem.store(arg_addr + 8, bytes.len() as u64, 8);
+                    self.invoke_fn_value(h_idx, h_env, &[arg_addr], dst)?;
+                }
             }
             Intrinsic::Cast(_, _) => {
                 assert!(result_ty.is_numeric(), "cast must return numeric type");
                 let src_ty = &nodes[args[0].0].ty;
-                let raw = self.eval_load(nodes, args[0]);
+                let raw = self.eval_load(nodes, args[0])?;
                 let converted = cast_numeric(raw, src_ty, result_ty);
                 self.scalar_store(dst, converted, result_ty);
             }
         }
+        Ok(())
     }
 
-    fn exec_stmt(&mut self, nodes: &[Node], id: NodeId, ret_dst: usize) -> ControlFlow {
-        match &nodes[id.0].kind {
+    /// Invoke a function value (closure) given its `fn_index`, env pointer, and
+    /// pre-materialized parameter slot addresses; the result is written to `dst`.
+    /// Used by `try` to run the body and the exception handler.
+    fn invoke_fn_value(
+        &mut self,
+        fn_idx: usize,
+        env_ptr: u64,
+        param_addrs: &[usize],
+        dst: usize,
+    ) -> Eval<()> {
+        let func_name = self.fn_index_to_name[fn_idx].to_string();
+        let func = *self.functions.get(func_name.as_str()).unwrap();
+        let saved_vars = std::mem::take(&mut self.vars);
+        let saved_meta = std::mem::take(&mut self.var_meta);
+        for cap in &func.env_captures {
+            let ptr_addr = env_ptr as usize + cap.index * 8;
+            let var_addr = self.mem.load(ptr_addr, 8) as usize;
+            self.vars.insert(cap.var, var_addr);
+        }
+        for (param, &addr) in func.params.iter().zip(param_addrs.iter()) {
+            self.vars.insert(param.var, addr);
+        }
+        let result = self.exec_function_body(func, dst);
+        self.vars = saved_vars;
+        self.var_meta = saved_meta;
+        result
+    }
+
+    fn exec_stmt(&mut self, nodes: &[Node], id: NodeId, ret_dst: usize) -> Eval<ControlFlow> {
+        Ok(match &nodes[id.0].kind {
             NodeKind::Let { var, value, .. } => {
                 let var = *var;
                 let value = *value;
                 let ty = nodes[value.0].ty.clone();
-                let meta = self.compute_meta(nodes, value);
+                let meta = self.compute_meta(nodes, value)?;
                 let addr = match meta {
                     Some(m) if !is_sized(&ty, &self.module.datatypes) => self.alloc_unsized(&ty, m),
                     _ => self.alloc_ty(&ty),
                 };
-                self.eval_into(nodes, value, addr);
+                self.eval_into(nodes, value, addr)?;
                 self.vars.insert(var, addr);
                 if let Some(m) = meta {
                     self.var_meta.insert(var, m);
@@ -1446,15 +1526,15 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             NodeKind::Assign { target, value } => {
                 let target = *target;
                 let value = *value;
-                let (place, target_meta) = self.eval_place(nodes, target);
+                let (place, target_meta) = self.eval_place(nodes, target)?;
                 if let Some(target_len) = target_meta {
-                    let value_len = self.compute_meta(nodes, value).unwrap();
+                    let value_len = self.compute_meta(nodes, value)?.unwrap();
                     assert!(
                         target_len == value_len,
                         "unsized assignment: length mismatch ({target_len} vs {value_len})"
                     );
                 }
-                self.eval_into(nodes, value, place);
+                self.eval_into(nodes, value, place)?;
                 ControlFlow::Normal
             }
             NodeKind::If {
@@ -1465,11 +1545,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let condition = *condition;
                 let then_body = then_body.clone();
                 let else_body = else_body.clone();
-                let cond = self.eval_load(nodes, condition);
+                let cond = self.eval_load(nodes, condition)?;
                 if cond != 0 {
-                    self.exec_body(nodes, &then_body, ret_dst)
+                    self.exec_body(nodes, &then_body, ret_dst)?
                 } else if !else_body.is_empty() {
-                    self.exec_body(nodes, &else_body, ret_dst)
+                    self.exec_body(nodes, &else_body, ret_dst)?
                 } else {
                     ControlFlow::Normal
                 }
@@ -1484,12 +1564,12 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 } else {
                     self.alloc_ty(&ty)
                 };
-                self.run_loop(nodes, &body, dst, ret_dst)
+                self.run_loop(nodes, &body, dst, ret_dst)?
             }
             NodeKind::Break(value) => {
                 if let Some(v) = *value {
                     let dst = *self.loop_dst.last().expect("break value outside a loop");
-                    self.eval_into(nodes, v, dst);
+                    self.eval_into(nodes, v, dst)?;
                 }
                 ControlFlow::Break
             }
@@ -1511,23 +1591,23 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                         let condition = *condition;
                         let then_body = then_body.clone();
                         let else_body = else_body.clone();
-                        let cond = self.eval_load(nodes, condition);
+                        let cond = self.eval_load(nodes, condition)?;
                         if cond != 0 {
-                            self.exec_body(nodes, &then_body, ret_dst)
+                            self.exec_body(nodes, &then_body, ret_dst)?
                         } else if !else_body.is_empty() {
-                            self.exec_body(nodes, &else_body, ret_dst)
+                            self.exec_body(nodes, &else_body, ret_dst)?
                         } else {
                             ControlFlow::Normal
                         }
                     }
-                    NodeKind::Match { .. } => self.exec_match_stmt(nodes, inner, ret_dst),
+                    NodeKind::Match { .. } => self.exec_match_stmt(nodes, inner, ret_dst)?,
                     _ => {
                         let ty = &nodes[inner.0].ty;
                         if *ty == Type::Unit {
-                            self.eval_into(nodes, inner, 0);
+                            self.eval_into(nodes, inner, 0)?;
                         } else {
                             let tmp = self.alloc_ty(ty);
-                            self.eval_into(nodes, inner, tmp);
+                            self.eval_into(nodes, inner, tmp)?;
                         }
                         ControlFlow::Normal
                     }
@@ -1535,28 +1615,28 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             }
             NodeKind::Return(inner) => {
                 let inner = *inner;
-                self.eval_into(nodes, inner, ret_dst);
+                self.eval_into(nodes, inner, ret_dst)?;
                 ControlFlow::Return
             }
             _ => unreachable!(),
-        }
+        })
     }
 
     /// Execute a statement-position `match` expression, propagating control flow
     /// out of the taken arm (its value is discarded). Mirrors the value-path
     /// `Match` evaluation but runs the arm body with `exec_body`.
-    fn exec_match_stmt(&mut self, nodes: &[Node], id: NodeId, ret_dst: usize) -> ControlFlow {
+    fn exec_match_stmt(&mut self, nodes: &[Node], id: NodeId, ret_dst: usize) -> Eval<ControlFlow> {
         let (scrutinee, arms) = match &nodes[id.0].kind {
             NodeKind::Match { scrutinee, arms } => (*scrutinee, arms.clone()),
             _ => unreachable!(),
         };
         let enum_base = if is_place(nodes, scrutinee) {
-            let (addr, _) = self.eval_place(nodes, scrutinee);
+            let (addr, _) = self.eval_place(nodes, scrutinee)?;
             addr
         } else {
             let ty = nodes[scrutinee.0].ty.clone();
             let tmp = self.alloc_ty(&ty);
-            self.eval_into(nodes, scrutinee, tmp);
+            self.eval_into(nodes, scrutinee, tmp)?;
             tmp
         };
         let disc = self.mem.load(enum_base, 8);
@@ -1600,31 +1680,32 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         body: &[NodeId],
         dst: usize,
         ret_dst: usize,
-    ) -> ControlFlow {
+    ) -> Eval<ControlFlow> {
         self.loop_dst.push(dst);
         let result = loop {
             match self.exec_body(nodes, body, ret_dst) {
-                ControlFlow::Break => break ControlFlow::Normal,
-                ControlFlow::Return => break ControlFlow::Return,
+                Ok(ControlFlow::Break) => break Ok(ControlFlow::Normal),
+                Ok(ControlFlow::Return) => break Ok(ControlFlow::Return),
                 // A fall-through or `continue` starts the next iteration.
-                ControlFlow::Normal | ControlFlow::Continue => {}
+                Ok(ControlFlow::Normal | ControlFlow::Continue) => {}
+                Err(t) => break Err(t),
             }
         };
         self.loop_dst.pop();
         result
     }
 
-    fn exec_body(&mut self, nodes: &[Node], body: &[NodeId], ret_dst: usize) -> ControlFlow {
+    fn exec_body(&mut self, nodes: &[Node], body: &[NodeId], ret_dst: usize) -> Eval<ControlFlow> {
         for &id in body {
-            match self.exec_stmt(nodes, id, ret_dst) {
+            match self.exec_stmt(nodes, id, ret_dst)? {
                 ControlFlow::Normal => {}
-                cf => return cf,
+                cf => return Ok(cf),
             }
         }
-        ControlFlow::Normal
+        Ok(ControlFlow::Normal)
     }
 
-    fn exec_branch_into(&mut self, nodes: &[Node], body: &[NodeId], dst: usize) {
+    fn exec_branch_into(&mut self, nodes: &[Node], body: &[NodeId], dst: usize) -> Eval<()> {
         let has_tail = body
             .last()
             .is_some_and(|&id| matches!(nodes[id.0].kind, NodeKind::Expr(_)));
@@ -1637,18 +1718,19 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         };
 
         for &id in init {
-            self.exec_stmt(nodes, id, dst);
+            self.exec_stmt(nodes, id, dst)?;
         }
 
         if let Some(tid) = tail {
             match &nodes[tid.0].kind {
-                NodeKind::Expr(inner) => self.eval_into(nodes, *inner, dst),
+                NodeKind::Expr(inner) => self.eval_into(nodes, *inner, dst)?,
                 _ => unreachable!(),
             }
         }
+        Ok(())
     }
 
-    fn exec_function_body(&mut self, func: &Function, ret_dst: usize) {
+    fn exec_function_body(&mut self, func: &Function, ret_dst: usize) -> Eval<()> {
         let nodes = &func.nodes;
         let body = &func.body;
 
@@ -1665,8 +1747,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         };
 
         for &id in init {
-            match self.exec_stmt(nodes, id, ret_dst) {
-                ControlFlow::Return => return,
+            match self.exec_stmt(nodes, id, ret_dst)? {
+                ControlFlow::Return => return Ok(()),
                 ControlFlow::Normal => {}
                 ControlFlow::Break => unreachable!("break outside loop"),
                 ControlFlow::Continue => unreachable!("continue outside loop"),
@@ -1675,10 +1757,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
 
         if let Some(tid) = tail {
             match &nodes[tid.0].kind {
-                NodeKind::Expr(inner) => self.eval_into(nodes, *inner, ret_dst),
+                NodeKind::Expr(inner) => self.eval_into(nodes, *inner, ret_dst)?,
                 _ => unreachable!(),
             }
         }
+        Ok(())
     }
 
     fn run(&mut self) {
@@ -1687,7 +1770,12 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             .get("main")
             .unwrap_or_else(|| panic!("no main function"));
         assert!(main_func.params.is_empty(), "main must take no parameters");
-        self.exec_function_body(main_func, 0);
+        if let Err(Thrown(bytes)) = self.exec_function_body(main_func, 0) {
+            // A `throw` that escapes `main` is uncaught; mirror the compiled
+            // runtime, which aborts with the message.
+            let msg = String::from_utf8_lossy(&bytes);
+            panic!("uncaught exception: {msg}");
+        }
     }
 }
 
