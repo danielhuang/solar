@@ -935,9 +935,13 @@ impl<'a, 'io> Interpreter<'a, 'io> {
 
                     // Set up captured variables from env
                     for cap in &func.env_captures {
-                        let ptr_addr = env_ptr as usize + cap.index * 8;
-                        let var_addr = self.mem.load(ptr_addr, 8) as usize;
+                        let slot = env_ptr as usize + cap.index * 16;
+                        let var_addr = self.mem.load(slot, 8) as usize;
                         self.vars.insert(cap.var, var_addr);
+                        if cap.is_unsized {
+                            let meta = self.mem.load(slot + 8, 8) as usize;
+                            self.var_meta.insert(cap.var, meta);
+                        }
                     }
 
                     // Set up parameter (single Uint param)
@@ -1126,11 +1130,12 @@ impl<'a, 'io> Interpreter<'a, 'io> {
 
                 let n_captures = capture_ids.len();
                 let env_ptr = if n_captures > 0 {
-                    let env = self.mem.alloc(n_captures * 8, 8);
+                    // 16-byte slots: a capture is a Ref (thin, 8 bytes) or a
+                    // RefUnsized (fat, 16 bytes — ptr+meta); `eval_into` writes
+                    // the right width into the slot.
+                    let env = self.mem.alloc(n_captures * 16, 8);
                     for (i, &cap_id) in capture_ids.iter().enumerate() {
-                        // Each capture is a Ref node — eval_load gives us the address
-                        let addr = self.eval_load(nodes, cap_id)?;
-                        self.mem.store(env + i * 8, addr, 8);
+                        self.eval_into(nodes, cap_id, env + i * 16)?;
                     }
                     env as u64
                 } else {
@@ -1202,9 +1207,13 @@ impl<'a, 'io> Interpreter<'a, 'io> {
 
         // Set up captured variables from env
         for cap in &func.env_captures {
-            let ptr_addr = env_value as usize + cap.index * 8;
-            let var_addr = self.mem.load(ptr_addr, 8) as usize;
+            let slot = env_value as usize + cap.index * 16;
+            let var_addr = self.mem.load(slot, 8) as usize;
             self.vars.insert(cap.var, var_addr);
+            if cap.is_unsized {
+                let meta = self.mem.load(slot + 8, 8) as usize;
+                self.var_meta.insert(cap.var, meta);
+            }
         }
 
         for ((param, addr), meta) in func.params.iter().zip(param_addrs).zip(param_metas) {
@@ -1497,9 +1506,13 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         let saved_vars = std::mem::take(&mut self.vars);
         let saved_meta = std::mem::take(&mut self.var_meta);
         for cap in &func.env_captures {
-            let ptr_addr = env_ptr as usize + cap.index * 8;
-            let var_addr = self.mem.load(ptr_addr, 8) as usize;
+            let slot = env_ptr as usize + cap.index * 16;
+            let var_addr = self.mem.load(slot, 8) as usize;
             self.vars.insert(cap.var, var_addr);
+            if cap.is_unsized {
+                let meta = self.mem.load(slot + 8, 8) as usize;
+                self.var_meta.insert(cap.var, meta);
+            }
         }
         for (param, &addr) in func.params.iter().zip(param_addrs.iter()) {
             self.vars.insert(param.var, addr);

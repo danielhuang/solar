@@ -676,13 +676,22 @@ impl<'a> Codegen<'a> {
         self.linef(format!("{q} {sig} {{"));
         self.indent += 1;
 
-        // Bind captured variables from env
+        // Bind captured variables from env. Each capture occupies a 16-byte
+        // slot: a thin pointer (sized) or a fat pointer `(ptr, meta)` (unsized,
+        // e.g. a captured `[Uint8]` — its `meta` is the length).
         for cap in &func.env_captures {
+            let off = cap.index * 16;
             self.linef(format!(
-                "uint8_t* _v{} = *(uint8_t**)((uint8_t*)__env + {});",
+                "uint8_t* _v{} = *(uint8_t**)((uint8_t*)__env + {off});",
                 cap.var.0,
-                cap.index * 8
             ));
+            if cap.is_unsized {
+                self.linef(format!(
+                    "uint64_t _vm{} = *(uint64_t*)((uint8_t*)__env + {});",
+                    cap.var.0,
+                    off + 8
+                ));
+            }
         }
 
         // Bind params: each gets a slot so a `&`/`^` of it is a valid pointer.
@@ -2076,11 +2085,12 @@ impl<'a> Codegen<'a> {
                 ));
                 if n > 0 {
                     let env_tmp = self.fresh_tmp();
-                    self.emit_alloc(&env_tmp, n * 8, 8, "_mark_ptr_array");
+                    // 16-byte slots: a sized capture writes a thin pointer; an
+                    // unsized one (e.g. a `[Uint8]`) writes a fat pointer (ptr+meta).
+                    self.emit_alloc(&env_tmp, n * 16, 8, "_mark_ptr_array");
                     for (i, &cap_id) in capture_ids.iter().enumerate() {
-                        // Each capture is a Ref node — load the pointer value
-                        let ptr_expr = self.emit_load(nodes, cap_id);
-                        self.linef(format!("*(uint8_t**)({env_tmp} + {}) = {ptr_expr};", i * 8));
+                        let slot = format!("({env_tmp} + {})", i * 16);
+                        self.emit_into(nodes, cap_id, &slot);
                     }
                     self.linef(format!("*(void(**)()){wide_tmp} = (void(*)())&{cname};"));
                     self.linef(format!("*(void**)({wide_tmp} + 8) = (void*){env_tmp};"));

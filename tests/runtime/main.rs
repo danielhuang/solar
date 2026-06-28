@@ -655,3 +655,12 @@ fn throw_alias() {
     let output = run(&fixture("throw_alias.solar"), "throw_alias");
     assert_eq!(output, "ABC\nZBC\n");
 }
+
+#[test]
+fn closure_capture_unsized() {
+    let output = run(
+        &fixture("closure_capture_unsized.solar"),
+        "closure_capture_unsized",
+    );
+    assert_eq!(output, "ZBX\n");
+}

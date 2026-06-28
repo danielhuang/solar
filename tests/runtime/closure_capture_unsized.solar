@@ -1,0 +1,14 @@
+// Regression: a closure may capture an unsized variable (a `[Uint8]` array) by
+// reference. Its env slot must carry the fat pointer (ptr + length), not just a
+// thin pointer — otherwise writing the length half runs off the slot, and the
+// bounds-checked index below (which needs the captured length) breaks.
+fn run(f: fn()) { f(); }
+
+fn main() {
+    let buf = [65u8, 66u8, 67u8];   // "ABC"
+    run(\ {
+        buf[0u] = 90u8;             // 'Z' — mutate the captured array
+        buf[2u] = 88u8;             // 'X' — index 2 needs the captured length
+    });
+    println(buf&);                  // "ZBX"
+}

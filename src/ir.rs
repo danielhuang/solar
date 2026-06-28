@@ -45,7 +45,12 @@ pub struct Module {
 #[derive(Debug)]
 pub struct EnvCapture {
     pub var: VarId,
+    /// Ordinal of this capture; its env slot is at byte offset `index * 16`.
+    /// Each slot is 16 bytes: a thin pointer (sized capture) or a fat pointer
+    /// `(ptr, meta)` (unsized capture, e.g. a captured `[Uint8]`).
     pub index: usize,
+    /// True if the captured variable is unsized (its slot carries `meta` too).
+    pub is_unsized: bool,
 }
 
 #[derive(Debug)]
@@ -227,7 +232,7 @@ pub fn lower(source: &typed_ast::SourceFile) -> Module {
     let functions = source
         .functions
         .values()
-        .map(|f| lower_function(f, &mut next_var, closure_captures.get(&f.name)))
+        .map(|f| lower_function(f, &mut next_var, closure_captures.get(&f.name), &datatypes))
         .collect();
     Module {
         datatypes,
@@ -693,15 +698,17 @@ struct FunctionLowerer<'a> {
     next_var: &'a mut RangeFrom<u32>,
     scopes: ScopeStack<VarId>,
     pending_stmts: Vec<NodeId>,
+    datatypes: &'a HashMap<String, DataType>,
 }
 
 impl<'a> FunctionLowerer<'a> {
-    fn new(next_var: &'a mut RangeFrom<u32>) -> Self {
+    fn new(next_var: &'a mut RangeFrom<u32>, datatypes: &'a HashMap<String, DataType>) -> Self {
         FunctionLowerer {
             nodes: Vec::new(),
             next_var,
             scopes: ScopeStack::default(),
             pending_stmts: Vec::new(),
+            datatypes,
         }
     }
 
@@ -1213,8 +1220,17 @@ impl<'a> FunctionLowerer<'a> {
                             kind: NodeKind::Local(var),
                             span: expr.span,
                         });
+                        // A reference to an unsized capture (e.g. a `[Uint8]`) is a
+                        // fat pointer, so its node type must be `RefUnsized`, not
+                        // `Ref` — else the env slot is sized as a thin pointer and
+                        // the meta half is written out of bounds.
+                        let ref_ty = if is_sized(&cap.ty, self.datatypes) {
+                            Type::Ref(Box::new(cap.ty.clone()))
+                        } else {
+                            Type::RefUnsized(Box::new(cap.ty.clone()))
+                        };
                         self.push(Node {
-                            ty: Type::Ref(Box::new(cap.ty.clone())),
+                            ty: ref_ty,
                             kind: NodeKind::Ref(local),
                             span: expr.span,
                         })
@@ -1374,8 +1390,9 @@ fn lower_function(
     func: &typed_ast::FunctionDef,
     next_var: &mut RangeFrom<u32>,
     captures: Option<&Vec<typed_ast::CapturedVar>>,
+    datatypes: &HashMap<String, DataType>,
 ) -> Function {
-    let mut lowerer = FunctionLowerer::new(next_var);
+    let mut lowerer = FunctionLowerer::new(next_var, datatypes);
     lowerer.push_scope();
 
     // For closure functions, define captured variables in scope first
@@ -1384,7 +1401,11 @@ fn lower_function(
             .enumerate()
             .map(|(i, cap)| {
                 let var = lowerer.define(&cap.name);
-                EnvCapture { var, index: i }
+                EnvCapture {
+                    var,
+                    index: i,
+                    is_unsized: !is_sized(&cap.ty, datatypes),
+                }
             })
             .collect()
     } else {
