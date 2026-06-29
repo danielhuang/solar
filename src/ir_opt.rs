@@ -247,7 +247,7 @@ pub fn analyze_param_escapes(module: &mut Module) -> bool {
 /// itself non-escaping (`param_noescape`) — which is **vacuously true when `V`'s
 /// address is never taken at all** (nothing points at it, so nothing can leak
 /// it). Deliberately simple — anything more involved is treated as escaping:
-///   * `^V` (unique pointer) or taking the address of a field/element of `V`;
+///   * `^V` (unique reference) or taking the address of a field/element of `V`;
 ///   * routing `V&` through another binding first (`let r = V&; f(r)`), since the
 ///     reference temp is then used as something other than a direct call arg.
 ///

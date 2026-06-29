@@ -25,7 +25,7 @@ const N: Uint = 1000000u;
 fn rng_next(state: &Uint64) -> Uint64 {
   let s = state@ ++ 0x9E3779B97F4A7C15u64;
   state@ = s;
-  // `^` directly before `(` parses as a postfix unique-pointer op, so bind the
+  // `^` directly before `(` parses as a postfix unique-reference op, so bind the
   // shifted sub-results to temps first.
   let a = s >> 30u64;
   let z1 = s ^ a;

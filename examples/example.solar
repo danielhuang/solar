@@ -9,7 +9,7 @@
 //   fixed-size array: [T; N] (N is a compile-time integer)
 //   references (pointers for interior mutability): &T
 //     note that references are always mutable unlike rust
-//   unique pointers (deep-copy on copy): ^T
+//   unique references (deep-copy on copy): ^T
 //     unlike &T which aliases on copy, ^T deep-clones the pointee
 
 // built-in io (via stdlib wrappers):
@@ -346,13 +346,13 @@ fn main() {
   println(indices[2u]);                 // 2
   println(indices[4u]);                 // 4
 
-  // unique pointers (^T): deep-copy on copy
-  let uptr: ^Int = 42^;
-  println(uptr@);                      // 42
-  let uptr2 = uptr;                      // deep copy: uptr2 points to separate memory
-  uptr@  = 100;
-  println(uptr@);                      // 100
-  println(uptr2@);                     // 42 — not aliased
+  // unique references (^T): deep-copy on copy
+  let uref: ^Int = 42^;
+  println(uref@);                      // 42
+  let uref2 = uref;                      // deep copy: uref2 points to separate memory
+  uref@  = 100;
+  println(uref@);                      // 100
+  println(uref2@);                     // 42 — not aliased
 
   // nested functions (closures with fn syntax)
   let base = 1000;

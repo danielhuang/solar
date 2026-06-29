@@ -364,7 +364,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let inner_ref = inner_slot.borrow();
                 match &*inner_ref {
                     Value::Ref(target) | Value::Unique(target) => Rc::clone(target),
-                    Value::Null => panic!("null pointer dereference"),
+                    Value::Null => panic!("null reference dereference"),
                     _ => unreachable!("type checker guarantees ref/unique"),
                 }
             }

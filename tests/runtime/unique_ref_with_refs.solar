@@ -1,13 +1,13 @@
 fn main() {
     let a = 5^;
     
-    // references allowed to alias unique pointers
+    // references allowed to alias unique references
     let a_ref = a@&;
     
     a_ref@ = 6;
     println(a@); // 6
     
-    // unique pointers cannot alias each other
+    // unique references cannot alias each other
     let a2 = a@^;
     a2@ = 7;
     println(a@); // 6

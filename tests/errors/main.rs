@@ -26,19 +26,19 @@ fn oob_index_codegen() {
 }
 
 #[test]
-#[should_panic(expected = "null pointer dereference")]
+#[should_panic(expected = "null reference dereference")]
 fn null_deref_ast() {
     run_ast_file(&fixture("null_deref.solar"));
 }
 
 #[test]
-#[should_panic(expected = "null pointer dereference")]
+#[should_panic(expected = "null reference dereference")]
 fn null_deref_ir() {
     run_ir_file(&fixture("null_deref.solar"));
 }
 
 #[test]
-#[should_panic(expected = "null pointer dereference")]
+#[should_panic(expected = "null reference dereference")]
 fn null_deref_codegen() {
     run_codegen_file(&fixture("null_deref.solar"), "null_deref");
 }

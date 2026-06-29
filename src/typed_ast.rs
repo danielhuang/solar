@@ -745,7 +745,7 @@ fn is_literal_default(e: &ast::Expr) -> bool {
         ast::ExprKind::ArrayRepeat { element, count } => {
             is_literal_default(element) && is_literal_default(count)
         }
-        // A reference/unique pointer to a literal — needed for string/array
+        // A reference or unique reference to a literal — needed for string/array
         // defaults passed to reference parameters, e.g. `label = "x"&`.
         ast::ExprKind::Reference(inner) | ast::ExprKind::Unique(inner) => is_literal_default(inner),
         _ => false,
@@ -7065,7 +7065,7 @@ impl<'a> Lowerer<'a> {
                     if !is_atomic_compatible(&inner_ty, &self.lowered_structs) {
                         return Err(CompileError::new(
                             format!(
-                                "{name}: type {inner_ty} is not atomic-compatible (must be sized, power of 2, <= 16 bytes, no enums or unique pointers)"
+                                "{name}: type {inner_ty} is not atomic-compatible (must be sized, power of 2, <= 16 bytes, no enums or unique references)"
                             ),
                             span,
                         ));
@@ -7291,7 +7291,7 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
 }
 
 /// Returns true if a type is atomic-compatible:
-/// no enums, no unique pointers, and structs only if all fields pass too.
+/// no enums, no unique references, and structs only if all fields pass too.
 /// Additionally requires the total size to be 1, 2, 4, 8, or 16 bytes.
 fn is_atomic_compatible(ty: &Type, structs: &HashMap<String, StructDef>) -> bool {
     if !is_atomic_shape_ok(ty, structs) {

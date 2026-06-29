@@ -1785,7 +1785,7 @@ impl<'a> Codegen<'a> {
                 }
             }
             NodeKind::Unique(inner) => {
-                // Unique pointer creation: always allocates fresh memory
+                // Unique reference creation: always allocates fresh memory
                 let inner = *inner;
                 let inner_ty_clone = nodes[inner.0].ty.clone();
                 if self.is_sized(&inner_ty_clone) {

@@ -207,7 +207,7 @@ pub unsafe extern "C" fn sol_slice_index(
 /// pointer is null; otherwise returns it unchanged.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_null_check(ptr: *const u8) -> *const u8 {
-    assert!(!ptr.is_null(), "null pointer dereference");
+    assert!(!ptr.is_null(), "null reference dereference");
     ptr
 }
 

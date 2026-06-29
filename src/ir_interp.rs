@@ -407,7 +407,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     }
                     Type::NullableRef(_) => {
                         let addr = self.mem.load(ref_place, 8) as usize;
-                        assert!(addr != 0, "null pointer dereference");
+                        assert!(addr != 0, "null reference dereference");
                         (addr, None)
                     }
                     Type::RefUnsized(_) | Type::UniqueUnsized(_) => {
@@ -417,7 +417,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     }
                     Type::NullableRefUnsized(_) => {
                         let addr = self.mem.load(ref_place, 8) as usize;
-                        assert!(addr != 0, "null pointer dereference");
+                        assert!(addr != 0, "null reference dereference");
                         let meta = self.mem.load(ref_place + 8, 8) as usize;
                         (addr, Some(meta))
                     }
@@ -844,7 +844,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 }
             }
             NodeKind::Unique(inner) => {
-                // Unique pointer creation: always allocates fresh memory
+                // Unique reference creation: always allocates fresh memory
                 let inner = *inner;
                 let inner_ty = nodes[inner.0].ty.clone();
                 if is_sized(&inner_ty, &self.module.datatypes) {

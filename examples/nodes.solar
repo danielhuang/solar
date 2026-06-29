@@ -1,12 +1,12 @@
-enum NodePtr {
+enum NodeRef {
     Some(&Node),
     None,
 }
 
 struct Node {
     value: Int,
-    left: NodePtr,
-    right: NodePtr,
+    left: NodeRef,
+    right: NodeRef,
 }
 
 fn add(x: &Int, dx: Int) {
@@ -15,10 +15,10 @@ fn add(x: &Int, dx: Int) {
 
 fn left(node: &Node) -> &Node {
     match node@.left {
-        NodePtr::Some(left) => left,
-        NodePtr::None => {
-            let new_node = Node { value: 0, left: NodePtr::None, right: NodePtr::Some(node) };
-            node@.left = NodePtr::Some(new_node&);
+        NodeRef::Some(left) => left,
+        NodeRef::None => {
+            let new_node = Node { value: 0, left: NodeRef::None, right: NodeRef::Some(node) };
+            node@.left = NodeRef::Some(new_node&);
             new_node&
         }
     }
@@ -26,17 +26,17 @@ fn left(node: &Node) -> &Node {
 
 fn right(node: &Node) -> &Node {
     match node@.right {
-        NodePtr::Some(right) => right,
-        NodePtr::None => {
-            let new_node = Node { value: 0, left: NodePtr::Some(node), right: NodePtr::None };
-            node@.right = NodePtr::Some(new_node&);
+        NodeRef::Some(right) => right,
+        NodeRef::None => {
+            let new_node = Node { value: 0, left: NodeRef::Some(node), right: NodeRef::None };
+            node@.right = NodeRef::Some(new_node&);
             new_node&
         }
     }
 }
 
 fn main() {
-    let node = (Node { value: 6, left: NodePtr::None, right: NodePtr::None })&;
+    let node = (Node { value: 6, left: NodeRef::None, right: NodeRef::None })&;
     println(node@.value);
     node = left(node);
     node = left(node);

@@ -502,8 +502,8 @@ fn if_expr_stmt() {
 }
 
 #[test]
-fn unique_ptr() {
-    let output = run(&fixture("unique_ptr.solar"), "unique_ptr");
+fn unique_ref() {
+    let output = run(&fixture("unique_ref.solar"), "unique_ref");
     assert_eq!(
         output,
         "42\n100\n42\n999\n10\n99\n1\n999\n20\n77\n0\n100\n5\n"
@@ -517,10 +517,10 @@ fn generic_overloads() {
 }
 
 #[test]
-fn unique_ptr_with_refs() {
+fn unique_ref_with_refs() {
     let output = run(
-        &fixture("unique_ptr_with_refs.solar"),
-        "unique_ptr_with_refs",
+        &fixture("unique_ref_with_refs.solar"),
+        "unique_ref_with_refs",
     );
     assert_eq!(output, "6\n6\n7\n");
 }
