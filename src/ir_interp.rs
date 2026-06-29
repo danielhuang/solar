@@ -1290,6 +1290,13 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let n = self.files.write_partial(fd, &bytes);
                 self.scalar_store(dst, n as u64, result_ty);
             }
+            Intrinsic::Args | Intrinsic::Env => {
+                // The interpreters have no process args/env source; return an
+                // empty `&[&[Uint8]]` (null data ptr, length 0). The result is a
+                // fat pointer occupying 16 bytes at `dst`.
+                self.mem.store(dst, 0, 8);
+                self.mem.store(dst + 8, 0, 8);
+            }
             Intrinsic::ArrayLen => {
                 let len = if let Type::FixedArray(_, n) = &nodes[args[0].0].ty {
                     *n as usize

@@ -1,0 +1,25 @@
+fn starts_with(s: &[Uint8], prefix: &[Uint8]) -> Bool {
+    if s.len() < prefix.len() { return false; }
+    for i in 0u..prefix.len() {
+        if s@[i] != prefix@[i] { return false; }
+    }
+    true
+}
+
+fn main() {
+    let a = process::args();
+    println("args:"&);
+    for i in 0u..a.len() {
+        write_stdout("  "&);
+        println(a@[i]);
+    }
+
+    let e = process::env();
+    for i in 0u..e.len() {
+        let entry = e@[i];
+        if starts_with(entry, "PATH="&) {
+            write_stdout("found env entry: "&);
+            println(entry);
+        }
+    }
+}

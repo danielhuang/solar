@@ -14,6 +14,7 @@ pub mod gc;
 pub mod heap;
 pub mod mem;
 pub mod panic;
+pub mod process;
 pub mod thread;
 pub mod thread_pool;
 

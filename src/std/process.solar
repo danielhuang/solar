@@ -1,0 +1,15 @@
+import intrinsics from "@intrinsics";
+
+// Returns the process command-line arguments, including the program name as the
+// first element (matching C's `argv`). Each argument is a `&[Uint8]` of raw
+// bytes, freshly copied into GC memory on every call.
+pub fn args() -> &[&[Uint8]] {
+    intrinsics::args()
+}
+
+// Returns the process environment as `KEY=VALUE` byte strings (the POSIX
+// `environ` layout). Each entry is a `&[Uint8]` freshly copied into GC memory on
+// every call.
+pub fn env() -> &[&[Uint8]] {
+    intrinsics::env()
+}

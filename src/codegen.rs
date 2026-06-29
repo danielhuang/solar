@@ -562,6 +562,8 @@ impl<'a> Codegen<'a> {
         self.line(
             "extern size_t sol_file_write_partial(uint8_t* fd, const uint8_t* ptr, size_t len);",
         );
+        self.line("extern void sol_args(uint8_t* out);");
+        self.line("extern void sol_env(uint8_t* out);");
         self.line("extern int64_t sol_checked_add_int(int64_t a, int64_t b);");
         self.line("extern int64_t sol_checked_sub_int(int64_t a, int64_t b);");
         self.line("extern int64_t sol_checked_mul_int(int64_t a, int64_t b);");
@@ -2350,6 +2352,16 @@ impl<'a> Codegen<'a> {
                 self.linef(format!(
                     "*({c_ty}*){dst} = ({c_ty})sol_file_write_partial((uint8_t*){fd}, {data_ptr}, {data_len});"
                 ));
+            }
+            Intrinsic::Args | Intrinsic::Env => {
+                // No args. The runtime builds the `&[&[Uint8]]` and writes its
+                // 16-byte fat pointer (data ptr + count) directly into `dst`.
+                let f = if matches!(intrinsic, Intrinsic::Args) {
+                    "sol_args"
+                } else {
+                    "sol_env"
+                };
+                self.linef(format!("{f}((uint8_t*){dst});"));
             }
             Intrinsic::ArrayLen => {
                 let len = if let Type::FixedArray(_, n) = &nodes[args[0].0].ty {

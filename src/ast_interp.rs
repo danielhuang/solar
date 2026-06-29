@@ -1077,6 +1077,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let n = self.files.write_partial(fd, &bytes);
                 Value::Int(n as i64)
             }
+            Intrinsic::Args | Intrinsic::Env => {
+                // No process args/env source in the interpreters: return an
+                // empty `&[&[Uint8]]` (a reference to an empty array).
+                Value::Ref(Rc::new(RefCell::new(Value::Array(Vec::new()))))
+            }
             Intrinsic::ArrayLen => {
                 let arr = self.eval_expr(&arguments[0])?;
                 match arr {

@@ -7132,6 +7132,12 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
             Type::Uint8,
         )))))
     };
+    // `&[&[Uint8]]` — a slice of byte-slices, the result of `args()`/`env()`.
+    let byte_slice_slice = || {
+        Type::RefUnsized(Box::new(Type::Array(Box::new(Type::RefUnsized(Box::new(
+            Type::Array(Box::new(Type::Uint8)),
+        ))))))
+    };
     let ref_u32 = || Exact(Type::Ref(Box::new(Type::Uint32)));
     let u32 = || Exact(Type::Uint32);
     let fn_unit = || {
@@ -7226,6 +7232,12 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
         ast::Intrinsic::FileWritePartial => IntrinsicSpec {
             params: vec![Exact(Type::FileDesc), byte_slice()],
             ret: Fixed(Type::Uint),
+        },
+        // args() / env(): no parameters; return `&[&[Uint8]]`. The runtime
+        // copies each argument / `KEY=VALUE` entry into a fresh GC allocation.
+        ast::Intrinsic::Args | ast::Intrinsic::Env => IntrinsicSpec {
+            params: vec![],
+            ret: Fixed(byte_slice_slice()),
         },
         // Bit-counting intrinsics: take any integer, return a count as `Uint`.
         ast::Intrinsic::CountTrailingZeros
