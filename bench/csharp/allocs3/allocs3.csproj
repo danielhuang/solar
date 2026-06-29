@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>allocs3</AssemblyName>
+    <Optimize>true</Optimize>
+    <!-- GC flavor (workstation/server, concurrent on/off) is chosen at run time
+         via DOTNET_gcServer / DOTNET_gcConcurrent so one build serves every
+         contender, mirroring Java's -XX collector flags. -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../GcPause.cs" />
+  </ItemGroup>
+
+</Project>

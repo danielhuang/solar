@@ -7,3 +7,5 @@ c/threads_list2
 go/allocs3
 go/threads_list2
 c/libbump.so
+csharp/*/bin/
+csharp/*/obj/

@@ -35,6 +35,16 @@ ROOT = Path(__file__).resolve().parent.parent
 JAVA_DIR = ROOT / "bench" / "java"
 JAVA_OPTS = ["-Xmx8g"]
 
+# .NET lives under ~/.dotnet here (installed by dotnet-install.sh), which is not
+# a system-registered location, so the apphost binaries need DOTNET_ROOT to find
+# the shared runtime. GC flavor is chosen per contender via DOTNET_gcServer.
+DOTNET_ROOT = str(Path.home() / ".dotnet")
+DOTNET_ENV = {"DOTNET_ROOT": DOTNET_ROOT}
+
+
+def csharp_bin(stem: str) -> str:
+    return str(ROOT / "bench/csharp" / stem / "bin/Release/net10.0" / stem)
+
 # Each benchmark: (solar/c/go binary stem, Java class).
 BENCHMARKS = [("allocs3", "Allocs3"), ("threads_list2", "ThreadsList2")]
 
@@ -54,6 +64,8 @@ def contenders(stem: str, cls: str):
         ("Java ZGC gen",     [*java, "-XX:+UseZGC", "-XX:+ZGenerational", cls], {}, "java"),
         ("Java ZGC non-gen", [*java, "-XX:+UseZGC", cls],            {}, "java"),
         ("Java Shenandoah",  [*java, "-XX:+UseShenandoahGC", cls],   {}, "java"),
+        ("C# Workstation",   [csharp_bin(stem)], {**DOTNET_ENV, "DOTNET_gcServer": "0"}, "csharp"),
+        ("C# Server",        [csharp_bin(stem)], {**DOTNET_ENV, "DOTNET_gcServer": "1"}, "csharp"),
     ]
 
 
@@ -96,6 +108,7 @@ _UNIT = {"µs": 1e-3, "ms": 1.0, "s": 1e3}
 _SOLAR_RE = re.compile(r"pause([12]) ([0-9.]+)(µs|ms|s)")
 _GO_RE = re.compile(r"([0-9.]+)\+[0-9.]+\+([0-9.]+) ms clock")
 _JAVA_RE = re.compile(r"At safepoint: (\d+) ns")
+_CSHARP_RE = re.compile(r"GCPAUSE ([0-9.]+) ms")
 
 
 def capture(argv, env) -> str:
@@ -107,8 +120,9 @@ def capture(argv, env) -> str:
     return p.stderr
 
 
-def pause_samples(argv, kind: str) -> list[float]:
+def pause_samples(argv, kind: str, env: dict | None = None) -> list[float]:
     """Run once with the runtime's GC trace enabled; return STW pauses in ms."""
+    env = env or {}
     if kind == "none":
         return []
     if kind == "solar":
@@ -133,6 +147,11 @@ def pause_samples(argv, kind: str) -> list[float]:
         p = subprocess.run(java_argv, cwd=JAVA_DIR, capture_output=True, text=True)
         text = p.stdout + p.stderr
         return [int(ns) / 1e6 for ns in _JAVA_RE.findall(text)]
+    if kind == "csharp":
+        # No built-in gctrace knob; the program's in-process EventListener
+        # (GcPause.cs) prints each STW window to stderr when BENCH_GC_TRACE=1.
+        text = capture(argv, {**env, "BENCH_GC_TRACE": "1"})
+        return [float(ms) for ms in _CSHARP_RE.findall(text)]
     raise ValueError(kind)
 
 
@@ -179,7 +198,7 @@ def main():
                     walls[lbl].append(w)
                     rss[lbl].append(m)
                 if do_lat and kind != "none":
-                    s = pause_samples(argv, kind)
+                    s = pause_samples(argv, kind, env)
                     if s:
                         lat_max[lbl].append(max(s))
                         lat_p50[lbl].append(statistics.median(s))
