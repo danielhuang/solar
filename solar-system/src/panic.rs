@@ -339,9 +339,8 @@ pub struct SolSlice {
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn sol_throw(ptr: *const u8, len: usize) -> ! {
     let slot = crate::gc::MY_SLOT.get();
-    if !slot.is_null() {
-        unsafe { crate::gc::begin_critical_section(&*slot) };
-    }
+    assert!(!slot.is_null(), "sol_throw called on unregistered thread");
+    unsafe { crate::gc::begin_critical_section(&*slot) };
     std::panic::panic_any(SolarException { ptr, len });
 }
 
@@ -370,9 +369,8 @@ pub unsafe extern "C-unwind" fn sol_try(
                     len: exc.len,
                 };
                 let slot = crate::gc::MY_SLOT.get();
-                if !slot.is_null() {
-                    unsafe { crate::gc::end_critical_section(&*slot) };
-                }
+                assert!(!slot.is_null(), "sol_try called on unregistered thread");
+                unsafe { crate::gc::end_critical_section(&*slot) };
                 unsafe { handler_fn(handler_env, slice) };
             }
             Err(other) => std::panic::resume_unwind(other),

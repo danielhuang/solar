@@ -1289,9 +1289,7 @@ unsafe fn write_barrier_slow(_dst: *mut u8, val: *mut u8) {
         return;
     }
     let slot = MY_SLOT.get();
-    if slot.is_null() {
-        return;
-    }
+    assert!(!slot.is_null(), "write barrier on unregistered thread");
     let slot = unsafe { &*slot };
     unsafe { with_signal_deferred(slot, || gray_enqueue_raw(slot, v)) };
 }
@@ -1314,9 +1312,7 @@ pub unsafe extern "C" fn sol_gc_memcpy_barrier(dst: *mut u8, size: usize) {
 #[inline]
 pub(crate) unsafe fn memcpy_barrier(dst: *mut u8, size: usize) {
     let slot = MY_SLOT.get();
-    if slot.is_null() {
-        return;
-    }
+    assert!(!slot.is_null(), "memcpy barrier on unregistered thread");
     let slot = unsafe { &*slot };
     let arena_base = heap::arena_base();
     let has_big = MARKING_HAS_BIG.load(Ordering::Relaxed);
