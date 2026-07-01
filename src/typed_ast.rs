@@ -2711,20 +2711,31 @@ impl<'a> Lowerer<'a> {
             );
         }
 
-        // Lower struct fields using resolve_ast_type (triggers monomorphization of generics)
-        for name in &struct_names {
-            let def = *self.structs.get(name).unwrap();
-            let fields: Vec<FieldDef> = def
-                .fields
-                .iter()
-                .map(|f| {
-                    Ok(FieldDef {
-                        name: f.name.clone(),
-                        ty: self.resolve_ast_type(&f.ty)?,
+        // Lower struct fields using resolve_ast_type (triggers monomorphization of
+        // generics). Run the loop TWICE: `resolve_refs` picks thin `&T` vs fat
+        // `&T`-to-unsized by `is_sized`, and during the first pass a not-yet-
+        // lowered struct still has its empty placeholder fields, which reads as
+        // "sized" — so a ref-to-unsized field resolved before its target struct
+        // got its real fields would bake in the wrong (thin) representation,
+        // nondeterministically with HashMap iteration order. A struct's sizedness
+        // depends only on its by-value last-field chain (never on thin/fat), so
+        // after pass 1 every sizedness query is answered correctly and pass 2
+        // re-resolves every field to its final representation.
+        for _pass in 0..2 {
+            for name in &struct_names {
+                let def = *self.structs.get(name).unwrap();
+                let fields: Vec<FieldDef> = def
+                    .fields
+                    .iter()
+                    .map(|f| {
+                        Ok(FieldDef {
+                            name: f.name.clone(),
+                            ty: self.resolve_ast_type(&f.ty)?,
+                        })
                     })
-                })
-                .collect::<Result<Vec<_>, CompileError>>()?;
-            self.lowered_structs.get_mut(name).unwrap().fields = fields;
+                    .collect::<Result<Vec<_>, CompileError>>()?;
+                self.lowered_structs.get_mut(name).unwrap().fields = fields;
+            }
         }
 
         // Lower enum variants using resolve_ast_type (triggers monomorphization of generics)

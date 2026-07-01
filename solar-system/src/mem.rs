@@ -3,8 +3,8 @@ use std::sync::atomic::Ordering;
 
 use crate::gc::{
     ALLOC_FLUSH_CHUNK, ALLOCATED_SINCE_GC, BigAllocLocal, DISABLE_GC, ENABLE_ALLOC_PRINTS, MY_SLOT,
-    SOL_CONCURRENT_MARKING, TOTAL_LIVE_SIZE_AFTER_LAST_GC, ThreadAllocState, alloc_hard_cap,
-    request_gc, stall_for_gc, with_signal_deferred,
+    SOL_CONCURRENT_MARKING, ThreadAllocState, alloc_hard_cap, request_gc, stall_for_gc,
+    with_signal_deferred,
 };
 use crate::heap;
 
@@ -26,7 +26,10 @@ pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -
     // &mut to alloc state exists across run_gc() (run_gc mutates it).
     let alloc_ptr = slot.alloc.get();
     let new_size = unsafe { (*alloc_ptr).new_size_since_last_gc };
-    let total_live = TOTAL_LIVE_SIZE_AFTER_LAST_GC.load(Ordering::Relaxed);
+    // Pace against the *traced* live set (float-excluded), not the raw live total.
+    // Using the float-inflated total here is a runaway feedback loop that lets a
+    // high-churn heap balloon between collections — see `traced_live_size`.
+    let total_live = crate::gc::traced_live_size();
 
     // GC coordination. `SOLAR_DISABLE_GC` gates only this block, so the
     // allocation path below stays byte-for-byte identical to a collected build
@@ -100,6 +103,7 @@ unsafe fn arena_allocate(
 
     let rbase = heap::region_base(class);
     let addr = heap::slot_addr(rbase, slot, class);
+    unsafe { heap::shadow_handout(class, slot) }; // no-op unless SOLAR_GC_SHADOW=1
 
     // No zeroing here: codegen emits an explicit `memset(p, 0, size)` after every
     // `sol_alloc` call, which LLVM dead-store-eliminates wherever the caller fully

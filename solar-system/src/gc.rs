@@ -99,6 +99,9 @@ const GC_STALL_FLOOR: usize = 512 << 20;
 pub(crate) static ENABLE_STAT_PRINTS: AtomicBool = AtomicBool::new(false);
 pub(crate) static ENABLE_ALLOC_PRINTS: AtomicBool = AtomicBool::new(false);
 pub(crate) static DISABLE_GC: AtomicBool = AtomicBool::new(false);
+/// Debug (`SOLAR_GC_VALIDATE=1`): at pause 2, verify the mark is complete before
+/// the sweep runs — see `validate_marks`.
+pub(crate) static VALIDATE_MARKS: AtomicBool = AtomicBool::new(false);
 
 // ---------------------------------------------------------------------------
 // Tri-color gray frontier.
@@ -550,6 +553,18 @@ pub(crate) fn alloc_hard_cap() -> usize {
     GC_STALL_FLOOR.max(TRACED_LIVE_SIZE.load(Ordering::Relaxed))
 }
 
+/// Estimated *traced* live bytes from the last cycle (live excluding this cycle's
+/// born-black float). The allocation trigger paces against this, not the raw live
+/// total: pacing off the float-inflated total is a runaway feedback loop (float
+/// inflates live → inflates the trigger threshold → collections fire more rarely
+/// → even more float accumulates), which on a high-churn workload lets the heap
+/// balloon until a single cycle must mark a huge graph. Same reasoning as
+/// `alloc_hard_cap` above.
+#[inline]
+pub(crate) fn traced_live_size() -> usize {
+    TRACED_LIVE_SIZE.load(Ordering::Relaxed)
+}
+
 /// Block until a GC cycle reclaims space, throttling the mutator to the
 /// collector's pace when it would otherwise outrun it. Runs as a GC *safepoint*
 /// (caller must NOT be `in_critical_section`): if the STW signal arrives mid-stall, the
@@ -781,6 +796,165 @@ unsafe fn scan_thread_roots(
     }
 }
 
+/// Debug (`SOLAR_GC_VALIDATE=1`): independently re-traverse the reachable object
+/// graph from roots (world stopped, mark already at a fixpoint) and report any
+/// object that is reachable but NOT marked — a live object the concurrent mark
+/// missed, which the sweep about to run would wrongly free. Unlike the real
+/// marker, this scans *every* reached object's outgoing words (its own `visited`
+/// set), so it also catches a "marked but children-unscanned" node. It marks the
+/// leaked objects so the run survives for continued diagnosis.
+///
+/// Child extraction is fully conservative (every pointer-aligned word), which
+/// matches the collector for workloads whose precise (>=128 B) objects are
+/// pointer-free; it can only *over*-approximate reachability, never miss.
+/// Debug (`SOLAR_GC_VALIDATE=1`): at pause 1 (before this cycle marks anything),
+/// re-traverse the reachable graph and report any reachable object whose ALLOC
+/// bit is clear — i.e. an object the previous cycle's sweep freed while still
+/// reachable (a premature free: the slot can be handed out again and clobbered
+/// while the old graph still points at it). Complements `validate_marks`, which
+/// only proves marking completeness at pause 2 — this proves the sweep+alloc
+/// accounting kept every reachable object allocated across the cycle boundary.
+unsafe fn validate_allocated(
+    registry: &HashMap<i32, Box<ThreadSlot>>,
+    arena_base: usize,
+    big_len: usize,
+) {
+    use std::collections::HashSet;
+    let mut visited: HashSet<usize> = HashSet::new();
+    let mut work: Vec<usize> = Vec::new();
+    for slot in registry.values() {
+        unsafe { scan_thread_roots(slot, arena_base, big_len, &mut work) };
+    }
+    let mut freed_live = 0usize;
+    while let Some(p) = work.pop() {
+        // Resolve the slot WITHOUT the alloc-bit filter (lookup_arena would
+        // silently skip freed slots — the very thing we're hunting).
+        let Some((class, rbase)) = heap::classify(p) else {
+            continue;
+        };
+        let slot = heap::slot_index(p, rbase, class);
+        if slot as u64 >= heap::hwm(class) {
+            continue;
+        }
+        let base = heap::slot_addr(rbase, slot, class);
+        if !visited.insert(base) {
+            continue;
+        }
+        if !unsafe { heap::is_allocated(class, slot) } {
+            freed_live += 1;
+            if freed_live <= 8 {
+                let w = base as *const usize;
+                eprintln!(
+                    "GC VALIDATE-ALLOC: reachable-but-FREED slot class={class} base={base:#x} words=[{:#x} {:#x} {:#x} {:#x}]",
+                    unsafe { *w },
+                    unsafe { *w.add(1) },
+                    unsafe { *w.add(2) },
+                    unsafe { *w.add(3) },
+                );
+            }
+            // Do not follow a freed object's (possibly reused) contents.
+            continue;
+        }
+        let slot_size = heap::slot_size(class);
+        let mut w = base as *const usize;
+        let end = (base + slot_size) as *const usize;
+        while w < end {
+            let v = unsafe { (*(w as *const AtomicUsize)).load(Ordering::Relaxed) };
+            w = unsafe { w.add(1) };
+            if plausible(v, arena_base, big_len) {
+                work.push(v);
+            }
+        }
+    }
+    if freed_live > 0 {
+        eprintln!(
+            "GC VALIDATE-ALLOC: {freed_live} reachable object(s) had been FREED by the previous sweep"
+        );
+    }
+}
+
+unsafe fn validate_marks(
+    registry: &HashMap<i32, Box<ThreadSlot>>,
+    arena_base: usize,
+    big_len: usize,
+) {
+    use std::collections::HashSet;
+    let mut visited: HashSet<usize> = HashSet::new();
+    // (child pointer, referrer base or 0 for a root, referrer_was_marked)
+    let mut work: Vec<(usize, usize, bool)> = Vec::new();
+    let mut roots: Vec<usize> = Vec::new();
+    for slot in registry.values() {
+        unsafe { scan_thread_roots(slot, arena_base, big_len, &mut roots) };
+    }
+    for &r in &roots {
+        work.push((r, 0, true)); // roots count as a "marked" referrer
+    }
+    let mut leaked = 0usize;
+    let mut frontier = 0usize; // unmarked child reached from a MARKED referrer/root
+    let mut leaked_by_class = [0usize; heap::NUM_CLASSES];
+    while let Some((p, referrer, referrer_marked)) = work.pop() {
+        let Some((class, slot, base, _kind)) = (unsafe { heap::lookup_arena(p) }) else {
+            continue; // not a live arena object (fd/big/free/untouched)
+        };
+        let marked = unsafe { heap::is_marked_addr(base) };
+        if !visited.insert(base) {
+            continue;
+        }
+        if !marked {
+            leaked += 1;
+            leaked_by_class[class] += 1;
+            // A frontier miss: the edge referrer->base is exactly a store the
+            // barrier (or marker scan) failed to cover — the referrer is live
+            // (marked/root) yet this child was left white.
+            if referrer_marked {
+                frontier += 1;
+                if frontier <= 12 && referrer != 0 {
+                    // Find which word(s) of the referrer point at this child, to
+                    // tell a real pointer field from a key-value coincidence.
+                    if let Some((rclass, _, rbase, _)) = unsafe { heap::lookup_arena(referrer) } {
+                        let rsize = heap::slot_size(rclass);
+                        let mut offs = String::new();
+                        let mut words = String::new();
+                        let mut w = rbase as *const usize;
+                        let mut off = 0usize;
+                        while off < rsize {
+                            let v = unsafe { *w };
+                            words.push_str(&format!("{v:#x} "));
+                            if let Some((_, _, cbase, _)) = unsafe { heap::lookup_arena(v) }
+                                && cbase == base
+                            {
+                                offs.push_str(&format!("{off} "));
+                            }
+                            w = unsafe { w.add(1) };
+                            off += 8;
+                        }
+                        eprintln!(
+                            "GC VALIDATE frontier: parent={rbase:#x}(class={rclass}) words=[{words}] -> unmarked child={base:#x}(class={class}) at parent offset(s) [{offs}]"
+                        );
+                    }
+                }
+            }
+            // Mitigate so the run survives (mark it live for this cycle's sweep).
+            unsafe { heap::set_marked(class, slot) };
+        }
+        let slot_size = heap::slot_size(class);
+        let mut w = base as *const usize;
+        let end = (base + slot_size) as *const usize;
+        while w < end {
+            let v = unsafe { (*(w as *const AtomicUsize)).load(Ordering::Relaxed) };
+            w = unsafe { w.add(1) };
+            if plausible(v, arena_base, big_len) {
+                work.push((v, base, marked));
+            }
+        }
+    }
+    if leaked > 0 {
+        eprintln!(
+            "GC VALIDATE: {leaked} leaked-live ({frontier} frontier misses) before sweep; by class {leaked_by_class:?}"
+        );
+    }
+}
+
 /// Drain the gray queue to quiescence using the thread pool. Used for the
 /// concurrent phase (mutators concurrently produce into the queue) and for the
 /// pause-2 remark drain (world stopped). Returns once every worker is idle and
@@ -888,6 +1062,15 @@ unsafe fn mark_worker(w: usize, big_snapshot: &Arc<Vec<BigSnap>>, active: &Atomi
 /// a *concurrent* sweep. Returns `(live_bytes, freed_slots, per_class_live_slots)`;
 /// the frontier-reset decision is deferred to the caller (it needs STW).
 unsafe fn parallel_sweep_arena(sweep_words: &[usize]) -> (usize, usize, Vec<u64>) {
+    // Debug (`SOLAR_GC_SWEEP_DELAY_US=<n>`): sleep before each sweep chunk to
+    // stretch the concurrent-sweep window and widen sweep-vs-mutator races.
+    static SWEEP_DELAY_US: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+        std::env::var("SOLAR_GC_SWEEP_DELAY_US")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
+    });
+    let delay_us = *SWEEP_DELAY_US;
     let pool = &*crate::thread_pool::THREAD_POOL;
     let per_class: Arc<Vec<(AtomicU64, AtomicU64)>> = Arc::new(
         (0..heap::NUM_CLASSES)
@@ -903,6 +1086,9 @@ unsafe fn parallel_sweep_arena(sweep_words: &[usize]) -> (usize, usize, Vec<u64>
             let per_class = per_class.clone();
             let (ws, we) = (w, end);
             pool.submit(move || {
+                if delay_us != 0 {
+                    std::thread::sleep(std::time::Duration::from_micros(delay_us));
+                }
                 let (live, freed) = unsafe { heap::sweep_word_range(c, ws, we) };
                 if live != 0 {
                     per_class[c].0.fetch_add(live, Ordering::Relaxed);
@@ -997,6 +1183,11 @@ unsafe fn run_gc_cycle() {
         big_snapshot = unsafe { snapshot_big_allocs(&registry) };
         let big_len = big_snapshot.len();
 
+        // Debug: verify the previous cycle's sweep freed nothing reachable.
+        if VALIDATE_MARKS.load(Ordering::Relaxed) {
+            unsafe { validate_allocated(&registry, arena_base, big_len) };
+        }
+
         // Materialize root pointer *values* into the gray queue while threads
         // are stopped (spread across shards for balanced parallel draining).
         let mut roots: Vec<usize> = Vec::new();
@@ -1039,6 +1230,7 @@ unsafe fn run_gc_cycle() {
     let fd_closed;
     let born_black;
     let sweep_words: Vec<usize>;
+    let mut stw_sweep_result: Option<(usize, usize, Vec<u64>)> = None;
     let p2_signal;
     let p2_remark;
     let p2_scan;
@@ -1076,6 +1268,11 @@ unsafe fn run_gc_cycle() {
         p2_pmark = pmark_start.elapsed();
         p2_remark = remark_start.elapsed();
 
+        // Debug: verify the mark is complete before the sweep frees anything.
+        if VALIDATE_MARKS.load(Ordering::Relaxed) {
+            unsafe { validate_marks(&registry, arena_base, big_snapshot.len()) };
+        }
+
         // Big-object and fd sweeps stay STW: they're cheap, and they consume the
         // mark bits that were just brought to a fixpoint.
         let fdbig_start = std::time::Instant::now();
@@ -1087,7 +1284,14 @@ unsafe fn run_gc_cycle() {
         // Partition the arena for the concurrent sweep (see the block comment).
         // `hwm == frontier` here and the world is stopped, so the snapshot is
         // exact and the backward-safe `freeze` + claim abandonment is race-free.
-        sweep_words = (0..heap::NUM_CLASSES).map(heap::hwm_words).collect();
+        // Debug (`SOLAR_GC_NO_SWEEP=1`): mark-only cycles, nothing ever freed.
+        static NO_SWEEP: std::sync::LazyLock<bool> =
+            std::sync::LazyLock::new(|| std::env::var_os("SOLAR_GC_NO_SWEEP").is_some());
+        sweep_words = if *NO_SWEEP {
+            vec![0; heap::NUM_CLASSES]
+        } else {
+            (0..heap::NUM_CLASSES).map(heap::hwm_words).collect()
+        };
         for c in 0..heap::NUM_CLASSES {
             heap::freeze_frontier_to_hwm(c);
         }
@@ -1103,6 +1307,16 @@ unsafe fn run_gc_cycle() {
             .load(Ordering::Relaxed)
             .saturating_sub(ALLOC_AT_MARK_START.load(Ordering::Relaxed));
 
+        // Debug (`SOLAR_GC_STW_SWEEP=1`): run the arena sweep here, inside the
+        // pause, with the world still stopped — the concurrent phase below then
+        // sweeps nothing (but reuses this result for its accounting). Bisects
+        // sweep-content bugs from sweep-vs-mutator races.
+        static STW_SWEEP: std::sync::LazyLock<bool> =
+            std::sync::LazyLock::new(|| std::env::var_os("SOLAR_GC_STW_SWEEP").is_some());
+        if *STW_SWEEP {
+            stw_sweep_result = Some(unsafe { parallel_sweep_arena(&sweep_words) });
+        }
+
         unsafe { resume_world(epoch2) };
     }
     let pause2_elapsed = pause2_start.elapsed();
@@ -1111,7 +1325,10 @@ unsafe fn run_gc_cycle() {
     // Mutators allocate from [hwm, …) (disjoint bitmap words), so the sweeper has
     // exclusive access to the swept region's alloc/mark words — no new atomics.
     let sweep_start = std::time::Instant::now();
-    let (arena_live, arena_freed, live_slots) = unsafe { parallel_sweep_arena(&sweep_words) };
+    let (arena_live, arena_freed, live_slots) = match stw_sweep_result {
+        Some(r) => r, // debug STW-sweep mode: already swept inside pause 2
+        None => unsafe { parallel_sweep_arena(&sweep_words) },
+    };
     let sweep_elapsed = sweep_start.elapsed();
 
     let new_total_live_size = arena_live + big_live;
@@ -1137,9 +1354,14 @@ unsafe fn run_gc_cycle() {
         // swept holes are reused (otherwise the frontier keeps climbing). Compare
         // the swept span against the live count — the same < 50%-live heuristic
         // the STW sweep used, but on the snapshotted boundary.
+        // Debug (`SOLAR_GC_NO_REUSE=1`): never reset the frontier, isolating
+        // hole-reuse bugs (freed slots are then never handed out again).
+        static DISABLE_REUSE: std::sync::LazyLock<bool> =
+            std::sync::LazyLock::new(|| std::env::var_os("SOLAR_GC_NO_REUSE").is_some());
+        let disable_reuse = *DISABLE_REUSE;
         for c in 0..heap::NUM_CLASSES {
             let swept_slots = (sweep_words[c] as u64) * 64;
-            if swept_slots > 2 * live_slots[c] {
+            if !disable_reuse && swept_slots > 2 * live_slots[c] {
                 heap::reset_frontier(c);
             }
         }

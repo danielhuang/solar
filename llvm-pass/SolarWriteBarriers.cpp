@@ -278,7 +278,16 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
       SmallVector<CallInst *, 8> MemcpyCalls;
       for (Instruction &I : instructions(F)) {
         if (auto *SI = dyn_cast<StoreInst>(&I)) {
-          if (SI->getValueOperand()->getType()->isPtrOrPtrVectorTy())
+          Type *VTy = SI->getValueOperand()->getType();
+          // Pointer-typed stores, and any store wide enough to carry a
+          // pointer. Solar's generated C moves values as opaque byte blobs,
+          // so a reference-field copy typically reaches us as `store i64`
+          // (or a vector/i128 after vectorization), NOT `store ptr` — those
+          // MUST be shaded too or the barrier misses real pointer stores
+          // (seen as GC frees of live splay-tree nodes). The runtime barrier
+          // range-checks the value, so a non-pointer integer is just a cheap
+          // arena-bounds miss while marking.
+          if (VTy->isPtrOrPtrVectorTy() || DL.getTypeStoreSize(VTy) >= 8)
             Stores.push_back(SI);
         } else if (auto *MT = dyn_cast<AnyMemTransferInst>(&I)) {
           Mems.push_back(MT);
@@ -295,18 +304,28 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
           ++NSkipStack;
           continue;
         }
+        // A constant value (null/undef/global/integer literal) is never a live
+        // heap pointer — nothing to shade.
+        if (isa<Constant>(Val))
+          continue;
         IRBuilder<> B(SI->getNextNode());
         if (Val->getType()->isPointerTy()) {
-          // Scalar pointer store: shade the stored value, unless it's a
-          // constant (null/undef/global) which is never a live heap pointer.
-          if (isa<Constant>(Val))
-            continue;
+          // Scalar pointer store: shade the stored value.
           CallInst *C = B.CreateCall(WB, {Dst, Val});
           C->setDebugLoc(SI->getDebugLoc());
           ++NStore;
+        } else if (Val->getType()->isIntegerTy(64)) {
+          // Pointer-sized integer store: Solar's byte-blob value representation
+          // means this may be a reference copy in disguise. Shade it through
+          // the scalar barrier; the runtime rejects non-arena values.
+          Value *AsPtr = B.CreateIntToPtr(Val, PointerType::getUnqual(Ctx));
+          CallInst *C = B.CreateCall(WB, {Dst, AsPtr});
+          C->setDebugLoc(SI->getDebugLoc());
+          ++NStore;
         } else {
-          // Vector-of-pointers store: conservatively shade every pointer-sized
-          // word of the stored region (can't name the individual lanes cheaply).
+          // Vector-of-pointers / wide-integer store (i128, <N x i64>, …):
+          // conservatively shade every pointer-sized word of the stored region
+          // (can't name the individual lanes cheaply).
           uint64_t Sz = DL.getTypeStoreSize(Val->getType());
           CallInst *C = B.CreateCall(MemB, {Dst, ConstantInt::get(I64, Sz)});
           C->setDebugLoc(SI->getDebugLoc());

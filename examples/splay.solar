@@ -1,0 +1,299 @@
+// Splay-tree benchmark, ported from the newspeaklanguage/benchmarks `Splay.java`
+// (originally the V8 / Dart splay benchmark). It stresses allocation and GC:
+// a ~8000-node splay tree is continually mutated, allocating a fresh payload
+// object graph per inserted node and discarding an equal amount as garbage.
+// Because of how splaying works the collector also has to cope with constant
+// rewiring of a large tree object graph.
+//
+// Keys: the Java/C/Go/C# ports use `double` keys from java.util.Random's
+// nextDouble(). Solar has no float literals, so this port keeps the key as the
+// 53-bit integer mantissa Java divides by 2^53 to form that double:
+// `(next(26) << 27) + next(27)`. That integer orders identically to the double,
+// so every insert/find/remove/splay decision — and therefore the final tree and
+// its checksum — is bit-identical to the other ports.
+
+const kTreeSize = 8000;
+const kTreeModifications = 80;
+const kTreePayloadDepth = 5;
+const kRuns = 2000; // exercise() iterations (the harness times the whole run)
+
+// --- java.util.Random: a 48-bit LCG producing nextDouble's mantissa ----------
+struct Random {
+    seed: Uint64,
+}
+
+// java.util.Random.next(bits): advance the LCG, return the top `bits` bits.
+fn next_bits(r: &Random, bits: Uint) -> Uint64 {
+    r@.seed = (r@.seed ** 0x5DEECE66Du64 ++ 0xBu64) & 0xFFFFFFFFFFFFu64;
+    r@.seed >> (48u - bits)
+}
+
+// The 53-bit integer mantissa of java.util.Random.nextDouble().
+fn next_key(r: &Random) -> Int64 {
+    let hi = next_bits(r, 26u);
+    let lo = next_bits(r, 27u);
+    Int64((hi << 27u) ++ lo)
+}
+
+// --- Synthetic payload attached to every node (allocation pressure) ----------
+// A depth-5 binary graph of Payload nodes with a Leaf (holding a heap array) at
+// each bottom, mirroring the Java `Payload`/`Leaf`.
+struct Leaf {
+    tag: Int64,
+    array: [Int64],
+}
+
+// A Payload node is either an internal branch (left+right children, leaf null)
+// or a bottom node (children null, leaf set) — mirroring Java's Payload/Leaf.
+struct Payload {
+    left: &?Payload,
+    right: &?Payload,
+    leaf: &?Leaf,
+}
+
+fn generate(depth: Int, tag: Int64) -> &Payload {
+    if depth == 0 {
+        let leaf = Leaf { tag: tag, array: [tag; 10u] };
+        let lref: &?Leaf = leaf&;
+        (Payload { left: null#[Payload], right: null#[Payload], leaf: lref })&
+    } else {
+        (Payload {
+            left: generate(depth - 1, tag),
+            right: generate(depth - 1, tag),
+            leaf: null#[Leaf],
+        })&
+    }
+}
+
+// --- Splay tree --------------------------------------------------------------
+struct Node {
+    key: Int64,
+    value: &?Payload,
+    left: &?Node,
+    right: &?Node,
+}
+
+fn new_node(key: Int64, value: &?Payload) -> &Node {
+    (Node { key: key, value: value, left: null#[Node], right: null#[Node] })&
+}
+
+struct SplayTree {
+    root: &?Node,
+}
+
+// Perform the top-down splay of Sleator & Tarjan, moving the node with `key`
+// (or the last node on its search path) to the root.
+fn splay(t: &SplayTree, key: Int64) {
+    if t@.root != null#[Node] {
+    // Dummy node: its right child holds the L tree, its left child the R tree.
+    let dummy = new_node(0i64, null#[Payload]);
+    let left = dummy;
+    let right = dummy;
+    let current = t@.root@&;
+    loop {
+        if key < current@.key {
+            if current@.left == null#[Node] {
+                break;
+            }
+            if key < current@.left@.key {
+                // Rotate right.
+                let tmp = current@.left@&;
+                current@.left = tmp@.right;
+                tmp@.right = current;
+                current = tmp;
+                if current@.left == null#[Node] {
+                    break;
+                }
+            }
+            // Link right.
+            right@.left = current;
+            right = current;
+            current = current@.left@&;
+        } else {
+            if key > current@.key {
+                if current@.right == null#[Node] {
+                    break;
+                }
+                if key > current@.right@.key {
+                    // Rotate left.
+                    let tmp = current@.right@&;
+                    current@.right = tmp@.left;
+                    tmp@.left = current;
+                    current = tmp;
+                    if current@.right == null#[Node] {
+                        break;
+                    }
+                }
+                // Link left.
+                left@.right = current;
+                left = current;
+                current = current@.right@&;
+            } else {
+                break;
+            }
+        }
+    };
+    // Assemble.
+    left@.right = current@.left;
+    right@.left = current@.right;
+    current@.left = dummy@.right;
+    current@.right = dummy@.left;
+    t@.root = current;
+    }
+}
+
+fn insert(t: &SplayTree, key: Int64, value: &Payload) {
+    if t@.root == null#[Node] {
+        t@.root = new_node(key, value);
+    } else {
+        splay(t, key);
+        let root = t@.root@&;
+        if root@.key != key {
+            let node = new_node(key, value);
+            if key > root@.key {
+                node@.left = root;
+                node@.right = root@.right;
+                root@.right = null#[Node];
+            } else {
+                node@.right = root;
+                node@.left = root@.left;
+                root@.left = null#[Node];
+            }
+            t@.root = node;
+        }
+    }
+}
+
+// Remove the node with `key` (assumed present, as in every call site here).
+fn remove(t: &SplayTree, key: Int64) {
+    splay(t, key);
+    let root = t@.root@&;
+    if root@.left == null#[Node] {
+        t@.root = root@.right;
+    } else {
+        let right = root@.right;
+        t@.root = root@.left;
+        // Splay so the new root has an empty right child, then graft `right`.
+        splay(t, key);
+        t@.root@.right = right;
+    }
+}
+
+fn find(t: &SplayTree, key: Int64) -> &?Node {
+    if t@.root == null#[Node] {
+        return null#[Node];
+    }
+    splay(t, key);
+    let root = t@.root@&;
+    if root@.key == key {
+        return root;
+    }
+    null#[Node]
+}
+
+fn find_max(t: &SplayTree, start: &?Node) -> &?Node {
+    if t@.root == null#[Node] {
+        return null#[Node];
+    }
+    let current = if start == null#[Node] { t@.root@& } else { start@& };
+    while current@.right != null#[Node] {
+        current = current@.right@&;
+    }
+    return current;
+}
+
+fn find_greatest_less_than(t: &SplayTree, key: Int64) -> &?Node {
+    if t@.root == null#[Node] {
+        return null#[Node];
+    }
+    splay(t, key);
+    let root = t@.root@&;
+    if root@.key < key {
+        return root;
+    }
+    if root@.left != null#[Node] {
+        return find_max(t, root@.left);
+    }
+    null#[Node]
+}
+
+// --- Benchmark driver --------------------------------------------------------
+fn insert_new_node(t: &SplayTree, r: &Random) -> Int64 {
+    let key = next_key(r);
+    while find(t, key) != null#[Node] {
+        key = next_key(r);
+    }
+    let payload = generate(kTreePayloadDepth, key);
+    insert(t, key, payload);
+    key
+}
+
+fn setup(t: &SplayTree, r: &Random) {
+    for _ in 0..kTreeSize {
+        insert_new_node(t, r);
+    }
+}
+
+fn exercise(t: &SplayTree, r: &Random) {
+    for _ in 0..kTreeModifications {
+        let key = insert_new_node(t, r);
+        let greatest = find_greatest_less_than(t, key);
+        if greatest == null#[Node] {
+            remove(t, key);
+        } else {
+            remove(t, greatest@.key);
+        }
+    }
+}
+
+// In-order traversal accumulating a checksum, node count, and a sortedness
+// check (mirrors Java's tearDown exportKeys()/verification).
+// Returns 0 (a value is required only so this recursive fn's return type can be
+// annotated — Solar can't infer a recursive function's type). Results flow out
+// through the `acc`/`count`/`last`/`ok` reference parameters.
+fn traverse_check(node: &?Node, acc: &Uint64, count: &Int, last: &Int64, ok: &Bool) -> Int {
+    let current = node;
+    while current != null#[Node] {
+        let c = current@&;
+        traverse_check(c@.left, acc, count, last, ok);
+        if count@ > 0 {
+            if c@.key <= last@ {
+                ok@ = false;
+            }
+        }
+        last@ = c@.key;
+        acc@ = acc@ ++ Uint64(c@.key);
+        count@ = count@ + 1;
+        current = c@.right;
+    }
+    0
+}
+
+fn main() {
+    // java.util.Random seeded with 12345 (seed scrambled per the JDK spec).
+    let rng = Random { seed: (Uint64(12345i64) ^ 0x5DEECE66Du64) & 0xFFFFFFFFFFFFu64 };
+    let tree = SplayTree { root: null#[Node] };
+    let t = tree&;
+    let r = rng&;
+
+    setup(t, r);
+    for _ in 0..kRuns {
+        exercise(t, r);
+    }
+
+    let acc = 0u64;
+    let count = 0;
+    let last = 0i64;
+    let ok = true;
+    traverse_check(t@.root, acc&, count&, last&, ok&);
+    if count != kTreeSize {
+        panic("Splay tree has wrong size"&);
+    }
+    if !ok {
+        panic("Splay tree not sorted"&);
+    }
+    let size_str = count.to_string();
+    let sum_str = Uint(acc).to_string();
+    write_stdout(("Splay done: size=" + size_str@
+        + " checksum=" + sum_str@ + "\n")&);
+}

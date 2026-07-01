@@ -46,7 +46,7 @@ def csharp_bin(stem: str) -> str:
     return str(ROOT / "bench/csharp" / stem / "bin/Release/net10.0" / stem)
 
 # Each benchmark: (solar/c/go binary stem, Java class).
-BENCHMARKS = [("allocs3", "Allocs3"), ("threads_list2", "ThreadsList2")]
+BENCHMARKS = [("allocs3", "Allocs3"), ("threads_list2", "ThreadsList2"), ("splay", "Splay")]
 
 
 # --------------------------------------------------------------------------- #

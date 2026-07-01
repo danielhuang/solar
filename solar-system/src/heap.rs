@@ -123,6 +123,8 @@ static ARENA_BASE: AtomicUsize = AtomicUsize::new(0);
 static ALLOC_BITS: AtomicUsize = AtomicUsize::new(0);
 static MARK_BITS: AtomicUsize = AtomicUsize::new(0);
 static META_BASE: AtomicUsize = AtomicUsize::new(0);
+/// Debug shadow bitmap base (`SOLAR_GC_SHADOW=1`), 0 when disabled.
+static SHADOW_BITS: AtomicUsize = AtomicUsize::new(0);
 
 #[allow(clippy::declare_interior_mutable_const)]
 const ZERO_U64: AtomicU64 = AtomicU64::new(0);
@@ -179,6 +181,14 @@ pub fn init() {
         ALLOC_BITS.store(alloc_bits, Ordering::Relaxed);
         MARK_BITS.store(mark_bits, Ordering::Relaxed);
         META_BASE.store(meta, Ordering::Relaxed);
+        // Debug (`SOLAR_GC_SHADOW=1`): a third bitmap tracking handed-out slots
+        // with fully atomic updates, to catch double handout / lost-free races.
+        if std::env::var_os("SOLAR_GC_SHADOW").is_some() {
+            SHADOW_BITS.store(
+                mmap_reserve(BITMAP_TOTAL, "shadow bitmap"),
+                Ordering::Relaxed,
+            );
+        }
         // Published last; `arena_base() != 0` gates everything else.
         ARENA_BASE.store(arena, Ordering::Relaxed);
     }
@@ -243,6 +253,45 @@ fn alloc_class_base(class: usize) -> *mut AtomicU64 {
 #[inline]
 fn mark_class_base(class: usize) -> *mut AtomicU64 {
     (MARK_BITS.load(Ordering::Relaxed) + bitmap_class_offset(class)) as *mut AtomicU64
+}
+
+/// Debug (`SOLAR_GC_SHADOW=1`): record a slot handout in the fully-atomic shadow
+/// bitmap; abort loudly if the slot is already handed out and never since freed
+/// — a double allocation, the smoking gun for alloc-bitmap corruption.
+#[inline]
+pub unsafe fn shadow_handout(class: usize, slot: usize) {
+    let base = SHADOW_BITS.load(Ordering::Relaxed);
+    if base == 0 {
+        return;
+    }
+    let w = unsafe { &*((base + bitmap_class_offset(class)) as *mut AtomicU64).add(slot >> 6) };
+    let prev = w.fetch_or(bit_mask(slot), Ordering::Relaxed);
+    if prev & bit_mask(slot) != 0 {
+        let aw = unsafe { &*alloc_class_base(class).add(slot >> 6) }.load(Ordering::Relaxed);
+        let mw = unsafe { &*mark_class_base(class).add(slot >> 6) }.load(Ordering::Relaxed);
+        let next = NEXT_SLOT[class].load(Ordering::Relaxed);
+        let hwm = HWM[class].load(Ordering::Relaxed);
+        eprintln!(
+            "GC SHADOW: DOUBLE HANDOUT class={class} slot={slot} word={} bit={} \
+             alloc_word={aw:#018x} mark_word={mw:#018x} shadow_word={prev:#018x} \
+             next_slot={next} hwm={hwm}",
+            slot >> 6,
+            slot & 63,
+        );
+        std::process::abort();
+    }
+}
+
+/// Debug: clear freed bits out of the shadow bitmap (called by the sweeper with
+/// the word's freed mask). Atomic, so it introduces no new races.
+#[inline]
+pub unsafe fn shadow_free_word(class: usize, word: usize, freed_bits: u64) {
+    let base = SHADOW_BITS.load(Ordering::Relaxed);
+    if base == 0 || freed_bits == 0 {
+        return;
+    }
+    let w = unsafe { &*((base + bitmap_class_offset(class)) as *mut AtomicU64).add(word) };
+    w.fetch_and(!freed_bits, Ordering::Relaxed);
 }
 
 #[inline]
@@ -397,6 +446,12 @@ pub unsafe fn lookup_arena(p: usize) -> Option<(usize, usize, usize, MarkKind)> 
 /// concurrent calls (they're partitioned by the sweep driver) and that all
 /// mutators are stopped.
 pub unsafe fn sweep_word_range(class: usize, word_start: usize, word_end: usize) -> (u64, u64) {
+    // Debug (`SOLAR_GC_SWEEP_MARKS_ONLY=1`): perform the mark-word clearing but
+    // never clear alloc bits (nothing is freed). Bisects which of the sweep's
+    // two bitmap writes a corruption needs.
+    static MARKS_ONLY: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var_os("SOLAR_GC_SWEEP_MARKS_ONLY").is_some());
+    let marks_only = *MARKS_ONLY;
     let abase = alloc_class_base(class);
     let mbase = mark_class_base(class);
     let mut live = 0u64;
@@ -412,8 +467,9 @@ pub unsafe fn sweep_word_range(class: usize, word_start: usize, word_end: usize)
         let survivors = a & m;
         live += survivors.count_ones() as u64;
         freed += (a & !m).count_ones() as u64;
-        if survivors != a {
+        if survivors != a && !marks_only {
             aw.store(survivors, Ordering::Relaxed);
+            unsafe { shadow_free_word(class, w, a & !m) };
         }
         if m != 0 {
             mw.store(0, Ordering::Relaxed);
