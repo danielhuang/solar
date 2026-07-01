@@ -173,6 +173,11 @@ fn gray_nonempty() -> bool {
     GRAY_LEN.load(Ordering::Relaxed) > 0
 }
 
+#[inline]
+fn gray_len() -> usize {
+    GRAY_LEN.load(Ordering::Relaxed)
+}
+
 /// Pick a stable shard for `slot` so a thread's flushes spread across shards.
 #[inline]
 fn slot_bucket(slot: &ThreadSlot) -> usize {
@@ -795,6 +800,53 @@ unsafe fn parallel_mark(big_snapshot: &Arc<Vec<BigSnap>>) {
     pool.wait_for_all();
 }
 
+/// Gray-frontier size at or above which draining fans out to the thread pool;
+/// below it, the caller drains serially. The pool fan-out costs ~tens of µs per
+/// worker (job submit + wake + quiescence spin + join) — pure overhead when
+/// there are only a few hundred pointers to trace, which is the usual pause-2
+/// remark. Above this many pending pointers the 24-way parallelism pays for the
+/// fan-out. (Break-even measured ~11k pointers; set below that, biased toward
+/// the serial path since small remarks are the common case.)
+const MARK_PARALLEL_THRESHOLD: usize = 8192;
+
+/// Drain the gray queue to quiescence, choosing serial vs parallel by frontier
+/// size — used for the STW pause-2 remark, which is almost always a few hundred
+/// pointers. Starts serial on the calling (GC) thread; if the frontier ever
+/// exceeds `MARK_PARALLEL_THRESHOLD` (a rare large remark, or a wide subtree
+/// discovered mid-drain and overflowed back to `GRAY`), it hands the remainder
+/// to `parallel_mark`. This keeps the tiny common-case remark off the pool
+/// entirely while never serial-draining a genuinely large frontier in the pause.
+///
+/// NOT for the concurrent-phase mark: that seeds a small root set but discovers
+/// millions of edges, so it must always go parallel (`parallel_mark` directly).
+unsafe fn mark_to_fixpoint(big_snapshot: &Arc<Vec<BigSnap>>) {
+    let arena_base = heap::arena_base();
+    let mut worklist: Vec<usize> = Vec::new();
+    let mut ctx = MarkContext {
+        big_ptr: big_snapshot.as_ptr(),
+        big_len: big_snapshot.len(),
+        worklist: &mut worklist,
+        shard: 0,
+        accum_class: u32::MAX,
+        accum_word: 0,
+        accum_bits: 0,
+    };
+    while gray_len() < MARK_PARALLEL_THRESHOLD {
+        // `drain` empties the local worklist (following chains, overflowing wide
+        // fan-out back to `GRAY`) and flushes the mark accumulator before it
+        // returns, so between iterations all our marks are globally visible.
+        if !gray_take(0, unsafe { &mut *ctx.worklist }) {
+            unsafe { flush_accum(&mut ctx) };
+            return; // drained to quiescence, entirely serially
+        }
+        unsafe { drain(&mut ctx, arena_base) };
+    }
+    // Frontier grew past the threshold: flush our accumulator and hand the rest
+    // (still in `GRAY`) to the pool.
+    unsafe { flush_accum(&mut ctx) };
+    unsafe { parallel_mark(big_snapshot) };
+}
+
 /// One parallel mark worker: pull a shard of gray work, drain its closure
 /// (overflowing excess back to the shared queue so idle workers can steal),
 /// repeat until quiescence.
@@ -989,6 +1041,9 @@ unsafe fn run_gc_cycle() {
     let sweep_words: Vec<usize>;
     let p2_signal;
     let p2_remark;
+    let p2_scan;
+    let p2_pmark;
+    let remark_roots;
     let p2_fdbig;
     {
         let _wg = crate::thread::GC_LOCK.write();
@@ -1012,7 +1067,13 @@ unsafe fn run_gc_cycle() {
             unsafe { scan_thread_roots(slot, arena_base, big_snapshot.len(), &mut remark) };
         }
         gray_seed(&remark);
-        unsafe { parallel_mark(&big_snapshot) };
+        p2_scan = remark_start.elapsed();
+        remark_roots = remark.len();
+        let pmark_start = std::time::Instant::now();
+        // Threshold: the remark is almost always tiny, so drain it serially and
+        // skip the pool fan-out; escalate to the pool only if it's large.
+        unsafe { mark_to_fixpoint(&big_snapshot) };
+        p2_pmark = pmark_start.elapsed();
         p2_remark = remark_start.elapsed();
 
         // Big-object and fd sweeps stay STW: they're cheap, and they consume the
@@ -1114,7 +1175,7 @@ unsafe fn run_gc_cycle() {
 
     if enable_stat_prints {
         eprintln!(
-            "gc freed {freed_count} allocations in {:?} (pause1 {pause1_elapsed:?} [signal {p1_signal:?}], concurrent mark {mark_elapsed:?}, pause2 {pause2_elapsed:?} [signal {p2_signal:?}, remark {p2_remark:?}, fd/big {p2_fdbig:?}], concurrent sweep {sweep_elapsed:?}, pause3 {pause3_elapsed:?} [signal {p3_signal:?}]); live {new_total_live_size} bytes",
+            "gc freed {freed_count} allocations in {:?} (pause1 {pause1_elapsed:?} [signal {p1_signal:?}], concurrent mark {mark_elapsed:?}, pause2 {pause2_elapsed:?} [signal {p2_signal:?}, remark {p2_remark:?} (scan {p2_scan:?} + pmark {p2_pmark:?}, {remark_roots} roots), fd/big {p2_fdbig:?}], concurrent sweep {sweep_elapsed:?}, pause3 {pause3_elapsed:?} [signal {p3_signal:?}]); live {new_total_live_size} bytes",
             gc_start.elapsed(),
         );
     }

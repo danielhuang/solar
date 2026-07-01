@@ -1,12 +1,11 @@
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock};
 use std::thread;
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
 pub struct ThreadPool {
-    sender: mpsc::Sender<Job>,
+    sender: flume::Sender<Job>,
     /// Number of worker threads. The parallel marker submits exactly this many
     /// jobs (each runs until quiescence), so this must equal the count that can
     /// run concurrently — else submitted jobs queue and never start.
@@ -19,8 +18,13 @@ pub struct ThreadPool {
 
 impl ThreadPool {
     fn new(size: usize) -> Self {
-        let (sender, receiver) = mpsc::channel::<Job>();
-        let receiver = Arc::new(Mutex::new(receiver));
+        // flume is MPMC: each worker holds its own cloned `Receiver` and calls
+        // `recv()` concurrently, so workers never serialize on a shared receiver
+        // lock. The std `mpsc` version wrapped one `Receiver` in an
+        // `Arc<Mutex<…>>` and funneled all N workers through it — a thundering
+        // herd that dominated the parallel-mark fan-out cost (~30 µs × N per
+        // call, superlinear at high N from that lock's contention).
+        let (sender, receiver) = flume::unbounded::<Job>();
         let unfinished = Arc::new(AtomicU32::new(0));
         for i in 0..size {
             let receiver = receiver.clone();
@@ -31,11 +35,11 @@ impl ThreadPool {
                 .spawn(move || {
                     crate::gc::block_gc_signal();
                     loop {
-                        // Hold the shared Receiver lock only across recv;
-                        // mpsc parks internally when the queue is empty.
-                        let job = match receiver.lock().unwrap().recv() {
+                        // flume parks internally when the queue is empty; no
+                        // external lock is held across recv.
+                        let job = match receiver.recv() {
                             Ok(j) => j,
-                            Err(_) => return, // sender dropped; pool shutting down
+                            Err(_) => return, // all senders dropped; pool shutting down
                         };
                         job();
                         if unfinished.fetch_sub(1, Ordering::AcqRel) == 1 {

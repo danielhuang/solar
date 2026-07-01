@@ -8,6 +8,10 @@ crate-type = ["staticlib", "lib"]
 
 [dependencies]
 backtrace = "0.3"
+# MPMC channel for the GC thread pool: each worker holds a cloned Receiver and
+# recv()s concurrently, avoiding the shared-mutex thundering herd of std mpsc.
+# default-features off drops async/select/eventual-fairness (sync channel only).
+flume = { version = "0.12", default-features = false }
 libc = "0.2.182"
 rustix-futex-sync = "0.4.0"
 
