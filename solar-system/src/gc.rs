@@ -830,8 +830,12 @@ unsafe fn mark_worker(w: usize, big_snapshot: &Arc<Vec<BigSnap>>, active: &Atomi
     }
 }
 
-/// Parallel arena sweep (still STW). Returns `(live_bytes, freed_slots)`.
-unsafe fn parallel_sweep_arena() -> (usize, usize) {
+/// Parallel arena sweep. Sweeps each class's `[0, sweep_words[c])` word range —
+/// a per-class boundary snapshotted (under STW) at the start of the sweep, so it
+/// is fixed even though `hwm` keeps growing as mutators allocate above it during
+/// a *concurrent* sweep. Returns `(live_bytes, freed_slots, per_class_live_slots)`;
+/// the frontier-reset decision is deferred to the caller (it needs STW).
+unsafe fn parallel_sweep_arena(sweep_words: &[usize]) -> (usize, usize, Vec<u64>) {
     let pool = &*crate::thread_pool::THREAD_POOL;
     let per_class: Arc<Vec<(AtomicU64, AtomicU64)>> = Arc::new(
         (0..heap::NUM_CLASSES)
@@ -840,7 +844,7 @@ unsafe fn parallel_sweep_arena() -> (usize, usize) {
     );
     const SWEEP_CHUNK_WORDS: usize = 1 << 12;
     for c in 0..heap::NUM_CLASSES {
-        let words = heap::hwm_words(c);
+        let words = sweep_words[c];
         let mut w = 0usize;
         while w < words {
             let end = (w + SWEEP_CHUNK_WORDS).min(words);
@@ -861,18 +865,15 @@ unsafe fn parallel_sweep_arena() -> (usize, usize) {
     pool.wait_for_all();
     let mut live_size = 0usize;
     let mut freed_count = 0usize;
+    let mut live_slots = vec![0u64; heap::NUM_CLASSES];
     for c in 0..heap::NUM_CLASSES {
         let live = per_class[c].0.load(Ordering::Relaxed);
         let freed = per_class[c].1.load(Ordering::Relaxed);
         live_size += live as usize * heap::slot_size(c);
         freed_count += freed as usize;
-        // Frontier reset: if less than half of [0, hwm) is live, re-fill from
-        // the start next cycle to reuse the holes.
-        if heap::hwm(c) > 2 * live {
-            heap::reset_frontier(c);
-        }
+        live_slots[c] = live;
     }
-    (live_size, freed_count)
+    (live_size, freed_count, live_slots)
 }
 
 /// Sweep big allocations (STW). Snapshot survivors are kept; born-during-mark
@@ -933,10 +934,13 @@ unsafe fn run_gc_cycle() {
     let pause1_start = std::time::Instant::now();
     let epoch1 = GC_EPOCH.load(Ordering::Acquire) + 1;
     let big_snapshot: Arc<Vec<BigSnap>>;
+    let p1_signal;
     {
         let _wg = crate::thread::GC_LOCK.write();
         let registry = THREAD_REGISTRY.read().unwrap();
+        let sig_start = std::time::Instant::now();
         unsafe { signal_and_wait(&registry, epoch1) };
+        p1_signal = sig_start.elapsed();
 
         big_snapshot = unsafe { snapshot_big_allocs(&registry) };
         let big_len = big_snapshot.len();
@@ -968,16 +972,30 @@ unsafe fn run_gc_cycle() {
     unsafe { parallel_mark(&big_snapshot) };
     let mark_elapsed = mark_start.elapsed();
 
-    // ===== STW pause 2: disable barrier, remark, sweep. =====
+    // ===== STW pause 2: disable barrier, remark, fd/big sweep, partition arena. =
+    // The arena sweep itself is deferred out of this pause and run concurrently
+    // below. Here we only do the cheap STW-bound work (remark, fd/big sweep) and
+    // set up the arena partition: snapshot each class's sweep boundary (its
+    // current `hwm`) and push the frontier up to it, then abandon every thread's
+    // cached claim. After resume, allocations claim slots strictly above `hwm`,
+    // so the concurrent sweep of `[0, hwm)` and the mutators touch disjoint
+    // bitmap words — keeping `set_allocated`'s non-atomic RMW sound.
     let pause2_start = std::time::Instant::now();
     let epoch2 = epoch1 + 1;
-    let sweep_elapsed;
-    let new_total_live_size;
-    let freed_count;
+    let big_live;
+    let big_freed;
+    let fd_closed;
+    let born_black;
+    let sweep_words: Vec<usize>;
+    let p2_signal;
+    let p2_remark;
+    let p2_fdbig;
     {
         let _wg = crate::thread::GC_LOCK.write();
         let registry = THREAD_REGISTRY.read().unwrap();
+        let sig_start = std::time::Instant::now();
         unsafe { signal_and_wait(&registry, epoch2) };
+        p2_signal = sig_start.elapsed();
 
         // No mutator is running, so none is mid-store: stop the barrier.
         SOL_CONCURRENT_MARKING.store(false, Ordering::Release);
@@ -986,6 +1004,7 @@ unsafe fn run_gc_cycle() {
         let born_big = unsafe { drain_born_big(&registry) };
 
         // Flush residual gray buffers + re-scan roots, then drain to fixpoint.
+        let remark_start = std::time::Instant::now();
         let mut remark: Vec<usize> = Vec::new();
         for slot in registry.values() {
             let buf = unsafe { &mut *slot.gray_buf.get() };
@@ -994,50 +1013,108 @@ unsafe fn run_gc_cycle() {
         }
         gray_seed(&remark);
         unsafe { parallel_mark(&big_snapshot) };
+        p2_remark = remark_start.elapsed();
 
-        // Sweep (still parallel under STW).
-        let sweep_start = std::time::Instant::now();
-        let (arena_live, arena_freed) = unsafe { parallel_sweep_arena() };
-        let (big_live, big_freed) = unsafe { sweep_big(&big_snapshot, born_big) };
+        // Big-object and fd sweeps stay STW: they're cheap, and they consume the
+        // mark bits that were just brought to a fixpoint.
+        let fdbig_start = std::time::Instant::now();
+        (big_live, big_freed) = unsafe { sweep_big(&big_snapshot, born_big) };
         // Close any file whose `FileDesc` slot went unmarked this cycle.
-        let fd_closed = unsafe { crate::file::fd_sweep() };
-        sweep_elapsed = sweep_start.elapsed();
+        fd_closed = unsafe { crate::file::fd_sweep() };
+        p2_fdbig = fdbig_start.elapsed();
 
-        new_total_live_size = arena_live + big_live;
-        freed_count = arena_freed + big_freed + fd_closed;
+        // Partition the arena for the concurrent sweep (see the block comment).
+        // `hwm == frontier` here and the world is stopped, so the snapshot is
+        // exact and the backward-safe `freeze` + claim abandonment is race-free.
+        sweep_words = (0..heap::NUM_CLASSES).map(heap::hwm_words).collect();
+        for c in 0..heap::NUM_CLASSES {
+            heap::freeze_frontier_to_hwm(c);
+        }
+        for slot in registry.values() {
+            let st = unsafe { &mut *slot.alloc.get() };
+            st.reset_claims();
+        }
 
+        // Bytes born black during the mark window (mark-start → now). Captured
+        // here, while marking's end is well-defined, for the traced-live estimate
+        // published in pause 3. (See the `TRACED_LIVE_SIZE` comment there.)
+        born_black = ALLOCATED_SINCE_GC
+            .load(Ordering::Relaxed)
+            .saturating_sub(ALLOC_AT_MARK_START.load(Ordering::Relaxed));
+
+        unsafe { resume_world(epoch2) };
+    }
+    let pause2_elapsed = pause2_start.elapsed();
+
+    // ===== Concurrent sweep: arena sweep of [0, hwm) while mutators run. =====
+    // Mutators allocate from [hwm, …) (disjoint bitmap words), so the sweeper has
+    // exclusive access to the swept region's alloc/mark words — no new atomics.
+    let sweep_start = std::time::Instant::now();
+    let (arena_live, arena_freed, live_slots) = unsafe { parallel_sweep_arena(&sweep_words) };
+    let sweep_elapsed = sweep_start.elapsed();
+
+    let new_total_live_size = arena_live + big_live;
+    let freed_count = arena_freed + big_freed + fd_closed;
+
+    // ===== STW pause 3: reset frontier (reuse swept holes) + publish accounting. =
+    // A backward frontier move (refilling from 0 to reuse the holes the sweep
+    // just opened) is only safe when no thread holds a claim into the region —
+    // true here, world stopped. Done as its own short pause rather than folded
+    // into the next cycle's pause 1 so hole reuse is prompt (bounding the RSS
+    // bump from allocating above `hwm` during the sweep window).
+    let pause3_start = std::time::Instant::now();
+    let epoch3 = epoch2 + 1;
+    let p3_signal;
+    {
+        let _wg = crate::thread::GC_LOCK.write();
+        let registry = THREAD_REGISTRY.read().unwrap();
+        let sig_start = std::time::Instant::now();
+        unsafe { signal_and_wait(&registry, epoch3) };
+        p3_signal = sig_start.elapsed();
+
+        // For any class that is now mostly holes, refill from slot 0 next so the
+        // swept holes are reused (otherwise the frontier keeps climbing). Compare
+        // the swept span against the live count — the same < 50%-live heuristic
+        // the STW sweep used, but on the snapshotted boundary.
+        for c in 0..heap::NUM_CLASSES {
+            let swept_slots = (sweep_words[c] as u64) * 64;
+            if swept_slots > 2 * live_slots[c] {
+                heap::reset_frontier(c);
+            }
+        }
+        // Abandon each thread's run so it re-claims from the (possibly reset)
+        // frontier, and clear per-thread alloc accounting for the new cycle.
         for slot in registry.values() {
             let st = unsafe { &mut *slot.alloc.get() };
             st.new_size_since_last_gc = 0;
             st.unflushed_alloc = 0;
             st.reset_claims();
         }
+
         TOTAL_LIVE_SIZE_AFTER_LAST_GC.store(new_total_live_size, Ordering::Release);
 
         // Estimate traced live = total marked − bytes born black during the mark
-        // window (allocation between mark-start and now). This excludes float
-        // from the back-pressure cap basis, breaking the runaway feedback where
-        // float inflates "live", which would inflate the cap, which permits more
-        // float. Saturating: born-black can exceed marked when most float died.
-        let born_black = ALLOCATED_SINCE_GC
-            .load(Ordering::Relaxed)
-            .saturating_sub(ALLOC_AT_MARK_START.load(Ordering::Relaxed));
+        // window. This excludes float from the back-pressure cap basis, breaking
+        // the runaway feedback where float inflates "live", which would inflate
+        // the cap, which permits more float. Saturating: born-black can exceed
+        // marked when most float died.
         TRACED_LIVE_SIZE.store(
             new_total_live_size.saturating_sub(born_black),
             Ordering::Release,
         );
 
         // Reset back-pressure accounting last: stalled allocators re-check this
-        // after `resume_world` bumps the epoch.
+        // after `resume_world` bumps the epoch. Held high until now (not pause 2)
+        // so back-pressure persists until the sweep has actually reclaimed space.
         ALLOCATED_SINCE_GC.store(0, Ordering::Release);
 
-        unsafe { resume_world(epoch2) };
+        unsafe { resume_world(epoch3) };
     }
-    let pause2_elapsed = pause2_start.elapsed();
+    let pause3_elapsed = pause3_start.elapsed();
 
     if enable_stat_prints {
         eprintln!(
-            "gc freed {freed_count} allocations in {:?} (pause1 {pause1_elapsed:?}, concurrent mark {mark_elapsed:?}, pause2 {pause2_elapsed:?}, sweep {sweep_elapsed:?}); live {new_total_live_size} bytes",
+            "gc freed {freed_count} allocations in {:?} (pause1 {pause1_elapsed:?} [signal {p1_signal:?}], concurrent mark {mark_elapsed:?}, pause2 {pause2_elapsed:?} [signal {p2_signal:?}, remark {p2_remark:?}, fd/big {p2_fdbig:?}], concurrent sweep {sweep_elapsed:?}, pause3 {pause3_elapsed:?} [signal {p3_signal:?}]); live {new_total_live_size} bytes",
             gc_start.elapsed(),
         );
     }

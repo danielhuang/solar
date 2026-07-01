@@ -332,6 +332,16 @@ pub fn hwm(class: usize) -> u64 {
 pub fn reset_frontier(class: usize) {
     NEXT_SLOT[class].store(0, Ordering::Relaxed);
 }
+/// Push the allocation frontier up to the current high-water mark, so the next
+/// `claim_run` hands out slots strictly above `[0, hwm)`. Used by the concurrent
+/// sweep to partition the arena into disjoint bitmap words: the sweeper owns
+/// `[0, hwm)` while post-resume allocations claim `[hwm, …)`. Must run while the
+/// world is stopped (it's a backward-safe move only because every thread's
+/// cached claim is abandoned in the same pause).
+#[inline]
+pub fn freeze_frontier_to_hwm(class: usize) {
+    NEXT_SLOT[class].store(HWM[class].load(Ordering::Relaxed), Ordering::Relaxed);
+}
 
 // ---------------------------------------------------------------------------
 // Lookup (used by the GC's conservative scan).

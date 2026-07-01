@@ -105,7 +105,7 @@ def run_throughput(argv, env) -> tuple[float, int]:
 # Latency: STW pause samples (ms) per runtime
 # --------------------------------------------------------------------------- #
 _UNIT = {"µs": 1e-3, "ms": 1.0, "s": 1e3}
-_SOLAR_RE = re.compile(r"pause([12]) ([0-9.]+)(µs|ms|s)")
+_SOLAR_RE = re.compile(r"pause([123]) ([0-9.]+)(µs|ms|s)")
 _GO_RE = re.compile(r"([0-9.]+)\+[0-9.]+\+([0-9.]+) ms clock")
 _JAVA_RE = re.compile(r"At safepoint: (\d+) ns")
 _CSHARP_RE = re.compile(r"GCPAUSE ([0-9.]+) ms")
@@ -134,13 +134,22 @@ def pause_samples(argv, kind: str, env: dict | None = None) -> list[float]:
         out = []
         for line in text.splitlines():
             parts = {n: float(v) * _UNIT[u] for n, v, u in _SOLAR_RE.findall(line)}
-            if "1" in parts and "2" in parts:  # one GC cycle -> STW = pause1+pause2
-                out.append(parts["1"] + parts["2"])
+            # One sample per *individual* STW pause (pause1/2/3), NOT summed per
+            # cycle — so `max` is the worst single application stall and `p50` the
+            # median single stall, matching Java's per-safepoint accounting. The
+            # arena sweep is concurrent; bracketed [signal …] sub-timings don't
+            # match _SOLAR_RE so they're ignored.
+            out.extend(parts.values())
         return out
     if kind == "go":
         text = capture(argv, {"GODEBUG": "gctrace=1"})
-        # clock triple: STW sweep-term + concurrent mark + STW mark-term
-        return [float(a) + float(b) for a, b in _GO_RE.findall(text)]
+        # clock triple: STW sweep-term + concurrent mark + STW mark-term. Emit the
+        # two STW terms as separate per-pause samples (not summed), to match the
+        # per-pause Solar/Java accounting.
+        out = []
+        for a, c in _GO_RE.findall(text):
+            out.extend((float(a), float(c)))
+        return out
     if kind == "java":
         # JVM flags must precede the main class; -Xlog defaults to stdout.
         java_argv = argv[:-1] + ["-Xlog:safepoint", argv[-1]]
