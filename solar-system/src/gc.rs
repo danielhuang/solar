@@ -99,9 +99,6 @@ const GC_STALL_FLOOR: usize = 512 << 20;
 pub(crate) static ENABLE_STAT_PRINTS: AtomicBool = AtomicBool::new(false);
 pub(crate) static ENABLE_ALLOC_PRINTS: AtomicBool = AtomicBool::new(false);
 pub(crate) static DISABLE_GC: AtomicBool = AtomicBool::new(false);
-/// Debug (`SOLAR_GC_VALIDATE=1`): at pause 2, verify the mark is complete before
-/// the sweep runs — see `validate_marks`.
-pub(crate) static VALIDATE_MARKS: AtomicBool = AtomicBool::new(false);
 
 // ---------------------------------------------------------------------------
 // Tri-color gray frontier.
@@ -796,165 +793,6 @@ unsafe fn scan_thread_roots(
     }
 }
 
-/// Debug (`SOLAR_GC_VALIDATE=1`): independently re-traverse the reachable object
-/// graph from roots (world stopped, mark already at a fixpoint) and report any
-/// object that is reachable but NOT marked — a live object the concurrent mark
-/// missed, which the sweep about to run would wrongly free. Unlike the real
-/// marker, this scans *every* reached object's outgoing words (its own `visited`
-/// set), so it also catches a "marked but children-unscanned" node. It marks the
-/// leaked objects so the run survives for continued diagnosis.
-///
-/// Child extraction is fully conservative (every pointer-aligned word), which
-/// matches the collector for workloads whose precise (>=128 B) objects are
-/// pointer-free; it can only *over*-approximate reachability, never miss.
-/// Debug (`SOLAR_GC_VALIDATE=1`): at pause 1 (before this cycle marks anything),
-/// re-traverse the reachable graph and report any reachable object whose ALLOC
-/// bit is clear — i.e. an object the previous cycle's sweep freed while still
-/// reachable (a premature free: the slot can be handed out again and clobbered
-/// while the old graph still points at it). Complements `validate_marks`, which
-/// only proves marking completeness at pause 2 — this proves the sweep+alloc
-/// accounting kept every reachable object allocated across the cycle boundary.
-unsafe fn validate_allocated(
-    registry: &HashMap<i32, Box<ThreadSlot>>,
-    arena_base: usize,
-    big_len: usize,
-) {
-    use std::collections::HashSet;
-    let mut visited: HashSet<usize> = HashSet::new();
-    let mut work: Vec<usize> = Vec::new();
-    for slot in registry.values() {
-        unsafe { scan_thread_roots(slot, arena_base, big_len, &mut work) };
-    }
-    let mut freed_live = 0usize;
-    while let Some(p) = work.pop() {
-        // Resolve the slot WITHOUT the alloc-bit filter (lookup_arena would
-        // silently skip freed slots — the very thing we're hunting).
-        let Some((class, rbase)) = heap::classify(p) else {
-            continue;
-        };
-        let slot = heap::slot_index(p, rbase, class);
-        if slot as u64 >= heap::hwm(class) {
-            continue;
-        }
-        let base = heap::slot_addr(rbase, slot, class);
-        if !visited.insert(base) {
-            continue;
-        }
-        if !unsafe { heap::is_allocated(class, slot) } {
-            freed_live += 1;
-            if freed_live <= 8 {
-                let w = base as *const usize;
-                eprintln!(
-                    "GC VALIDATE-ALLOC: reachable-but-FREED slot class={class} base={base:#x} words=[{:#x} {:#x} {:#x} {:#x}]",
-                    unsafe { *w },
-                    unsafe { *w.add(1) },
-                    unsafe { *w.add(2) },
-                    unsafe { *w.add(3) },
-                );
-            }
-            // Do not follow a freed object's (possibly reused) contents.
-            continue;
-        }
-        let slot_size = heap::slot_size(class);
-        let mut w = base as *const usize;
-        let end = (base + slot_size) as *const usize;
-        while w < end {
-            let v = unsafe { (*(w as *const AtomicUsize)).load(Ordering::Relaxed) };
-            w = unsafe { w.add(1) };
-            if plausible(v, arena_base, big_len) {
-                work.push(v);
-            }
-        }
-    }
-    if freed_live > 0 {
-        eprintln!(
-            "GC VALIDATE-ALLOC: {freed_live} reachable object(s) had been FREED by the previous sweep"
-        );
-    }
-}
-
-unsafe fn validate_marks(
-    registry: &HashMap<i32, Box<ThreadSlot>>,
-    arena_base: usize,
-    big_len: usize,
-) {
-    use std::collections::HashSet;
-    let mut visited: HashSet<usize> = HashSet::new();
-    // (child pointer, referrer base or 0 for a root, referrer_was_marked)
-    let mut work: Vec<(usize, usize, bool)> = Vec::new();
-    let mut roots: Vec<usize> = Vec::new();
-    for slot in registry.values() {
-        unsafe { scan_thread_roots(slot, arena_base, big_len, &mut roots) };
-    }
-    for &r in &roots {
-        work.push((r, 0, true)); // roots count as a "marked" referrer
-    }
-    let mut leaked = 0usize;
-    let mut frontier = 0usize; // unmarked child reached from a MARKED referrer/root
-    let mut leaked_by_class = [0usize; heap::NUM_CLASSES];
-    while let Some((p, referrer, referrer_marked)) = work.pop() {
-        let Some((class, slot, base, _kind)) = (unsafe { heap::lookup_arena(p) }) else {
-            continue; // not a live arena object (fd/big/free/untouched)
-        };
-        let marked = unsafe { heap::is_marked_addr(base) };
-        if !visited.insert(base) {
-            continue;
-        }
-        if !marked {
-            leaked += 1;
-            leaked_by_class[class] += 1;
-            // A frontier miss: the edge referrer->base is exactly a store the
-            // barrier (or marker scan) failed to cover — the referrer is live
-            // (marked/root) yet this child was left white.
-            if referrer_marked {
-                frontier += 1;
-                if frontier <= 12 && referrer != 0 {
-                    // Find which word(s) of the referrer point at this child, to
-                    // tell a real pointer field from a key-value coincidence.
-                    if let Some((rclass, _, rbase, _)) = unsafe { heap::lookup_arena(referrer) } {
-                        let rsize = heap::slot_size(rclass);
-                        let mut offs = String::new();
-                        let mut words = String::new();
-                        let mut w = rbase as *const usize;
-                        let mut off = 0usize;
-                        while off < rsize {
-                            let v = unsafe { *w };
-                            words.push_str(&format!("{v:#x} "));
-                            if let Some((_, _, cbase, _)) = unsafe { heap::lookup_arena(v) }
-                                && cbase == base
-                            {
-                                offs.push_str(&format!("{off} "));
-                            }
-                            w = unsafe { w.add(1) };
-                            off += 8;
-                        }
-                        eprintln!(
-                            "GC VALIDATE frontier: parent={rbase:#x}(class={rclass}) words=[{words}] -> unmarked child={base:#x}(class={class}) at parent offset(s) [{offs}]"
-                        );
-                    }
-                }
-            }
-            // Mitigate so the run survives (mark it live for this cycle's sweep).
-            unsafe { heap::set_marked(class, slot) };
-        }
-        let slot_size = heap::slot_size(class);
-        let mut w = base as *const usize;
-        let end = (base + slot_size) as *const usize;
-        while w < end {
-            let v = unsafe { (*(w as *const AtomicUsize)).load(Ordering::Relaxed) };
-            w = unsafe { w.add(1) };
-            if plausible(v, arena_base, big_len) {
-                work.push((v, base, marked));
-            }
-        }
-    }
-    if leaked > 0 {
-        eprintln!(
-            "GC VALIDATE: {leaked} leaked-live ({frontier} frontier misses) before sweep; by class {leaked_by_class:?}"
-        );
-    }
-}
-
 /// Drain the gray queue to quiescence using the thread pool. Used for the
 /// concurrent phase (mutators concurrently produce into the queue) and for the
 /// pause-2 remark drain (world stopped). Returns once every worker is idle and
@@ -1183,11 +1021,6 @@ unsafe fn run_gc_cycle() {
         big_snapshot = unsafe { snapshot_big_allocs(&registry) };
         let big_len = big_snapshot.len();
 
-        // Debug: verify the previous cycle's sweep freed nothing reachable.
-        if VALIDATE_MARKS.load(Ordering::Relaxed) {
-            unsafe { validate_allocated(&registry, arena_base, big_len) };
-        }
-
         // Materialize root pointer *values* into the gray queue while threads
         // are stopped (spread across shards for balanced parallel draining).
         let mut roots: Vec<usize> = Vec::new();
@@ -1267,11 +1100,6 @@ unsafe fn run_gc_cycle() {
         unsafe { mark_to_fixpoint(&big_snapshot) };
         p2_pmark = pmark_start.elapsed();
         p2_remark = remark_start.elapsed();
-
-        // Debug: verify the mark is complete before the sweep frees anything.
-        if VALIDATE_MARKS.load(Ordering::Relaxed) {
-            unsafe { validate_marks(&registry, arena_base, big_snapshot.len()) };
-        }
 
         // Big-object and fd sweeps stay STW: they're cheap, and they consume the
         // mark bits that were just brought to a fixpoint.

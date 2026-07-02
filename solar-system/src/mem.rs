@@ -171,10 +171,12 @@ pub unsafe extern "C" fn sol_memcpy(dst: *mut u8, src: *const u8, size: usize) {
     // A plain copy with no GC side effects: keeping the body free of global
     // reads/writes is what lets the optimizer prove sol_memcpy doesn't capture
     // or escape its arguments, so freshly-allocated objects initialized through
-    // it can still be SROA'd / elided. The aggregate-copy write barrier (shading
-    // the copied region's pointers) is re-added by the `solar-write-barriers`
-    // pass, which instruments the memcpy *after* optimization — exactly like the
-    // per-store barriers — so the barrier never blocks allocation elision.
+    // it can still be SROA'd / elided. Codegen emits sol_memcpy ONLY for
+    // pointer-free bytes (GC-pointer words are copied with typed `uint8_t*`
+    // member stores, which the write-barrier pass instruments precisely), so
+    // the `solar-lower-gc-alloc` pass tags its lowered `llvm.memcpy` with
+    // `!solar.nobarrier` and plain-data copies (e.g. `[Uint8]` contents) carry
+    // no barrier at all.
     unsafe { std::ptr::copy_nonoverlapping(src, dst, size) };
 }
 

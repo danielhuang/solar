@@ -9,6 +9,9 @@ use std::collections::{HashMap, HashSet};
 /// can't overflow the stack where a heap allocation would not.
 const STACK_ALLOC_MAX: usize = 4096;
 
+/// A by-value C typedef spec: (size, align, pointer-word runs).
+type ValTypeSpec = (usize, usize, Vec<(usize, usize)>);
+
 pub fn generate(module: &Module, source_file: &str, source_map: &SourceMap) -> String {
     let mut cg = Codegen {
         module,
@@ -339,52 +342,139 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    /// Name for a value-type struct: `_v{size}_{align}`
-    fn val_type_name(size: usize, align: usize) -> String {
-        format!("_v{size}_{align}")
-    }
-
-    /// Collect all (size, align) pairs used for by-value params and returns.
-    fn collect_val_types_from_type(
+    /// Byte offsets of the GC-pointer words inside the *value representation*
+    /// of `ty` (fat pointers contribute their data-pointer word, not the
+    /// meta/len word; function values contribute both the code and env words;
+    /// enums contribute the union over all variants' payloads). These offsets
+    /// drive both the pointer-typed members of the value typedefs and the
+    /// typed member-wise copies in `emit_copy` — every GC-pointer store must
+    /// reach LLVM as a `store ptr` so the write-barrier pass can instrument
+    /// pointer stores precisely instead of shading every 8-byte store.
+    fn collect_ptr_words(
         ty: &Type,
         dt: &std::collections::HashMap<String, DataType>,
-        set: &mut HashSet<(usize, usize)>,
+        base: usize,
+        out: &mut std::collections::BTreeSet<usize>,
     ) {
+        match ty {
+            Type::Ref(_)
+            | Type::NullableRef(_)
+            | Type::Unique(_)
+            | Type::FileDesc
+            | Type::RefUnsized(_)
+            | Type::NullableRefUnsized(_)
+            | Type::UniqueUnsized(_) => {
+                out.insert(base);
+            }
+            // Owned slice value: (data ptr, len) — only the data word is a pointer.
+            Type::Array(_) => {
+                out.insert(base);
+            }
+            // Function value: (code ptr, env ptr). Only env is a GC pointer, but
+            // the code word is a real pointer too — typing both keeps provenance.
+            Type::Function { .. } => {
+                out.insert(base);
+                out.insert(base + 8);
+            }
+            Type::Struct(name) | Type::Enum(name) => {
+                let fields: Vec<(Type, usize)> = dt[name.as_str()]
+                    .fields
+                    .iter()
+                    .map(|f| (f.ty.clone(), f.offset))
+                    .collect();
+                for (fty, off) in &fields {
+                    Self::collect_ptr_words(fty, dt, base + off, out);
+                }
+            }
+            Type::FixedArray(inner, count) => {
+                let es = type_size(inner, dt);
+                let mut elem = std::collections::BTreeSet::new();
+                Self::collect_ptr_words(inner, dt, 0, &mut elem);
+                if !elem.is_empty() {
+                    for i in 0..*count as usize {
+                        for &o in &elem {
+                            out.insert(base + i * es + o);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Maximal runs of consecutive pointer words: `(start_word, len_words)`.
+    fn ptr_runs(&self, ty: &Type) -> Vec<(usize, usize)> {
+        let mut set = std::collections::BTreeSet::new();
+        Self::collect_ptr_words(ty, &self.module.datatypes, 0, &mut set);
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        for off in set {
+            debug_assert!(off % 8 == 0, "pointer word at unaligned offset {off}");
+            let w = off / 8;
+            match runs.last_mut() {
+                Some((start, len)) if *start + *len == w => *len += 1,
+                _ => runs.push((w, 1)),
+            }
+        }
+        runs
+    }
+
+    /// Name for a value-type struct: `_v{size}_{align}` for pointer-free blobs,
+    /// with `_p{start}x{len}` per pointer-word run when the type holds GC
+    /// pointers (e.g. a splay `Node {key, value, left, right}` is `_v32_8_p1x3`).
+    fn val_type_name(size: usize, align: usize, ptr_runs: &[(usize, usize)]) -> String {
+        let mut name = format!("_v{size}_{align}");
+        for (start, len) in ptr_runs {
+            name.push_str(&format!("_p{start}x{len}"));
+        }
+        name
+    }
+
+    /// C value type for `ty`: computes size/align and the pointer-word runs.
+    fn val_type(&self, ty: &Type) -> String {
+        let s = self.type_size(ty);
+        let a = self.type_align(ty);
+        Self::val_type_name(s, a, &self.ptr_runs(ty))
+    }
+
+    /// Collect all (size, align, ptr-runs) triples used for by-value params and
+    /// returns.
+    fn collect_val_types_from_type(&self, ty: &Type, set: &mut HashSet<ValTypeSpec>) {
         if let Type::Function {
             params,
             return_type,
         } = ty
         {
+            let dt = &self.module.datatypes;
             for p in params {
-                let s = type_size(p, dt);
-                let a = type_align(p, dt);
-                set.insert((s, a));
-                Self::collect_val_types_from_type(p, dt, set);
+                set.insert((type_size(p, dt), type_align(p, dt), self.ptr_runs(p)));
+                self.collect_val_types_from_type(p, set);
             }
             if !matches!(**return_type, Type::Unit | Type::Never) {
-                let s = type_size(return_type, dt);
-                let a = type_align(return_type, dt);
-                set.insert((s, a));
-                Self::collect_val_types_from_type(return_type, dt, set);
+                set.insert((
+                    type_size(return_type, dt),
+                    type_align(return_type, dt),
+                    self.ptr_runs(return_type),
+                ));
+                self.collect_val_types_from_type(return_type, set);
             }
         }
     }
 
-    fn collect_val_types(&self) -> Vec<(usize, usize)> {
+    fn collect_val_types(&self) -> Vec<ValTypeSpec> {
         let mut set = HashSet::new();
         for func in &self.module.functions {
             if !matches!(func.return_type, Type::Unit | Type::Never) {
                 let s = self.type_size(&func.return_type);
                 let a = self.type_align(&func.return_type);
-                set.insert((s, a));
+                set.insert((s, a, self.ptr_runs(&func.return_type)));
             }
             for param in &func.params {
                 let s = self.type_size(&param.ty);
                 let a = self.type_align(&param.ty);
-                set.insert((s, a));
-                Self::collect_val_types_from_type(&param.ty, &self.module.datatypes, &mut set);
+                set.insert((s, a, self.ptr_runs(&param.ty)));
+                self.collect_val_types_from_type(&param.ty, &mut set);
             }
-            Self::collect_val_types_from_type(&func.return_type, &self.module.datatypes, &mut set);
+            self.collect_val_types_from_type(&func.return_type, &mut set);
         }
         let mut v: Vec<_> = set.into_iter().collect();
         v.sort();
@@ -498,13 +588,39 @@ impl<'a> Codegen<'a> {
     fn emit_module(&mut self) {
         self.emit_prelude();
 
-        // Emit value-type typedefs
+        // Emit value-type typedefs. Pointer-free types stay opaque byte blobs;
+        // a type with GC pointers gets real `uint8_t*` members at its pointer
+        // words (with `char` filler between) so that LLVM sees genuinely
+        // pointer-typed values flow through params/returns/copies — the write
+        // barrier instruments `store ptr` precisely, instead of conservatively
+        // shading every 8-byte store.
         let val_types = self.collect_val_types();
-        for (size, align) in &val_types {
-            self.linef(format!(
-                "typedef struct {{ _Alignas({align}) char _d[{size}]; }} {};",
-                Self::val_type_name(*size, *align)
-            ));
+        for (size, align, runs) in &val_types {
+            let name = Self::val_type_name(*size, *align, runs);
+            if runs.is_empty() {
+                self.linef(format!(
+                    "typedef struct {{ _Alignas({align}) char _d[{size}]; }} {name};"
+                ));
+            } else {
+                let mut members = String::new();
+                let mut off = 0usize;
+                let mut gap_n = 0usize;
+                for (i, (start, len)) in runs.iter().enumerate() {
+                    let run_off = start * 8;
+                    if run_off > off {
+                        members.push_str(&format!("char _g{gap_n}[{}]; ", run_off - off));
+                        gap_n += 1;
+                    }
+                    members.push_str(&format!("uint8_t* _p{i}[{len}]; "));
+                    off = run_off + len * 8;
+                }
+                if *size > off {
+                    members.push_str(&format!("char _g{gap_n}[{}]; ", *size - off));
+                }
+                self.linef(format!(
+                    "typedef struct {{ _Alignas({align}) {members}}} {name};"
+                ));
+            }
         }
         if !val_types.is_empty() {
             self.line("");
@@ -646,18 +762,14 @@ impl<'a> Codegen<'a> {
         let name = self.func_name(&func.name);
         let mut params: Vec<String> = vec!["void* __env".to_string()];
         for (i, p) in func.params.iter().enumerate() {
-            let s = self.type_size(&p.ty);
-            let a = self.type_align(&p.ty);
-            let vt = Self::val_type_name(s, a);
+            let vt = self.val_type(&p.ty);
             params.push(format!("{vt} _p{i}"));
         }
         let params_str = params.join(", ");
         if matches!(func.return_type, Type::Unit | Type::Never) {
             format!("void {name}({params_str})")
         } else {
-            let s = self.type_size(&func.return_type);
-            let a = self.type_align(&func.return_type);
-            let vt = Self::val_type_name(s, a);
+            let vt = self.val_type(&func.return_type);
             format!("{vt} {name}({params_str})")
         }
     }
@@ -732,9 +844,7 @@ impl<'a> Codegen<'a> {
 
         // Declare return variable for non-unit functions
         if !matches!(func.return_type, Type::Unit | Type::Never) {
-            let s = self.type_size(&func.return_type);
-            let a = self.type_align(&func.return_type);
-            let vt = Self::val_type_name(s, a);
+            let vt = self.val_type(&func.return_type);
             self.linef(format!("{vt} _ret;"));
         }
 
@@ -1247,9 +1357,7 @@ impl<'a> Codegen<'a> {
                 let function = function.clone();
                 let args: Vec<NodeId> = args.clone();
                 let result_ty = nodes[id.0].ty.clone();
-                let s = self.type_size(&result_ty);
-                let a = self.type_align(&result_ty);
-                let vt = Self::val_type_name(s, a);
+                let vt = self.val_type(&result_ty);
                 let call_expr = self.emit_call_expr(nodes, &function, &args);
                 let tmp = self.fresh_tmp();
                 self.linef(format!("{vt} {tmp} = {call_expr};"));
@@ -1440,9 +1548,7 @@ impl<'a> Codegen<'a> {
                     BinOp::Ne => "!=",
                     _ => unreachable!("only ==/!= allowed on nullable references"),
                 };
-                let sz = self.type_size(left_ty);
-                let al = self.type_align(left_ty);
-                let vt = Self::val_type_name(sz, al);
+                let vt = self.val_type(left_ty);
                 let lt = self.fresh_tmp();
                 self.linef(format!("{vt} {lt};"));
                 self.emit_into(nodes, left, &format!("(uint8_t*)&{lt}"));
@@ -1518,9 +1624,7 @@ impl<'a> Codegen<'a> {
         let cname = self.func_name(function);
         let mut arg_exprs: Vec<String> = vec!["NULL".to_string()];
         for (param, &arg) in func.params.iter().zip(args.iter()) {
-            let s = self.type_size(&param.ty);
-            let a = self.type_align(&param.ty);
-            let vt = Self::val_type_name(s, a);
+            let vt = self.val_type(&param.ty);
             // Create a local val-type, emit_into it, pass by value
             let ptmp = self.fresh_tmp();
             self.linef(format!("{vt} {ptmp};"));
@@ -1531,9 +1635,70 @@ impl<'a> Codegen<'a> {
         format!("{cname}({args_str})")
     }
 
+    /// Emit a plain (no deep-copy, no variant dispatch) copy of a *value* of
+    /// `ty`. Pointer-free types are one `sol_memcpy`; a type with GC pointers
+    /// is copied member-wise — `uint8_t*`-typed assignments at its pointer
+    /// words, `sol_memcpy` for the pointer-free gaps — so every GC-pointer
+    /// store reaches LLVM as `store ptr` and the write-barrier pass can
+    /// instrument pointer stores precisely. (A flat memcpy of a small value
+    /// gets shrunk by `opt` into an *integer* store, which the barrier can't
+    /// tell from data; that was a real missed-mark bug on splay.)
+    fn emit_plain_copy(&mut self, dst: &str, src: &str, ty: &Type, size_expr: &str) {
+        let runs = self.ptr_runs(ty);
+        if runs.is_empty() {
+            self.linef(format!("sol_memcpy({dst}, {src}, {size_expr});"));
+            return;
+        }
+        // Owned-slice *value*: a (data ptr, len) fat pointer. `type_size` below
+        // refuses unsized types, so lay it out explicitly.
+        if let Type::Array(_) = ty {
+            self.linef(format!("*(uint8_t**)({dst}) = *(uint8_t**)({src});"));
+            self.linef(format!(
+                "*(uint64_t*)(({dst}) + 8) = *(uint64_t*)(({src}) + 8);"
+            ));
+            return;
+        }
+        let size = self.type_size(ty);
+        let mut off = 0usize;
+        let copy_gap = |this: &mut Self, from: usize, to: usize| {
+            if to > from {
+                this.linef(format!(
+                    "sol_memcpy(({dst}) + {from}, ({src}) + {from}, {});",
+                    to - from
+                ));
+            }
+        };
+        for (start, len) in &runs {
+            let run_off = start * 8;
+            copy_gap(self, off, run_off);
+            for w in 0..*len {
+                let o = run_off + w * 8;
+                self.linef(format!(
+                    "*(uint8_t**)(({dst}) + {o}) = *(uint8_t**)(({src}) + {o});"
+                ));
+            }
+            off = run_off + len * 8;
+        }
+        copy_gap(self, off, size);
+    }
+
     /// Emit a type-aware copy from `src` to `dst`. If the type contains unique
-    /// pointers, recursively deep-copies the pointees. Otherwise falls back to memcpy.
+    /// pointers, recursively deep-copies the pointees. Otherwise copies the
+    /// value with pointer-typed member stores (see `emit_plain_copy`).
     fn emit_copy(&mut self, dst: &str, src: &str, ty: &Type, size_expr: &str) {
+        self.emit_copy_ctx(dst, src, ty, size_expr, false)
+    }
+
+    /// Copy the *pointee data* of an unsized `ty` (element data for `[T]`,
+    /// not its 16-byte fat-pointer value). `size_expr` is the total byte size.
+    fn emit_copy_contents(&mut self, dst: &str, src: &str, ty: &Type, size_expr: &str) {
+        self.emit_copy_ctx(dst, src, ty, size_expr, true)
+    }
+
+    /// `contents == true` means `dst`/`src` point at the *pointee data* of an
+    /// unsized `ty` (from a `^T`-of-unsized deep copy) rather than at a value
+    /// of `ty` — for `[T]` that's the element data, not the 16-byte fat pointer.
+    fn emit_copy_ctx(&mut self, dst: &str, src: &str, ty: &Type, size_expr: &str, contents: bool) {
         // UniqueUnsized needs deep-copy, so it goes through the match below
         if matches!(
             ty,
@@ -1543,7 +1708,30 @@ impl<'a> Codegen<'a> {
             return;
         }
         if !self.type_contains_unique(ty) && !self.type_contains_enum(ty) {
-            self.linef(format!("sol_memcpy({dst}, {src}, {size_expr});"));
+            if contents && let Type::Array(inner) = ty {
+                // Unsized array contents: copy per element so pointer-carrying
+                // elements still get typed pointer stores.
+                if self.ptr_runs(inner).is_empty() {
+                    self.linef(format!("sol_memcpy({dst}, {src}, {size_expr});"));
+                } else {
+                    let es = self.type_size(inner);
+                    let inner = (**inner).clone();
+                    let count_tmp = self.fresh_tmp();
+                    self.linef(format!("size_t {count_tmp} = ({size_expr}) / {es};"));
+                    let idx = self.fresh_tmp();
+                    self.linef(format!(
+                        "for (size_t {idx} = 0; {idx} < {count_tmp}; {idx}++) {{"
+                    ));
+                    self.indent += 1;
+                    let edst = format!("(({dst}) + {idx} * {es})");
+                    let esrc = format!("(({src}) + {idx} * {es})");
+                    self.emit_plain_copy(&edst, &esrc, &inner, &es.to_string());
+                    self.indent -= 1;
+                    self.line("}");
+                }
+            } else {
+                self.emit_plain_copy(dst, src, ty, size_expr);
+            }
             return;
         }
         match ty {
@@ -1576,7 +1764,8 @@ impl<'a> Codegen<'a> {
                 let mf = self.mark_fn_expr(inner);
                 let new_ptr = self.fresh_tmp();
                 self.emit_alloc(&new_ptr, &inner_size, align, &mf);
-                self.emit_copy(&new_ptr, &src_ptr, inner, &inner_size);
+                // `inner` is unsized: new_ptr/src_ptr are its pointee data.
+                self.emit_copy_ctx(&new_ptr, &src_ptr, inner, &inner_size, true);
                 let wide_tmp = self.fresh_tmp();
                 self.linef(format!(
                     "uint8_t {wide_tmp}[16] __attribute__((aligned(16)));"
@@ -1603,13 +1792,7 @@ impl<'a> Codegen<'a> {
                         self.indent += 1;
                         let fdst = format!("({dst} + {offset})");
                         let fsrc = format!("({src} + {offset})");
-                        if self.type_contains_unique(&field_ty)
-                            || self.type_contains_enum(&field_ty)
-                        {
-                            self.emit_copy(&fdst, &fsrc, &field_ty, &field_size.to_string());
-                        } else {
-                            self.linef(format!("sol_memcpy({fdst}, {fsrc}, {field_size});"));
-                        }
+                        self.emit_copy(&fdst, &fsrc, &field_ty, &field_size.to_string());
                         self.indent -= 1;
                         self.line("}");
                     }
@@ -1630,23 +1813,17 @@ impl<'a> Codegen<'a> {
                     .map(|f| (f.offset, f.ty.clone(), f.size))
                     .collect();
                 for (offset, field_ty, field_size) in &fields {
-                    if self.type_contains_unique(field_ty) || self.type_contains_enum(field_ty) {
-                        let fdst = if *offset == 0 {
-                            dst.to_string()
-                        } else {
-                            format!("({dst} + {offset})")
-                        };
-                        let fsrc = if *offset == 0 {
-                            src.to_string()
-                        } else {
-                            format!("({src} + {offset})")
-                        };
-                        self.emit_copy(&fdst, &fsrc, field_ty, &field_size.to_string());
+                    let fdst = if *offset == 0 {
+                        dst.to_string()
                     } else {
-                        self.linef(format!(
-                            "sol_memcpy({dst} + {offset}, {src} + {offset}, {field_size});"
-                        ));
-                    }
+                        format!("({dst} + {offset})")
+                    };
+                    let fsrc = if *offset == 0 {
+                        src.to_string()
+                    } else {
+                        format!("({src} + {offset})")
+                    };
+                    self.emit_copy(&fdst, &fsrc, field_ty, &field_size.to_string());
                 }
             }
             Type::FixedArray(inner, count) => {
@@ -1682,7 +1859,7 @@ impl<'a> Codegen<'a> {
                 self.line("}");
             }
             _ => {
-                self.linef(format!("sol_memcpy({dst}, {src}, {size_expr});"));
+                self.emit_plain_copy(dst, src, ty, size_expr);
             }
         }
     }
@@ -1711,9 +1888,10 @@ impl<'a> Codegen<'a> {
                     let size = self.type_size(&ty);
                     self.emit_copy(dst, &src, &ty, &size.to_string());
                 } else {
+                    // Unsized place: `src`/`dst` are the pointee data.
                     let meta = src_meta.unwrap();
                     let size_expr = self.emit_full_size_expr(&ty, &meta);
-                    self.emit_copy(dst, &src, &ty, &size_expr);
+                    self.emit_copy_contents(dst, &src, &ty, &size_expr);
                 }
             }
             NodeKind::IntegerLiteral(n) => {
@@ -1908,16 +2086,17 @@ impl<'a> Codegen<'a> {
                     let ra_tmp = self.fresh_tmp();
                     self.emit_alloc(&ra_tmp, format!("{rm} * {es}"), ea, mf);
                     self.emit_into(nodes, right, &ra_tmp);
+                    // Concatenation copies array *data* halves, not fat values.
                     let left_size = format!("{lm} * {es}");
-                    self.emit_copy(
+                    self.emit_copy_contents(
                         dst,
                         &la_tmp,
                         &Type::Array(Box::new(inner.clone())),
                         &left_size,
                     );
-                    let right_dst = format!("{dst} + {lm} * {es}");
+                    let right_dst = format!("({dst} + {lm} * {es})");
                     let right_size = format!("{rm} * {es}");
-                    self.emit_copy(
+                    self.emit_copy_contents(
                         &right_dst,
                         &ra_tmp,
                         &Type::Array(Box::new(inner)),
@@ -2118,12 +2297,12 @@ impl<'a> Codegen<'a> {
                     self.linef(format!("{call_expr};"));
                 } else {
                     let s = self.type_size(&result_ty);
-                    let a = self.type_align(&result_ty);
-                    let vt = Self::val_type_name(s, a);
+                    let vt = self.val_type(&result_ty);
                     let call_expr = self.emit_call_expr(nodes, &function, &args);
                     let tmp = self.fresh_tmp();
                     self.linef(format!("{vt} {tmp} = {call_expr};"));
-                    self.linef(format!("sol_memcpy({dst}, (uint8_t*)&{tmp}, {s});"));
+                    let src_expr = format!("(uint8_t*)&{tmp}");
+                    self.emit_copy(dst, &src_expr, &result_ty, &s.to_string());
                 }
             }
             NodeKind::ArrayInit { count, init } => {
@@ -2134,7 +2313,6 @@ impl<'a> Codegen<'a> {
                     _ => unreachable!(),
                 };
                 let es = self.type_size(&elem_ty);
-                let ea = self.type_align(&elem_ty);
                 let cnt_expr = self.emit_load(nodes, count);
                 let cnt_tmp = self.fresh_tmp();
                 self.linef(format!("uint64_t {cnt_tmp} = (uint64_t){cnt_expr};"));
@@ -2151,9 +2329,10 @@ impl<'a> Codegen<'a> {
                 self.linef(format!("void(*{fp_var})() = *(void(**)()){callee_tmp};"));
                 self.linef(format!("void* {env_var} = *(void**)({callee_tmp} + 8);"));
 
-                // Build function pointer type: returns val_type_name(es, ea), takes (void* env, val_type_name(8, 8) index)
-                let ret_vt = Self::val_type_name(es, ea);
-                let idx_vt = Self::val_type_name(8, 8);
+                // Build function pointer type: returns the element value type,
+                // takes (void* env, index value type).
+                let ret_vt = self.val_type(&elem_ty);
+                let idx_vt = Self::val_type_name(8, 8, &[]);
                 let fp_type = format!("{ret_vt}(*)(void*, {idx_vt})");
 
                 let idx = self.fresh_tmp();
@@ -2169,9 +2348,9 @@ impl<'a> Codegen<'a> {
                 self.linef(format!(
                     "{ret_vt} {result_tmp} = (({fp_type}){fp_var})({env_var}, {idx_wrapped});"
                 ));
-                self.linef(format!(
-                    "sol_memcpy({dst} + {idx} * {es}, (uint8_t*)&{result_tmp}, {es});"
-                ));
+                let edst = format!("({dst} + {idx} * {es})");
+                let esrc = format!("(uint8_t*)&{result_tmp}");
+                self.emit_copy(&edst, &esrc, &elem_ty, &es.to_string());
                 self.indent -= 1;
                 self.line("}");
             }
@@ -2203,9 +2382,7 @@ impl<'a> Codegen<'a> {
                 // Build arg val-type wrappers — prepend env
                 let mut arg_exprs: Vec<String> = vec![env_var.clone()];
                 for (pty, &arg) in param_types.iter().zip(args.iter()) {
-                    let s = self.type_size(pty);
-                    let a = self.type_align(pty);
-                    let vt = Self::val_type_name(s, a);
+                    let vt = self.val_type(pty);
                     let ptmp = self.fresh_tmp();
                     self.linef(format!("{vt} {ptmp};"));
                     self.emit_into(nodes, arg, &format!("(uint8_t*)&{ptmp}"));
@@ -2217,15 +2394,11 @@ impl<'a> Codegen<'a> {
                 let ret_vt = if matches!(return_type, Type::Unit | Type::Never) {
                     "void".to_string()
                 } else {
-                    let s = self.type_size(&return_type);
-                    let a = self.type_align(&return_type);
-                    Self::val_type_name(s, a)
+                    self.val_type(&return_type)
                 };
                 let mut param_vts: Vec<String> = vec!["void*".to_string()];
                 for pty in &param_types {
-                    let s = self.type_size(pty);
-                    let a = self.type_align(pty);
-                    param_vts.push(Self::val_type_name(s, a));
+                    param_vts.push(self.val_type(pty));
                 }
                 let fp_type = format!("{ret_vt}(*)({})", param_vts.join(", "));
 
@@ -2233,11 +2406,11 @@ impl<'a> Codegen<'a> {
                     self.linef(format!("(({fp_type}){fp_var})({args_str});"));
                 } else {
                     let s = self.type_size(&return_type);
-                    let a = self.type_align(&return_type);
-                    let vt = Self::val_type_name(s, a);
+                    let vt = self.val_type(&return_type);
                     let tmp = self.fresh_tmp();
                     self.linef(format!("{vt} {tmp} = (({fp_type}){fp_var})({args_str});"));
-                    self.linef(format!("sol_memcpy({dst}, (uint8_t*)&{tmp}, {s});"));
+                    let src_expr = format!("(uint8_t*)&{tmp}");
+                    self.emit_copy(dst, &src_expr, &return_type, &s.to_string());
                 }
             }
             _ => unreachable!("emit_into on statement node: {:?}", nodes[id.0].kind),

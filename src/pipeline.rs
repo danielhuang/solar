@@ -166,6 +166,10 @@ fn compile_debug(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
         .args([
             "-fsanitize=address",
             "-fno-omit-frame-pointer",
+            // The generated C accesses the same memory through mixed-typed
+            // casts (`uint8_t*` pointer members vs `uint64_t` scalar views),
+            // so type-based alias analysis must be off.
+            "-fno-strict-aliasing",
             "-g",
             // Emit unwind tables and don't mark functions `nounwind`, so a Solar
             // `throw` (a Rust panic from `sol_throw`) can unwind back through
@@ -304,6 +308,10 @@ fn compile_release(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
         let mut clang_args = vec![
             "-flto=full",
             "-fexceptions",
+            // The generated C accesses the same memory through mixed-typed
+            // casts (`uint8_t*` pointer members vs `uint64_t` scalar views),
+            // so type-based alias analysis must be off.
+            "-fno-strict-aliasing",
             "-c",
             "-march=native",
             "-O3",

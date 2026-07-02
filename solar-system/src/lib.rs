@@ -46,7 +46,6 @@ pub unsafe extern "C" fn sol_start(solar_main: unsafe extern "C" fn(*mut c_void)
 
     gc::ENABLE_STAT_PRINTS.store(read_env_bool("SOLAR_PRINT_GC_STATS"), Ordering::Relaxed);
     gc::ENABLE_ALLOC_PRINTS.store(read_env_bool("SOLAR_PRINT_ALLOCS"), Ordering::Relaxed);
-    gc::VALIDATE_MARKS.store(read_env_bool("SOLAR_GC_VALIDATE"), Ordering::Relaxed);
     // OR-fold so a prior `sol_disable_gc()` call (debug builds) is preserved
     // rather than overwritten by the env flag.
     gc::DISABLE_GC.fetch_or(read_env_bool("SOLAR_DISABLE_GC"), Ordering::Relaxed);

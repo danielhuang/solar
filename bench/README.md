@@ -39,9 +39,11 @@ the same checksum** (`size=8000 checksum=17673159485837241130` at the default
 > their defaults (the .NET binaries select workstation vs server GC at run time
 > via `DOTNET_gcServer`); C is native. .NET is 10.0.301 (`net10.0`).
 > This session was measured after the three splay-exposed fixes (GC pacing,
-> write-barrier coverage of integer-typed pointer stores, deterministic struct
-> lowering); the barrier fix instruments every ≥ 8-byte store, and
-> `allocs3`/`threads` numbers moved only within session noise vs the prior run.
+> write-barrier coverage, deterministic struct lowering). The barrier has since
+> been made **precise** again: codegen now emits pointer-typed C struct members
+> at each type's pointer offsets, so every GC-pointer store reaches LLVM as
+> `store ptr` and plain integer stores carry no barrier. GC-benchmark numbers
+> moved only within session noise; the HashMap table below was re-measured.
 
 ## Directory layout
 
@@ -490,17 +492,18 @@ index on stdin) and reports the best wall-clock of 7 runs plus peak RSS
 
 | phase | Solar (ms) | Rust (ms) | Solar/Rust | Solar RSS (MB) | Rust RSS (MB) | checksum match |
 |-------|-----------:|----------:|-----------:|---------------:|--------------:|:--------------:|
-| u64       | 191.8 | 111.9 | 1.71x | 71.3  | 53.0 | yes |
-| u32       | 191.1 | 114.0 | 1.68x | 71.2  | 53.0 | yes |
-| point     | 379.4 | 161.4 | 2.35x | 161.5 | 76.8 | yes |
-| mixed     | 381.8 | 157.6 | 2.42x | 160.3 | 76.8 | yes |
-| **total** | **1144.0** | **544.9** | **2.10x** | | | |
+| u64       | 162.7 | 93.2  | 1.74x | 71.2  | 52.9 | yes |
+| u32       | 169.3 | 104.8 | 1.62x | 71.3  | 52.8 | yes |
+| point     | 371.0 | 144.3 | 2.57x | 161.3 | 76.8 | yes |
+| mixed     | 349.9 | 148.4 | 2.36x | 161.3 | 76.8 | yes |
+| **total** | **1052.8** | **490.6** | **2.15x** | | | |
 
-(Remeasured after the splay-exposed fixes: the GC-pacing fix — the trigger now
-paces against traced live instead of the float-inflated total — trims both
-Solar's wall (1186 → 1144 ms) and its RSS (78 → 71 MB on `u64`), and the wider
-write-barrier coverage costs nothing measurable here. This started at 6.99x
-total / 175 MB on `u64`. A series of changes brought it to
+(Remeasured after the splay-exposed fixes plus the precise-barrier rework: the
+GC-pacing fix — the trigger now paces against traced live instead of the
+float-inflated total — trims Solar's RSS (78 → 71 MB on `u64`), and restoring a
+*precise* write barrier (pointer-typed codegen; no barrier on plain integer
+stores) cut Solar's wall from 1144 → 1053 ms (`u64` −15%). This started at
+6.99x total / 175 MB on `u64`. A series of changes brought it to
 2.43x: the `(inline)` hint on foldhash's `write_num`; an `ir_opt` escape analysis
 that places non-escaping locals/params on the C stack instead of GC-heap-boxing
 them (`NodeKind::Let { noescape }` + `param_noescape`, run to a fixpoint with a

@@ -93,8 +93,12 @@ struct SolarLowerGcAlloc : PassInfoMixin<SolarLowerGcAlloc> {
     // sol_memcpy is a plain copy with no GC side effects; rewrite it to the
     // recognized llvm.memcpy intrinsic so the optimizer can DSE copies into
     // dead/elided objects (and treat the args as nocapture/argmem, which a
-    // custom call would not be). The aggregate-copy barrier is re-added by
-    // solar-write-barriers on the surviving llvm.memcpy after optimization.
+    // custom call would not be). Codegen emits sol_memcpy ONLY for
+    // pointer-free bytes (GC-pointer words are copied with typed `store ptr`
+    // member assignments), so the lowered memcpy is tagged `!solar.nobarrier`
+    // and solar-write-barriers skips it — a plain-data copy (e.g. `[Uint8]`
+    // contents) costs no barrier. Optimizer-synthesized memcpys (loop idiom,
+    // MemCpyOpt rewrites) carry no tag and stay conservatively instrumented.
     Function *SolMemcpy = M.getFunction("sol_memcpy");
 
     SmallVector<GlobalValue *, 8> MarkFns;
@@ -148,6 +152,7 @@ struct SolarLowerGcAlloc : PassInfoMixin<SolarLowerGcAlloc> {
         // non-volatile; sol_memcpy is copy_nonoverlapping, so memcpy is sound.
         CallInst *MC = B.CreateMemCpy(Dst, MaybeAlign(), Src, MaybeAlign(), Size);
         MC->setDebugLoc(CI->getDebugLoc());
+        MC->setMetadata("solar.nobarrier", MDNode::get(Ctx, {}));
         CI->eraseFromParent();
         ++NMemcpy;
       }
@@ -257,13 +262,7 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
     // sol_alloc before instrumenting their stores (no-op in debug builds).
     unsigned NRaised = raiseGcAlloc(M);
 
-    // In debug builds (no solar-lower-gc-alloc pass) aggregate copies are still
-    // direct sol_memcpy calls; instrument those too. In release they were
-    // already turned into llvm.memcpy by the lowering pass and are handled as
-    // AnyMemTransferInst below.
-    Function *SolMemcpy = M.getFunction("sol_memcpy");
-
-    unsigned NStore = 0, NVec = 0, NMem = 0, NSkipStack = 0;
+    unsigned NStore = 0, NVec = 0, NMem = 0, NSkipStack = 0, NSkipPlain = 0;
 
     for (Function &F : M) {
       if (F.isDeclaration())
@@ -273,27 +272,37 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
         continue;
 
       // Collect first; we insert new calls, so don't mutate while iterating.
+      // Residual `sol_memcpy` calls (unlowered builds) need no handling at
+      // all: codegen emits sol_memcpy ONLY for pointer-free bytes, so it can
+      // never carry a GC pointer.
       SmallVector<StoreInst *, 32> Stores;
       SmallVector<AnyMemTransferInst *, 8> Mems;
-      SmallVector<CallInst *, 8> MemcpyCalls;
       for (Instruction &I : instructions(F)) {
         if (auto *SI = dyn_cast<StoreInst>(&I)) {
           Type *VTy = SI->getValueOperand()->getType();
-          // Pointer-typed stores, and any store wide enough to carry a
-          // pointer. Solar's generated C moves values as opaque byte blobs,
-          // so a reference-field copy typically reaches us as `store i64`
-          // (or a vector/i128 after vectorization), NOT `store ptr` — those
-          // MUST be shaded too or the barrier misses real pointer stores
-          // (seen as GC frees of live splay-tree nodes). The runtime barrier
-          // range-checks the value, so a non-pointer integer is just a cheap
-          // arena-bounds miss while marking.
-          if (VTy->isPtrOrPtrVectorTy() || DL.getTypeStoreSize(VTy) >= 8)
+          // Pointer-typed stores (scalar and vector): codegen emits every
+          // GC-pointer copy through a `uint8_t*`-typed member/cast (value
+          // typedefs carry real pointer members at their pointer words), so
+          // pointer stores reach us as `store ptr` and are instrumented
+          // precisely. Stores WIDER than a pointer (i128, <2 x i64>, …) are
+          // kept as a conservative safety net: optimizer passes that widen or
+          // vectorize adjacent stores (SLP, memcpy lowering of 16-byte fat
+          // values through the inlined 128-bit atomics) are type-agnostic and
+          // may fold pointer words into them. Plain 8-byte integer/float
+          // stores are NOT instrumented — with typed codegen they are data,
+          // and shading them would put a barrier on every scalar store.
+          if (VTy->isPtrOrPtrVectorTy() || DL.getTypeStoreSize(VTy) > 8)
             Stores.push_back(SI);
         } else if (auto *MT = dyn_cast<AnyMemTransferInst>(&I)) {
-          Mems.push_back(MT);
-        } else if (auto *CI = dyn_cast<CallInst>(&I)) {
-          if (SolMemcpy && CI->getCalledFunction() == SolMemcpy)
-            MemcpyCalls.push_back(CI);
+          // A memcpy lowered from codegen's `sol_memcpy` copies pointer-free
+          // bytes by construction (`!solar.nobarrier`) — plain-data copies
+          // like `[Uint8]` contents get no barrier. Unmarked transfers
+          // (optimizer-synthesized: loop idiom, MemCpyOpt rewrites — which
+          // may fuse typed pointer stores) stay conservatively instrumented.
+          if (MT->getMetadata("solar.nobarrier"))
+            ++NSkipPlain;
+          else
+            Mems.push_back(MT);
         }
       }
 
@@ -314,16 +323,8 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
           CallInst *C = B.CreateCall(WB, {Dst, Val});
           C->setDebugLoc(SI->getDebugLoc());
           ++NStore;
-        } else if (Val->getType()->isIntegerTy(64)) {
-          // Pointer-sized integer store: Solar's byte-blob value representation
-          // means this may be a reference copy in disguise. Shade it through
-          // the scalar barrier; the runtime rejects non-arena values.
-          Value *AsPtr = B.CreateIntToPtr(Val, PointerType::getUnqual(Ctx));
-          CallInst *C = B.CreateCall(WB, {Dst, AsPtr});
-          C->setDebugLoc(SI->getDebugLoc());
-          ++NStore;
         } else {
-          // Vector-of-pointers / wide-integer store (i128, <N x i64>, …):
+          // Vector-of-pointers / wider-than-pointer store (i128, <N x i64>, …):
           // conservatively shade every pointer-sized word of the stored region
           // (can't name the individual lanes cheaply).
           uint64_t Sz = DL.getTypeStoreSize(Val->getType());
@@ -346,19 +347,8 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
         ++NMem;
       }
 
-      for (CallInst *CI : MemcpyCalls) {
-        Value *Dst = CI->getArgOperand(0); // sol_memcpy(dst, src, size)
-        if (isStackOrGlobalDest(Dst)) {
-          ++NSkipStack;
-          continue;
-        }
-        IRBuilder<> B(CI->getNextNode());
-        Value *Len = B.CreateZExtOrTrunc(CI->getArgOperand(2), I64);
-        CallInst *C = B.CreateCall(MemB, {Dst, Len});
-        C->setDebugLoc(CI->getDebugLoc());
-        ++NMem;
-      }
     }
+    (void)NSkipPlain;
 
     return (NRaised || NStore || NVec || NMem) ? PreservedAnalyses::none()
                                                : PreservedAnalyses::all();
