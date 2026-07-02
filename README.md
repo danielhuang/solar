@@ -10,7 +10,11 @@ Solar's syntax is similar to Rust (with a few differences); see [`example.solar`
 
 ## Performance
 
-Solar's performance is equivalent to C in programs that are not allocation heavy, like [`sieve.solar`](examples/sieve.solar). Solar's memory management with GC is ~2x faster than C and Java for allocation-heavy workloads (see [`bench/README.md`](bench/README.md) for details).
+Solar lowers to native code and gets optimal performance for workloads that are not allocation-heavy, such as [`sieve.solar`](examples/sieve.solar).
+
+For allocation-heavy workloads, Solar's GC is faster than Java's (including Shenandoah, ZGC, G1, and Parallel), .NET's, and Go's GCs. Additionally, Solar's allocator is faster than glibc's allocator (~2x).
+
+See [`bench/README.md`](bench/README.md) for details.
 
 ## Sum types
 
@@ -41,16 +45,9 @@ This is memory-safe, since a reference to a variant can be obtained only if that
 
 Solar is memory safe, even with values implemented with wide pointers (currently, references to unsized values and functions are 16 bytes). [Reading from these values cannot tear](https://www.ralfj.de/blog/2025/07/24/memory-safety.html), since assignment uses 128-bit atomics.
 
-### Ideal implementation
-
-Solar supports a concurrent moving GC with *partial frees*: In most languages, an allocation is a single block of memory with an address, and can be freed later. The GC expands this by reclaiming specific portions of an allocation when only parts of the allocation are reachable. For example, if I allocate a large array and only keep a reference to a single element, the rest of the array can be reclaimed.
-
-However, doing this requires LLVM (or another codegen backend) to emit Solar stackmaps, which is currently not implemented.
-
-### Current implementation
-
-Currently, Solar uses a multithreaded semi-conservative stop-the-world GC. During each cycle, each thread's stack and registers, and small allocations (below a threshold) are scanned conservatively, and large allocations are scanned precisely using the allocation's metadata.
+Solar uses a multithreaded semi-conservative concurrent GC. During each cycle, each thread's stack and registers, and small allocations (below a threshold) are scanned conservatively, and large allocations are scanned precisely using the allocation's metadata.
 
 On program startup, a 26TB arena is allocated and divided into buckets, one per power-of-2 allocation size up to 1GB, with each bucket holding 1TB in total.
 
 Conservative scanning becomes a fast O(1) lookup, since any word that looks like a potential memory address is scanned only if it belongs in the arena, and the allocation size can be found from the bucket index.
+
