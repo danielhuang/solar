@@ -15,7 +15,9 @@
 //! slot went unmarked — GC-driven resource cleanup. This mirrors the heap's
 //! alloc/mark-bitmap sweep (`heap::sweep_word_range`).
 
-use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::init_cell::InitCell;
 
 /// 4 GiB of address space: fd numbers `0..2^32` (covers every `i32` fd).
 pub const FD_ARENA_SIZE: usize = 1usize << 32;
@@ -24,9 +26,9 @@ const FD_BITMAP_TOTAL: usize = FD_ARENA_SIZE / 8;
 
 /// Base of the fake arena. `FileDesc` for fd `n` is `FD_BASE + n`. Set once by
 /// [`init`]; `!= 0` gates [`in_fd_arena`].
-static FD_BASE: AtomicUsize = AtomicUsize::new(0);
-static FD_ALLOC_BITS: AtomicUsize = AtomicUsize::new(0);
-static FD_MARK_BITS: AtomicUsize = AtomicUsize::new(0);
+static FD_BASE: InitCell<usize> = InitCell::new(0);
+static FD_ALLOC_BITS: InitCell<usize> = InitCell::new(0);
+static FD_MARK_BITS: InitCell<usize> = InitCell::new(0);
 /// Highest fd + 1 ever handed out; never decreases. Sweep only scans `[0, HWM)`.
 static FD_HWM: AtomicU64 = AtomicU64::new(0);
 
@@ -34,7 +36,7 @@ static FD_HWM: AtomicU64 = AtomicU64::new(0);
 /// closed. Reading it yields immediate EOF, so any I/O on a fd that has been
 /// [`sol_file_close`]d (via `dup2(DEAD_FD, fd)`) fails harmlessly. Set once by
 /// [`init`]; `+1` so the unset state (`0`) is distinguishable from fd 0.
-static DEAD_FD: AtomicI32 = AtomicI32::new(0);
+static DEAD_FD: InitCell<i32> = InitCell::new(0);
 
 unsafe fn mmap(size: usize, prot: i32, what: &str) -> usize {
     let p = unsafe {
@@ -58,7 +60,7 @@ unsafe fn mmap(size: usize, prot: i32, what: &str) -> usize {
 /// Reserve the fake arena and its two side bitmaps. Idempotent; call once from
 /// `sol_start` before any Solar code runs.
 pub fn init() {
-    if FD_BASE.load(Ordering::Relaxed) != 0 {
+    if FD_BASE.get() != 0 {
         return;
     }
     unsafe {
@@ -75,8 +77,10 @@ pub fn init() {
         // The arena is never accessed: PROT_NONE both saves pages and traps any
         // accidental dereference of an opaque `FileDesc`.
         let arena = mmap(FD_ARENA_SIZE, libc::PROT_NONE, "fd arena");
-        FD_ALLOC_BITS.store(alloc, Ordering::Relaxed);
-        FD_MARK_BITS.store(mark, Ordering::Relaxed);
+        // SAFETY (here and below): `init` runs once from `sol_start`, before
+        // any thread that reads these cells is spawned.
+        FD_ALLOC_BITS.set(alloc);
+        FD_MARK_BITS.set(mark);
 
         // The "dead" fd: read end of a pipe with the write end closed. Reads on
         // it return EOF; `sol_file_close` dup2's it over a fd to neuter the fd's
@@ -89,10 +93,9 @@ pub fn init() {
             std::io::Error::last_os_error()
         );
         libc::close(fds[1]); // drop the write end → reads on fds[0] hit EOF
-        DEAD_FD.store(fds[0], Ordering::Relaxed);
+        DEAD_FD.set(fds[0]);
 
-        // Published last; `in_fd_arena` gates on `FD_BASE != 0`.
-        FD_BASE.store(arena, Ordering::Relaxed);
+        FD_BASE.set(arena);
     }
 }
 
@@ -102,11 +105,11 @@ fn bit_mask(fd: usize) -> u64 {
 }
 #[inline]
 unsafe fn alloc_word(fd: usize) -> *const AtomicU64 {
-    unsafe { (FD_ALLOC_BITS.load(Ordering::Relaxed) as *const AtomicU64).add(fd >> 6) }
+    unsafe { (FD_ALLOC_BITS.get() as *const AtomicU64).add(fd >> 6) }
 }
 #[inline]
 unsafe fn mark_word(fd: usize) -> *const AtomicU64 {
-    unsafe { (FD_MARK_BITS.load(Ordering::Relaxed) as *const AtomicU64).add(fd >> 6) }
+    unsafe { (FD_MARK_BITS.get() as *const AtomicU64).add(fd >> 6) }
 }
 
 /// Open `path` with the given `open(2)` `flags` and creation `mode`, and return
@@ -168,7 +171,7 @@ pub unsafe extern "C" fn sol_file_open(
                 (*mark_word(fd)).fetch_or(bit_mask(fd), Ordering::Relaxed);
             }
 
-            (FD_BASE.load(Ordering::Relaxed) + fd) as *mut u8
+            (FD_BASE.get() + fd) as *mut u8
         })
     }
 }
@@ -182,7 +185,7 @@ pub unsafe extern "C" fn sol_file_open(
 /// so stdin/stdout are never auto-closed regardless of reachability.
 #[inline]
 unsafe fn std_stream(fd: libc::c_int) -> *mut u8 {
-    let base = FD_BASE.load(Ordering::Relaxed);
+    let base = FD_BASE.get();
     debug_assert!(base != 0, "std_stream called before fd arena init");
     (base + fd as usize) as *mut u8
 }
@@ -202,7 +205,7 @@ pub unsafe extern "C" fn sol_file_stdout() -> *mut u8 {
 /// Recover the raw fd number from a `FileDesc` pointer (`addr - FD_BASE`).
 #[inline]
 fn fd_from_ptr(fd_ptr: *mut u8) -> libc::c_int {
-    let base = FD_BASE.load(Ordering::Relaxed);
+    let base = FD_BASE.get();
     debug_assert!(
         base != 0 && (fd_ptr as usize).wrapping_sub(base) < FD_ARENA_SIZE,
         "FileDesc pointer is not in the fd arena"
@@ -266,13 +269,13 @@ pub unsafe extern "C" fn sol_file_write_partial(
 /// bitmaps, and `fd_sweep` (the only other toucher of this fd) runs under STW.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_file_close(fd_ptr: *mut u8) {
-    let base = FD_BASE.load(Ordering::Relaxed);
+    let base = FD_BASE.get();
     debug_assert!(
         base != 0 && (fd_ptr as usize).wrapping_sub(base) < FD_ARENA_SIZE,
         "sol_file_close: pointer is not a FileDesc"
     );
     let fd = (fd_ptr as usize).wrapping_sub(base) as libc::c_int;
-    let dead = DEAD_FD.load(Ordering::Relaxed);
+    let dead = DEAD_FD.get();
     // dup2 onto the same fd is a no-op, so a dead fd value of 0 (pre-init) would
     // be wrong only if init never ran — which can't happen for compiled code.
     unsafe { libc::dup2(dead, fd) };
@@ -281,7 +284,7 @@ pub unsafe extern "C" fn sol_file_close(fd_ptr: *mut u8) {
 /// Does `v` point into the fd arena (i.e. is it a `FileDesc`)?
 #[inline]
 pub fn in_fd_arena(v: usize) -> bool {
-    let base = FD_BASE.load(Ordering::Relaxed);
+    let base = FD_BASE.get();
     base != 0 && v.wrapping_sub(base) < FD_ARENA_SIZE
 }
 
@@ -289,7 +292,7 @@ pub fn in_fd_arena(v: usize) -> bool {
 /// `in_fd_arena(v)`.
 #[inline]
 pub unsafe fn fd_mark(v: usize) {
-    let fd = v.wrapping_sub(FD_BASE.load(Ordering::Relaxed));
+    let fd = v.wrapping_sub(FD_BASE.get());
     unsafe { (*mark_word(fd)).fetch_or(bit_mask(fd), Ordering::Relaxed) };
 }
 
@@ -297,7 +300,7 @@ pub unsafe fn fd_mark(v: usize) {
 /// shading in the write barriers. Caller must ensure `in_fd_arena(v)`.
 #[inline]
 pub unsafe fn is_marked(v: usize) -> bool {
-    let fd = v.wrapping_sub(FD_BASE.load(Ordering::Relaxed));
+    let fd = v.wrapping_sub(FD_BASE.get());
     unsafe { (*mark_word(fd)).load(Ordering::Relaxed) & bit_mask(fd) != 0 }
 }
 
@@ -310,8 +313,8 @@ pub unsafe fn fd_sweep() -> usize {
         return 0;
     }
     let words = (hwm + 63) >> 6;
-    let abase = FD_ALLOC_BITS.load(Ordering::Relaxed) as *const AtomicU64;
-    let mbase = FD_MARK_BITS.load(Ordering::Relaxed) as *const AtomicU64;
+    let abase = FD_ALLOC_BITS.get() as *const AtomicU64;
+    let mbase = FD_MARK_BITS.get() as *const AtomicU64;
     let mut closed = 0usize;
     for wi in 0..words {
         let aw = unsafe { &*abase.add(wi) };

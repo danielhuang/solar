@@ -12,6 +12,7 @@ pub mod file;
 pub mod futex;
 pub mod gc;
 pub mod heap;
+pub mod init_cell;
 pub mod mem;
 pub mod panic;
 pub mod process;
@@ -36,7 +37,8 @@ pub(crate) fn read_env_bool(name: &str) -> bool {
 /// (rather than overwriting it) so a call here always sticks.
 #[unsafe(no_mangle)]
 pub extern "C" fn sol_disable_gc() {
-    gc::DISABLE_GC.store(true, Ordering::Relaxed);
+    // SAFETY: called before `sol_start`, single-threaded.
+    unsafe { gc::DISABLE_GC.set(true) };
 }
 
 #[unsafe(no_mangle)]
@@ -44,11 +46,15 @@ pub unsafe extern "C" fn sol_start(solar_main: unsafe extern "C" fn(*mut c_void)
     let start = Instant::now();
     panic::install_panic_hook();
 
-    gc::ENABLE_STAT_PRINTS.store(read_env_bool("SOLAR_PRINT_GC_STATS"), Ordering::Relaxed);
-    gc::ENABLE_ALLOC_PRINTS.store(read_env_bool("SOLAR_PRINT_ALLOCS"), Ordering::Relaxed);
-    // OR-fold so a prior `sol_disable_gc()` call (debug builds) is preserved
-    // rather than overwritten by the env flag.
-    gc::DISABLE_GC.fetch_or(read_env_bool("SOLAR_DISABLE_GC"), Ordering::Relaxed);
+    // SAFETY: no threads exist yet; these `InitCell` writes all happen before
+    // the thread pool / GC thread / main mutator thread are spawned below.
+    unsafe {
+        gc::ENABLE_STAT_PRINTS.set(read_env_bool("SOLAR_PRINT_GC_STATS"));
+        gc::ENABLE_ALLOC_PRINTS.set(read_env_bool("SOLAR_PRINT_ALLOCS"));
+        // OR-fold so a prior `sol_disable_gc()` call (debug builds) is preserved
+        // rather than overwritten by the env flag.
+        gc::DISABLE_GC.set(gc::DISABLE_GC.get() | read_env_bool("SOLAR_DISABLE_GC"));
+    }
 
     gc::install_signal_handler();
     heap::init();
@@ -69,10 +75,10 @@ pub unsafe extern "C" fn sol_start(solar_main: unsafe extern "C" fn(*mut c_void)
     gc::shutdown_gc_thread(gc_handle);
 
     // Stats printing (after the main thread unregistered, outside STW).
-    let enable_stat_prints = gc::ENABLE_STAT_PRINTS.load(Ordering::Relaxed);
+    let enable_stat_prints = gc::ENABLE_STAT_PRINTS.get();
     if enable_stat_prints {
         let total_allocations = gc::ORPHANED_TOTAL_ALLOCATIONS.load(Ordering::Relaxed);
-        if gc::DISABLE_GC.load(Ordering::Relaxed) {
+        if gc::DISABLE_GC.get() {
             eprintln!("gc was disabled");
             eprintln!("total allocations: {total_allocations}");
         } else {

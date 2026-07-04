@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering}
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 
 use crate::heap::{self, MarkKind};
+use crate::init_cell::InitCell;
 use crate::mem::MarkFn;
 
 // ---------------------------------------------------------------------------
@@ -96,9 +97,11 @@ pub(crate) const ALLOC_FLUSH_CHUNK: usize = 1 << 20;
 /// Floor for the back-pressure cap, so small heaps never stall.
 const GC_STALL_FLOOR: usize = 512 << 20;
 
-pub(crate) static ENABLE_STAT_PRINTS: AtomicBool = AtomicBool::new(false);
-pub(crate) static ENABLE_ALLOC_PRINTS: AtomicBool = AtomicBool::new(false);
-pub(crate) static DISABLE_GC: AtomicBool = AtomicBool::new(false);
+// Diagnostic/config flags, set once during startup (`sol_start` /
+// `sol_disable_gc`) before any thread exists, read plainly thereafter.
+pub(crate) static ENABLE_STAT_PRINTS: InitCell<bool> = InitCell::new(false);
+pub(crate) static ENABLE_ALLOC_PRINTS: InitCell<bool> = InitCell::new(false);
+pub(crate) static DISABLE_GC: InitCell<bool> = InitCell::new(false);
 
 // ---------------------------------------------------------------------------
 // Tri-color gray frontier.
@@ -987,7 +990,7 @@ unsafe fn sweep_big(
 // ---------------------------------------------------------------------------
 
 unsafe fn run_gc_cycle() {
-    let enable_stat_prints = ENABLE_STAT_PRINTS.load(Ordering::Relaxed);
+    let enable_stat_prints = ENABLE_STAT_PRINTS.get();
     let gc_start = std::time::Instant::now();
     if enable_stat_prints {
         eprintln!("running gc (concurrent)");

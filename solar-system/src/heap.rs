@@ -16,7 +16,9 @@
 //! footprint is proportional to the live heap, not to the ~28 TiB / ~290 GiB
 //! of virtual address space reserved.
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::init_cell::InitCell;
 
 use crate::mem::MarkFn;
 
@@ -119,10 +121,10 @@ pub const META_TOTAL: usize = 1usize << META_TOP; // 256 GiB
 // Global state (set once by `init`, then effectively const).
 // ---------------------------------------------------------------------------
 
-static ARENA_BASE: AtomicUsize = AtomicUsize::new(0);
-static ALLOC_BITS: AtomicUsize = AtomicUsize::new(0);
-static MARK_BITS: AtomicUsize = AtomicUsize::new(0);
-static META_BASE: AtomicUsize = AtomicUsize::new(0);
+static ARENA_BASE: InitCell<usize> = InitCell::new(0);
+static ALLOC_BITS: InitCell<usize> = InitCell::new(0);
+static MARK_BITS: InitCell<usize> = InitCell::new(0);
+static META_BASE: InitCell<usize> = InitCell::new(0);
 #[allow(clippy::declare_interior_mutable_const)]
 const ZERO_U64: AtomicU64 = AtomicU64::new(0);
 /// Next slot index to hand out for each class. `claim_run` `fetch_add`s it.
@@ -162,7 +164,7 @@ unsafe fn advise_hugepage(base: usize, size: usize) {
 /// Reserve the arena, bitmaps and metadata table. Idempotent; call once from
 /// `sol_start` before any Solar code runs.
 pub fn init() {
-    if ARENA_BASE.load(Ordering::Relaxed) != 0 {
+    if ARENA_BASE.get() != 0 {
         return;
     }
     unsafe {
@@ -175,17 +177,18 @@ pub fn init() {
         let alloc_bits = mmap_reserve(BITMAP_TOTAL, "alloc bitmap");
         let mark_bits = mmap_reserve(BITMAP_TOTAL, "mark bitmap");
         let meta = mmap_reserve(META_TOTAL, "metadata table");
-        ALLOC_BITS.store(alloc_bits, Ordering::Relaxed);
-        MARK_BITS.store(mark_bits, Ordering::Relaxed);
-        META_BASE.store(meta, Ordering::Relaxed);
-        // Published last; `arena_base() != 0` gates everything else.
-        ARENA_BASE.store(arena, Ordering::Relaxed);
+        // SAFETY: `init` runs once from `sol_start`, before any thread that
+        // reads these cells is spawned.
+        ALLOC_BITS.set(alloc_bits);
+        MARK_BITS.set(mark_bits);
+        META_BASE.set(meta);
+        ARENA_BASE.set(arena);
     }
 }
 
 #[inline]
 pub fn arena_base() -> usize {
-    ARENA_BASE.load(Ordering::Relaxed)
+    ARENA_BASE.get()
 }
 
 // ---------------------------------------------------------------------------
@@ -237,11 +240,11 @@ fn bit_mask(slot: usize) -> u64 {
 }
 #[inline]
 fn alloc_class_base(class: usize) -> *mut AtomicU64 {
-    (ALLOC_BITS.load(Ordering::Relaxed) + bitmap_class_offset(class)) as *mut AtomicU64
+    (ALLOC_BITS.get() + bitmap_class_offset(class)) as *mut AtomicU64
 }
 #[inline]
 fn mark_class_base(class: usize) -> *mut AtomicU64 {
-    (MARK_BITS.load(Ordering::Relaxed) + bitmap_class_offset(class)) as *mut AtomicU64
+    (MARK_BITS.get() + bitmap_class_offset(class)) as *mut AtomicU64
 }
 
 #[inline]
@@ -304,7 +307,7 @@ pub unsafe fn is_marked_addr(p: usize) -> bool {
 
 #[inline]
 pub unsafe fn meta_entry(class: usize, slot: usize) -> *mut MetaEntry {
-    let base = META_BASE.load(Ordering::Relaxed) + meta_class_offset(class);
+    let base = META_BASE.get() + meta_class_offset(class);
     unsafe { (base as *mut MetaEntry).add(slot) }
 }
 

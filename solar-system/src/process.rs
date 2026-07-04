@@ -35,9 +35,9 @@
 //!    mutator thread, so `sol_alloc`'s registration assert holds.
 
 use std::ffi::{c_char, c_int};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::gc::sol_gc_mark;
+use crate::init_cell::InitCell;
 use crate::mem::{MarkFn, sol_alloc};
 
 unsafe extern "C" {
@@ -50,16 +50,19 @@ unsafe extern "C" {
 // command line (unlike `environ`), so an `.init_array` constructor records it.
 // If for some reason the constructor never runs, `ARGC` stays 0 and `args()`
 // returns empty rather than reading a null pointer.
-static ARGC: AtomicUsize = AtomicUsize::new(0);
-static ARGV: AtomicUsize = AtomicUsize::new(0);
+static ARGC: InitCell<usize> = InitCell::new(0);
+static ARGV: InitCell<usize> = InitCell::new(0);
 
 unsafe extern "C" fn capture_args(
     argc: c_int,
     argv: *const *const c_char,
     _envp: *const *const c_char,
 ) {
-    ARGC.store(argc.max(0) as usize, Ordering::Relaxed);
-    ARGV.store(argv as usize, Ordering::Relaxed);
+    // SAFETY: `.init_array` constructors run before `main`, single-threaded.
+    unsafe {
+        ARGC.set(argc.max(0) as usize);
+        ARGV.set(argv as usize);
+    }
 }
 
 #[used]
@@ -122,8 +125,8 @@ unsafe fn build(out: *mut u8, n: usize, entry: impl Fn(usize) -> (*const u8, usi
 /// each argument copied out of `argv` into GC memory.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_args(out: *mut u8) {
-    let argc = ARGC.load(Ordering::Relaxed);
-    let argv = ARGV.load(Ordering::Relaxed) as *const *const c_char;
+    let argc = ARGC.get();
+    let argv = ARGV.get() as *const *const c_char;
     unsafe {
         build(out, argc, |i| {
             let s = *argv.add(i);

@@ -38,7 +38,7 @@ pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -
     // back-pressure stall is gated together with the trigger it depends on:
     // with no cycle to ever reset `ALLOCATED_SINCE_GC`, a stall could never be
     // relieved and would hang.
-    if !DISABLE_GC.load(Ordering::Relaxed) {
+    if !DISABLE_GC.get() {
         let threshold = total_live + MIN_SIZE_UNTIL_GC;
         if (new_size + size) % threshold < size {
             request_gc();
@@ -54,7 +54,7 @@ pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -
         }
     }
 
-    if ENABLE_ALLOC_PRINTS.load(Ordering::Relaxed) {
+    if ENABLE_ALLOC_PRINTS.get() {
         eprintln!(
             "allocating new object: {size} bytes (align={align}), prev total {total_live} bytes"
         );
