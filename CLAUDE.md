@@ -47,7 +47,6 @@ These flags only apply to compiled binaries, and not the interpreter.
 - `SOLAR_PRINT_GC_STATS=1` - prints stats for each GC cycle
 - `SOLAR_PRINT_ALLOCS=1` - prints EVERY allocation; this may flood the output, so use sparingly!
 - `SOLAR_DISABLE_GC=1` - disables GC and switches to a bump allocator
-- GC bisection knobs (debug): `SOLAR_GC_NO_SWEEP=1` (mark-only cycles, nothing freed), `SOLAR_GC_STW_SWEEP=1` (arena sweep inside pause 2 instead of concurrent), `SOLAR_GC_SWEEP_MARKS_ONLY=1` (sweep clears mark words but never frees), `SOLAR_GC_NO_REUSE=1` (no frontier reset, freed slots never reused), `SOLAR_GC_SWEEP_DELAY_US=<n>` (stretch the concurrent-sweep window per chunk, to widen suspected sweep-vs-mutator races), `SOLAR_GC_SHADOW=1` (fully-atomic shadow allocation bitmap; aborts on a double slot handout)
 
 ## Changing syntax rules
 

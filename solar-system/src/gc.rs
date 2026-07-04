@@ -900,15 +900,6 @@ unsafe fn mark_worker(w: usize, big_snapshot: &Arc<Vec<BigSnap>>, active: &Atomi
 /// a *concurrent* sweep. Returns `(live_bytes, freed_slots, per_class_live_slots)`;
 /// the frontier-reset decision is deferred to the caller (it needs STW).
 unsafe fn parallel_sweep_arena(sweep_words: &[usize]) -> (usize, usize, Vec<u64>) {
-    // Debug (`SOLAR_GC_SWEEP_DELAY_US=<n>`): sleep before each sweep chunk to
-    // stretch the concurrent-sweep window and widen sweep-vs-mutator races.
-    static SWEEP_DELAY_US: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
-        std::env::var("SOLAR_GC_SWEEP_DELAY_US")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0)
-    });
-    let delay_us = *SWEEP_DELAY_US;
     let pool = &*crate::thread_pool::THREAD_POOL;
     let per_class: Arc<Vec<(AtomicU64, AtomicU64)>> = Arc::new(
         (0..heap::NUM_CLASSES)
@@ -924,9 +915,6 @@ unsafe fn parallel_sweep_arena(sweep_words: &[usize]) -> (usize, usize, Vec<u64>
             let per_class = per_class.clone();
             let (ws, we) = (w, end);
             pool.submit(move || {
-                if delay_us != 0 {
-                    std::thread::sleep(std::time::Duration::from_micros(delay_us));
-                }
                 let (live, freed) = unsafe { heap::sweep_word_range(c, ws, we) };
                 if live != 0 {
                     per_class[c].0.fetch_add(live, Ordering::Relaxed);
@@ -1063,7 +1051,6 @@ unsafe fn run_gc_cycle() {
     let fd_closed;
     let born_black;
     let sweep_words: Vec<usize>;
-    let mut stw_sweep_result: Option<(usize, usize, Vec<u64>)> = None;
     let p2_signal;
     let p2_remark;
     let p2_scan;
@@ -1112,14 +1099,7 @@ unsafe fn run_gc_cycle() {
         // Partition the arena for the concurrent sweep (see the block comment).
         // `hwm == frontier` here and the world is stopped, so the snapshot is
         // exact and the backward-safe `freeze` + claim abandonment is race-free.
-        // Debug (`SOLAR_GC_NO_SWEEP=1`): mark-only cycles, nothing ever freed.
-        static NO_SWEEP: std::sync::LazyLock<bool> =
-            std::sync::LazyLock::new(|| std::env::var_os("SOLAR_GC_NO_SWEEP").is_some());
-        sweep_words = if *NO_SWEEP {
-            vec![0; heap::NUM_CLASSES]
-        } else {
-            (0..heap::NUM_CLASSES).map(heap::hwm_words).collect()
-        };
+        sweep_words = (0..heap::NUM_CLASSES).map(heap::hwm_words).collect();
         for c in 0..heap::NUM_CLASSES {
             heap::freeze_frontier_to_hwm(c);
         }
@@ -1135,16 +1115,6 @@ unsafe fn run_gc_cycle() {
             .load(Ordering::Relaxed)
             .saturating_sub(ALLOC_AT_MARK_START.load(Ordering::Relaxed));
 
-        // Debug (`SOLAR_GC_STW_SWEEP=1`): run the arena sweep here, inside the
-        // pause, with the world still stopped — the concurrent phase below then
-        // sweeps nothing (but reuses this result for its accounting). Bisects
-        // sweep-content bugs from sweep-vs-mutator races.
-        static STW_SWEEP: std::sync::LazyLock<bool> =
-            std::sync::LazyLock::new(|| std::env::var_os("SOLAR_GC_STW_SWEEP").is_some());
-        if *STW_SWEEP {
-            stw_sweep_result = Some(unsafe { parallel_sweep_arena(&sweep_words) });
-        }
-
         unsafe { resume_world(epoch2) };
     }
     let pause2_elapsed = pause2_start.elapsed();
@@ -1153,10 +1123,7 @@ unsafe fn run_gc_cycle() {
     // Mutators allocate from [hwm, …) (disjoint bitmap words), so the sweeper has
     // exclusive access to the swept region's alloc/mark words — no new atomics.
     let sweep_start = std::time::Instant::now();
-    let (arena_live, arena_freed, live_slots) = match stw_sweep_result {
-        Some(r) => r, // debug STW-sweep mode: already swept inside pause 2
-        None => unsafe { parallel_sweep_arena(&sweep_words) },
-    };
+    let (arena_live, arena_freed, live_slots) = unsafe { parallel_sweep_arena(&sweep_words) };
     let sweep_elapsed = sweep_start.elapsed();
 
     let new_total_live_size = arena_live + big_live;
@@ -1182,14 +1149,9 @@ unsafe fn run_gc_cycle() {
         // swept holes are reused (otherwise the frontier keeps climbing). Compare
         // the swept span against the live count — the same < 50%-live heuristic
         // the STW sweep used, but on the snapshotted boundary.
-        // Debug (`SOLAR_GC_NO_REUSE=1`): never reset the frontier, isolating
-        // hole-reuse bugs (freed slots are then never handed out again).
-        static DISABLE_REUSE: std::sync::LazyLock<bool> =
-            std::sync::LazyLock::new(|| std::env::var_os("SOLAR_GC_NO_REUSE").is_some());
-        let disable_reuse = *DISABLE_REUSE;
         for c in 0..heap::NUM_CLASSES {
             let swept_slots = (sweep_words[c] as u64) * 64;
-            if !disable_reuse && swept_slots > 2 * live_slots[c] {
+            if swept_slots > 2 * live_slots[c] {
                 heap::reset_frontier(c);
             }
         }

@@ -103,7 +103,6 @@ unsafe fn arena_allocate(
 
     let rbase = heap::region_base(class);
     let addr = heap::slot_addr(rbase, slot, class);
-    unsafe { heap::shadow_handout(class, slot) }; // no-op unless SOLAR_GC_SHADOW=1
 
     // No zeroing here: codegen emits an explicit `memset(p, 0, size)` after every
     // `sol_alloc` call, which LLVM dead-store-eliminates wherever the caller fully
