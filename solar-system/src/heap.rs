@@ -125,15 +125,13 @@ static ARENA_BASE: InitCell<usize> = InitCell::new(0);
 static ALLOC_BITS: InitCell<usize> = InitCell::new(0);
 static MARK_BITS: InitCell<usize> = InitCell::new(0);
 static META_BASE: InitCell<usize> = InitCell::new(0);
-#[allow(clippy::declare_interior_mutable_const)]
-const ZERO_U64: AtomicU64 = AtomicU64::new(0);
 /// Next slot index to hand out for each class. `claim_run` `fetch_add`s it.
 /// Reset to 0 by `reset_frontier` after a sweep frees most of a class.
-static NEXT_SLOT: [AtomicU64; NUM_CLASSES] = [ZERO_U64; NUM_CLASSES];
+static NEXT_SLOT: [AtomicU64; NUM_CLASSES] = [const { AtomicU64::new(0) }; NUM_CLASSES];
 /// High-water mark (in slots) for each class — the furthest slot ever handed
 /// out. Never decreases. Sweep walks `[0, HWM)`; `lookup_arena` short-circuits
 /// past it.
-static HWM: [AtomicU64; NUM_CLASSES] = [ZERO_U64; NUM_CLASSES];
+static HWM: [AtomicU64; NUM_CLASSES] = [const { AtomicU64::new(0) }; NUM_CLASSES];
 
 unsafe fn mmap_reserve(size: usize, what: &str) -> usize {
     let p = unsafe {
