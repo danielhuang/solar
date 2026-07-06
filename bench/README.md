@@ -21,29 +21,32 @@ the same checksum** (`size=8000 checksum=17673159485837241130` at the default
 2000 iterations), which doubles as a cross-language correctness check.
 
 > **Measurement conditions.** All numbers below come from one **interleaved**
-> session on a 24-core / 93 GB machine (Intel Core Ultra 9 275HX), produced by
-> `bench/bench.py` (3 rounds; load average 4.6 → 11.8 across the session).
-> Interleaved means each round runs every language
-> once before the next round begins, so background-load drift is spread evenly
-> across contenders instead of penalizing whichever ran last; only one process
-> runs at a time. The STW
+> session on a near-idle 24-core / 93 GB machine (Intel Core Ultra 9 275HX),
+> produced by `bench/bench.py` (3 rounds; load average 1.7 at the start — the
+> 9.0 at the end is the session's own accumulation). Interleaved means each
+> round runs every language once before the next round begins, so
+> background-load drift is spread evenly across contenders instead of
+> penalizing whichever ran last; only one process runs at a time. The STW
 > collectors' threaded numbers are **load-sensitive** (Solar stops all mutators at
 > each phase; Go/G1/Parallel/.NET have STW phases too), so their `threads`
 > worst-case pauses are noisy — the latency table reports the **median over the 3
 > rounds** of each run's max/p50, and the p50 column is the more stable signal.
 > The latency table samples **each individual STW pause** (not summed per cycle),
 > so `max` is the worst single application stall and `p50` the median single
-> stall. An
-> earlier `threads` run under heavy load ~9–29 measured Solar at ~8 s with an
-> 86 ms worst pause. Prefer an idle box. Java uses `-Xmx8g`; Go and .NET use
+> stall. Load moves these numbers a lot: the previous session of this table
+> (load 4.6 → 11.8) measured Solar's `threads` at 2.22 s with a 14 ms worst
+> pause, and an earlier heavy-load run (~9–29) at ~8 s / 86 ms. Prefer an idle
+> box. Java uses `-Xmx8g`; Go and .NET use
 > their defaults (the .NET binaries select workstation vs server GC at run time
 > via `DOTNET_gcServer`); C is native. .NET is 10.0.301 (`net10.0`).
-> This session was measured after the three splay-exposed fixes (GC pacing,
-> write-barrier coverage, deterministic struct lowering). The barrier has since
-> been made **precise** again: codegen now emits pointer-typed C struct members
-> at each type's pointer offsets, so every GC-pointer store reaches LLVM as
-> `store ptr` and plain integer stores carry no barrier. GC-benchmark numbers
-> moved only within session noise; the HashMap table below was re-measured.
+> This session was measured after **removing the arena's `MADV_HUGEPAGE` hint**
+> (`solar-system/src/heap.rs`): under THP `defrag=defer+madvise` (a common
+> default) hinted regions page-fault through *synchronous* direct reclaim and
+> compaction, and on a fragmented host (42 GB swapped out) that tripled Solar's
+> `threads` wall (3.4 s, of which 15 s of CPU was kernel compaction — 99% of
+> the attempts failing). Solar now always runs on base 4 KiB pages. The
+> earlier sessions' Solar numbers were taken with the hint active on an
+> unfragmented host, where it was harmless-to-helpful.
 
 ## Directory layout
 
@@ -156,30 +159,30 @@ Wall-clock is the median of 3 runs; RSS is peak resident set.
 
 | runtime          | allocs3 wall | threads wall | splay wall | allocs3 RSS | threads RSS | splay RSS |
 |------------------|-------------:|-------------:|-----------:|------------:|------------:|----------:|
-| Solar            | 1.19 s       | **2.22 s**   | **0.48 s** | **786 MB**  | 2502 MB     | 213 MB    |
-| C (malloc/free)  | 2.32 s       | 4.20 s       | 1.09 s     | 3048 MB     | **99 MB**   | **48 MB** |
-| Go               | 2.56 s       | 12.39 s      | 0.63 s     | 823 MB      | 137 MB      | 94 MB     |
-| Java G1          | 3.47 s       | 2.40 s       | 0.74 s     | 1943 MB     | 3545 MB     | 1135 MB   |
-| Java Parallel    | 3.94 s       | 2.39 s       | 0.51 s     | 2340 MB     | 2776 MB     | 505 MB    |
-| Java ZGC gen     | 2.16 s       | 4.91 s       | 1.46 s     | 2350 MB     | 3943 MB     | 907 MB    |
-| Java ZGC non-gen | 2.19 s       | 5.24 s       | 1.33 s     | 3104 MB     | 8802 MB     | 1235 MB   |
-| Java Shenandoah  | **1.07 s**   | 2.77 s       | 0.80 s     | 1567 MB     | 7242 MB     | 932 MB    |
-| C# Workstation   | 6.37 s       | 71.02 s      | 6.93 s     | 2345 MB     | 7224 MB     | 340 MB    |
-| C# Server        | 4.14 s       | 30.40 s      | 2.27 s     | 2351 MB     | 388 MB      | 684 MB    |
+| Solar            | 0.99 s       | **1.66 s**   | **0.38 s** | **781 MB**  | 2117 MB     | 179 MB    |
+| C (malloc/free)  | 1.63 s       | 3.42 s       | 0.82 s     | 3052 MB     | 99 MB       | **48 MB** |
+| Go               | 2.28 s       | 10.67 s      | 0.50 s     | 822 MB      | **83 MB**   | 89 MB     |
+| Java G1          | 2.88 s       | 2.04 s       | 0.63 s     | 1943 MB     | 3547 MB     | 1095 MB   |
+| Java Parallel    | 3.16 s       | 1.78 s       | 0.44 s     | 2340 MB     | 2772 MB     | 505 MB    |
+| Java ZGC gen     | 1.46 s       | 3.80 s       | 1.09 s     | 2349 MB     | 4625 MB     | 924 MB    |
+| Java ZGC non-gen | 1.51 s       | 4.18 s       | 1.05 s     | 2980 MB     | 8753 MB     | 1172 MB   |
+| Java Shenandoah  | **0.77 s**   | 2.02 s       | 0.69 s     | 1567 MB     | 7250 MB     | 932 MB    |
+| C# Workstation   | 5.10 s       | 53.85 s      | 4.50 s     | 2342 MB     | 6937 MB     | 339 MB    |
+| C# Server        | 2.76 s       | 13.70 s      | 1.51 s     | 2352 MB     | 432 MB      | 712 MB    |
 
 (`allocs3` is a *retained* chain, so RSS reflects allocator overhead per live
 node: Solar's 8-byte cell and Go's 8-byte size class win; C pays glibc's 32-byte
-minimum chunk; the JVM and .NET object headers land them in the 1.5–3.2 GB band.
-`threads` is *discarded* garbage, so RSS reflects reclamation aggression: C
-frees inline to 99 MB and Go's pacing keeps it near-lean at 137 MB, with **.NET
-server GC third-leanest at 388 MB** — while the JVM collectors let garbage
-accumulate toward `-Xmx8g` (ZGC non-gen fills most of the cap) and .NET
-workstation GC, choking on 16-thread contention, bloats to 7 GB. Solar sits at
-2502 MB — the **concurrent sweep** allocates above the high-water mark during
-the sweep window and defers hole reuse to the next pause, so its peak footprint
-grows with sweep duration and machine load (an idler session measured 1285 MB).
+minimum chunk; the JVM and .NET object headers land them in the 1.5–3 GB band.
+`threads` is *discarded* garbage, so RSS reflects reclamation aggression: Go's
+pacing keeps it leanest at 83 MB, C frees inline to 99 MB, with **.NET server GC
+third-leanest at 432 MB** — while the JVM collectors let garbage accumulate
+toward `-Xmx8g` (ZGC non-gen fills most of the cap) and .NET workstation GC,
+choking on 16-thread contention, bloats to ~7 GB. Solar sits at 2117 MB — the
+**concurrent sweep** allocates above the high-water mark during the sweep window
+and defers hole reuse to the next pause, so its peak footprint grows with sweep
+duration and machine load (the previous, loaded session measured 2502 MB).
 `splay`'s live set is only ~35 MB, so RSS is pure collector headroom: C 48 MB,
-Go 94 MB, Solar 213 MB, the JVMs 0.5–1.2 GB.)
+Go 89 MB, Solar 179 MB, the JVMs 0.5–1.2 GB.)
 
 ## GC pause latency — worst / median single STW pause (ms, median of 3 runs)
 
@@ -189,40 +192,41 @@ application stall and `p50` the median single stall.
 
 | runtime          | allocs3 max | allocs3 p50 | threads max² | threads p50 | splay max | splay p50 |
 |------------------|------------:|------------:|-------------:|------------:|----------:|----------:|
-| Solar            | 0.13        | 0.02        | 14.22        | 0.30        | 0.47      | 0.03      |
+| Solar            | 0.03        | 0.01        | 4.61         | 0.23        | 0.20      | 0.02      |
 | C (malloc/free)  | none        | none        | none         | none        | none      | none      |
-| Go               | 0.27        | 0.03        | 16.00        | 0.04        | 0.36      | 0.03      |
-| Java G1          | 562.69      | 258.60      | 10.83        | 5.54        | 32.30     | 14.35     |
-| Java Parallel    | 1491.49     | 839.79      | 9.70         | 5.43        | 9.92      | 8.84      |
-| Java ZGC gen     | 0.03        | 0.03        | 0.09         | 0.04        | 0.04      | 0.03      |
-| Java ZGC non-gen | 0.02        | 0.02        | 0.07         | 0.03        | 0.03      | 0.02      |
-| Java Shenandoah  | none¹       | none¹       | 0.86         | 0.05        | none¹     | none¹     |
-| C# Workstation   | 71.09       | 28.27       | 77.88        | 23.50       | 152.24    | 58.79     |
-| C# Server        | 653.76      | 54.95       | 99.50        | 37.26       | 124.83    | 42.55     |
+| Go               | 0.06        | 0.01        | 6.90         | 0.03        | 0.67      | 0.02      |
+| Java G1          | 477.06      | 230.52      | 9.04         | 5.18        | 24.15     | 11.70     |
+| Java Parallel    | 1340.62     | 695.31      | 8.14         | 4.59        | 7.27      | 6.04      |
+| Java ZGC gen     | 0.02        | 0.02        | 0.10         | 0.03        | 0.03      | 0.02      |
+| Java ZGC non-gen | 0.01        | 0.01        | 0.06         | 0.03        | 0.02      | 0.02      |
+| Java Shenandoah  | none¹       | none¹       | 0.92         | 0.03        | none¹     | none¹     |
+| C# Workstation   | 60.35       | 19.32       | 60.02        | 17.70       | 141.39    | 32.60     |
+| C# Server        | 374.37      | 30.03       | 67.11        | 16.18       | 73.75     | 22.09     |
 
 ¹ Shenandoah completed `allocs3` and `splay` **without any STW-bearing
 safepoint** — with `-Xmx8g` neither live set forced a mark pause before the VM
 exited.
 ² The `threads` worst-case pauses for the STW collectors (Solar, Go, G1,
 Parallel, both .NET flavors) are noisy under load, so a single scheduling spike
-during a mutator-stop handshake produces these ~10–16 ms maxes (Solar 14.2, Go
-16.0, G1 10.8). The medians over rounds are shown; the **p50 row is far more
-stable** — and on a per-pause basis Solar's p50 single stall is **0.30 ms** (its
+during a mutator-stop handshake produces these ~5–9 ms maxes (Solar 4.6, Go
+6.9, G1 9.0; the previous, loaded session measured 10–16 ms). The medians over
+rounds are shown; the **p50 row is far more
+stable** — and on a per-pause basis Solar's p50 single stall is **0.23 ms** (its
 three phases are each small in the median; the big one, the pause-2 remark, is
 only one of three). ZGC and Shenandoah stay sub-millisecond throughout. **.NET's
 pauses are neither**: every ephemeral (gen0/gen1) collection is blocking, and at
 this allocation rate there are thousands of them, so even at p50 the stalls are
-tens of milliseconds (C# server's 654 ms `allocs3` max is one blocking
+tens of milliseconds (C# server's 374 ms `allocs3` max is one blocking
 compacting gen2). On `splay` — the one benchmark whose *pointer-mutation* rate,
-not just allocation rate, is high — Solar's worst single stall is **0.47 ms**,
-in the same class as Go (0.36) and ZGC (0.03–0.04), while the blocking
-collectors stall 10–32 ms (Parallel/G1) and .NET 125–152 ms.
+not just allocation rate, is high — Solar's worst single stall is **0.20 ms**,
+the best worst-case in the field this session (Go 0.67, ZGC 0.02–0.03), while
+the blocking collectors stall 7–24 ms (Parallel/G1) and .NET 74–141 ms.
 
 ## Fraction of wall-clock spent in STW GC
 
 | runtime          | allocs3 | threads |
 |------------------|--------:|--------:|
-| Solar            | ~0.7%   | ~7%     |
+| Solar            | ~0.05%  | ~5%     |
 | C (malloc/free)  | 0%      | 0%      |
 | Go               | ~0%     | ~0%     |
 | Java G1          | ~83%    | ~4%     |
@@ -232,9 +236,12 @@ collectors stall 10–32 ms (Parallel/G1) and .NET 125–152 ms.
 | C# Workstation   | ~52%    | ~87%    |
 | C# Server        | ~55%    | ~86%    |
 
-(Derived for `allocs3`/`threads`; on `splay` the same split holds — the
-concurrent collectors' summed stalls are well under 1% of its ~0.5–0.8 s wall,
-while Parallel/G1's 9–32 ms blocking collections and .NET's 40–150 ms stalls are
+(Derived for `allocs3`/`threads` — Solar's directly from `SOLAR_PRINT_GC_STATS`
+pause sums (0.6 ms STW over a 1.2 s allocs3 run; 87 ms over a 1.7 s threads
+run); on `splay` the same split holds — the
+concurrent collectors' summed stalls are well under 1% of its ~0.4–0.7 s wall
+(Solar: 2.2 ms of STW across a 0.40 s run, ~0.5%),
+while Parallel/G1's 7–24 ms blocking collections and .NET's 22–141 ms stalls are
 a visible fraction of a sub-second run. For Solar, ZGC, Shenandoah, and Go the
 marking work is concurrent / off the critical path, so STW fraction is small. **Go's GC cost does not show up here**:
 it is paid as concurrent *mark-assist* throttling of allocating goroutines — 3%
@@ -249,89 +256,98 @@ thousands of short blocking pauses rather than a few long ones.)
 ## Takeaways
 
 1. **Monotonic growth (allocs3) splits the field cleanly.** The non-moving /
-   concurrent collectors win and the copying / compacting collectors lose. Solar
-   and Shenandoah **tie for fastest (1.07–1.19 s)** — both avoid evacuating a live
-   set that only grows — followed by ZGC (~2.2 s), C (2.32 s), and Go (2.56 s).
-   The compactors trail: C# server (4.14 s), G1 (3.47 s) and Parallel (3.94 s)
+   concurrent collectors win and the copying / compacting collectors lose.
+   Shenandoah is **fastest (0.77 s) with Solar second (0.99 s)** — both avoid
+   evacuating a live
+   set that only grows — followed by ZGC (~1.5 s), C (1.63 s), and Go (2.28 s).
+   The compactors trail: C# server (2.76 s), G1 (2.88 s) and Parallel (3.16 s)
    spend ~52–85% of wall-clock **stopped** moving the growing chain (Parallel's
-   worst single pause is **1.49 s**, C# server's **0.65 s** for one blocking gen2
-   compaction), and **C# workstation is the slowest at 6.37 s** — its single GC
+   worst single pause is **1.34 s**, C# server's **0.37 s** for one blocking gen2
+   compaction), and **C# workstation is the slowest at 5.10 s** — its single GC
    heap can't keep up even single-threaded. Solar's worst single pause stays
-   ≤ 0.13 ms and its median pause is **0.02 ms**. Notably **C `malloc` (2.32 s)
-   is ~2× slower than Solar** here, and glibc's 32-byte minimum chunk inflates
-   the chain to ~3 GB vs Solar's 786 MB and Go's 823 MB.
+   ≤ 0.03 ms and its median pause is **0.01 ms**. Notably **C `malloc` (1.63 s)
+   is ~1.6× slower than Solar** here, and glibc's 32-byte minimum chunk inflates
+   the chain to ~3 GB vs Solar's 781 MB and Go's 822 MB.
 
 2. **High concurrent garbage (threads): Solar wins on throughput; Go and .NET
-   collapse.** Solar (2.22 s) leads, ahead of Parallel (2.39 s), G1 (2.40 s), and
-   Shenandoah (2.77 s), then C (4.20 s) and ZGC (~5 s), **~5.6× faster than Go
-   (12.39 s)** and **~32× faster than C# workstation (71.02 s)**. Two runtimes
+   collapse.** Solar (1.66 s) leads, ahead of Parallel (1.78 s), Shenandoah
+   (2.02 s), and G1 (2.04 s), then C (3.42 s) and ZGC (3.8–4.2 s), **~6.4×
+   faster than Go
+   (10.67 s)** and **~32× faster than C# workstation (53.85 s)**. Two runtimes
    collapse for different reasons. Go's concurrent GC cannot keep pace with 16
    goroutines churning 1.6 billion short-lived nodes: mutators are conscripted
    into mark-assist and throttled, so throughput craters even though its pauses
    stay tiny. **.NET workstation GC is far worse** — its *single* GC heap
    serializes 16 allocating threads, so it spends ~87% of wall stopped in
-   back-to-back ephemeral collections. **Server GC fixes most of that** (30.4 s,
-   a per-core heap each) and reclaims so promptly it posts the third-leanest
-   footprint of the whole field (**388 MB**, vs the JVMs' multi-GB), but it is
+   back-to-back ephemeral collections. **Server GC fixes most of that** (13.7 s,
+   a per-core heap each) and reclaims promptly enough to post the third-leanest
+   footprint of the field (**432 MB**, behind only Go's 83 MB and C's 99 MB),
+   but it is
    still slower than Go. The catch for Solar is contention: it stops all 16
-   mutators at each STW phase, so under heavy load its pauses and `stall_for_gc`
-   back-pressure inflate fast (an earlier heavy-load session measured ~8 s /
-   86 ms worst pause) — visible here as its threaded numbers rising with the
-   session's load.
+   mutators at each STW phase, so under load its pauses and `stall_for_gc`
+   back-pressure inflate (the previous, loaded session measured 2.22 s with a
+   14 ms worst pause; an earlier heavy-load session ~8 s / 86 ms).
 
 3. **Pointer churn (splay): Solar is the only runtime that wins both throughput
-   AND latency.** Solar is **fastest outright at 0.48 s** — ahead of Parallel
-   (0.51 s), Go (0.63 s), G1 (0.74 s), Shenandoah (0.80 s), and **2.3× faster
-   than C (1.09 s)**, which must walk and `free` every removed node's 63-object
+   AND latency.** Solar is **fastest outright at 0.38 s** — ahead of Parallel
+   (0.44 s), Go (0.50 s), G1 (0.63 s), Shenandoah (0.69 s), and **2.2× faster
+   than C (0.82 s)**, which must walk and `free` every removed node's 63-object
    payload graph inline on the mutator. The interesting part is *how* each
-   winner wins: Parallel matches Solar's wall-clock but stalls the application
-   **8.8 ms at the median pause** (blocking young-gen collections), while
-   Solar's worst single stall is **0.47 ms** (p50 0.03 ms) — ZGC-class latency
-   at the best throughput in the field. ZGC itself pays for its concurrency on
-   this small hot heap (1.3–1.5 s, ~3× Solar), and C# workstation is
-   pathological again (6.93 s with 152 ms stalls). Splay is also the benchmark
+   winner wins: Parallel nearly matches Solar's wall-clock but stalls the
+   application
+   **6.0 ms at the median pause** (blocking young-gen collections), while
+   Solar's worst single stall is **0.20 ms** (p50 0.02 ms) — the best worst-case
+   in the field this session, below even Go (0.67 ms) and in ZGC's class
+   (0.02–0.03 ms), at the best throughput in the field. ZGC itself pays for its
+   concurrency on
+   this small hot heap (1.05–1.09 s, ~2.8× Solar), and C# workstation is
+   pathological again (4.50 s with 141 ms stalls). Splay is also the benchmark
    that validates the write barrier under fire: every splay operation rewires
    `left`/`right` pointers of long-lived nodes during concurrent marking, and
    all five ports print the same checksum.
 
 4. **Latency: ZGC and Shenandoah rule; Solar and Go are close; .NET is not.**
-   Per individual pause Solar's stalls are small (allocs3 max 0.13 ms / p50
-   0.02 ms, splay max 0.47 ms / p50 0.03 ms, threads max 14 ms / p50 0.30 ms) —
-   on the single-threaded benchmarks it now *matches* Go pause-for-pause, and
-   only its 16-thread stop handshake leaves a >10 ms tail (Go's own threads max
-   was 16 ms this session). ZGC/Shenandoah stay sub-0.1 ms everywhere. **.NET
+   Per individual pause Solar's stalls are small (allocs3 max 0.03 ms / p50
+   0.01 ms, splay max 0.20 ms / p50 0.02 ms, threads max 4.6 ms / p50 0.23 ms) —
+   on this idle session it matches or beats Go pause-for-pause on every
+   benchmark (Go's threads max was 6.9 ms, splay max 0.67 ms), and only its
+   16-thread stop handshake leaves a multi-millisecond tail.
+   ZGC/Shenandoah stay sub-0.1 ms everywhere. **.NET
    sits at the other end with G1/Parallel**: its always-blocking ephemeral GCs
-   give p50 stalls of ~23–59 ms on every benchmark, and a blocking gen2
-   compaction spikes C# server's `allocs3` max to 654 ms. Solar trades a
+   give p50 stalls of ~16–33 ms on every benchmark, and a blocking gen2
+   compaction spikes C# server's `allocs3` max to 374 ms. Solar trades a
    loaded-box threads tail for the best throughput; .NET pays both a worse tail
    *and* lower throughput here.
 
 5. **Go is the latency/throughput inverse of the STW collectors.** It keeps
    pauses tiny by doing all reclamation concurrently — but on a high allocation
    rate that concurrency is *paid by the mutators* via mark-assist, so it posts
-   a near-lean `threads` footprint (137 MB) and near-best latency yet a **very
-   poor `threads` throughput** (12.39 s — though .NET holds the throughput
+   the leanest `threads` footprint of the field (83 MB) and near-best latency
+   yet a **very
+   poor `threads` throughput** (10.67 s — though .NET holds the throughput
    floor). On the single-threaded benchmarks, where one thread can't outrun the
-   GC, Go is competitive (2.56 s allocs3, 0.63 s splay) with sub-0.1 ms median
+   GC, Go is competitive (2.28 s allocs3, 0.50 s splay) with sub-0.1 ms median
    pauses.
 
 6. **C is fastest only when there is nothing to reclaim — and on these
-   workloads there always is.** On allocs3 (never frees) C is still ~2× slower
-   than Solar on `malloc` call overhead alone. On threads (4.20 s) and splay
-   (1.09 s) C must `free` inline on the mutator — the reclamation
+   workloads there always is.** On allocs3 (never frees) C is still ~1.6× slower
+   than Solar on `malloc` call overhead alone. On threads (3.42 s) and splay
+   (0.82 s) C must `free` inline on the mutator — the reclamation
    Solar/Java/Go/.NET do concurrently or in bulk, serialized into the hot path.
    C's "GC pause" is `none` yet its wall-clock is mid-pack; its unambiguous win
    is footprint (99 MB threads / 48 MB splay).
 
 **Net:** across these three workloads, on this box, Solar's non-moving
-concurrent mark-sweep is **the throughput leader on two of three benchmarks and
-ties Shenandoah on the third** — beating C, Go, and both .NET GCs everywhere,
+concurrent mark-sweep is **the outright throughput leader on two of three
+benchmarks and second only to Shenandoah on the third** (0.77 vs 0.99 s on
+allocs3) — beating C, Go, and both .NET GCs everywhere,
 leading outright on the allocate-and-discard threads test and the
-pointer-churning splay test, with allocs3 split between it and Shenandoah
-(1.07 vs 1.19 s). On single-threaded workloads its pause profile now sits in
-the ZGC/Go class (sub-0.5 ms worst, ~0.03 ms median); the remaining gap is the
+pointer-churning splay test. On this idle session its pause profile sits in
+the ZGC/Go class on every benchmark (sub-0.25 ms worst on the single-threaded
+ones, ~0.01–0.02 ms median); the remaining gap is the
 16-thread stop handshake, whose worst-case stall rises with machine load
-(~14 ms here). The comparison cleanly separates the strategies: copying /
+(4.6 ms here; 14 ms in the previous, loaded session). The comparison cleanly
+separates the strategies: copying /
 compacting collectors (G1, Parallel, and .NET's compacting gen2) choke on the
 growing live set; a fully-concurrent collector tuned for latency (Go) chokes on
 the allocation *rate*; a generational collector whose ephemeral GCs are
@@ -383,7 +399,7 @@ ROUNDS=3 python3 bench/c/alloc_matrix.py         # interleaved matrix, the table
 | tcmalloc (min)   | 0.71 s       | 775 MB      | 90.62 s²     | **53 MB**   |
 | mimalloc         | **0.56 s**   | 766 MB      | **0.85 s**   | 54 MB       |
 | bump (no-op free)| 0.57 s       | **764 MB**  | 2.83 s       | 15030 MB¹   |
-| *Solar (ref)*    | *1.19 s*     | *786 MB*    | *2.22 s*     | *2502 MB*   |
+| *Solar (ref)*    | *0.99 s*     | *781 MB*    | *1.66 s*     | *2117 MB*   |
 
 *Solar (ref)* is from the throughput table further up — a **different session**,
 shown only for scale, not measured interleaved with these. ¹ bump never frees,
@@ -397,14 +413,15 @@ all three rounds at 53 MB RSS — CPU/lock-bound, not swapping (see takeaway 4).
    `malloc`, never frees) jemalloc/tcmalloc/mimalloc are **~3–4× faster than
    glibc** (0.56–0.73 s vs 2.35 s) and pack the 8-byte node at 8 bytes (~766 MB)
    instead of glibc's 32-byte minimum chunk (3 GB). So the earlier "C malloc is
-   ~2× slower than Solar" result is a **glibc** result: against mimalloc the same
-   benchmark is ~2× *faster* than Solar (0.56 s vs 1.19 s).
+   ~1.6× slower than Solar" result is a **glibc** result: against mimalloc the
+   same
+   benchmark is ~1.8× *faster* than Solar (0.56 s vs 0.99 s).
 
 2. **mimalloc beats Solar on both benchmarks' throughput.** mimalloc is fastest
    everywhere (0.56 s / 0.85 s); jemalloc is close (0.73 s / 1.20 s). Both beat
-   Solar's 1.19 s / 2.22 s. Solar's GC throughput lead held against glibc and Go,
+   Solar's 0.99 s / 1.66 s. Solar's GC throughput lead held against glibc and Go,
    but a state-of-the-art thread-caching allocator that reuses freed memory is
-   faster here — and on `threads` it does so at **~55 MB vs Solar's 2502 MB**,
+   faster here — and on `threads` it does so at **~55 MB vs Solar's 2117 MB**,
    because it reclaims immediately rather than at the next GC cycle.
 
 3. **The bump floor: fastest only when nothing is freed.** With a no-op `free`,
@@ -430,7 +447,7 @@ benchmarks goes to mimalloc, with jemalloc second; Solar sits between the modern
 allocators and glibc. Solar's distinct advantage is elsewhere — automatic
 reclamation with no manual `free` and no use-after-free (the C `threads` port has
 to carefully free only its own per-thread lists to avoid racing), competitive
-throughput, and on the retained `allocs3` chain an RSS (786 MB) on par with the
+throughput, and on the retained `allocs3` chain an RSS (781 MB) on par with the
 best 8-byte-packing allocators.
 
 ---
