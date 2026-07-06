@@ -3,8 +3,7 @@ use std::sync::atomic::Ordering;
 
 use crate::gc::{
     ALLOC_FLUSH_CHUNK, ALLOCATED_SINCE_GC, BigAllocLocal, DISABLE_GC, ENABLE_ALLOC_PRINTS, MY_SLOT,
-    SOL_CONCURRENT_MARKING, ThreadAllocState, alloc_hard_cap, request_gc, stall_for_gc,
-    with_signal_deferred,
+    SOL_CONCURRENT_MARKING, ThreadAllocState, request_gc, with_signal_deferred,
 };
 use crate::heap;
 
@@ -28,8 +27,10 @@ pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -
     let new_size = unsafe { (*alloc_ptr).new_size_since_last_gc };
     // Pace against the *traced* live set (float-excluded), not the raw live total.
     // Using the float-inflated total here is a runaway feedback loop that lets a
-    // high-churn heap balloon between collections — see `traced_live_size`.
-    let total_live = crate::gc::traced_live_size();
+    // high-churn heap balloon between collections. Read from this thread's own
+    // copy (published into every thread by the GC at pause 3) — see the
+    // `ThreadAllocState::traced_live_size` doc.
+    let total_live = unsafe { (*alloc_ptr).traced_live_size };
 
     // GC coordination. `SOLAR_DISABLE_GC` gates only this block, so the
     // allocation path below stays byte-for-byte identical to a collected build
@@ -42,15 +43,6 @@ pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -
         let threshold = total_live + MIN_SIZE_UNTIL_GC;
         if (new_size + size) % threshold < size {
             request_gc();
-        }
-
-        // Back-pressure: if mutators have collectively outrun the collector, stall
-        // here (a GC safepoint, before the critical section) until a cycle reclaims
-        // space. Without this a fast allocator born-blacks unbounded floating
-        // garbage and exhausts memory. The check reads an approximate global
-        // counter, so it is cheap and only trips when the heap is genuinely large.
-        if ALLOCATED_SINCE_GC.load(Ordering::Relaxed) > alloc_hard_cap() {
-            unsafe { stall_for_gc() };
         }
     }
 

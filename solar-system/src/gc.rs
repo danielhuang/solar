@@ -42,6 +42,16 @@ pub struct ThreadAllocState {
     /// allocation.
     pub unflushed_alloc: usize,
     pub total_allocations: usize,
+    /// This thread's copy of the estimated *traced* live bytes from the last
+    /// cycle (live excluding that cycle's born-black float). The allocation
+    /// trigger paces against this, not the raw live total: pacing off the
+    /// float-inflated total is a runaway feedback loop (float inflates live →
+    /// inflates the trigger threshold → collections fire more rarely → even
+    /// more float accumulates), which on a high-churn workload lets the heap
+    /// balloon until a single cycle must mark a huge graph. Stored into each
+    /// registered thread by the GC thread at STW pause 3; threads registered
+    /// after that read 0 until the next cycle.
+    pub traced_live_size: usize,
 }
 
 impl Default for ThreadAllocState {
@@ -58,6 +68,7 @@ impl ThreadAllocState {
             new_size_since_last_gc: 0,
             unflushed_alloc: 0,
             total_allocations: 0,
+            traced_live_size: 0,
         }
     }
     /// Drop all claim cursors so the next allocation re-claims against the
@@ -87,15 +98,8 @@ pub(crate) static ALLOCATED_SINCE_GC: AtomicUsize = AtomicUsize::new(0);
 /// `ALLOCATED_SINCE_GC` snapshot taken when marking turned on, so the cycle can
 /// estimate how much was allocated (born black) during the mark window.
 static ALLOC_AT_MARK_START: AtomicUsize = AtomicUsize::new(0);
-/// Estimated *traced* live bytes from the last cycle — the live set excluding
-/// the float born black during marking. The back-pressure cap scales off this
-/// (not the raw live total, which includes float) so the cap can't feed back
-/// into ever-larger float. Reset/updated each cycle.
-static TRACED_LIVE_SIZE: AtomicUsize = AtomicUsize::new(0);
 /// Per-thread allocation that accrues before flushing into `ALLOCATED_SINCE_GC`.
 pub(crate) const ALLOC_FLUSH_CHUNK: usize = 1 << 20;
-/// Floor for the back-pressure cap, so small heaps never stall.
-const GC_STALL_FLOOR: usize = 512 << 20;
 
 // Diagnostic/config flags, set once during startup (`sol_start` /
 // `sol_disable_gc`) before any thread exists, read plainly thereafter.
@@ -538,56 +542,6 @@ pub(crate) fn request_gc() {
                 &GC_REQUEST as *const AtomicU64,
                 libc::FUTEX_WAKE,
                 1i32 as i64,
-            );
-        }
-    }
-}
-
-/// Allocation allowed (across all threads) between cycles before allocators
-/// stall. Scales with the *traced* live set (objects that survived by being
-/// reachable, NOT this cycle's born-black float) so it tracks real working-set
-/// growth without the float→cap→float feedback that using the raw live total
-/// would create. Floor keeps small heaps from stalling.
-#[inline]
-pub(crate) fn alloc_hard_cap() -> usize {
-    GC_STALL_FLOOR.max(TRACED_LIVE_SIZE.load(Ordering::Relaxed))
-}
-
-/// Estimated *traced* live bytes from the last cycle (live excluding this cycle's
-/// born-black float). The allocation trigger paces against this, not the raw live
-/// total: pacing off the float-inflated total is a runaway feedback loop (float
-/// inflates live → inflates the trigger threshold → collections fire more rarely
-/// → even more float accumulates), which on a high-churn workload lets the heap
-/// balloon until a single cycle must mark a huge graph. Same reasoning as
-/// `alloc_hard_cap` above.
-#[inline]
-pub(crate) fn traced_live_size() -> usize {
-    TRACED_LIVE_SIZE.load(Ordering::Relaxed)
-}
-
-/// Block until a GC cycle reclaims space, throttling the mutator to the
-/// collector's pace when it would otherwise outrun it. Runs as a GC *safepoint*
-/// (caller must NOT be `in_critical_section`): if the STW signal arrives mid-stall, the
-/// handler parks this thread and the cycle proceeds, so this never deadlocks
-/// the collector. The end of a cycle resets `ALLOCATED_SINCE_GC` and bumps
-/// `GC_EPOCH`, waking us to re-check.
-pub(crate) unsafe fn stall_for_gc() {
-    request_gc();
-    loop {
-        // Read the epoch BEFORE the counter: a cycle end resets the counter and
-        // then bumps the epoch, so capturing the epoch first means any reset we
-        // miss is guaranteed to make the wait below return immediately.
-        let e = GC_EPOCH.load(Ordering::Acquire);
-        if ALLOCATED_SINCE_GC.load(Ordering::Relaxed) <= alloc_hard_cap() {
-            return;
-        }
-        unsafe {
-            libc::syscall(
-                libc::SYS_futex,
-                &GC_EPOCH as *const AtomicU64,
-                libc::FUTEX_WAIT,
-                e as u32,
-                std::ptr::null::<libc::timespec>(),
             );
         }
     }
@@ -1113,7 +1067,7 @@ unsafe fn run_gc_cycle() {
 
         // Bytes born black during the mark window (mark-start → now). Captured
         // here, while marking's end is well-defined, for the traced-live estimate
-        // published in pause 3. (See the `TRACED_LIVE_SIZE` comment there.)
+        // published in pause 3. (See the `traced_live_size` field's doc.)
         born_black = ALLOCATED_SINCE_GC
             .load(Ordering::Relaxed)
             .saturating_sub(ALLOC_AT_MARK_START.load(Ordering::Relaxed));
@@ -1158,26 +1112,26 @@ unsafe fn run_gc_cycle() {
                 heap::reset_frontier(c);
             }
         }
+        // Estimate traced live = total marked − bytes born black during the mark
+        // window. This excludes float from the trigger's pacing basis, breaking
+        // the runaway feedback where float inflates "live", which would inflate
+        // the trigger threshold, which permits more float. Saturating: born-black
+        // can exceed marked when most float died.
+        let traced_live_size = new_total_live_size.saturating_sub(born_black);
+
         // Abandon each thread's run so it re-claims from the (possibly reset)
-        // frontier, and clear per-thread alloc accounting for the new cycle.
+        // frontier, clear per-thread alloc accounting for the new cycle, and
+        // publish the traced-live estimate into each thread (threads registered
+        // later start at 0 until the next cycle).
         for slot in registry.values() {
             let st = unsafe { &mut *slot.alloc.get() };
             st.new_size_since_last_gc = 0;
             st.unflushed_alloc = 0;
+            st.traced_live_size = traced_live_size;
             st.reset_claims();
         }
 
         TOTAL_LIVE_SIZE_AFTER_LAST_GC.store(new_total_live_size, Ordering::Release);
-
-        // Estimate traced live = total marked − bytes born black during the mark
-        // window. This excludes float from the back-pressure cap basis, breaking
-        // the runaway feedback where float inflates "live", which would inflate
-        // the cap, which permits more float. Saturating: born-black can exceed
-        // marked when most float died.
-        TRACED_LIVE_SIZE.store(
-            new_total_live_size.saturating_sub(born_black),
-            Ordering::Release,
-        );
 
         // Reset back-pressure accounting last: stalled allocators re-check this
         // after `resume_world` bumps the epoch. Held high until now (not pause 2)
