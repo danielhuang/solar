@@ -86,7 +86,7 @@ static CLAIMED_SINCE_GC: AtomicUsize = AtomicUsize::new(0);
 
 /// Floor on the trigger threshold so a tiny heap (traced live ≈ 0 at startup)
 /// doesn't request a cycle on every claim.
-const MIN_SIZE_UNTIL_GC: usize = 1 << 28; // 256 MiB
+const MIN_SIZE_UNTIL_GC: usize = 1 << 30;
 
 /// GC trigger. Records `bytes` of freshly claimed memory — an arena run from
 /// `heap::claim_run` or one big allocation — and requests a cycle once the
