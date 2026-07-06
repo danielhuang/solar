@@ -1707,6 +1707,35 @@ impl<'a> Codegen<'a> {
             self.linef(format!("sol_copy_128_unordered({dst}, {src});"));
             return;
         }
+        // Unsized-struct contents: copy the sized field prefix field-by-field
+        // (each field via `emit_copy`, so pointer runs / deep copies apply),
+        // then recurse on the unsized tail with the remaining bytes.
+        // `emit_plain_copy` can't handle this — it needs a static `type_size`.
+        if contents
+            && let Type::Struct(name) = ty
+            && !self.module.datatypes[name.as_str()].is_sized
+        {
+            let fields: Vec<_> = self.module.datatypes[name.as_str()]
+                .fields
+                .iter()
+                .map(|f| (f.offset, f.ty.clone(), f.size))
+                .collect();
+            let (prefix, tail) = fields.split_at(fields.len() - 1);
+            for (offset, field_ty, field_size) in prefix {
+                let fdst = format!("(({dst}) + {offset})");
+                let fsrc = format!("(({src}) + {offset})");
+                self.emit_copy(&fdst, &fsrc, field_ty, &field_size.to_string());
+            }
+            let (tail_off, tail_ty, _) = &tail[0];
+            let tdst = format!("(({dst}) + {tail_off})");
+            let tsrc = format!("(({src}) + {tail_off})");
+            // Includes the struct's trailing alignment padding, like the
+            // whole-value memcpy this replaces; both allocations are
+            // `full_size` so the extra bytes are in bounds.
+            let tail_size = format!("(({size_expr}) - {tail_off})");
+            self.emit_copy_ctx(&tdst, &tsrc, tail_ty, &tail_size, true);
+            return;
+        }
         if !self.type_contains_unique(ty) && !self.type_contains_enum(ty) {
             if contents && let Type::Array(inner) = ty {
                 // Unsized array contents: copy per element so pointer-carrying
