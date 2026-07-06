@@ -1,7 +1,7 @@
 use std::arch::asm;
 use std::cell::{Cell, UnsafeCell};
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 
 use crate::heap::{self, MarkKind};
@@ -146,6 +146,30 @@ const GRAY_SHARDS: usize = 16;
 static GRAY: [Mutex<Vec<usize>>; GRAY_SHARDS] = [const { Mutex::new(Vec::new()) }; GRAY_SHARDS];
 static GRAY_LEN: AtomicUsize = AtomicUsize::new(0);
 
+/// Futex word idle mark workers park on (instead of a yield spin). Bumped, with
+/// a FUTEX_WAKE, whenever new gray work is published (`gray_push` — covering
+/// barrier flushes, worker overflow, and root seeding) and when a worker
+/// observes global quiescence, so sleepers re-check and either grab work or
+/// exit `mark_worker`.
+static MARK_WAKE: AtomicU32 = AtomicU32::new(0);
+/// Number of mark workers currently parked on `MARK_WAKE`; lets producers skip
+/// the wake syscall when nobody is sleeping (the common case: all workers busy
+/// draining). SeqCst everywhere: either the producer's `MARK_WAITERS` load sees
+/// the waiter's registration (and wakes it), or the registration came later in
+/// the SC order — after the producer's `MARK_WAKE` bump — so the waiter's
+/// FUTEX_WAIT sees the bumped word and refuses to sleep. Anything weaker allows
+/// the classic missed-wake: producer reads waiters=0 while the waiter reads the
+/// pre-bump word, and the worker sleeps through its wake.
+static MARK_WAITERS: AtomicU32 = AtomicU32::new(0);
+
+/// Wake every parked mark worker (new gray work, or quiescence reached).
+fn mark_wake_all() {
+    MARK_WAKE.fetch_add(1, Ordering::SeqCst);
+    if MARK_WAITERS.load(Ordering::SeqCst) != 0 {
+        unsafe { crate::futex::sol_futex_wake(MARK_WAKE.as_ptr(), u32::MAX) };
+    }
+}
+
 /// Per-thread gray buffer capacity. Pre-reserved at thread registration and
 /// flushed to a shard on reaching it, so the barrier never reallocates.
 pub(crate) const GRAY_BUF_CAP: usize = 512;
@@ -161,9 +185,13 @@ fn gray_push(bucket: usize, items: &[usize]) {
     if items.is_empty() {
         return;
     }
-    let mut g = GRAY[bucket % GRAY_SHARDS].lock().unwrap();
-    g.extend_from_slice(items);
-    GRAY_LEN.fetch_add(items.len(), Ordering::Relaxed);
+    {
+        let mut g = GRAY[bucket % GRAY_SHARDS].lock().unwrap();
+        g.extend_from_slice(items);
+        GRAY_LEN.fetch_add(items.len(), Ordering::Relaxed);
+    }
+    // Off the shard lock: wake any mark worker parked waiting for work.
+    mark_wake_all();
 }
 
 /// Seed the queue with root values, spread across shards for balanced draining.
@@ -854,17 +882,29 @@ unsafe fn mark_worker(w: usize, big_snapshot: &Arc<Vec<BigSnap>>, active: &Atomi
             unsafe { drain(&mut ctx, arena_base) };
             continue;
         }
-        // No work right now: go idle and wait for work or global quiescence.
+        // No work right now: go idle and park on `MARK_WAKE` until a producer
+        // publishes work or the whole crew reaches global quiescence.
         active.fetch_sub(1, Ordering::AcqRel);
         loop {
+            // Read the futex word BEFORE the checks: any wake published after
+            // this load changes the word, so the FUTEX_WAIT below returns
+            // immediately instead of sleeping through it — the re-checks on the
+            // next iteration then see what the wake announced.
+            let epoch = MARK_WAKE.load(Ordering::SeqCst);
             if gray_nonempty() {
                 active.fetch_add(1, Ordering::AcqRel);
                 break;
             }
             if active.load(Ordering::Acquire) == 0 {
+                // Global quiescence. The observer must wake the parked workers
+                // so they too observe `active == 0` and exit — nothing else
+                // will: quiescence means no producer is left to wake them.
+                mark_wake_all();
                 return;
             }
-            std::thread::yield_now();
+            MARK_WAITERS.fetch_add(1, Ordering::SeqCst);
+            unsafe { crate::futex::sol_futex_wait(MARK_WAKE.as_ptr(), epoch) };
+            MARK_WAITERS.fetch_sub(1, Ordering::SeqCst);
         }
     }
 }
