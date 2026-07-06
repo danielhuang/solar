@@ -3,7 +3,7 @@ CC      = clang
 CFLAGS  ?= -std=c11 -O3 -march=native
 LDFLAGS ?= -pthread
 
-all: allocs3 threads_list2 splay
+all: allocs3 threads_list2 splay allocs5
 
 allocs3: allocs3.c
 	$(CC) $(CFLAGS) -o $@ $<
@@ -14,5 +14,8 @@ threads_list2: threads_list2.c
 splay: splay.c
 	$(CC) $(CFLAGS) -o $@ $<
 
+allocs5: allocs5.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $<
+
 clean:
-	rm -f allocs3 threads_list2 splay
+	rm -f allocs3 threads_list2 splay allocs5

@@ -4,8 +4,10 @@ __pycache__/
 java/*.class
 c/allocs3
 c/threads_list2
+c/allocs5
 go/allocs3
 go/threads_list2
+go/allocs5
 c/libbump.so
 csharp/*/bin/
 csharp/*/obj/

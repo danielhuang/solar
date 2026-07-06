@@ -1,0 +1,43 @@
+struct Chain {
+    next: &?Chain,
+}
+
+struct Node {
+    value: Int,
+    next: &?Node,
+}
+
+fn main() {
+    // Phase 1 (allocs3): build a 100M-cell chain that stays live for the
+    // whole run (~800 MB of 8-byte cells).
+    let chain = Chain { next: null#[Chain] };
+    for _ in 0..100000000 {
+        let prev = chain;
+        chain = Chain { next: prev& };
+    }
+
+    // Phase 2 (threads_list2): 16 threads churn short-lived 100k-node lists
+    // while the chain above stays live, so every GC cycle has to trace the
+    // large retained set concurrently with a high allocation rate.
+    let sentinel = (Node { value: 0, next: null#[Node] })&;
+    let root = sentinel;
+    let is_done = false;
+    for _ in 0..16 {
+        thread::spawn(\ {
+            for iter in 0..1000 {
+                let head = sentinel;
+                for j in 0..100000 {
+                    head = (Node { value: j, next: head })&;
+                }
+                root&.atomic_store(head);
+            }
+            is_done&.atomic_store(true);
+        });
+    }
+    while is_done&.atomic_load() == false {}
+    println(root@.value);
+    if chain.next != null#[Chain] {
+        println("chain-live"&);
+    }
+    println("done"&);
+}

@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """Allocation / GC benchmark harness for Solar vs C vs Go vs the JVM collectors.
 
-Runs two benchmarks (allocs3, threads_list2), each ported to every runtime, and
-reports throughput (median wall-clock + peak RSS) and GC-pause latency (max/p50
-STW stall). Contenders are **interleaved**: every round runs each language once
-before the next round begins, so background-load drift over the session is
-spread evenly across languages rather than penalizing whichever ran last.
+Runs four benchmarks (allocs3, threads_list2, splay, allocs5), each ported to
+every runtime, and reports throughput (median wall-clock + peak RSS) and
+GC-pause latency (max/p50 STW stall). Contenders are **interleaved**: every
+round runs each language once before the next round begins, so background-load
+drift over the session is spread evenly across languages rather than
+penalizing whichever ran last.
 
 Prereqs (see README.md "How to reproduce"):
-  Solar  target/{allocs3,threads_list2}        (cargo ... --bin compile)
-  C      bench/c/{allocs3,threads_list2}        (make -C bench/c)
-  Go     bench/go/{allocs3,threads_list2}       (go build)
-  Java   bench/java/*.class                     (javac)
+  Solar  target/{allocs3,threads_list2,splay,allocs5}   (cargo ... --bin compile)
+  C      bench/c/{allocs3,threads_list2,splay,allocs5}  (make -C bench/c)
+  Go     bench/go/{allocs3,threads_list2,splay,allocs5} (go build)
+  Java   bench/java/*.class                             (javac)
+  C#     bench/csharp/*/bin/Release/net10.0/*           (dotnet build -c Release)
 
 Usage:
   bench/bench.py                 # both throughput and latency, 3 rounds
@@ -46,7 +48,8 @@ def csharp_bin(stem: str) -> str:
     return str(ROOT / "bench/csharp" / stem / "bin/Release/net10.0" / stem)
 
 # Each benchmark: (solar/c/go binary stem, Java class).
-BENCHMARKS = [("allocs3", "Allocs3"), ("threads_list2", "ThreadsList2"), ("splay", "Splay")]
+BENCHMARKS = [("allocs3", "Allocs3"), ("threads_list2", "ThreadsList2"), ("splay", "Splay"),
+              ("allocs5", "Allocs5")]
 
 
 # --------------------------------------------------------------------------- #
