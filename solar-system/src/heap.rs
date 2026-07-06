@@ -310,6 +310,10 @@ pub fn claim_run(class: usize) -> (u64, u64) {
     let s = NEXT_SLOT[class].fetch_add(n, Ordering::Relaxed);
     let e = s + n;
     HWM[class].fetch_max(e, Ordering::Relaxed);
+    // The GC trigger lives here rather than in `sol_alloc`: a claim is the
+    // rare, amortized event (one per `CLAIM_BYTES` run), so pacing on claimed
+    // bytes keeps the per-allocation path free of trigger bookkeeping.
+    crate::gc::note_claimed((n as usize) << slot_size_log(class));
     (s, e)
 }
 #[inline]

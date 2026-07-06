@@ -2,12 +2,10 @@ use std::alloc::Layout;
 use std::sync::atomic::Ordering;
 
 use crate::gc::{
-    ALLOC_FLUSH_CHUNK, ALLOCATED_SINCE_GC, BigAllocLocal, DISABLE_GC, ENABLE_ALLOC_PRINTS, MY_SLOT,
-    SOL_CONCURRENT_MARKING, ThreadAllocState, request_gc, with_signal_deferred,
+    ALLOC_FLUSH_CHUNK, ALLOCATED_SINCE_GC, BigAllocLocal, ENABLE_ALLOC_PRINTS, MY_SLOT,
+    SOL_CONCURRENT_MARKING, ThreadAllocState, note_claimed, with_signal_deferred,
 };
 use crate::heap;
-
-const MIN_SIZE_UNTIL_GC: usize = 1 << 20;
 
 pub type MarkFn = unsafe extern "C" fn(*mut u8, *mut u8, u64);
 
@@ -21,35 +19,14 @@ pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -
     );
     let slot = unsafe { &*slot_ptr };
 
-    // GC trigger check — read per-thread counters via raw pointer so that no
-    // &mut to alloc state exists across run_gc() (run_gc mutates it).
+    // Per-thread alloc state via raw pointer so that no &mut to it exists
+    // across a GC suspension (the GC thread mutates it at STW pauses). The GC
+    // trigger itself is not checked here: it lives in `heap::claim_run` /
+    // `big_allocate` (via `gc::note_claimed`), off the per-allocation path.
     let alloc_ptr = slot.alloc.get();
-    let new_size = unsafe { (*alloc_ptr).new_size_since_last_gc };
-    // Pace against the *traced* live set (float-excluded), not the raw live total.
-    // Using the float-inflated total here is a runaway feedback loop that lets a
-    // high-churn heap balloon between collections. Read from this thread's own
-    // copy (published into every thread by the GC at pause 3) — see the
-    // `ThreadAllocState::traced_live_size` doc.
-    let total_live = unsafe { (*alloc_ptr).traced_live_size };
-
-    // GC coordination. `SOLAR_DISABLE_GC` gates only this block, so the
-    // allocation path below stays byte-for-byte identical to a collected build
-    // (same arena, bitmaps, born-black logic and accounting) and the disabled
-    // mode measures the real allocator rather than a separate bump arena. The
-    // back-pressure stall is gated together with the trigger it depends on:
-    // with no cycle to ever reset `ALLOCATED_SINCE_GC`, a stall could never be
-    // relieved and would hang.
-    if !DISABLE_GC.get() {
-        let threshold = total_live + MIN_SIZE_UNTIL_GC;
-        if (new_size + size) % threshold < size {
-            request_gc();
-        }
-    }
 
     if ENABLE_ALLOC_PRINTS.get() {
-        eprintln!(
-            "allocating new object: {size} bytes (align={align}), prev total {total_live} bytes"
-        );
+        eprintln!("allocating new object: {size} bytes (align={align})");
     }
 
     // Update per-thread structures inside a GC critical section so the signal
@@ -127,7 +104,6 @@ unsafe fn arena_allocate(
 /// global atomic off the per-allocation hot path.
 #[inline]
 fn account_alloc(state: &mut ThreadAllocState, bytes: usize) {
-    state.new_size_since_last_gc += bytes;
     state.total_allocations += 1;
     state.unflushed_alloc += bytes;
     if state.unflushed_alloc >= ALLOC_FLUSH_CHUNK {
@@ -145,6 +121,10 @@ unsafe fn big_allocate(
     align: usize,
     mark_fn: MarkFn,
 ) -> *mut u8 {
+    // Big allocations never go through `claim_run`, so feed the claim-based GC
+    // trigger directly — otherwise a big-object-only workload would never
+    // request a cycle.
+    note_claimed(size);
     let layout = Layout::from_size_align(size.max(1), align.max(1)).unwrap();
     let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
     assert!(!ptr.is_null(), "big allocation of {size} bytes failed");
