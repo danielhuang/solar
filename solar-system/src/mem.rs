@@ -56,14 +56,35 @@ unsafe fn arena_allocate(
     mark_fn: MarkFn,
 ) -> *mut u8 {
     // Find a free slot in the current claim; claim a fresh run when exhausted.
+    // The scan works a bitmap word at a time: load the word covering `cur`
+    // once and test all its slots from that value, instead of reloading the
+    // same word for every slot. Claims are bitmap-word-aligned (see
+    // `claim_slots`), so `cur`'s word never extends past `end`.
     let slot = 'find: loop {
         let cs = &mut state.classes[class];
         while cs.cur < cs.end {
-            let s = cs.cur as usize;
-            cs.cur += 1;
-            if !unsafe { heap::is_allocated(class, s) } {
-                break 'find s;
+            let cur = cs.cur;
+            let w = unsafe { heap::alloc_word_load(class, (cur >> 6) as usize) };
+            // Fast path: `cur` itself is free. The slot index is `cur` — a
+            // value that does NOT depend on the loaded word — so the address
+            // math and the caller's stores don't wait on the load; it only
+            // feeds this (predictable) branch. Computing the slot from the
+            // word (tzcnt) here instead would chain every downstream access
+            // onto the load and cost ~10% on an allocation-bound workload.
+            if w & (1 << (cur & 63)) == 0 {
+                cs.cur = cur + 1;
+                break 'find cur as usize;
             }
+            // `cur` is allocated (recycled run): skip the whole allocated
+            // stretch using the word already in hand.
+            let free = !w & (u64::MAX << (cur & 63));
+            if free != 0 {
+                let s = (cur & !63) + free.trailing_zeros() as u64;
+                cs.cur = s + 1;
+                break 'find s as usize;
+            }
+            // Word exhausted: skip to the next word boundary.
+            cs.cur = (cur | 63) + 1;
         }
         let (s, e) = heap::claim_run(class);
         cs.cur = s;

@@ -238,6 +238,13 @@ pub unsafe fn is_allocated(class: usize, slot: usize) -> bool {
     let w = unsafe { &*alloc_class_base(class).add(slot >> 6) };
     w.load(Ordering::Relaxed) & bit_mask(slot) != 0
 }
+/// Load a whole alloc-bitmap word. The allocator's find-slot scan loads the
+/// word covering its cursor once and tests all 64 slots from it, instead of
+/// reloading the word per slot via `is_allocated`.
+#[inline]
+pub unsafe fn alloc_word_load(class: usize, word: usize) -> u64 {
+    unsafe { &*alloc_class_base(class).add(word) }.load(Ordering::Relaxed)
+}
 #[inline]
 pub unsafe fn set_allocated(class: usize, slot: usize) {
     // Non-atomic read-modify-write: the only thread that writes this word until
