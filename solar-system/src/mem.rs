@@ -2,8 +2,8 @@ use std::alloc::Layout;
 use std::sync::atomic::Ordering;
 
 use crate::gc::{
-    ALLOC_FLUSH_CHUNK, ALLOCATED_SINCE_GC, BigAllocLocal, ENABLE_ALLOC_PRINTS, MY_SLOT,
-    SOL_CONCURRENT_MARKING, ThreadAllocState, note_claimed, with_signal_deferred,
+    BigAllocLocal, ENABLE_ALLOC_PRINTS, MY_SLOT, SOL_CONCURRENT_MARKING, ThreadAllocState,
+    note_claimed, with_signal_deferred,
 };
 use crate::heap;
 
@@ -40,7 +40,7 @@ pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -
     };
 
     unsafe {
-        account_alloc(&mut *alloc_ptr, size);
+        account_alloc(&mut *alloc_ptr);
     }
 
     addr
@@ -103,13 +103,8 @@ unsafe fn arena_allocate(
 /// the global back-pressure counter (`ALLOCATED_SINCE_GC`). Batching keeps the
 /// global atomic off the per-allocation hot path.
 #[inline]
-fn account_alloc(state: &mut ThreadAllocState, bytes: usize) {
+fn account_alloc(state: &mut ThreadAllocState) {
     state.total_allocations += 1;
-    state.unflushed_alloc += bytes;
-    if state.unflushed_alloc >= ALLOC_FLUSH_CHUNK {
-        ALLOCATED_SINCE_GC.fetch_add(state.unflushed_alloc, Ordering::Relaxed);
-        state.unflushed_alloc = 0;
-    }
 }
 
 /// Allocate a >1 GiB object via the system allocator and record it in the

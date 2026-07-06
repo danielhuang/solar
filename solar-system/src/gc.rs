@@ -39,7 +39,6 @@ pub struct ThreadAllocState {
     /// Batches the global counter update off the hot path (flush every
     /// `ALLOC_FLUSH_CHUNK`) so back-pressure accounting costs ~nothing per
     /// allocation.
-    pub unflushed_alloc: usize,
     pub total_allocations: usize,
 }
 
@@ -54,7 +53,6 @@ impl ThreadAllocState {
         Self {
             classes: std::array::from_fn(|_| ThreadClassState { cur: 0, end: 0 }),
             big_allocs: Vec::new(),
-            unflushed_alloc: 0,
             total_allocations: 0,
         }
     }
@@ -72,22 +70,6 @@ impl ThreadAllocState {
 // Global atomics.
 // ---------------------------------------------------------------------------
 
-/// Total live size (in slot bytes + big-alloc bytes), recomputed by the GC at
-/// the end of each cycle. Read by allocating threads for the trigger heuristic.
-pub(crate) static TOTAL_LIVE_SIZE_AFTER_LAST_GC: AtomicUsize = AtomicUsize::new(0);
-
-/// Bytes allocated (across all threads) since the last completed GC cycle,
-/// updated in batches from per-thread `unflushed_alloc`. Drives allocation
-/// back-pressure: when it exceeds `alloc_hard_cap()` a thread stalls until a
-/// cycle reclaims space, bounding floating garbage so a fast allocator can't
-/// outrun the collector and exhaust memory. Reset to 0 at the end of a cycle.
-pub(crate) static ALLOCATED_SINCE_GC: AtomicUsize = AtomicUsize::new(0);
-/// `ALLOCATED_SINCE_GC` snapshot taken when marking turned on, so the cycle can
-/// estimate how much was allocated (born black) during the mark window.
-static ALLOC_AT_MARK_START: AtomicUsize = AtomicUsize::new(0);
-/// Per-thread allocation that accrues before flushing into `ALLOCATED_SINCE_GC`.
-pub(crate) const ALLOC_FLUSH_CHUNK: usize = 1 << 20;
-
 /// Estimated *traced* live bytes found by the last cycle (live excluding that
 /// cycle's born-black float), published by the GC thread at STW pause 3. The
 /// claim-based trigger (`note_claimed`) paces against this, not the raw live
@@ -95,7 +77,7 @@ pub(crate) const ALLOC_FLUSH_CHUNK: usize = 1 << 20;
 /// (float inflates live → inflates the trigger threshold → collections fire
 /// more rarely → even more float accumulates), which on a high-churn workload
 /// lets the heap balloon until a single cycle must mark a huge graph.
-pub(crate) static TRACED_LIVE_SIZE: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static LIVE_SIZE_FROM_LAST_GC: AtomicUsize = AtomicUsize::new(0);
 /// Bytes claimed (arena runs + big allocations, across all threads) since the
 /// last completed cycle. Bumped by `note_claimed`, reset with the rest of the
 /// accounting at pause 3. A plain global atomic is fine here: it's touched
@@ -113,7 +95,7 @@ const MIN_SIZE_UNTIL_GC: usize = 1 << 28; // 256 MiB
 /// identical in disabled runs.
 pub(crate) fn note_claimed(bytes: usize) {
     let claimed = CLAIMED_SINCE_GC.fetch_add(bytes, Ordering::Relaxed) + bytes;
-    let threshold = TRACED_LIVE_SIZE.load(Ordering::Relaxed) + MIN_SIZE_UNTIL_GC;
+    let threshold = LIVE_SIZE_FROM_LAST_GC.load(Ordering::Relaxed) + MIN_SIZE_UNTIL_GC;
     if claimed > threshold && !DISABLE_GC.get() {
         request_gc();
     }
@@ -1032,13 +1014,6 @@ unsafe fn run_gc_cycle() {
         }
         gray_seed(&roots);
 
-        // Turn the barrier on before resuming so no later store is missed.
-        // Snapshot the allocation counter so pause 2 can estimate how much was
-        // born black during the mark window.
-        ALLOC_AT_MARK_START.store(
-            ALLOCATED_SINCE_GC.load(Ordering::Relaxed),
-            Ordering::Relaxed,
-        );
         MARKING_HAS_BIG.store(big_len != 0, Ordering::Release);
         SOL_CONCURRENT_MARKING.store(true, Ordering::Release);
 
@@ -1064,7 +1039,6 @@ unsafe fn run_gc_cycle() {
     let big_live;
     let big_freed;
     let fd_closed;
-    let born_black;
     let sweep_words: Vec<usize>;
     let p2_signal;
     let p2_remark;
@@ -1123,13 +1097,6 @@ unsafe fn run_gc_cycle() {
             st.reset_claims();
         }
 
-        // Bytes born black during the mark window (mark-start → now). Captured
-        // here, while marking's end is well-defined, for the traced-live estimate
-        // published in pause 3. (See the `TRACED_LIVE_SIZE` doc.)
-        born_black = ALLOCATED_SINCE_GC
-            .load(Ordering::Relaxed)
-            .saturating_sub(ALLOC_AT_MARK_START.load(Ordering::Relaxed));
-
         unsafe { resume_world(epoch2) };
     }
     let pause2_elapsed = pause2_start.elapsed();
@@ -1174,26 +1141,20 @@ unsafe fn run_gc_cycle() {
         // frontier and clear per-thread alloc accounting for the new cycle.
         for slot in registry.values() {
             let st = unsafe { &mut *slot.alloc.get() };
-            st.unflushed_alloc = 0;
             st.reset_claims();
         }
 
-        TOTAL_LIVE_SIZE_AFTER_LAST_GC.store(new_total_live_size, Ordering::Release);
         // Estimate traced live = total marked − bytes born black during the mark
         // window. This excludes float from the trigger's pacing basis, breaking
         // the runaway feedback where float inflates "live", which would inflate
         // the trigger threshold, which permits more float. Saturating: born-black
         // can exceed marked when most float died.
-        TRACED_LIVE_SIZE.store(
-            new_total_live_size.saturating_sub(born_black),
-            Ordering::Release,
-        );
+        LIVE_SIZE_FROM_LAST_GC.store(new_total_live_size, Ordering::Release);
 
         // Reset the trigger accounting last. Held high until now (not pause 2)
         // so an allocation storm during the concurrent sweep keeps the next
         // cycle requested rather than looking freshly paid-for before the sweep
         // has actually reclaimed space.
-        ALLOCATED_SINCE_GC.store(0, Ordering::Release);
         CLAIMED_SINCE_GC.store(0, Ordering::Release);
 
         unsafe { resume_world(epoch3) };
