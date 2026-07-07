@@ -82,13 +82,14 @@ runs produce the identical checksum.
 
 ```
 bench/
-  java/      Allocs3.java, ThreadsList2.java, Splay.java, Allocs5.java   (javac before running)
-  csharp/    allocs3/, threads_list2/, splay/, allocs5/, GcPause.cs   (dotnet build -c Release)
-  c/         allocs3.c, threads_list2.c, splay.c, allocs5.c, Makefile   (make before running)
-  go/        allocs3.go, threads_list2.go, splay.go, allocs5.go, go.mod   (go build before running)
+  java/      Allocs3.java, ThreadsList2.java, Splay.java, Allocs5.java, Sieve.java   (javac before running)
+  csharp/    allocs3/, threads_list2/, splay/, allocs5/, sieve/, GcPause.cs   (dotnet build -c Release)
+  c/         allocs3.c, threads_list2.c, splay.c, allocs5.c, sieve.c, Makefile   (make before running)
+  go/        allocs3.go, threads_list2.go, splay.go, allocs5.go, sieve.go, go.mod   (go build before running)
   bench.py   interleaved harness — throughput (median wall + peak RSS) and
              GC-pause latency (Solar per-pause pause1/2/3; Java safepoint; Go gctrace;
              C# in-process GCSuspend→GCRestart EventListener)
+  sieve_matrix.py  interleaved harness for the non-allocation sieve section
   README.md  this file
 ```
 
@@ -629,6 +630,77 @@ automatic reclamation with no manual `free` and no use-after-free (the C
 to carefully free only their own per-thread lists to avoid racing), and on the
 retained `allocs3` chain an RSS (778 MB) on par with the
 best 8-byte-packing allocators.
+
+---
+
+# sieve — a non-allocation compute benchmark
+
+Everything above stresses the allocator and collector. `sieve` is the control:
+a port of [`examples/sieve.solar`](../examples/sieve.solar) — a Sieve of
+Eratosthenes over 10⁸ — to the same four languages (`bench/c/sieve.c`,
+`bench/go/sieve.go`, `bench/java/Sieve.java`, `bench/csharp/sieve/`). It
+allocates **one 100 MB byte array up front and nothing after**: two nested
+scan/mark loops perform ~3.4×10⁸ array stores, so after setup the allocator
+and collector are idle in every runtime (Solar runs zero GC cycles — the
+array is below the trigger floor and nothing ever dies). What's left is raw
+generated-code quality: array indexing, bounds checks (Solar, Go, Java, and
+C# check every store; C doesn't), loop optimization, and for the JVM/.NET the
+JIT warmup, all sitting on top of a memory-bandwidth-bound access pattern.
+
+All five ports run the identical single-pass algorithm (count `n` while
+marking multiples from `2n` upward — no `n²` start, matching the Solar
+source) and must print the same prime count, **5761455**, which the harness
+asserts on every run.
+
+## How to reproduce
+
+```bash
+cargo run --release --bin compile -- examples/sieve.solar target/sieve
+make -C bench/c
+(cd bench/go && go build -o sieve sieve.go)
+javac bench/java/Sieve.java
+dotnet build bench/csharp/sieve -c Release
+
+ROUNDS=5 python3 bench/sieve_matrix.py    # interleaved, prints the table below
+```
+
+Each runtime appears once with its default GC — there is nothing for a
+collector to do, so the collector-flavor matrix would measure noise.
+
+## Results (median of 5 interleaved rounds, lower is better)
+
+Measured July 7, 2026, same session/conditions as the allocator table (the
+unrelated host job was still running; every contender drifted ~1.1 → 1.6 s
+uniformly across the five rounds as it ramped, which the interleaving spreads
+evenly — the medians land on the middle round).
+
+| runtime | wall | peak RSS |
+|---------|-----:|---------:|
+| Solar   | **1.33 s** | 98 MB |
+| C       | 1.35 s | 96 MB |
+| Go      | 1.34 s | 97 MB |
+| Java    | 1.42 s | 139 MB |
+| C#      | 1.46 s | 131 MB |
+
+## Takeaways
+
+1. **It's a five-way tie, and that is the result.** Solar, C, and Go are
+   within 2% of each other; Java and C# trail by only ~7–10% (JVM/.NET
+   startup + JIT warmup on a ~1.3 s run accounts for most of that). On a
+   memory-bandwidth-bound loop, language and runtime stop mattering: the
+   marking stores miss cache no matter who compiled them.
+
+2. **Solar's bounds checks cost nothing here.** Every Solar array store is
+   bounds-checked, yet it matches unchecked C to the noise floor — the checks
+   either get hoisted/elided by LLVM (the loop bounds prove the index
+   in-range) or hide entirely behind the cache misses. The "bounds + null
+   checks" tax the HashMap study measures on a cache-resident probe loop does
+   not generalize to streaming workloads.
+
+3. **RSS is the array plus the runtime.** Solar/C/Go sit at the raw 96–98 MB
+   of the sieve array; Java and .NET add ~35–40 MB of VM. Solar's GC float —
+   its footprint tax on the churn benchmarks — is absent because nothing is
+   ever collected: with no garbage, Solar's footprint is C's.
 
 ---
 

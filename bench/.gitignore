@@ -5,9 +5,11 @@ java/*.class
 c/allocs3
 c/threads_list2
 c/allocs5
+c/sieve
 go/allocs3
 go/threads_list2
 go/allocs5
+go/sieve
 c/libbump.so
 csharp/*/bin/
 csharp/*/obj/
