@@ -18,7 +18,9 @@ ALLOCATORS = [
     ("mimalloc", f"{LIB}/libmimalloc.so.3"),
     ("bump",     f"{HERE}/libbump.so"),
 ]
-BENCHES = ["allocs3", "threads_list2"]
+BENCHES = ["allocs3", "threads_list2", "splay", "allocs5"]
+LABEL = {"allocs3": "allocs3", "threads_list2": "threads", "splay": "splay",
+         "allocs5": "allocs5"}
 ROUNDS = int(os.environ.get("ROUNDS", "3"))
 
 # (bench, alloc) -> {"wall": [...], "rss": [...]}
@@ -47,6 +49,16 @@ def run_one(bench, preload):
 
 
 def main():
+    # The bump allocator never frees; on the churn benchmarks its peak RSS is
+    # ~15-16 GB. Make this harness (and the spawned benchmarks, which inherit
+    # it) the OOM killer's first choice so a tight-memory host never kills an
+    # unrelated process instead.
+    try:
+        with open("/proc/self/oom_score_adj", "w") as f:
+            f.write("1000")
+    except OSError:
+        pass
+
     for r in range(ROUNDS):
         for bench in BENCHES:
             for alloc, preload in ALLOCATORS:
@@ -59,8 +71,10 @@ def main():
 
     print("\n## C benchmark: allocator comparison "
           f"(median of {ROUNDS} rounds, interleaved)\n")
-    print("| allocator | allocs3 wall | allocs3 RSS | threads wall | threads RSS |")
-    print("|-----------|-------------:|------------:|-------------:|------------:|")
+    hdr = "| allocator | " + " | ".join(
+        f"{LABEL[b]} wall | {LABEL[b]} RSS" for b in BENCHES) + " |"
+    print(hdr)
+    print("|-----------|" + "-------------:|------------:|" * len(BENCHES))
     for alloc, _ in ALLOCATORS:
         cells = []
         for bench in BENCHES:
@@ -68,10 +82,8 @@ def main():
             m = results[(bench, alloc)]["rss"]
             wall = statistics.median(w)
             rss = statistics.median(m) / 1024 if m else float("nan")
-            cells.append((wall, rss))
-        (aw, ar), (tw, tr) = cells
-        print(f"| {alloc:9s} | {aw:9.2f} s | {ar:7.0f} MB | "
-              f"{tw:9.2f} s | {tr:7.0f} MB |")
+            cells.append(f"{wall:9.2f} s | {rss:7.0f} MB")
+        print(f"| {alloc:9s} | " + " | ".join(cells) + " |")
 
 
 if __name__ == "__main__":

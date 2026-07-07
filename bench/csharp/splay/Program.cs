@@ -19,23 +19,41 @@ GcPause.MaybeStart();
 const int kTreeSize = 8000;
 const int kTreeModifications = 80;
 const int kTreePayloadDepth = 5;
-const int kRuns = 2000;
+const int kRuns = 5000;   // exercise() iterations per outer run
+// Whole-benchmark repetitions: each builds a fresh tree (setup + kRuns
+// exercises) with a re-seeded RNG, dropping the previous ~35 MB tree as
+// garbage, so every iteration must produce the identical checksum.
+const int kOuterRuns = 5;
 
-var rnd = new JavaRandom(12345);
-var tree = new SplayTree();
+// One full benchmark iteration: fresh RNG + tree, setup, kRuns exercises,
+// verify, return the checksum.
+ulong RunOnce()
+{
+    var rnd = new JavaRandom(12345);
+    var tree = new SplayTree();
 
-Splay.Setup(tree, rnd, kTreeSize, kTreePayloadDepth);
-for (int i = 0; i < kRuns; i++)
-    Splay.Exercise(tree, rnd, kTreeModifications, kTreePayloadDepth);
+    Splay.Setup(tree, rnd, kTreeSize, kTreePayloadDepth);
+    for (int i = 0; i < kRuns; i++)
+        Splay.Exercise(tree, rnd, kTreeModifications, kTreePayloadDepth);
 
-ulong acc = 0;
-int count = 0;
-double last = 0.0;
-bool ok = true;
-Splay.TraverseCheck(tree.Root, ref acc, ref count, ref last, ref ok);
-if (count != kTreeSize) throw new Exception("Splay tree has wrong size");
-if (!ok) throw new Exception("Splay tree not sorted");
-Console.WriteLine($"Splay done: size={count} checksum={acc}");
+    ulong acc = 0;
+    int count = 0;
+    double last = 0.0;
+    bool ok = true;
+    Splay.TraverseCheck(tree.Root, ref acc, ref count, ref last, ref ok);
+    if (count != kTreeSize) throw new Exception("Splay tree has wrong size");
+    if (!ok) throw new Exception("Splay tree not sorted");
+    return acc;
+}
+
+ulong checksum = 0;
+for (int i = 0; i < kOuterRuns; i++)
+{
+    ulong a = RunOnce();
+    if (i == 0) checksum = a;
+    else if (a != checksum) throw new Exception("Splay checksum differs between runs");
+}
+Console.WriteLine($"Splay done: size={kTreeSize} checksum={checksum}");
 
 // ---- java.util.Random: 48-bit LCG, producing nextDouble() -------------------
 internal sealed class JavaRandom

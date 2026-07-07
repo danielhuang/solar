@@ -15,7 +15,11 @@ public class Splay {
     static final int kTreeSize = 8000;
     static final int kTreeModifications = 80;
     static final int kTreePayloadDepth = 5;
-    static final int kRuns = 2000;
+    static final int kRuns = 5000;   // exercise() iterations per outer run
+    // Whole-benchmark repetitions: each builds a fresh tree (setup + kRuns
+    // exercises) with a re-seeded RNG, dropping the previous ~35 MB tree as
+    // garbage, so every iteration must produce the identical checksum.
+    static final int kOuterRuns = 5;
 
     // The exact 53-bit integer mantissa of a nextDouble() value (== what Solar
     // keys on); key*2^53 is exact because key = mantissa / 2^53, mantissa < 2^53.
@@ -181,18 +185,31 @@ public class Splay {
         }
     }
 
-    public static void main(String[] args) {
+    // One full benchmark iteration: fresh RNG + tree, setup, kRuns exercises,
+    // verify, return the checksum.
+    static long runOnce() {
         Random rnd = new Random(12345);
         SplayTree tree = new SplayTree();
 
         setup(tree, rnd);
         for (int i = 0; i < kRuns; i++) exercise(tree, rnd);
 
+        acc = 0; count = 0; last = 0.0; ok = true; // reset traversal statics
         traverseCheck(tree.root);
         if (count != kTreeSize) throw new RuntimeException("Splay tree has wrong size");
         if (!ok) throw new RuntimeException("Splay tree not sorted");
+        return acc;
+    }
+
+    public static void main(String[] args) {
+        long checksum = 0;
+        for (int i = 0; i < kOuterRuns; i++) {
+            long a = runOnce();
+            if (i == 0) checksum = a;
+            else if (a != checksum) throw new RuntimeException("Splay checksum differs between runs");
+        }
         // Print the wrapping sum as an unsigned 64-bit value (matches C/Go/Solar).
-        System.out.println("Splay done: size=" + count
-                + " checksum=" + Long.toUnsignedString(acc));
+        System.out.println("Splay done: size=" + kTreeSize
+                + " checksum=" + Long.toUnsignedString(checksum));
     }
 }

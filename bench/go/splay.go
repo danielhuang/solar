@@ -17,7 +17,11 @@ const (
 	kTreeSize          = 8000
 	kTreeModifications = 80
 	kTreePayloadDepth  = 5
-	kRuns              = 2000
+	kRuns              = 5000 // exercise() iterations per outer run
+	// Whole-benchmark repetitions: each builds a fresh tree (setup + kRuns
+	// exercises) with a re-seeded RNG, dropping the previous ~35 MB tree as
+	// garbage, so every iteration must produce the identical checksum.
+	kOuterRuns = 5
 )
 
 // ---- java.util.Random: 48-bit LCG, producing nextDouble() -------------------
@@ -235,7 +239,9 @@ func traverseCheck(node *Node, acc *uint64, count *int, last *float64, ok *bool)
 	}
 }
 
-func main() {
+// runOnce is one full benchmark iteration: fresh RNG + tree, setup, kRuns
+// exercises, verify, return the checksum.
+func runOnce() uint64 {
 	r := newRandom(12345)
 	tree := &SplayTree{}
 
@@ -255,5 +261,18 @@ func main() {
 	if !ok {
 		panic("Splay tree not sorted")
 	}
-	fmt.Printf("Splay done: size=%d checksum=%d\n", count, acc)
+	return acc
+}
+
+func main() {
+	var checksum uint64
+	for i := 0; i < kOuterRuns; i++ {
+		acc := runOnce()
+		if i == 0 {
+			checksum = acc
+		} else if acc != checksum {
+			panic("Splay checksum differs between runs")
+		}
+	}
+	fmt.Printf("Splay done: size=%d checksum=%d\n", kTreeSize, checksum)
 }

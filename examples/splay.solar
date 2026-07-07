@@ -15,7 +15,11 @@
 const kTreeSize = 8000;
 const kTreeModifications = 80;
 const kTreePayloadDepth = 5;
-const kRuns = 2000; // exercise() iterations (the harness times the whole run)
+const kRuns = 5000;      // exercise() iterations per outer run
+const kOuterRuns = 5;    // whole-benchmark repetitions: each builds a fresh
+                         // tree (setup + kRuns exercises) with a re-seeded RNG,
+                         // dropping the previous ~35 MB tree as garbage, so
+                         // every iteration must produce the identical checksum
 
 // --- java.util.Random: a 48-bit LCG producing nextDouble's mantissa ----------
 struct Random {
@@ -269,7 +273,9 @@ fn traverse_check(node: &?Node, acc: &Uint64, count: &Int, last: &Int64, ok: &Bo
     0
 }
 
-fn main() {
+// One full benchmark iteration: fresh RNG + tree, setup, kRuns exercises,
+// verify, return the checksum.
+fn run_once() -> Uint64 {
     // java.util.Random seeded with 12345 (seed scrambled per the JDK spec).
     let rng = Random { seed: (Uint64(12345i64) ^ 0x5DEECE66Du64) & 0xFFFFFFFFFFFFu64 };
     let tree = SplayTree { root: null#[Node] };
@@ -292,8 +298,24 @@ fn main() {
     if !ok {
         panic("Splay tree not sorted"&);
     }
-    let size_str = count.to_string();
-    let sum_str = Uint(acc).to_string();
+    acc
+}
+
+fn main() {
+    let checksum = 0u64;
+    for i in 0..kOuterRuns {
+        let acc = run_once();
+        if i == 0 {
+            checksum = acc;
+        } else {
+            if acc != checksum {
+                panic("Splay checksum differs between runs"&);
+            }
+        }
+    }
+    let size = kTreeSize;
+    let size_str = size.to_string();
+    let sum_str = Uint(checksum).to_string();
     write_stdout(("Splay done: size=" + size_str@
         + " checksum=" + sum_str@ + "\n")&);
 }

@@ -17,7 +17,11 @@
 #include <stdint.h>
 
 enum { kTreeSize = 8000, kTreeModifications = 80, kTreePayloadDepth = 5 };
-#define kRuns 2000
+#define kRuns 5000     /* exercise() iterations per outer run */
+#define kOuterRuns 5   /* whole-benchmark repetitions: each builds a fresh tree
+                          (setup + kRuns exercises) with a re-seeded RNG and
+                          frees the whole previous tree, so every iteration must
+                          produce the identical checksum */
 
 // ---- java.util.Random: 48-bit LCG, producing nextDouble() -------------------
 typedef struct { uint64_t seed; } Random;
@@ -216,7 +220,9 @@ static void free_tree(Node *node) {
     free(node);
 }
 
-int main(void) {
+// One full benchmark iteration: fresh RNG + tree, setup, kRuns exercises,
+// verify, free the whole tree (manual reclamation), return the checksum.
+static uint64_t run_once(void) {
     Random r;
     rnd_init(&r, 12345);
     SplayTree tree = {NULL};
@@ -228,10 +234,23 @@ int main(void) {
     int count = 0, ok = 1;
     double last = 0.0;
     traverse_check(tree.root, &acc, &count, &last, &ok);
-    if (count != kTreeSize) { fprintf(stderr, "Splay tree has wrong size\n"); return 1; }
-    if (!ok) { fprintf(stderr, "Splay tree not sorted\n"); return 1; }
-    printf("Splay done: size=%d checksum=%llu\n", count, (unsigned long long)acc);
+    if (count != kTreeSize) { fprintf(stderr, "Splay tree has wrong size\n"); exit(1); }
+    if (!ok) { fprintf(stderr, "Splay tree not sorted\n"); exit(1); }
 
     free_tree(tree.root);
+    return acc;
+}
+
+int main(void) {
+    uint64_t checksum = 0;
+    for (int i = 0; i < kOuterRuns; i++) {
+        uint64_t acc = run_once();
+        if (i == 0) checksum = acc;
+        else if (acc != checksum) {
+            fprintf(stderr, "Splay checksum differs between runs\n");
+            return 1;
+        }
+    }
+    printf("Splay done: size=%d checksum=%llu\n", kTreeSize, (unsigned long long)checksum);
     return 0;
 }
