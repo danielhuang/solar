@@ -885,7 +885,7 @@ unsafe fn mark_worker(w: usize, big_snapshot: &Arc<Vec<BigSnap>>, active: &Atomi
                 return;
             }
             MARK_WAITERS.fetch_add(1, Ordering::SeqCst);
-            unsafe { crate::futex::sol_futex_wait(MARK_WAKE.as_ptr(), epoch) };
+            unsafe { crate::futex::sol_futex_wait(MARK_WAKE.as_ptr(), epoch, u64::MAX) };
             MARK_WAITERS.fetch_sub(1, Ordering::SeqCst);
         }
     }

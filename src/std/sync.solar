@@ -16,8 +16,12 @@ pub method atomic_compare_exchange#[T](self: &T, expected: T, new: T) -> T {
     atomic_compare_exchange(self, expected, new)
 }
 
-pub method futex_wait(self: &Uint32, expected: Uint32) {
-    futex_wait(self, expected);
+// Block until the pointee's value differs from `expected`, a wake arrives, or
+// `timeout` nanoseconds pass (the default is effectively forever). May return
+// early spuriously (e.g. interrupted by a GC signal); callers must recheck
+// their condition and re-wait.
+pub method futex_wait(self: &Uint32, expected: Uint32, timeout: Uint64 = 18446744073709551615u64) {
+    futex_wait(self, expected, timeout);
 }
 
 pub method futex_wake(self: &Uint32, count: Uint32) {

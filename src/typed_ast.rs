@@ -7216,7 +7216,8 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
             ret: RefInner,
         },
         ast::Intrinsic::FutexWait => IntrinsicSpec {
-            params: vec![ref_u32(), u32()],
+            // (word, expected value, timeout in nanoseconds; u64::MAX = forever)
+            params: vec![ref_u32(), u32(), Exact(Type::Uint64)],
             ret: Fixed(Type::Unit),
         },
         ast::Intrinsic::FutexWake => IntrinsicSpec {

@@ -714,7 +714,9 @@ impl<'a> Codegen<'a> {
         self.line("extern void sol_atomic_load_128_acq(uint8_t* dst, const uint8_t* src);");
         self.line("extern void sol_atomic_store_128_rel(uint8_t* dst, const uint8_t* src);");
         self.line("extern void sol_atomic_compare_exchange_128_acq_rel(uint8_t* dst, uint8_t* ref, const uint8_t* expected, const uint8_t* new_val);");
-        self.line("extern void sol_futex_wait(uint32_t* ptr, uint32_t expected);");
+        self.line(
+            "extern void sol_futex_wait(uint32_t* ptr, uint32_t expected, uint64_t timeout_ns);",
+        );
         self.line("extern void sol_futex_wake(uint32_t* ptr, uint32_t count);");
         self.line("");
         // SIMD group-scan helpers (the SwissTable hot path). Written with vector
@@ -2728,8 +2730,9 @@ impl<'a> Codegen<'a> {
             Intrinsic::FutexWait => {
                 let ptr = self.emit_load(nodes, args[0]);
                 let expected = self.emit_load(nodes, args[1]);
+                let timeout = self.emit_load(nodes, args[2]);
                 self.linef(format!(
-                    "sol_futex_wait((uint32_t*){ptr}, (uint32_t){expected});"
+                    "sol_futex_wait((uint32_t*){ptr}, (uint32_t){expected}, (uint64_t){timeout});"
                 ));
             }
             Intrinsic::FutexWake => {

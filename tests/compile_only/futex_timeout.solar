@@ -1,0 +1,10 @@
+fn main() {
+    let flag = 0u32;
+    // Nobody ever wakes this word: without timeout support the wait would
+    // block forever, so completing at all proves the timeout fired.
+    flag&.futex_wait(0u32, timeout = 50000000u64);
+    // The value already differs from `expected`: returns immediately even
+    // with an effectively-infinite default timeout.
+    flag&.futex_wait(1u32);
+    println(Int(flag&.atomic_load()));
+}

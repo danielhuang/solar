@@ -54,3 +54,12 @@ fn channel_pingpong() {
     );
     assert_eq!(output, "11\n");
 }
+
+#[test]
+fn futex_timeout() {
+    let output = run_codegen_file(
+        &fixture("futex_timeout.solar"),
+        "compile_only_futex_timeout",
+    );
+    assert_eq!(output, "0\n");
+}
