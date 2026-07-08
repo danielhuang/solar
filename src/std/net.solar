@@ -3,8 +3,10 @@ import intrinsics from "@intrinsics";
 // TCP networking over the socket intrinsics. Sockets are FileDescs in the same
 // GC-traced fd arena as files: the collector auto-closes unreachable ones, and
 // the generic file read/write intrinsics do the byte transfer. Addresses are
-// IPv4 dotted-quad byte strings (e.g. "127.0.0.1"); the sockaddr_in layout the
-// kernel expects is built here and passed to the intrinsics as raw bytes.
+// IPv4 dotted-quad ("127.0.0.1") or IPv6 ("::1", "2001:db8::1",
+// "::ffff:10.0.0.1") byte strings — an address containing ':' is IPv6 — and
+// the sockaddr_in/sockaddr_in6 layout the kernel expects is built here and
+// passed to the intrinsics as raw bytes.
 
 pub struct TcpListener {
     pub fd: FileDesc,
@@ -16,6 +18,7 @@ pub struct TcpStream {
 
 // Linux socket constants (an implementation detail of this module).
 const AF_INET = 2;
+const AF_INET6 = 10;
 const SOCK_STREAM = 1;
 const SOL_SOCKET = 1;
 const SO_REUSEADDR = 2;
@@ -23,23 +26,30 @@ const IPPROTO_TCP = 6;
 const TCP_NODELAY = 1;
 const SHUT_RD = 0;
 const SHUT_WR = 1;
+// sockaddr_in is 16 bytes; sockaddr_in6 is 28.
+const SOCKADDR_MAX = 28u;
 
-// Builds a 16-byte sockaddr_in into `sa`: family (host order), port
-// (big-endian), the parsed dotted-quad address, and zero padding.
-fn build_sockaddr_in(sa: &[Uint8], addr: &[Uint8], port: Uint) {
-    sa@[0u] = 2u8; // AF_INET, little-endian u16
-    sa@[1u] = 0u8;
-    sa@[2u] = Uint8(port >> 8u); // sin_port is big-endian
-    sa@[3u] = Uint8(port & 255u);
-    // Parse "a.b.c.d" into bytes 4..8 (sin_addr, network byte order).
-    let octet = 0u;
-    let idx = 4u;
+// Is `addr` an IPv6 literal? (Any ':' marks IPv6 — dotted quads have none.)
+fn is_ipv6(addr: &[Uint8]) -> Bool {
+    let found = false;
     let i = 0u;
     let n = addr.len();
     while i < n {
+        if addr@[i] == 58u8 { found = true; }
+        i = i + 1u;
+    }
+    found
+}
+
+// Parses a dotted-quad from addr[from..to) into 4 bytes at out[at..at+4).
+fn parse_ipv4_range(addr: &[Uint8], from: Uint, to: Uint, out: &[Uint8], at: Uint) {
+    let octet = 0u;
+    let idx = at;
+    let i = from;
+    while i < to {
         let c = addr@[i];
         if c == 46u8 {
-            sa@[idx] = Uint8(octet);
+            out@[idx] = Uint8(octet);
             idx = idx + 1u;
             octet = 0u;
         } else {
@@ -47,18 +57,119 @@ fn build_sockaddr_in(sa: &[Uint8], addr: &[Uint8], port: Uint) {
         }
         i = i + 1u;
     }
-    sa@[idx] = Uint8(octet);
+    out@[idx] = Uint8(octet);
 }
 
-// Creates a TCP socket bound to `addr:port` (dotted-quad IPv4; port 0 asks the
-// OS for an ephemeral port — read it back with `local_port`) and starts
-// listening. SO_REUSEADDR is set so restarts don't trip over TIME_WAIT.
+// Parses an IPv4 dotted-quad ("a.b.c.d") into the 4 bytes at out[0..4).
+pub fn parse_ipv4(addr: &[Uint8], out: &[Uint8]) {
+    parse_ipv4_range(addr, 0u, addr.len(), out, 0u);
+}
+
+fn hex_digit(c: Uint8) -> Uint {
+    if c >= 48u8 && c <= 57u8 {
+        Uint(c - 48u8)
+    } else {
+        if c >= 97u8 { Uint(c - 97u8) + 10u } else { Uint(c - 65u8) + 10u }
+    }
+}
+
+// Parses the colon-separated IPv6 groups in addr[from..to) — hex groups (2
+// bytes each, big-endian) or one trailing dotted-quad (4 bytes) — writing at
+// byte offset `at` in `out`. Empty groups (adjacent to a `::`) are skipped.
+// Returns the offset after the last byte written.
+fn parse_groups(addr: &[Uint8], from: Uint, to: Uint, out: &[Uint8], at: Uint) -> Uint {
+    let w = at;
+    let group_start = from;
+    let val = 0u;
+    let has_dot = false;
+    let i = from;
+    while i <= to {
+        let c = if i == to { 58u8 } else { addr@[i] }; // treat the end as ':'
+        if c == 58u8 {
+            if i > group_start {
+                if has_dot {
+                    parse_ipv4_range(addr, group_start, i, out, w);
+                    w = w + 4u;
+                } else {
+                    out@[w] = Uint8(val >> 8u);
+                    out@[w + 1u] = Uint8(val & 255u);
+                    w = w + 2u;
+                }
+            }
+            val = 0u;
+            has_dot = false;
+            group_start = i + 1u;
+        } else {
+            if c == 46u8 { has_dot = true; } else { val = val * 16u + hex_digit(c); }
+        }
+        i = i + 1u;
+    }
+    w
+}
+
+// Parses an IPv6 literal into the 16 bytes at out[0..16) (which must be
+// zeroed). Supports the full 8-group form, `::` compression, and an embedded
+// trailing dotted-quad ("::ffff:192.168.1.10"). No zone IDs.
+pub fn parse_ipv6(addr: &[Uint8], out: &[Uint8]) {
+    let n = addr.len();
+    // Locate the `::` gap, if any.
+    let gap = n + 1u;
+    let i = 0u;
+    while i + 1u < n {
+        if addr@[i] == 58u8 && addr@[i + 1u] == 58u8 {
+            gap = i;
+            i = n;
+        } else {
+            i = i + 1u;
+        }
+    }
+    if gap > n {
+        let full = parse_groups(addr, 0u, n, out, 0u);
+    } else {
+        let left = parse_groups(addr, 0u, gap, out, 0u);
+        // Groups right of the `::` are flush with the end of the address.
+        let tail = [0u8; 16u];
+        let tail_len = parse_groups(addr, gap + 2u, n, tail&, 0u);
+        let j = 0u;
+        while j < tail_len {
+            out@[16u - tail_len + j] = tail[j];
+            j = j + 1u;
+        }
+    }
+}
+
+// Builds a sockaddr into `sa` (which must be SOCKADDR_MAX bytes, zeroed) and
+// returns its size: a 16-byte sockaddr_in for dotted-quad `addr`, a 28-byte
+// sockaddr_in6 for an IPv6 literal. Port lands at bytes 2..4 (big-endian) in
+// both layouts.
+fn build_sockaddr(sa: &[Uint8], addr: &[Uint8], port: Uint) -> Uint {
+    sa@[2u] = Uint8(port >> 8u);
+    sa@[3u] = Uint8(port & 255u);
+    if is_ipv6(addr) {
+        sa@[0u] = 10u8; // AF_INET6, little-endian u16
+        // bytes 4..8: sin6_flowinfo (0); 8..24: sin6_addr; 24..28: scope id (0)
+        parse_ipv6(addr, sa@[8u..24u]&);
+        28u
+    } else {
+        sa@[0u] = 2u8; // AF_INET, little-endian u16
+        parse_ipv4_range(addr, 0u, addr.len(), sa, 4u);
+        16u
+    }
+}
+
+fn family_of(addr: &[Uint8]) -> Int {
+    if is_ipv6(addr) { AF_INET6 } else { AF_INET }
+}
+
+// Creates a TCP socket bound to `addr:port` (port 0 asks the OS for an
+// ephemeral port — read it back with `local_port`) and starts listening.
+// SO_REUSEADDR is set so restarts don't trip over TIME_WAIT.
 pub fn listen(addr: &[Uint8], port: Uint, backlog = 128) -> TcpListener {
-    let fd = intrinsics::socket_create(AF_INET, SOCK_STREAM, 0);
+    let fd = intrinsics::socket_create(family_of(addr), SOCK_STREAM, 0);
     intrinsics::socket_set_option(fd, SOL_SOCKET, SO_REUSEADDR, 1);
-    let sa = [0u8; 16u];
-    build_sockaddr_in(sa&, addr, port);
-    intrinsics::socket_bind(fd, sa&);
+    let sa = [0u8; SOCKADDR_MAX];
+    let len = build_sockaddr(sa&, addr, port);
+    intrinsics::socket_bind(fd, sa[0u..len]&);
     intrinsics::socket_listen(fd, backlog);
     TcpListener { fd: fd }
 }
@@ -70,9 +181,10 @@ pub method accept(self: TcpListener) -> TcpStream {
 
 // The port this listener is actually bound to (useful after binding port 0).
 pub method local_port(self: TcpListener) -> Uint {
-    let sa = [0u8; 16u];
+    let sa = [0u8; SOCKADDR_MAX];
     intrinsics::socket_local_addr(self.fd, sa&);
-    Uint(sa[2u]) * 256u + Uint(sa[3u]) // sin_port, big-endian
+    // sin_port and sin6_port are both big-endian at bytes 2..4.
+    Uint(sa[2u]) * 256u + Uint(sa[3u])
 }
 
 // Stops accepting now instead of when the collector reclaims the listener.
@@ -80,12 +192,12 @@ pub method close(self: TcpListener) {
     self.fd.close();
 }
 
-// Connects to `addr:port` (dotted-quad IPv4) and returns the stream.
+// Connects to `addr:port` (IPv4 or IPv6 literal) and returns the stream.
 pub fn connect(addr: &[Uint8], port: Uint) -> TcpStream {
-    let fd = intrinsics::socket_create(AF_INET, SOCK_STREAM, 0);
-    let sa = [0u8; 16u];
-    build_sockaddr_in(sa&, addr, port);
-    intrinsics::socket_connect(fd, sa&);
+    let fd = intrinsics::socket_create(family_of(addr), SOCK_STREAM, 0);
+    let sa = [0u8; SOCKADDR_MAX];
+    let len = build_sockaddr(sa&, addr, port);
+    intrinsics::socket_connect(fd, sa[0u..len]&);
     TcpStream { fd: fd }
 }
 

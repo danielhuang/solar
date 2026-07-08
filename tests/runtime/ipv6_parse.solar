@@ -1,0 +1,35 @@
+// net::parse_ipv6 / parse_ipv4 are pure functions, testable on all three
+// backends without sockets. Prints the parsed bytes for representative forms.
+fn print_bytes(out: &[Uint8], n: Uint) {
+    let i = 0u;
+    while i < n {
+        println(Int(out@[i]));
+        i = i + 1u;
+    }
+}
+
+fn parse6(addr: &[Uint8]) {
+    println(addr);
+    let out = [0u8; 16u];
+    net::parse_ipv6(addr, out&);
+    print_bytes(out&, 16u);
+}
+
+fn main() {
+    // Loopback: 15 zeros then 1.
+    parse6("::1"&);
+    // Full 8-group form.
+    parse6("1:2:3:4:5:6:7:8"&);
+    // Compression in the middle + multi-digit hex (case-insensitive).
+    parse6("2001:Db8::8a2e:370:7334"&);
+    // Trailing embedded dotted-quad (v4-mapped).
+    parse6("::ffff:192.168.1.10"&);
+    // Compression at the end.
+    parse6("fe80::"&);
+    // All zeroes.
+    parse6("::"&);
+
+    let v4 = [0u8; 4u];
+    net::parse_ipv4("203.0.113.7"&, v4&);
+    print_bytes(v4&, 4u);
+}

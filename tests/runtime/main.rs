@@ -722,3 +722,18 @@ fn blanket_eq_throw() {
         "operator_eq: type is not a struct or enum\ncontents equal\nstructs equal\n"
     );
 }
+
+#[test]
+fn ipv6_parse() {
+    let output = run(&fixture("ipv6_parse.solar"), "ipv6_parse");
+    assert_eq!(
+        output,
+        "::1\n0\n0\n0\n0\n0\n0\n0\n0\n0\n0\n0\n0\n0\n0\n0\n1\n\
+         1:2:3:4:5:6:7:8\n0\n1\n0\n2\n0\n3\n0\n4\n0\n5\n0\n6\n0\n7\n0\n8\n\
+         2001:Db8::8a2e:370:7334\n32\n1\n13\n184\n0\n0\n0\n0\n0\n0\n138\n46\n3\n112\n115\n52\n\
+         ::ffff:192.168.1.10\n0\n0\n0\n0\n0\n0\n0\n0\n0\n0\n255\n255\n192\n168\n1\n10\n\
+         fe80::\n254\n128\n0\n0\n0\n0\n0\n0\n0\n0\n0\n0\n0\n0\n0\n0\n\
+         ::\n0\n0\n0\n0\n0\n0\n0\n0\n0\n0\n0\n0\n0\n0\n0\n0\n\
+         203\n0\n113\n7\n"
+    );
+}
