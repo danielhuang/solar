@@ -1514,13 +1514,13 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             | Intrinsic::FloatAbs => {
                 let ty = nodes[args[0].0].ty.clone();
                 let raw = self.eval_load(nodes, args[0])?;
-                self.scalar_store(dst, float_unary(&intrinsic, raw, &ty), result_ty);
+                self.scalar_store(dst, float_unary(intrinsic, raw, &ty), result_ty);
             }
             Intrinsic::Atan2 | Intrinsic::Pow => {
                 let ty = nodes[args[0].0].ty.clone();
                 let a = self.eval_load(nodes, args[0])?;
                 let b = self.eval_load(nodes, args[1])?;
-                self.scalar_store(dst, float_binary(&intrinsic, a, b, &ty), result_ty);
+                self.scalar_store(dst, float_binary(intrinsic, a, b, &ty), result_ty);
             }
             Intrinsic::Exit => {
                 let code = self.eval_load(nodes, args[0])? as i32;

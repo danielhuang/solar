@@ -117,7 +117,9 @@ impl Type {
             Type::FixedArray(_, _) | Type::Function { .. } => true,
             Type::Enum(_) => true,
             Type::Struct(name) => {
-                let def = &structs[name];
+                let def = structs
+                    .get(name)
+                    .unwrap_or_else(|| panic!("is_sized: missing struct `{name}`"));
                 def.fields.last().is_none_or(|f| f.ty.is_sized(structs))
             }
             _ => true,
@@ -225,6 +227,9 @@ fn from_ast_type_with_subst(ty: &ast::Type, subst: &HashMap<String, Type>) -> Ty
                 "Float64" => Type::Float64,
                 "Bool" => Type::Bool,
                 "FileDesc" => Type::FileDesc,
+                // `Unit` names the unit type — the type printer already emits it
+                // (e.g. as a function's inferred return), so it must round-trip.
+                "Unit" => Type::Unit,
                 other => Type::Struct(other.to_string()),
             }
         }
@@ -1459,7 +1464,13 @@ struct Lowerer<'a> {
     destructure_counter: usize,
     for_counter: usize,
     pending_closures: Vec<FunctionDef>,
-    capture_context: Option<CaptureContext>,
+    /// Stack of capture contexts, one per enclosing closure currently being
+    /// lowered (innermost last). A variable referenced from an outer scope is
+    /// recorded as a capture in **every** context whose barrier sits above the
+    /// variable's definition — so an inner closure that captures a variable
+    /// from above an outer closure forces the outer closure to capture it too
+    /// (transitive capture through nesting).
+    capture_contexts: Vec<CaptureContext>,
     reverse_mono: HashMap<String, (String, Vec<Type>)>,
     nested_function_defs: Vec<HashMap<String, Vec<FunctionEntry>>>,
     type_aliases: HashMap<String, (Vec<String>, ast::Type)>,
@@ -1742,7 +1753,7 @@ impl<'a> Lowerer<'a> {
             destructure_counter: 0,
             for_counter: 0,
             pending_closures: Vec::new(),
-            capture_context: None,
+            capture_contexts: Vec::new(),
             reverse_mono: HashMap::new(),
             nested_function_defs: Vec::new(),
             type_aliases,
@@ -1871,34 +1882,35 @@ impl<'a> Lowerer<'a> {
     fn lookup_var(&mut self, name: &str) -> Option<Type> {
         if let Some(ty) = self.scopes.lookup(name) {
             let ty = ty.clone();
-            // If we're inside a closure and the variable is from outside the barrier,
-            // record it as a capture
-            if let Some(ref mut ctx) = self.capture_context {
-                // Check if this variable is from the outer scope (below the barrier)
-                // by checking if it exists when we only have scopes below the barrier
-                if !ctx.captured_names.contains(name) {
-                    // Walk scopes to find which depth has this variable
-                    // Variables defined inside the closure body are at depth >= barrier
-                    // Variables from outside need capturing
-                    let found_inside = {
-                        let barrier = ctx.scope_depth_barrier;
-                        // scopes at index >= barrier are "inside" the closure
-                        let mut found = false;
-                        let depth = self.scopes.depth();
-                        for i in (barrier..depth).rev() {
-                            if self.scopes.lookup_at(name, i).is_some() {
-                                found = true;
-                                break;
-                            }
+            // If we're inside one or more closures and the variable is from
+            // outside a closure's barrier, record it as a capture in that
+            // closure — and in every enclosing closure above the variable's
+            // definition, so a transitively-captured variable is threaded
+            // through each closure's environment.
+            if !self.capture_contexts.is_empty() {
+                // The scope index where `name` is (innermost) defined.
+                let def_depth = {
+                    let mut d = None;
+                    for i in (0..self.scopes.depth()).rev() {
+                        if self.scopes.lookup_at(name, i).is_some() {
+                            d = Some(i);
+                            break;
                         }
-                        found
-                    };
-                    if !found_inside {
-                        ctx.captured_names.insert(name.to_string());
-                        ctx.captures.push(CapturedVar {
-                            name: name.to_string(),
-                            ty: ty.clone(),
-                        });
+                    }
+                    d
+                };
+                if let Some(def_depth) = def_depth {
+                    for ctx in self.capture_contexts.iter_mut() {
+                        // The closure captures `name` iff it is defined outside
+                        // the closure (below its scope barrier).
+                        if ctx.scope_depth_barrier > def_depth && !ctx.captured_names.contains(name)
+                        {
+                            ctx.captured_names.insert(name.to_string());
+                            ctx.captures.push(CapturedVar {
+                                name: name.to_string(),
+                                ty: ty.clone(),
+                            });
+                        }
                     }
                 }
             }
@@ -3024,13 +3036,13 @@ impl<'a> Lowerer<'a> {
         let saved_scopes = std::mem::take(&mut self.scopes);
         let saved_return_type = self.current_return_type.take();
         let saved_return_type_span = self.current_return_type_span.take();
-        let saved_capture_context = self.capture_context.take();
+        let saved_capture_contexts = std::mem::take(&mut self.capture_contexts);
         let saved_nested = std::mem::take(&mut self.nested_function_defs);
         let lowered = self.lower_function(&func_def)?;
         self.scopes = saved_scopes;
         self.current_return_type = saved_return_type;
         self.current_return_type_span = saved_return_type_span;
-        self.capture_context = saved_capture_context;
+        self.capture_contexts = saved_capture_contexts;
         self.nested_function_defs = saved_nested;
         self.resolving_return_types.pop();
         let ret_ty = lowered.return_type.clone();
@@ -6149,10 +6161,10 @@ impl<'a> Lowerer<'a> {
         let synthetic_name = format!("__closure_{}", self.closure_counter);
         self.closure_counter += 1;
 
-        // Set up capture context
+        // Push a capture context for this closure onto the stack (nested
+        // closures leave enclosing contexts in place so they capture too).
         let barrier = self.scopes.depth();
-        let prev_capture_context = self.capture_context.take();
-        self.capture_context = Some(CaptureContext {
+        self.capture_contexts.push(CaptureContext {
             scope_depth_barrier: barrier,
             captures: Vec::new(),
             captured_names: HashSet::new(),
@@ -6219,9 +6231,8 @@ impl<'a> Lowerer<'a> {
         self.pop_scope();
         self.loop_ctx = saved_loop_ctx;
 
-        // Extract captures
-        let ctx = self.capture_context.take().unwrap();
-        self.capture_context = prev_capture_context;
+        // Extract captures (pop this closure's context off the stack).
+        let ctx = self.capture_contexts.pop().unwrap();
         let captures = ctx.captures;
 
         // Determine return type

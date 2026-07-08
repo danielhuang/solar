@@ -2930,7 +2930,7 @@ impl<'a> Codegen<'a> {
                 // the Float32 variant so f32 math runs in f32 precision.
                 let ty = nodes[args[0].0].ty.clone();
                 let arg = self.emit_load(nodes, args[0]);
-                let f = float_builtin(&intrinsic);
+                let f = float_builtin(intrinsic);
                 let suffix = if matches!(ty, Type::Float32) { "f" } else { "" };
                 let c_ty = self.c_int_type(&ty);
                 self.linef(format!(
@@ -2942,7 +2942,7 @@ impl<'a> Codegen<'a> {
                 let ty = nodes[args[0].0].ty.clone();
                 let a = self.emit_load(nodes, args[0]);
                 let b = self.emit_load(nodes, args[1]);
-                let f = float_builtin(&intrinsic);
+                let f = float_builtin(intrinsic);
                 let suffix = if matches!(ty, Type::Float32) { "f" } else { "" };
                 let c_ty = self.c_int_type(&ty);
                 self.linef(format!(

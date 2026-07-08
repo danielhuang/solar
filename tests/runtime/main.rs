@@ -763,3 +763,18 @@ fn float_math() {
          3\n256\n7\n333333\n"
     );
 }
+
+#[test]
+fn unit_return() {
+    let output = run(&fixture("unit_return.solar"), "unit_return");
+    assert_eq!(output, "42\n");
+}
+
+#[test]
+fn nested_closure_capture() {
+    let output = run(
+        &fixture("nested_closure_capture.solar"),
+        "nested_closure_capture",
+    );
+    assert_eq!(output, "30\n200\n-10\n");
+}

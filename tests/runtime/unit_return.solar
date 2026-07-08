@@ -1,0 +1,11 @@
+// A function with an explicit `-> Unit` return type resolves `Unit` to the
+// unit type (not a phantom struct named "Unit"). Recursive functions need an
+// explicit return annotation, so `-> Unit` must be spellable.
+fn noop(x: Int) -> Unit {
+    if x > 0 { noop(x - 1); }
+}
+
+fn main() {
+    noop(3);
+    println(42);
+}

@@ -1,0 +1,26 @@
+// A variable captured by an inner closure that lives above an *enclosing*
+// closure must be captured transitively by every closure in between, so it is
+// threaded through each closure's environment. (The `try`/`catch` desugaring
+// nests closures, so this also covers capturing across a try block.)
+fn call(f: fn()) { f(); }
+
+fn main() {
+    let a = 10;
+    let b = 20;
+    // Two closure layers: the inner one captures a/b from main, forcing the
+    // outer to capture them too.
+    let outer = \ {
+        call(\ { println(a + b); });
+    };
+    outer();
+
+    // Three layers.
+    let deep = \ { call(\ { call(\ { println(a * b); }); }); };
+    deep();
+
+    // Capture across a try block nested inside a closure.
+    let guarded = \ {
+        try { println(a - b); } catch (e) { println(e); }
+    };
+    guarded();
+}
