@@ -7251,6 +7251,14 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
             params: vec![],
             ret: Fixed(byte_slice_slice()),
         },
+        // monotonic_time() / system_time(): no parameters; return the clock
+        // reading in nanoseconds (CLOCK_MONOTONIC / nanoseconds since the Unix
+        // epoch). The monotonic epoch is unspecified — only differences are
+        // meaningful.
+        ast::Intrinsic::MonotonicTime | ast::Intrinsic::SystemTime => IntrinsicSpec {
+            params: vec![],
+            ret: Fixed(Type::Uint64),
+        },
         // Bit-counting intrinsics: take any integer, return a count as `Uint`.
         ast::Intrinsic::CountTrailingZeros
         | ast::Intrinsic::CountLeadingZeros

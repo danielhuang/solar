@@ -63,3 +63,9 @@ fn futex_timeout() {
     );
     assert_eq!(output, "0\n");
 }
+
+#[test]
+fn sleep() {
+    let output = run_codegen_file(&fixture("sleep.solar"), "compile_only_sleep");
+    assert_eq!(output, "slept\n");
+}

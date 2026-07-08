@@ -718,6 +718,8 @@ impl<'a> Codegen<'a> {
             "extern void sol_futex_wait(uint32_t* ptr, uint32_t expected, uint64_t timeout_ns);",
         );
         self.line("extern void sol_futex_wake(uint32_t* ptr, uint32_t count);");
+        self.line("extern uint64_t sol_monotonic_time(void);");
+        self.line("extern uint64_t sol_system_time(void);");
         self.line("");
         // SIMD group-scan helpers (the SwissTable hot path). Written with vector
         // extensions + an explicit move-mask so they stay vectorized into SSE2
@@ -2570,6 +2572,15 @@ impl<'a> Codegen<'a> {
                     "sol_env"
                 };
                 self.linef(format!("{f}((uint8_t*){dst});"));
+            }
+            Intrinsic::MonotonicTime | Intrinsic::SystemTime => {
+                let f = if matches!(intrinsic, Intrinsic::MonotonicTime) {
+                    "sol_monotonic_time"
+                } else {
+                    "sol_system_time"
+                };
+                let c_ty = self.c_int_type(result_ty);
+                self.linef(format!("*({c_ty}*){dst} = ({c_ty}){f}();"));
             }
             Intrinsic::ArrayLen => {
                 let len = if let Type::FixedArray(_, n) = &nodes[args[0].0].ty {

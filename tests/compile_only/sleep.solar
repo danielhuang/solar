@@ -1,0 +1,8 @@
+import { monotonic_time } from "@intrinsics";
+
+fn main() {
+    let start = monotonic_time();
+    thread::sleep(50000000u64);
+    let elapsed = monotonic_time() - start;
+    if elapsed >= 50000000u64 { println("slept"&); } else { println("too fast"&); }
+}

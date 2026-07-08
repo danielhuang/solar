@@ -1345,6 +1345,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 self.mem.store(dst, 0, 8);
                 self.mem.store(dst + 8, 0, 8);
             }
+            Intrinsic::MonotonicTime | Intrinsic::SystemTime => {
+                self.scalar_store(dst, time_ns(intrinsic), result_ty);
+            }
             Intrinsic::ArrayLen => {
                 let len = if let Type::FixedArray(_, n) = &nodes[args[0].0].ty {
                     *n as usize
@@ -1862,4 +1865,23 @@ pub fn interpret(module: &Module) {
 pub fn interpret_to(module: &Module, stdin: impl Read, stdout: impl Write) {
     let mut interp = Interpreter::new(module, stdin, stdout);
     interp.run();
+}
+
+/// Shared clock source for the `monotonic_time`/`system_time` intrinsics in
+/// both interpreters. The monotonic epoch is the first call — any epoch is
+/// valid, since only differences are meaningful.
+pub(crate) fn time_ns(intrinsic: &Intrinsic) -> u64 {
+    use std::sync::OnceLock;
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
+    static MONO_EPOCH: OnceLock<Instant> = OnceLock::new();
+    match intrinsic {
+        Intrinsic::MonotonicTime => {
+            MONO_EPOCH.get_or_init(Instant::now).elapsed().as_nanos() as u64
+        }
+        Intrinsic::SystemTime => SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64,
+        _ => unreachable!(),
+    }
 }

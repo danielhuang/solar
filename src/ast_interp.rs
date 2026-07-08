@@ -1158,6 +1158,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 // empty `&[&[Uint8]]` (a reference to an empty array).
                 Value::Ref(Rc::new(RefCell::new(Value::Array(Vec::new()))))
             }
+            Intrinsic::MonotonicTime | Intrinsic::SystemTime => {
+                Value::Int(crate::ir_interp::time_ns(intrinsic) as i64)
+            }
             Intrinsic::ArrayLen => {
                 let arr = self.eval_expr(&arguments[0])?;
                 match arr {

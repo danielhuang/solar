@@ -692,3 +692,9 @@ fn closure_capture_unsized() {
     );
     assert_eq!(output, "ZBX\n");
 }
+
+#[test]
+fn time() {
+    let output = run(&fixture("time.solar"), "time");
+    assert_eq!(output, "mono ok\nsys ok\n");
+}

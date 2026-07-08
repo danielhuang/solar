@@ -1,0 +1,10 @@
+import { monotonic_time, system_time } from "@intrinsics";
+
+fn main() {
+    let a = monotonic_time();
+    let b = monotonic_time();
+    if b >= a { println("mono ok"&); } else { println("mono bad"&); }
+    // Sanity-bound the wall clock: after 2020-01-01 (the system clock is set).
+    let s = system_time();
+    if s > 1577836800000000000u64 { println("sys ok"&); } else { println("sys bad"&); }
+}

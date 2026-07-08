@@ -18,6 +18,7 @@ pub mod panic;
 pub mod process;
 pub mod thread;
 pub mod thread_pool;
+pub mod time;
 
 pub(crate) fn read_env_bool(name: &str) -> bool {
     match env::var(name).as_deref() {

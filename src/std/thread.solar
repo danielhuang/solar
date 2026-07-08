@@ -19,3 +19,16 @@ pub method join(self: Thread) {
         self.done.futex_wait(0u32);
     }
 }
+
+// Sleep for at least `nanoseconds`. A futex wait on a never-woken word
+// supplies the timed block; the loop re-waits on the monotonic clock, since a
+// wait may return early spuriously (e.g. interrupted by a GC signal).
+pub fn sleep(nanoseconds: Uint64) {
+    let word = 0u32;
+    let start = intrinsics::monotonic_time();
+    let elapsed = 0u64;
+    while elapsed < nanoseconds {
+        word&.futex_wait(0u32, timeout = nanoseconds - elapsed);
+        elapsed = intrinsics::monotonic_time() - start;
+    }
+}
