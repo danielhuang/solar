@@ -1,0 +1,44 @@
+// Top-level `static` declarations: global mutable state. Initial values are
+// literals (stored before main's body runs); a static needing init code is a
+// nullable reference populated in main. Statics are ordinary places: readable,
+// assignable, and referenceable from any function.
+static COUNTER = 0;
+static SCALE: Int = 3;
+static BUF: &[Uint8] = "initial"&;
+static LATE: &?Int = null#[Int];
+static FLAG = false;
+
+fn bump() {
+    COUNTER = COUNTER + 1;
+}
+
+fn scaled(x: Int) -> Int {
+    x * SCALE
+}
+
+fn main() {
+    bump();
+    bump();
+    bump();
+    println(COUNTER);
+    println(scaled(COUNTER));
+
+    // Wide (16-byte fat pointer) static: read, swap, read.
+    println(BUF);
+    BUF = "swapped"&;
+    println(BUF);
+
+    // Nullable-ref static populated in main.
+    if LATE == null#[Int] { println("late is null"&); }
+    let x = 42;
+    LATE = x&;
+    println(LATE@);
+
+    if !FLAG { FLAG = true; }
+    if FLAG { println("flag set"&); }
+
+    // A reference to a static's storage works like any place.
+    let r = COUNTER&;
+    r@ = r@ + 10;
+    println(COUNTER);
+}

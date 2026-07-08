@@ -89,6 +89,16 @@ struct Box#[T] {
 type Num = Int;
 type OptInt = Option#[Int];
 
+// statics: global mutable state (top-level only). The initial value must be a
+// literal; the type annotation is optional. State that needs init code is a
+// nullable reference populated in main().
+static CALL_COUNT: Int = 0;
+static LATE_INIT: &?Int = null#[Int];
+
+fn count_call() {
+  CALL_COUNT = CALL_COUNT + 1;
+}
+
 fn main() {
   // comments look like this
 
@@ -423,6 +433,14 @@ fn main() {
   } catch (e) {
     println(e);                          // caught exception
   }
+
+  // statics: read/assign like any place; populate a nullable-ref static here
+  count_call();
+  count_call();
+  println(CALL_COUNT);                   // 2
+  let late = 7;
+  LATE_INIT = late&;
+  println(LATE_INIT@);                   // 7
 }
 
 // works with generics: each instantiation takes its own branch

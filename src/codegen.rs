@@ -21,6 +21,7 @@ pub fn generate(module: &Module, source_file: &str, source_map: &SourceMap) -> S
         source_file: source_file.to_string(),
         source_map,
         emitted_mark_fns: HashSet::new(),
+        static_root_count: 0,
         loop_dst: Vec::new(),
         cur_loc: None,
     };
@@ -39,6 +40,9 @@ struct Codegen<'a> {
     /// actual file (e.g. a `@std` file) rather than always the main file.
     source_map: &'a SourceMap,
     emitted_mark_fns: HashSet<String>,
+    /// Number of GC-relevant static slots in the emitted `_sol_statics` root
+    /// table (0 = no table emitted; `main` passes null to `sol_start`).
+    static_root_count: usize,
     /// C lvalue strings for the enclosing loop expressions' result destinations;
     /// `break <v>` assigns into the innermost one.
     loop_dst: Vec<String>,
@@ -629,6 +633,55 @@ impl<'a> Codegen<'a> {
         // Emit GC mark functions
         self.emit_mark_functions();
 
+        // Emit the `static` globals as raw aligned byte slots (zero-initialized;
+        // their literal initial values are stored by the assignments IR lowering
+        // prepended to `main`). Copies in/out go through the same `emit_copy`
+        // machinery as any place, so 16-byte pointer-carrying values (fat
+        // pointers, function values) use `sol_copy_128_unordered` — reads and
+        // writes of a wide static cannot tear (the slot's `_Alignas` satisfies
+        // the i128 atomics' 16-byte alignment requirement, matching the type's
+        // Solar alignment). The GC-relevant slots are collected into a root
+        // table handed to `sol_start`: the collector runs each entry's mark_fn
+        // over the slot at both stop-the-world root scans (statics need no
+        // write barrier for the same reason stacks don't — roots are re-scanned
+        // at pause 2).
+        let statics_meta: Vec<(usize, String)> = self
+            .module
+            .statics
+            .iter()
+            .enumerate()
+            .map(|(i, st)| (i, self.mark_fn_expr(&st.ty)))
+            .collect();
+        for (i, st) in self.module.statics.iter().enumerate() {
+            let size = self.type_size(&st.ty).max(1);
+            let align = self.type_align(&st.ty);
+            self.linef(format!(
+                "static _Alignas({align}) uint8_t _gs{i}[{size}]; // static {}",
+                st.name
+            ));
+        }
+        let gc_statics: Vec<&(usize, String)> = statics_meta
+            .iter()
+            .filter(|(_, mark)| mark != "_mark_noop")
+            .collect();
+        if !gc_statics.is_empty() {
+            let entries: Vec<String> = gc_statics
+                .iter()
+                .map(|(i, mark)| {
+                    let size = self.type_size(&self.module.statics[*i].ty).max(1);
+                    format!("{{ _gs{i}, {size}, {mark} }}")
+                })
+                .collect();
+            self.linef(format!(
+                "static const sol_static_entry _sol_statics[] = {{ {} }};",
+                entries.join(", ")
+            ));
+        }
+        self.static_root_count = gc_statics.len();
+        if !self.module.statics.is_empty() {
+            self.line("");
+        }
+
         // Forward-declare user functions
         for func in &self.module.functions {
             let sig = self.func_signature(func);
@@ -654,7 +707,14 @@ impl<'a> Codegen<'a> {
         self.raw_line("#ifdef SOLAR_DEBUG_DISABLE_GC");
         self.raw_line("sol_disable_gc();");
         self.raw_line("#endif");
-        self.line("sol_start(solar_main);");
+        if self.static_root_count > 0 {
+            self.linef(format!(
+                "sol_start(solar_main, _sol_statics, {});",
+                self.static_root_count
+            ));
+        } else {
+            self.line("sol_start(solar_main, 0, 0);");
+        }
         self.line("return 0;");
         self.indent -= 1;
         self.line("}");
@@ -734,7 +794,12 @@ impl<'a> Codegen<'a> {
         self.line("extern uint8_t* sol_slice_range(uint8_t* base, uint64_t start, uint64_t end, uint64_t len, uint64_t elem_size);");
         self.line("extern uint8_t* sol_null_check(uint8_t* ptr);");
         self.line("extern void sol_assert_array_len(uint64_t actual, uint64_t expected);");
-        self.line("extern void sol_start(void (*solar_main)(void*));");
+        self.line(
+            "typedef struct { uint8_t* addr; uint64_t size; sol_mark_fn_t mark_fn; } sol_static_entry;",
+        );
+        self.line(
+            "extern void sol_start(void (*solar_main)(void*), const sol_static_entry* statics, size_t statics_len);",
+        );
         self.line("extern void sol_disable_gc(void);");
         self.line("extern void sol_thread_spawn(void* fn_ptr, void* env);");
         self.line("extern void sol_throw(const uint8_t* ptr, size_t len);");
@@ -925,6 +990,8 @@ impl<'a> Codegen<'a> {
                     (ptr, None)
                 }
             }
+            // Statics are sized global slots.
+            NodeKind::Global(idx) => (format!("((uint8_t*)_gs{idx})"), None),
             NodeKind::FieldAccess { object, field } => {
                 let object = *object;
                 let field = field.clone();
@@ -1340,7 +1407,8 @@ impl<'a> Codegen<'a> {
                 let c_ty = self.c_int_type(ty);
                 format!("*({c_ty}*)_v{}", var.0)
             }
-            NodeKind::FieldAccess { .. }
+            NodeKind::Global(_)
+            | NodeKind::FieldAccess { .. }
             | NodeKind::Deref(_)
             | NodeKind::Index { .. }
             | NodeKind::Slice { .. } => {
@@ -1948,6 +2016,7 @@ impl<'a> Codegen<'a> {
         }
         match &nodes[id.0].kind {
             NodeKind::Local(_)
+            | NodeKind::Global(_)
             | NodeKind::FieldAccess { .. }
             | NodeKind::Deref(_)
             | NodeKind::Index { .. }

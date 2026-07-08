@@ -25,6 +25,7 @@ pub enum TopLevelItem {
     Import(ImportDef),
     TypeAlias(TypeAliasDef),
     Const(ConstDef),
+    Static(StaticDef),
 }
 
 #[derive(Debug, Clone)]
@@ -34,6 +35,21 @@ pub struct ConstDef {
     pub ty: Option<Type>,
     /// The constant's value — must be a literal. Substituted at each use site
     /// during type-check/lowering.
+    pub value: Box<Expr>,
+    pub is_pub: bool,
+    pub span: SourceSpan,
+}
+
+/// `static NAME[: T] = <literal>;` — a global mutable variable (top-level
+/// only). Like keyword-parameter defaults, the initial value must be a
+/// literal; state needing init code is a nullable reference populated in
+/// `main`. The type must be sized.
+#[derive(Debug, Clone)]
+pub struct StaticDef {
+    pub name: String,
+    /// Optional explicit type; inferred from the literal `value` when absent.
+    pub ty: Option<Type>,
+    /// The initial value — must be a literal, stored before `main` runs.
     pub value: Box<Expr>,
     pub is_pub: bool,
     pub span: SourceSpan,

@@ -323,6 +323,9 @@ fn collect_locals(nodes: &[Node], id: NodeId, out: &mut HashSet<VarId>) {
         NodeKind::Local(var) => {
             out.insert(*var);
         }
+        // A static's storage is global, not any local's — taking a reference
+        // rooted at it involves no local variable.
+        NodeKind::Global(_) => {}
         NodeKind::FieldAccess { object, .. } => collect_locals(nodes, *object, out),
         NodeKind::Deref(n)
         | NodeKind::Ref(n)

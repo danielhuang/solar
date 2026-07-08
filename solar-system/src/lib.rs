@@ -43,8 +43,27 @@ pub extern "C" fn sol_disable_gc() {
     unsafe { gc::DISABLE_GC.set(true) };
 }
 
+/// A `static` slot registered as a GC root. Codegen emits one entry per
+/// pointer-carrying `static` global; the collector runs `mark_fn` over the
+/// slot (`addr`, `size`) at both stop-the-world root scans.
+#[repr(C)]
+pub struct StaticEntry {
+    pub addr: *mut u8,
+    pub size: u64,
+    pub mark_fn: mem::MarkFn,
+}
+// SAFETY: entries live in the program's immutable static data and point at
+// global slots valid for the process lifetime. The GC thread only reads the
+// slots during stop-the-world pauses (no mutator is running).
+unsafe impl Send for StaticEntry {}
+unsafe impl Sync for StaticEntry {}
+
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sol_start(solar_main: unsafe extern "C" fn(*mut c_void)) {
+pub unsafe extern "C" fn sol_start(
+    solar_main: unsafe extern "C" fn(*mut c_void),
+    statics: *const StaticEntry,
+    statics_len: usize,
+) {
     let start = Instant::now();
     panic::install_panic_hook();
 
@@ -63,9 +82,17 @@ pub unsafe extern "C" fn sol_start(solar_main: unsafe extern "C" fn(*mut c_void)
     file::init();
     LazyLock::force(&thread_pool::THREAD_POOL);
 
+    // The generated statics root table lives in the program's immutable data
+    // for the process lifetime.
+    let statics: &'static [StaticEntry] = if statics.is_null() {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(statics, statics_len) }
+    };
+
     // Dedicated collector thread. Mutators only ever wake it (via request_gc);
     // collection runs concurrently on this thread.
-    let gc_handle = gc::spawn_gc_thread();
+    let gc_handle = gc::spawn_gc_thread(statics);
 
     // Run main via sol_thread_start (registers thread, calls entry, unregisters)
     unsafe {

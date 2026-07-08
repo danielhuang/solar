@@ -28,6 +28,7 @@ enum ExportKind {
     Method,
     TypeAlias,
     Const,
+    Static,
 }
 
 struct Resolver {
@@ -187,6 +188,12 @@ impl Resolver {
                         .or_default()
                         .push(ExportKind::Const);
                 }
+                TopLevelItem::Static(st) if st.is_pub => {
+                    exports
+                        .entry(st.name.clone())
+                        .or_default()
+                        .push(ExportKind::Static);
+                }
                 _ => {}
             }
         }
@@ -319,6 +326,12 @@ impl Resolver {
                     local_defs.insert(c.name.clone());
                     if !prefix.is_empty() {
                         rename_map.insert(c.name.clone(), format!("{prefix}{}", c.name));
+                    }
+                }
+                TopLevelItem::Static(st) => {
+                    local_defs.insert(st.name.clone());
+                    if !prefix.is_empty() {
+                        rename_map.insert(st.name.clone(), format!("{prefix}{}", st.name));
                     }
                 }
                 TopLevelItem::Import(_) => {}
@@ -586,6 +599,17 @@ impl Resolver {
                     }
                     set_file_id_span(&mut c.span, file_id);
                     rewritten.push(TopLevelItem::Const(c));
+                }
+                TopLevelItem::Static(st) => {
+                    let mut st = st.clone();
+                    st.name = rename_map.get(&st.name).cloned().unwrap_or(st.name.clone());
+                    // The value is a literal (no name references), but an explicit
+                    // type may reference a renamed/imported type.
+                    if let Some(ty) = &mut st.ty {
+                        *ty = rewrite_type(ty, &rename_map, &module_aliases, &[]);
+                    }
+                    set_file_id_span(&mut st.span, file_id);
+                    rewritten.push(TopLevelItem::Static(st));
                 }
                 TopLevelItem::Import(_) => {
                     // Strip imports from output

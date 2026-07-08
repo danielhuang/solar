@@ -40,6 +40,16 @@ pub struct NodeId(pub usize);
 pub struct Module {
     pub datatypes: HashMap<String, DataType>,
     pub functions: Vec<Function>,
+    /// Top-level `static` declarations (global mutable slots), in source
+    /// order. `NodeKind::Global(i)` indexes into this. Their literal initial
+    /// values are stored by assignments prepended to `main`'s body.
+    pub statics: Vec<IrStatic>,
+}
+
+#[derive(Debug)]
+pub struct IrStatic {
+    pub name: String,
+    pub ty: Type,
 }
 
 #[derive(Debug)]
@@ -96,6 +106,9 @@ pub enum NodeKind {
     /// as an 8-byte or 16-byte zero.
     Null,
     Local(VarId),
+    /// A top-level `static` slot (index into `Module::statics`) — a global
+    /// mutable place.
+    Global(usize),
     FieldAccess {
         object: NodeId,
         field: String,
@@ -229,14 +242,64 @@ pub fn lower(source: &typed_ast::SourceFile) -> Module {
         collect_closure_captures(&func.body, &mut closure_captures);
     }
 
+    let statics: Vec<IrStatic> = source
+        .statics
+        .iter()
+        .map(|s| IrStatic {
+            name: s.name.clone(),
+            ty: s.ty.clone(),
+        })
+        .collect();
+    let static_idx: HashMap<String, usize> = source
+        .statics
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.name.clone(), i))
+        .collect();
+
     let functions = source
         .functions
         .values()
-        .map(|f| lower_function(f, &mut next_var, closure_captures.get(&f.name), &datatypes))
+        .map(|f| {
+            // Statics are initialized by assignments prepended to `main` (their
+            // values are literals, so this is pure stores — no user code runs
+            // before them).
+            if f.name == "main" && !source.statics.is_empty() {
+                let mut main_fn = f.clone();
+                let inits = source.statics.iter().map(|st| typed_ast::Statement {
+                    kind: typed_ast::StatementKind::Assignment {
+                        target: typed_ast::Expr {
+                            ty: st.ty.clone(),
+                            kind: typed_ast::ExprKind::Global(st.name.clone()),
+                            span: st.init.span,
+                        },
+                        value: st.init.clone(),
+                    },
+                    span: st.init.span,
+                });
+                main_fn.body.splice(0..0, inits);
+                lower_function(
+                    &main_fn,
+                    &mut next_var,
+                    closure_captures.get(&f.name),
+                    &datatypes,
+                    &static_idx,
+                )
+            } else {
+                lower_function(
+                    f,
+                    &mut next_var,
+                    closure_captures.get(&f.name),
+                    &datatypes,
+                    &static_idx,
+                )
+            }
+        })
         .collect();
     Module {
         datatypes,
         functions,
+        statics,
     }
 }
 
@@ -375,6 +438,7 @@ fn collect_closure_captures_expr(
             }
         }
         typed_ast::ExprKind::Identifier(_)
+        | typed_ast::ExprKind::Global(_)
         | typed_ast::ExprKind::IntegerLiteral(_)
         | typed_ast::ExprKind::BooleanLiteral(_)
         | typed_ast::ExprKind::NullLiteral
@@ -511,6 +575,7 @@ pub fn type_contains_enum(ty: &Type, dt: &HashMap<String, DataType>) -> bool {
 pub fn is_place(nodes: &[Node], id: NodeId) -> bool {
     match &nodes[id.0].kind {
         NodeKind::Local(_)
+        | NodeKind::Global(_)
         | NodeKind::FieldAccess { .. }
         | NodeKind::Deref(_)
         | NodeKind::Index { .. }
@@ -699,16 +764,23 @@ struct FunctionLowerer<'a> {
     scopes: ScopeStack<VarId>,
     pending_stmts: Vec<NodeId>,
     datatypes: &'a HashMap<String, DataType>,
+    /// Static name -> `Module::statics` index, for `ExprKind::Global`.
+    static_idx: &'a HashMap<String, usize>,
 }
 
 impl<'a> FunctionLowerer<'a> {
-    fn new(next_var: &'a mut RangeFrom<u32>, datatypes: &'a HashMap<String, DataType>) -> Self {
+    fn new(
+        next_var: &'a mut RangeFrom<u32>,
+        datatypes: &'a HashMap<String, DataType>,
+        static_idx: &'a HashMap<String, usize>,
+    ) -> Self {
         FunctionLowerer {
             nodes: Vec::new(),
             next_var,
             scopes: ScopeStack::default(),
             pending_stmts: Vec::new(),
             datatypes,
+            static_idx,
         }
     }
 
@@ -767,6 +839,11 @@ impl<'a> FunctionLowerer<'a> {
                     span: expr.span,
                 })
             }
+            typed_ast::ExprKind::Global(name) => self.push(Node {
+                ty: expr.ty.clone(),
+                kind: NodeKind::Global(self.static_idx[name.as_str()]),
+                span: expr.span,
+            }),
             typed_ast::ExprKind::IntegerLiteral(n) => self.push(Node {
                 ty: expr.ty.clone(),
                 kind: NodeKind::IntegerLiteral(*n),
@@ -1413,8 +1490,9 @@ fn lower_function(
     next_var: &mut RangeFrom<u32>,
     captures: Option<&Vec<typed_ast::CapturedVar>>,
     datatypes: &HashMap<String, DataType>,
+    static_idx: &HashMap<String, usize>,
 ) -> Function {
-    let mut lowerer = FunctionLowerer::new(next_var, datatypes);
+    let mut lowerer = FunctionLowerer::new(next_var, datatypes, static_idx);
     lowerer.push_scope();
 
     // For closure functions, define captured variables in scope first

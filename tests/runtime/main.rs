@@ -737,3 +737,12 @@ fn ipv6_parse() {
          203\n0\n113\n7\n"
     );
 }
+
+#[test]
+fn statics() {
+    let output = run(&fixture("statics.solar"), "statics");
+    assert_eq!(
+        output,
+        "3\n9\ninitial\nswapped\nlate is null\n42\nflag set\n13\n"
+    );
+}

@@ -166,6 +166,10 @@ struct Interpreter<'a, 'io> {
     /// Result destinations of the enclosing loop expressions; `break <v>` writes
     /// the value into the innermost one.
     loop_dst: Vec<usize>,
+    /// Storage address of each `Module::statics` slot (zeroed at start; their
+    /// literal initial values are stored by the assignments IR lowering
+    /// prepended to `main`).
+    static_addrs: Vec<usize>,
 }
 
 impl<'a, 'io> Interpreter<'a, 'io> {
@@ -182,16 +186,28 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             .enumerate()
             .map(|(i, name)| (*name, i as u64))
             .collect();
+        let mut mem = Memory::new();
+        let static_addrs = module
+            .statics
+            .iter()
+            .map(|st| {
+                mem.alloc(
+                    type_size(&st.ty, &module.datatypes),
+                    type_align(&st.ty, &module.datatypes),
+                )
+            })
+            .collect();
         Interpreter {
             module,
             functions,
             fn_name_to_index,
             fn_index_to_name,
-            mem: Memory::new(),
+            mem,
             vars: HashMap::new(),
             var_meta: HashMap::new(),
             files: FileTable::new(stdin, stdout),
             loop_dst: Vec::new(),
+            static_addrs,
         }
     }
 
@@ -394,6 +410,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let meta = self.var_meta.get(var).copied();
                 (addr, meta)
             }
+            NodeKind::Global(idx) => (self.static_addrs[*idx], None),
             NodeKind::FieldAccess { object, field } => {
                 let object = *object;
                 let field = field.clone();
@@ -593,6 +610,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             }
             NodeKind::Local(var) => {
                 let addr = self.vars[var];
+                let ty = &nodes[id.0].ty;
+                self.scalar_load(addr, ty)
+            }
+            NodeKind::Global(idx) => {
+                let addr = self.static_addrs[*idx];
                 let ty = &nodes[id.0].ty;
                 self.scalar_load(addr, ty)
             }
@@ -834,6 +856,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
     fn eval_into(&mut self, nodes: &[Node], id: NodeId, dst: usize) -> Eval<()> {
         match &nodes[id.0].kind {
             NodeKind::Local(_)
+            | NodeKind::Global(_)
             | NodeKind::FieldAccess { .. }
             | NodeKind::Deref(_)
             | NodeKind::Index { .. }

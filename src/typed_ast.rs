@@ -174,6 +174,7 @@ impl fmt::Display for Type {
 fn is_place_expr(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::Identifier(_)
+        | ExprKind::Global(_)
         | ExprKind::FieldAccess { .. }
         | ExprKind::Deref(_)
         | ExprKind::Index { .. }
@@ -741,6 +742,9 @@ fn integer_type_ast_name(it: &ast::IntegerType) -> &'static str {
 fn is_literal_default(e: &ast::Expr) -> bool {
     match &e.kind {
         ast::ExprKind::IntegerLiteral(..) | ast::ExprKind::BooleanLiteral(_) => true,
+        // `null#[T]` — the untouched-until-main initial value for a static
+        // whose real value needs init code.
+        ast::ExprKind::NullLiteral(_) => true,
         ast::ExprKind::ArrayLiteral(elems) => elems.iter().all(is_literal_default),
         ast::ExprKind::ArrayRepeat { element, count } => {
             is_literal_default(element) && is_literal_default(count)
@@ -932,6 +936,17 @@ pub struct SourceFile {
     pub structs: HashMap<String, StructDef>,
     pub enums: HashMap<String, EnumDef>,
     pub functions: HashMap<String, FunctionDef>,
+    /// Top-level `static` declarations, in source order. Each init is the
+    /// lowered literal expression; downstream layers store it into the global
+    /// before `main`'s body runs.
+    pub statics: Vec<StaticItem>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StaticItem {
+    pub name: String,
+    pub ty: Type,
+    pub init: Expr,
 }
 
 #[derive(Debug, Clone)]
@@ -1005,6 +1020,8 @@ pub struct Expr {
 #[derive(Debug, Clone)]
 pub enum ExprKind {
     Identifier(String),
+    /// A reference to a top-level `static` (a global mutable place).
+    Global(String),
     IntegerLiteral(i64),
     BooleanLiteral(bool),
     FieldAccess {
@@ -1435,6 +1452,11 @@ struct Lowerer<'a> {
     consts: HashMap<String, &'a ast::ConstDef>,
     /// Block-scoped local const declarations, pushed/popped with `scopes`.
     const_scopes: Vec<HashMap<String, ast::ConstDef>>,
+    /// Top-level `static` declarations (globals), in source order.
+    static_defs: Vec<&'a ast::StaticDef>,
+    /// Resolved types of the statics, by name — filled early in `lower_all` so
+    /// function bodies can reference them as `ExprKind::Global` places.
+    statics: HashMap<String, Type>,
     /// Stack of enclosing loops in the *current* function. Cleared when entering
     /// a closure or nested function so `break`/`continue` can't escape into an
     /// outer function's loop. Each entry tracks whether the loop is a value-
@@ -1462,6 +1484,7 @@ impl<'a> Lowerer<'a> {
         let mut method_defs: HashMap<String, Vec<FunctionEntry>> = HashMap::new();
         let mut display_names: HashMap<String, String> = HashMap::new();
         let mut consts: HashMap<String, &ast::ConstDef> = HashMap::new();
+        let mut static_defs: Vec<&ast::StaticDef> = Vec::new();
         for item in &source.items {
             match item {
                 ast::TopLevelItem::Struct(s) => {
@@ -1563,6 +1586,25 @@ impl<'a> Lowerer<'a> {
                             c.span,
                         ));
                     }
+                }
+                ast::TopLevelItem::Static(st) => {
+                    // Like keyword-parameter defaults, the initial value must be
+                    // a literal (stored into the global before `main` runs);
+                    // state that needs init code is a nullable reference
+                    // populated in `main`.
+                    if !is_literal_default(&st.value) {
+                        return Err(CompileError::new(
+                            format!("static `{}` must be assigned a literal value", st.name),
+                            st.value.span,
+                        ));
+                    }
+                    if static_defs.iter().any(|s| s.name == st.name) {
+                        return Err(CompileError::new(
+                            format!("duplicate static definition: `{}`", st.name),
+                            st.span,
+                        ));
+                    }
+                    static_defs.push(st);
                 }
                 ast::TopLevelItem::Import(_) => {
                     panic!("Import items must be resolved before type checking");
@@ -1690,6 +1732,8 @@ impl<'a> Lowerer<'a> {
             type_aliases,
             consts,
             const_scopes: Vec::new(),
+            static_defs,
+            statics: HashMap::new(),
             loop_ctx: Vec::new(),
         })
     }
@@ -2760,6 +2804,52 @@ impl<'a> Lowerer<'a> {
             self.lowered_enums.get_mut(name).unwrap().variants = variants;
         }
 
+        // Resolve and register statics: type from the annotation (coercing the
+        // literal) or inferred from the literal; must be sized (a global slot
+        // has fixed storage — use `&`/`&?` for unsized data). Registered before
+        // functions are lowered so bodies can reference them.
+        let mut statics_out: Vec<StaticItem> = Vec::new();
+        for st in self.static_defs.clone() {
+            if self.consts.contains_key(&st.name) {
+                return Err(CompileError::new(
+                    format!("`{}` is declared as both a const and a static", st.name),
+                    st.span,
+                ));
+            }
+            let init = self.lower_expr(&st.value)?;
+            let init = if let Some(ann) = &st.ty {
+                let resolved = self.resolve_ast_type(ann)?;
+                let coerced = self.try_coerce(init, &resolved);
+                if coerced.ty != resolved {
+                    return Err(CompileError::new(
+                        format!(
+                            "static `{}`: value of type {} does not match declared type {resolved}",
+                            st.name, coerced.ty
+                        ),
+                        st.value.span,
+                    ));
+                }
+                coerced
+            } else {
+                init
+            };
+            if !init.ty.is_sized(&self.lowered_structs) {
+                return Err(CompileError::new(
+                    format!(
+                        "static `{}` has unsized type {} — store a reference instead",
+                        st.name, init.ty
+                    ),
+                    st.span,
+                ));
+            }
+            self.statics.insert(st.name.clone(), init.ty.clone());
+            statics_out.push(StaticItem {
+                name: st.name.clone(),
+                ty: init.ty.clone(),
+                init,
+            });
+        }
+
         // Build local structs/enums from non-generic definitions
         let mut structs: HashMap<String, StructDef> = struct_names
             .iter()
@@ -2859,6 +2949,7 @@ impl<'a> Lowerer<'a> {
             structs,
             enums,
             functions,
+            statics: statics_out,
         })
     }
 
@@ -3762,6 +3853,13 @@ impl<'a> Lowerer<'a> {
                     Ok(Expr {
                         ty,
                         kind: ExprKind::Identifier(name.clone()),
+                        span: expr.span,
+                    })
+                } else if let Some(ty) = self.statics.get(name) {
+                    // A top-level static: a global mutable place.
+                    Ok(Expr {
+                        ty: ty.clone(),
+                        kind: ExprKind::Global(name.clone()),
                         span: expr.span,
                     })
                 } else if let Some(cdef) = self.lookup_const(name) {

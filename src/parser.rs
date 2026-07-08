@@ -159,6 +159,7 @@ fn convert_source_file(node: tree_sitter::Node, source: &str) -> SourceFile {
                 child, source,
             ))),
             "const_def" => items.push(TopLevelItem::Const(convert_const_def(child, source))),
+            "static_def" => items.push(TopLevelItem::Static(convert_static_def(child, source))),
             _ => {}
         }
     }
@@ -273,6 +274,25 @@ fn convert_const_def(node: tree_sitter::Node, source: &str) -> ConstDef {
         source,
     ));
     ConstDef {
+        name,
+        ty,
+        value,
+        is_pub,
+        span: source_span(node),
+    }
+}
+
+fn convert_static_def(node: tree_sitter::Node, source: &str) -> StaticDef {
+    let name = node_text(node.child_by_field_name("name").unwrap(), source).to_string();
+    let is_pub = has_pub_keyword(node, source);
+    let ty = node
+        .child_by_field_name("type")
+        .map(|n| convert_type(n, source));
+    let value = Box::new(convert_expr(
+        node.child_by_field_name("value").unwrap(),
+        source,
+    ));
+    StaticDef {
         name,
         ty,
         value,

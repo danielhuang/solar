@@ -30,13 +30,25 @@ module.exports = grammar({
   rules: {
     source_file: ($) => repeat($._top_level_item),
 
-    _top_level_item: ($) => choice($.struct_def, $.function_def, $.enum_def, $.method_def, $.import_statement, $.type_alias_def, $.const_def),
+    _top_level_item: ($) => choice($.struct_def, $.function_def, $.enum_def, $.method_def, $.import_statement, $.type_alias_def, $.const_def, $.static_def),
 
     // ── Const ──────────────────────────────────────────────
     const_def: ($) =>
       seq(
         optional("pub"),
         "const",
+        field("name", $.identifier),
+        optional(seq(":", field("type", $._type))),
+        "=",
+        field("value", $._expression),
+        ";",
+      ),
+
+    // ── Static (global mutable state; top-level only) ─────
+    static_def: ($) =>
+      seq(
+        optional("pub"),
+        "static",
         field("name", $.identifier),
         optional(seq(":", field("type", $._type))),
         "=",

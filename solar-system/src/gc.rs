@@ -578,12 +578,14 @@ pub(crate) fn request_gc() {
 /// Spawn the dedicated collector thread. It blocks the GC signal (it is never a
 /// mutator and must not stop itself) and is never entered into THREAD_REGISTRY,
 /// so the stop-the-world signal sweep never targets it.
-pub(crate) fn spawn_gc_thread() -> std::thread::JoinHandle<()> {
+pub(crate) fn spawn_gc_thread(
+    statics: &'static [crate::StaticEntry],
+) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("solar-gc".into())
-        .spawn(|| {
+        .spawn(move || {
             block_gc_signal();
-            gc_thread_main();
+            gc_thread_main(statics);
         })
         .unwrap()
 }
@@ -604,7 +606,7 @@ pub(crate) fn shutdown_gc_thread(handle: std::thread::JoinHandle<()>) {
     handle.join().unwrap();
 }
 
-fn gc_thread_main() {
+fn gc_thread_main(statics: &[crate::StaticEntry]) {
     // Start at 0 (not a load): a request that arrived between spawn and here
     // already bumped GC_REQUEST to 1, and must be served — initializing from
     // the load would skip it and leave GC_REQUESTED stuck true, starving the
@@ -630,7 +632,7 @@ fn gc_thread_main() {
         served = cur;
         // Let allocations during this cycle arm a fresh request for the next.
         GC_REQUESTED.store(false, Ordering::Release);
-        unsafe { run_gc_cycle() };
+        unsafe { run_gc_cycle(statics) };
     }
 }
 
@@ -983,7 +985,37 @@ unsafe fn sweep_big(
 // GC cycle: STW root scan → concurrent mark → STW remark + sweep.
 // ---------------------------------------------------------------------------
 
-unsafe fn run_gc_cycle() {
+/// Run each registered `static` slot's generated mark function over the slot,
+/// collecting the pointer values it reports into `out` — the statics' half of
+/// a stop-the-world root scan (the mutator-stack half is `scan_thread_roots`).
+/// Must run while the world is stopped: the mark fns read the slots directly,
+/// and a concurrent mutator store to a static could race (wide slots are only
+/// single-copy-atomic mutator-to-mutator via the i128 helpers).
+unsafe fn scan_static_roots(statics: &[crate::StaticEntry], out: &mut Vec<usize>) {
+    if statics.is_empty() {
+        return;
+    }
+    let mut ctx = MarkContext {
+        big_ptr: std::ptr::null(),
+        big_len: 0,
+        worklist: out,
+        shard: 0,
+        accum_class: u32::MAX,
+        accum_word: 0,
+        accum_bits: 0,
+    };
+    for entry in statics {
+        unsafe {
+            (entry.mark_fn)(
+                &mut ctx as *mut MarkContext as *mut u8,
+                entry.addr,
+                entry.size,
+            )
+        };
+    }
+}
+
+unsafe fn run_gc_cycle(statics: &[crate::StaticEntry]) {
     let enable_stat_prints = ENABLE_STAT_PRINTS.get();
     let gc_start = std::time::Instant::now();
     if enable_stat_prints {
@@ -1012,6 +1044,7 @@ unsafe fn run_gc_cycle() {
         for slot in registry.values() {
             unsafe { scan_thread_roots(slot, arena_base, big_len, &mut roots) };
         }
+        unsafe { scan_static_roots(statics, &mut roots) };
         gray_seed(&roots);
 
         MARKING_HAS_BIG.store(big_len != 0, Ordering::Release);
@@ -1067,6 +1100,9 @@ unsafe fn run_gc_cycle() {
             remark.append(buf);
             unsafe { scan_thread_roots(slot, arena_base, big_snapshot.len(), &mut remark) };
         }
+        // Statics take no write barrier (like stacks); this re-scan is what
+        // catches pointers stored into them during the concurrent mark.
+        unsafe { scan_static_roots(statics, &mut remark) };
         gray_seed(&remark);
         p2_scan = remark_start.elapsed();
         remark_roots = remark.len();

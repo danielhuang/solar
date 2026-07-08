@@ -351,6 +351,10 @@ struct Interpreter<'a, 'io> {
     functions: HashMap<String, &'a FunctionDef>,
     scopes: ScopeStack<Slot>,
     files: FileTable<'io>,
+    /// Top-level `static` slots, by name. Initialized from their literal init
+    /// expressions in `run` before `main`'s body executes.
+    globals: HashMap<String, Slot>,
+    statics: &'a [crate::typed_ast::StaticItem],
 }
 
 impl<'a, 'io> Interpreter<'a, 'io> {
@@ -364,6 +368,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             functions,
             scopes: ScopeStack::default(),
             files: FileTable::new(stdin, stdout),
+            globals: HashMap::new(),
+            statics: &source.statics,
         }
     }
 
@@ -390,6 +396,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
     fn eval_place(&mut self, expr: &Expr) -> Eval<Slot> {
         Ok(match &expr.kind {
             ExprKind::Identifier(name) => self.lookup_var(name),
+            ExprKind::Global(name) => Rc::clone(&self.globals[name.as_str()]),
             ExprKind::FieldAccess { object, field } => {
                 let obj_slot = self.eval_place(object)?;
                 let obj_ref = obj_slot.borrow();
@@ -536,6 +543,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
     fn eval_expr(&mut self, expr: &Expr) -> Eval<Value> {
         Ok(match &expr.kind {
             ExprKind::Identifier(_)
+            | ExprKind::Global(_)
             | ExprKind::FieldAccess { .. }
             | ExprKind::Deref(_)
             | ExprKind::Index { .. }
@@ -1839,6 +1847,18 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             main_func.parameters.is_empty(),
             "main function must take no parameters"
         );
+
+        // Store the statics' literal initial values before main's body runs.
+        self.push_scope();
+        let statics = self.statics;
+        for st in statics {
+            let Ok(val) = self.eval_expr(&st.init) else {
+                unreachable!("static initializers are literals and cannot throw")
+            };
+            self.globals
+                .insert(st.name.clone(), Rc::new(RefCell::new(val)));
+        }
+        self.pop_scope();
 
         self.push_scope();
         let result = self.exec_function_body(&main_func.body, &main_func.return_type);
