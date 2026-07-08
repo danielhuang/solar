@@ -68,8 +68,9 @@ impl<'io> FileTable<'io> {
     /// Open `path` with the given `open(2)` `flags` and creation `mode`, push it,
     /// and return its `FileDesc` index. The flag bits match the Linux values used
     /// by `@std`'s `file::open` (the compiled runtime passes them straight to
-    /// `open(2)`); here they're decoded into `OpenOptions`.
-    pub fn open(&mut self, path: &str, flags: i64, mode: u32) -> usize {
+    /// `open(2)`); here they're decoded into `OpenOptions`. Errors are returned
+    /// so the interpreters can throw them as catchable Solar exceptions.
+    pub fn open(&mut self, path: &str, flags: i64, mode: u32) -> std::io::Result<usize> {
         use std::os::unix::fs::OpenOptionsExt;
         // POSIX open(2) flags (Linux values).
         const O_WRONLY: i64 = 1;
@@ -92,25 +93,19 @@ impl<'io> FileTable<'io> {
             o.create(true);
         }
         o.mode(mode);
-        let f = o
-            .open(path)
-            .unwrap_or_else(|e| panic!("file_open: could not open {path:?}: {e}"));
+        let f = o.open(path)?;
         self.files.push(Box::new(f));
-        self.files.len() - 1
+        Ok(self.files.len() - 1)
     }
 
     /// Read into `buf` from the stream at `fd`, returning the byte count.
-    pub fn read(&mut self, fd: usize, buf: &mut [u8]) -> usize {
-        self.files[fd]
-            .read(buf)
-            .unwrap_or_else(|e| panic!("file_read failed: {e}"))
+    pub fn read(&mut self, fd: usize, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.files[fd].read(buf)
     }
 
     /// Write `buf` to the stream at `fd`, returning the byte count actually
     /// written (a single, possibly partial, write).
-    pub fn write_partial(&mut self, fd: usize, buf: &[u8]) -> usize {
-        self.files[fd]
-            .write(buf)
-            .unwrap_or_else(|e| panic!("file_write_partial failed: {e}"))
+    pub fn write_partial(&mut self, fd: usize, buf: &[u8]) -> std::io::Result<usize> {
+        self.files[fd].write(buf)
     }
 }

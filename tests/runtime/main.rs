@@ -641,6 +641,34 @@ fn file_open_flags() {
     assert_eq!(output, "xyz\n");
 }
 
+// Every fallible runtime intrinsic (checked arithmetic, bounds/null/length
+// checks, file errors) throws a *catchable* Solar exception whose message is
+// byte-identical across the three backends.
+#[test]
+fn catch_runtime_errors() {
+    let output = run(
+        &fixture("catch_runtime_errors.solar"),
+        "catch_runtime_errors",
+    );
+    assert_eq!(
+        output,
+        "integer overflow in addition\n\
+         integer overflow in subtraction\n\
+         integer overflow in multiplication\n\
+         integer division by zero\n\
+         integer overflow in division\n\
+         integer modulo by zero\n\
+         index out of bounds: index is 5 but length is 3\n\
+         slice end (5) > length (3)\n\
+         slice start (2) > end (1)\n\
+         null reference dereference\n\
+         array length mismatch: expected 2 elements, got 3\n\
+         array length mismatch: expected 2 elements, got 3\n\
+         file_open failed: No such file or directory (os error 2)\n\
+         done\n"
+    );
+}
+
 #[test]
 fn throw_try() {
     let output = run(&fixture("throw_try.solar"), "throw_try");

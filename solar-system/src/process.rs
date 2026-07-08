@@ -71,7 +71,8 @@ static CAPTURE_ARGS: unsafe extern "C" fn(c_int, *const *const c_char, *const *c
     capture_args;
 
 /// Mark function for the byte buffers: they hold raw bytes, no pointers.
-unsafe extern "C" fn mark_noop(_ctx: *mut u8, _obj: *mut u8, _size: u64) {}
+/// Also used by `panic::throw_message` for runtime-thrown message buffers.
+pub(crate) unsafe extern "C" fn mark_noop(_ctx: *mut u8, _obj: *mut u8, _size: u64) {}
 
 /// Mark function for the outer array of `&[Uint8]` fat pointers. Treats every
 /// 8-byte word as a candidate pointer — the data pointer at +0 of each 16-byte

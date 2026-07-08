@@ -8,7 +8,7 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 #[test]
-#[should_panic(expected = "index out of bounds")]
+#[should_panic(expected = "index out of bounds: index is 5 but length is 3")]
 fn oob_index_ast() {
     run_ast_file(&fixture("oob_index.solar"));
 }
@@ -62,19 +62,19 @@ fn oob_slice_codegen() {
 }
 
 #[test]
-#[should_panic(expected = "array destructure: expected 2 elements, got 3")]
+#[should_panic(expected = "array length mismatch: expected 2 elements, got 3")]
 fn destructure_bad_len_ast() {
     run_ast_file(&fixture("destructure_bad_len.solar"));
 }
 
 #[test]
-#[should_panic(expected = "array destructure: expected 2 elements, got 3")]
+#[should_panic(expected = "array length mismatch: expected 2 elements, got 3")]
 fn destructure_bad_len_ir() {
     run_ir_file(&fixture("destructure_bad_len.solar"));
 }
 
 #[test]
-#[should_panic(expected = "array destructure: expected 2 elements, got 3")]
+#[should_panic(expected = "array length mismatch: expected 2 elements, got 3")]
 fn destructure_bad_len_codegen() {
     run_codegen_file(&fixture("destructure_bad_len.solar"), "destructure_bad_len");
 }

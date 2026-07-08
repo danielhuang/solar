@@ -195,6 +195,19 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         }
     }
 
+    /// Build a `Thrown` carrying `msg` as freshly-allocated message bytes —
+    /// the interpreter's counterpart of the compiled runtime's throw helpers
+    /// (`panic::throw_str`/`throw_message`). The message strings are canonical
+    /// across all three backends.
+    fn thrown(&mut self, msg: &str) -> Thrown {
+        let ptr = self.mem.alloc(msg.len().max(1), 1);
+        self.mem.data[ptr..ptr + msg.len()].copy_from_slice(msg.as_bytes());
+        Thrown {
+            ptr,
+            len: msg.len(),
+        }
+    }
+
     fn alloc_ty(&mut self, ty: &Type) -> usize {
         let s = type_size(ty, &self.module.datatypes);
         let a = type_align(ty, &self.module.datatypes);
@@ -407,7 +420,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     }
                     Type::NullableRef(_) => {
                         let addr = self.mem.load(ref_place, 8) as usize;
-                        assert!(addr != 0, "null reference dereference");
+                        if addr == 0 {
+                            return Err(self.thrown("null reference dereference"));
+                        }
                         (addr, None)
                     }
                     Type::RefUnsized(_) | Type::UniqueUnsized(_) => {
@@ -417,7 +432,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     }
                     Type::NullableRefUnsized(_) => {
                         let addr = self.mem.load(ref_place, 8) as usize;
-                        assert!(addr != 0, "null reference dereference");
+                        if addr == 0 {
+                            return Err(self.thrown("null reference dereference"));
+                        }
                         let meta = self.mem.load(ref_place + 8, 8) as usize;
                         (addr, Some(meta))
                     }
@@ -428,7 +445,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let object = *object;
                 let index = *index;
                 let (base, meta) = self.eval_place(nodes, object)?;
-                let idx = self.eval_load(nodes, index)? as i64;
+                // The index is compared and rendered as u64, matching the
+                // compiled runtime's `sol_slice_index` (a negative signed index
+                // wraps to a huge unsigned value and fails the bounds check).
+                let idx = self.eval_load(nodes, index)?;
                 let len = match meta {
                     Some(m) => m,
                     // For FixedArray, length is known from the type
@@ -437,10 +457,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                         _ => self.compute_meta(nodes, object)?.unwrap(),
                     },
                 };
-                assert!(
-                    idx >= 0 && (idx as usize) < len,
-                    "index out of bounds: index is {idx} but length is {len}"
-                );
+                if idx >= len as u64 {
+                    return Err(self.thrown(&format!(
+                        "index out of bounds: index is {idx} but length is {len}"
+                    )));
+                }
                 let idx = idx as usize;
                 let elem_ty = &nodes[id.0].ty;
                 let es = type_size(elem_ty, &self.module.datatypes);
@@ -460,8 +481,12 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                         _ => self.compute_meta(nodes, object)?.unwrap(),
                     },
                 };
-                assert!(s <= e, "slice start ({s}) > end ({e})");
-                assert!(e <= len, "slice end ({e}) > length ({len})");
+                if s > e {
+                    return Err(self.thrown(&format!("slice start ({s}) > end ({e})")));
+                }
+                if e > len {
+                    return Err(self.thrown(&format!("slice end ({e}) > length ({len})")));
+                }
                 let elem_ty = match &nodes[id.0].ty {
                     Type::Array(inner) | Type::FixedArray(inner, _) => inner,
                     _ => unreachable!(),
@@ -711,26 +736,28 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let a = self.eval_load(nodes, left)? as i64;
                 let b = self.eval_load(nodes, right)? as i64;
                 match op {
-                    BinOp::Add => a
-                        .checked_add(b)
-                        .unwrap_or_else(|| panic!("integer overflow"))
-                        as u64,
-                    BinOp::Sub => a
-                        .checked_sub(b)
-                        .unwrap_or_else(|| panic!("integer overflow"))
-                        as u64,
-                    BinOp::Mul => a
-                        .checked_mul(b)
-                        .unwrap_or_else(|| panic!("integer overflow"))
-                        as u64,
-                    BinOp::Div => a
-                        .checked_div(b)
-                        .unwrap_or_else(|| panic!("division by zero"))
-                        as u64,
-                    BinOp::Mod => a
-                        .checked_rem(b)
-                        .unwrap_or_else(|| panic!("division by zero"))
-                        as u64,
+                    BinOp::Add => match a.checked_add(b) {
+                        Some(v) => v as u64,
+                        None => return Err(self.thrown("integer overflow in addition")),
+                    },
+                    BinOp::Sub => match a.checked_sub(b) {
+                        Some(v) => v as u64,
+                        None => return Err(self.thrown("integer overflow in subtraction")),
+                    },
+                    BinOp::Mul => match a.checked_mul(b) {
+                        Some(v) => v as u64,
+                        None => return Err(self.thrown("integer overflow in multiplication")),
+                    },
+                    BinOp::Div => match a.checked_div(b) {
+                        Some(v) => v as u64,
+                        None if b == 0 => return Err(self.thrown("integer division by zero")),
+                        None => return Err(self.thrown("integer overflow in division")),
+                    },
+                    BinOp::Mod => match a.checked_rem(b) {
+                        Some(v) => v as u64,
+                        None if b == 0 => return Err(self.thrown("integer modulo by zero")),
+                        None => return Err(self.thrown("integer overflow in modulo")),
+                    },
                     BinOp::Eq => (a == b) as u64,
                     BinOp::Ne => (a != b) as u64,
                     BinOp::Lt => (a < b) as u64,
@@ -754,21 +781,26 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let a = self.eval_load(nodes, left)?;
                 let b = self.eval_load(nodes, right)?;
                 match op {
-                    BinOp::Add => a
-                        .checked_add(b)
-                        .unwrap_or_else(|| panic!("integer overflow")),
-                    BinOp::Sub => a
-                        .checked_sub(b)
-                        .unwrap_or_else(|| panic!("integer overflow")),
-                    BinOp::Mul => a
-                        .checked_mul(b)
-                        .unwrap_or_else(|| panic!("integer overflow")),
-                    BinOp::Div => a
-                        .checked_div(b)
-                        .unwrap_or_else(|| panic!("division by zero")),
-                    BinOp::Mod => a
-                        .checked_rem(b)
-                        .unwrap_or_else(|| panic!("division by zero")),
+                    BinOp::Add => match a.checked_add(b) {
+                        Some(v) => v,
+                        None => return Err(self.thrown("integer overflow in addition")),
+                    },
+                    BinOp::Sub => match a.checked_sub(b) {
+                        Some(v) => v,
+                        None => return Err(self.thrown("integer overflow in subtraction")),
+                    },
+                    BinOp::Mul => match a.checked_mul(b) {
+                        Some(v) => v,
+                        None => return Err(self.thrown("integer overflow in multiplication")),
+                    },
+                    BinOp::Div => match a.checked_div(b) {
+                        Some(v) => v,
+                        None => return Err(self.thrown("integer division by zero")),
+                    },
+                    BinOp::Mod => match a.checked_rem(b) {
+                        Some(v) => v,
+                        None => return Err(self.thrown("integer modulo by zero")),
+                    },
                     BinOp::Eq => (a == b) as u64,
                     BinOp::Ne => (a != b) as u64,
                     BinOp::Lt => (a < b) as u64,
@@ -956,12 +988,17 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             NodeKind::ArraySizeCoerce { value, size } => {
                 let value = *value;
                 let size = *size;
-                self.eval_into(nodes, value, dst)?;
+                // Check the length BEFORE the copy: `dst` is sized for `size`
+                // elements, so copying a longer slice first would write out of
+                // bounds. (compute_meta is place/length-based and safe to run
+                // before the value is evaluated.)
                 let actual_meta = self.compute_meta(nodes, value)?.unwrap();
-                assert!(
-                    actual_meta == size as usize,
-                    "array size coercion failed: expected {size} elements, got {actual_meta}"
-                );
+                if actual_meta != size as usize {
+                    return Err(self.thrown(&format!(
+                        "array length mismatch: expected {size} elements, got {actual_meta}"
+                    )));
+                }
+                self.eval_into(nodes, value, dst)?;
             }
             NodeKind::BinaryOp { op, left, right } => {
                 let op = *op;
@@ -1257,7 +1294,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let mode = self.eval_load(nodes, args[2])? as u32;
                 // No fd arena / GC here: the FileDesc is an index into a virtual
                 // table of boxed streams (the compiled runtime uses a real fd).
-                let fd = self.files.open(&path, flags, mode);
+                let fd = match self.files.open(&path, flags, mode) {
+                    Ok(fd) => fd,
+                    Err(err) => return Err(self.thrown(&format!("file_open failed: {err}"))),
+                };
                 self.scalar_store(dst, fd as u64, result_ty);
             }
             Intrinsic::FileClose => {
@@ -1277,7 +1317,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let data_ptr = self.mem.load(ref_addr, 8) as usize;
                 let data_len = self.mem.load(ref_addr + 8, 8) as usize;
                 let mut buf = vec![0u8; data_len];
-                let n = self.files.read(fd, &mut buf);
+                let n = match self.files.read(fd, &mut buf) {
+                    Ok(n) => n,
+                    Err(err) => return Err(self.thrown(&format!("file_read failed: {err}"))),
+                };
                 self.mem.data[data_ptr..data_ptr + n].copy_from_slice(&buf[..n]);
                 self.scalar_store(dst, n as u64, result_ty);
             }
@@ -1287,7 +1330,12 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let data_ptr = self.mem.load(ref_addr, 8) as usize;
                 let data_len = self.mem.load(ref_addr + 8, 8) as usize;
                 let bytes = self.mem.data[data_ptr..data_ptr + data_len].to_vec();
-                let n = self.files.write_partial(fd, &bytes);
+                let n = match self.files.write_partial(fd, &bytes) {
+                    Ok(n) => n,
+                    Err(err) => {
+                        return Err(self.thrown(&format!("file_write_partial failed: {err}")));
+                    }
+                };
                 self.scalar_store(dst, n as u64, result_ty);
             }
             Intrinsic::Args | Intrinsic::Env => {
@@ -1352,10 +1400,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 } else {
                     self.compute_meta(nodes, arr_id)?.unwrap()
                 };
-                assert!(
-                    actual_len == expected_len,
-                    "array destructure: expected {expected_len} elements, got {actual_len}"
-                );
+                if actual_len != expected_len {
+                    return Err(self.thrown(&format!(
+                        "array length mismatch: expected {expected_len} elements, got {actual_len}"
+                    )));
+                }
             }
             Intrinsic::ThreadSpawn => {
                 panic!("thread_spawn not implemented in IR interpreter");

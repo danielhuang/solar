@@ -2082,12 +2082,16 @@ impl<'a> Codegen<'a> {
             NodeKind::ArraySizeCoerce { value, size } => {
                 let value = *value;
                 let size = *size;
-                self.emit_into(nodes, value, dst);
-                // Runtime assertion: meta == size
+                // Runtime check: meta == size. Throws a catchable Solar
+                // exception (same message as the interpreters); the call is
+                // kept off the happy path behind the compare. The check runs
+                // BEFORE the copy — `dst` is sized for `size` elements, so a
+                // longer source would write past it.
                 let meta = self.emit_meta(nodes, value).unwrap();
                 self.linef(format!(
-                    "if ((uint64_t){meta} != {size}u) {{ __builtin_trap(); }}"
+                    "if ((uint64_t){meta} != {size}u) {{ sol_assert_array_len((uint64_t){meta}, {size}u); }}"
                 ));
+                self.emit_into(nodes, value, dst);
             }
             NodeKind::BinaryOp { op, left, right } => {
                 let op = *op;

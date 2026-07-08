@@ -1,0 +1,46 @@
+// Every fallible runtime intrinsic throws a *catchable* Solar exception with a
+// message that is byte-identical across the three backends (interpreters throw
+// the same strings as solar-system). Each case catches, prints the message,
+// and control resumes after the try.
+
+fn first2(pair: [Int; 2]) -> Int {
+    pair[0u]
+}
+
+fn main() {
+    let big = 9223372036854775807;
+    let min = 0 - big - 1;
+    let neg = 0 - 1;
+    let zero = 0;
+    let a: [Int] = [10, 20, 30];
+    let z: &?Int = null#[Int];
+
+    // Checked arithmetic: overflow and division/modulo by zero.
+    try { println(big + 1); } catch (e) { println(e); }
+    try { println(0u - 1u); } catch (e) { println(e); }
+    try { println(big * 2); } catch (e) { println(e); }
+    try { println(big / zero); } catch (e) { println(e); }
+    try { println(min / neg); } catch (e) { println(e); }
+    try { println(big % zero); } catch (e) { println(e); }
+
+    // Bounds checks.
+    try { println(a[5u]); } catch (e) { println(e); }
+    try { println(a[1u..5u][0u]); } catch (e) { println(e); }
+    try { println(a[2u..1u][0u]); } catch (e) { println(e); }
+
+    // Null deref, destructure, fixed-size coercion.
+    try { println(z@); } catch (e) { println(e); }
+    try {
+        let [p, q]: [Int] = a;
+        println(p + q);
+    } catch (e) { println(e); }
+    try { println(first2(a)); } catch (e) { println(e); }
+
+    // File errors.
+    try {
+        let f = file::open("/nonexistent_solar_test_dir/no_such_file"&);
+        println("UNREACHABLE"&);
+    } catch (e) { println(e); }
+
+    println("done"&);
+}

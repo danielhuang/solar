@@ -167,47 +167,63 @@ pub unsafe extern "C" fn sol_memcpy(dst: *mut u8, src: *const u8, size: usize) {
     unsafe { std::ptr::copy_nonoverlapping(src, dst, size) };
 }
 
+// Bounds/null/length checks below are *user* errors detected before any memory
+// is touched — they throw a catchable Solar exception (`extern "C-unwind"` so
+// the unwind may pass back through the generated C frames). The offset-overflow
+// `expect`s stay Rust panics: they can only trip on a corrupted length/element
+// size, i.e. a broken runtime invariant.
+
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sol_slice_range(
+pub unsafe extern "C-unwind" fn sol_slice_range(
     base: *const u8,
     start: u64,
     end: u64,
     len: u64,
     elem_size: u64,
 ) -> *const u8 {
-    assert!(start <= end, "slice start ({start}) > end ({end})");
-    assert!(end <= len, "slice end ({end}) > length ({len})");
+    if start > end {
+        crate::panic::throw_message(format_args!("slice start ({start}) > end ({end})"));
+    }
+    if end > len {
+        crate::panic::throw_message(format_args!("slice end ({end}) > length ({len})"));
+    }
     let offset = start.checked_mul(elem_size).expect("slice offset overflow");
     unsafe { base.add(offset as usize) }
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sol_slice_index(
+pub unsafe extern "C-unwind" fn sol_slice_index(
     base: *const u8,
     index: u64,
     len: u64,
     elem_size: u64,
 ) -> *const u8 {
-    assert!(
-        index < len,
-        "index out of bounds: index is {index} but length is {len}"
-    );
+    if index >= len {
+        crate::panic::throw_message(format_args!(
+            "index out of bounds: index is {index} but length is {len}"
+        ));
+    }
     let offset = index.checked_mul(elem_size).expect("index overflow");
     unsafe { base.add(offset as usize) }
 }
 
-/// Null check for dereferencing a nullable reference (`&?T`). Panics if the
-/// pointer is null; otherwise returns it unchanged.
+/// Null check for dereferencing a nullable reference (`&?T`). Throws a Solar
+/// exception if the pointer is null; otherwise returns it unchanged.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sol_null_check(ptr: *const u8) -> *const u8 {
-    assert!(!ptr.is_null(), "null reference dereference");
+pub unsafe extern "C-unwind" fn sol_null_check(ptr: *const u8) -> *const u8 {
+    if ptr.is_null() {
+        crate::panic::throw_str("null reference dereference");
+    }
     ptr
 }
 
+/// Array length check backing both array destructuring and the `[T]` → `[T; N]`
+/// coercion (`ArraySizeCoerce`).
 #[unsafe(no_mangle)]
-pub extern "C" fn sol_assert_array_len(actual: u64, expected: u64) {
-    assert!(
-        actual == expected,
-        "array destructure: expected {expected} elements, got {actual}"
-    );
+pub extern "C-unwind" fn sol_assert_array_len(actual: u64, expected: u64) {
+    if actual != expected {
+        crate::panic::throw_message(format_args!(
+            "array length mismatch: expected {expected} elements, got {actual}"
+        ));
+    }
 }

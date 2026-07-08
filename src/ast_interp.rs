@@ -93,6 +93,18 @@ fn cast_numeric_ast(raw: u64, src: &Type, dst: &Type) -> u64 {
     }
 }
 
+/// Build a `Thrown` carrying `msg` as a fresh `&[Uint8]` value — the
+/// interpreter's counterpart of the compiled runtime's throw helpers
+/// (`panic::throw_str`/`throw_message`). The message strings are canonical
+/// across all three backends.
+fn thrown(msg: &str) -> Thrown {
+    let bytes: Vec<Slot> = msg
+        .bytes()
+        .map(|b| Rc::new(RefCell::new(Value::Int(b as i64))))
+        .collect();
+    Thrown(Value::Ref(Rc::new(RefCell::new(Value::Array(bytes)))))
+}
+
 /// Extract the bytes of a `&[Uint8]`/`^[Uint8]` value (a ref to a byte array).
 fn slice_to_bytes(val: &Value) -> Vec<u8> {
     match val {
@@ -364,20 +376,31 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let inner_ref = inner_slot.borrow();
                 match &*inner_ref {
                     Value::Ref(target) | Value::Unique(target) => Rc::clone(target),
-                    Value::Null => panic!("null reference dereference"),
+                    Value::Null => return Err(thrown("null reference dereference")),
                     _ => unreachable!("type checker guarantees ref/unique"),
                 }
             }
             ExprKind::Index { object, index } => {
                 let arr_slot = self.eval_place(object)?;
                 let idx_val = self.eval_expr(index)?;
+                // The index is compared and rendered as u64, matching the
+                // compiled runtime's `sol_slice_index` (a negative signed index
+                // wraps to a huge unsigned value and fails the bounds check).
                 let idx = match idx_val {
-                    Value::Int(n) => n as usize,
+                    Value::Int(n) => n as u64,
                     _ => unreachable!("type checker guarantees integer index"),
                 };
                 let arr_ref = arr_slot.borrow();
                 match &*arr_ref {
-                    Value::Array(elements) => Rc::clone(&elements[idx]),
+                    Value::Array(elements) => {
+                        let len = elements.len();
+                        if idx >= len as u64 {
+                            return Err(thrown(&format!(
+                                "index out of bounds: index is {idx} but length is {len}"
+                            )));
+                        }
+                        Rc::clone(&elements[idx as usize])
+                    }
                     _ => unreachable!("type checker guarantees array"),
                 }
             }
@@ -397,8 +420,12 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     _ => unreachable!("type checker guarantees array"),
                 };
                 let len = elements.len();
-                assert!(s <= e, "slice start ({s}) > end ({e})");
-                assert!(e <= len, "slice end ({e}) > length ({len})");
+                if s > e {
+                    return Err(thrown(&format!("slice start ({s}) > end ({e})")));
+                }
+                if e > len {
+                    return Err(thrown(&format!("slice end ({e}) > length ({len})")));
+                }
                 let sub_slots: Vec<Slot> = elements[s..e].to_vec();
                 Rc::new(RefCell::new(Value::Array(sub_slots)))
             }
@@ -593,12 +620,13 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let val = self.eval_expr(expr)?;
                 match &val {
                     Value::Array(elements) => {
-                        assert!(
-                            elements.len() == *size as usize,
-                            "array size coercion failed: expected {} elements, got {}",
-                            size,
-                            elements.len()
-                        );
+                        if elements.len() != *size as usize {
+                            return Err(thrown(&format!(
+                                "array length mismatch: expected {} elements, got {}",
+                                size,
+                                elements.len()
+                            )));
+                        }
                     }
                     _ => unreachable!("ArraySizeCoerce on non-array value"),
                 }
@@ -632,21 +660,38 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                                 let b = *b as u64;
                                 let int = |v: u64| Value::Int(v as i64);
                                 match op {
-                                    BinOp::Add => int(a
-                                        .checked_add(b)
-                                        .unwrap_or_else(|| panic!("integer overflow"))),
-                                    BinOp::Sub => int(a
-                                        .checked_sub(b)
-                                        .unwrap_or_else(|| panic!("integer overflow"))),
-                                    BinOp::Mul => int(a
-                                        .checked_mul(b)
-                                        .unwrap_or_else(|| panic!("integer overflow"))),
-                                    BinOp::Div => int(a
-                                        .checked_div(b)
-                                        .unwrap_or_else(|| panic!("division by zero"))),
-                                    BinOp::Mod => int(a
-                                        .checked_rem(b)
-                                        .unwrap_or_else(|| panic!("division by zero"))),
+                                    BinOp::Add => int(match a.checked_add(b) {
+                                        Some(v) => v,
+                                        None => {
+                                            return Err(thrown("integer overflow in addition"));
+                                        }
+                                    }),
+                                    BinOp::Sub => int(match a.checked_sub(b) {
+                                        Some(v) => v,
+                                        None => {
+                                            return Err(thrown("integer overflow in subtraction"));
+                                        }
+                                    }),
+                                    BinOp::Mul => int(match a.checked_mul(b) {
+                                        Some(v) => v,
+                                        None => {
+                                            return Err(thrown(
+                                                "integer overflow in multiplication",
+                                            ));
+                                        }
+                                    }),
+                                    BinOp::Div => int(match a.checked_div(b) {
+                                        Some(v) => v,
+                                        None => {
+                                            return Err(thrown("integer division by zero"));
+                                        }
+                                    }),
+                                    BinOp::Mod => int(match a.checked_rem(b) {
+                                        Some(v) => v,
+                                        None => {
+                                            return Err(thrown("integer modulo by zero"));
+                                        }
+                                    }),
                                     BinOp::Eq => Value::Int((a == b) as i64),
                                     BinOp::Ne => Value::Int((a != b) as i64),
                                     BinOp::Lt => Value::Int((a < b) as i64),
@@ -682,26 +727,44 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                                 let a = *a;
                                 let b = *b;
                                 match op {
-                                    BinOp::Add => Value::Int(
-                                        a.checked_add(b)
-                                            .unwrap_or_else(|| panic!("integer overflow")),
-                                    ),
-                                    BinOp::Sub => Value::Int(
-                                        a.checked_sub(b)
-                                            .unwrap_or_else(|| panic!("integer overflow")),
-                                    ),
-                                    BinOp::Mul => Value::Int(
-                                        a.checked_mul(b)
-                                            .unwrap_or_else(|| panic!("integer overflow")),
-                                    ),
-                                    BinOp::Div => Value::Int(
-                                        a.checked_div(b)
-                                            .unwrap_or_else(|| panic!("division by zero")),
-                                    ),
-                                    BinOp::Mod => Value::Int(
-                                        a.checked_rem(b)
-                                            .unwrap_or_else(|| panic!("division by zero")),
-                                    ),
+                                    BinOp::Add => Value::Int(match a.checked_add(b) {
+                                        Some(v) => v,
+                                        None => {
+                                            return Err(thrown("integer overflow in addition"));
+                                        }
+                                    }),
+                                    BinOp::Sub => Value::Int(match a.checked_sub(b) {
+                                        Some(v) => v,
+                                        None => {
+                                            return Err(thrown("integer overflow in subtraction"));
+                                        }
+                                    }),
+                                    BinOp::Mul => Value::Int(match a.checked_mul(b) {
+                                        Some(v) => v,
+                                        None => {
+                                            return Err(thrown(
+                                                "integer overflow in multiplication",
+                                            ));
+                                        }
+                                    }),
+                                    BinOp::Div => Value::Int(match a.checked_div(b) {
+                                        Some(v) => v,
+                                        None if b == 0 => {
+                                            return Err(thrown("integer division by zero"));
+                                        }
+                                        None => {
+                                            return Err(thrown("integer overflow in division"));
+                                        }
+                                    }),
+                                    BinOp::Mod => Value::Int(match a.checked_rem(b) {
+                                        Some(v) => v,
+                                        None if b == 0 => {
+                                            return Err(thrown("integer modulo by zero"));
+                                        }
+                                        None => {
+                                            return Err(thrown("integer overflow in modulo"));
+                                        }
+                                    }),
                                     BinOp::Eq => Value::Int(if a == b { 1 } else { 0 }),
                                     BinOp::Ne => Value::Int(if a != b { 1 } else { 0 }),
                                     BinOp::Lt => Value::Int(if a < b { 1 } else { 0 }),
@@ -1023,7 +1086,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 };
                 // No fd arena / GC here: the FileDesc is an index into a virtual
                 // table of boxed streams (the compiled runtime uses a real fd).
-                let fd = self.files.open(&path, flags, mode);
+                let fd = match self.files.open(&path, flags, mode) {
+                    Ok(fd) => fd,
+                    Err(err) => return Err(thrown(&format!("file_open failed: {err}"))),
+                };
                 Value::Int(fd as i64)
             }
             Intrinsic::FileClose => {
@@ -1044,7 +1110,12 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     Value::Ref(slot) | Value::Unique(slot) => match &*slot.borrow() {
                         Value::Array(elements) => {
                             let mut buf = vec![0u8; elements.len()];
-                            let n = self.files.read(fd, &mut buf);
+                            let n = match self.files.read(fd, &mut buf) {
+                                Ok(n) => n,
+                                Err(err) => {
+                                    return Err(thrown(&format!("file_read failed: {err}")));
+                                }
+                            };
                             for (i, byte) in buf[..n].iter().enumerate() {
                                 *elements[i].borrow_mut() = Value::Int(*byte as i64);
                             }
@@ -1074,7 +1145,12 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     },
                     _ => unreachable!(),
                 };
-                let n = self.files.write_partial(fd, &bytes);
+                let n = match self.files.write_partial(fd, &bytes) {
+                    Ok(n) => n,
+                    Err(err) => {
+                        return Err(thrown(&format!("file_write_partial failed: {err}")));
+                    }
+                };
                 Value::Int(n as i64)
             }
             Intrinsic::Args | Intrinsic::Env => {
@@ -1151,10 +1227,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     Value::Array(elements) => elements.len(),
                     _ => unreachable!(),
                 };
-                assert!(
-                    actual_len == expected_len,
-                    "array destructure: expected {expected_len} elements, got {actual_len}"
-                );
+                if actual_len != expected_len {
+                    return Err(thrown(&format!(
+                        "array length mismatch: expected {expected_len} elements, got {actual_len}"
+                    )));
+                }
                 Value::Unit
             }
             Intrinsic::ThreadSpawn => {

@@ -117,10 +117,12 @@ unsafe fn mark_word(fd: usize) -> *const AtomicU64 {
 /// so the next GC traces it. `O_CLOEXEC` is always added so descriptors don't
 /// leak across `exec`.
 ///
-/// Panics on failure so the returned pointer is always a valid, live fd — the
-/// opaque-handle contract needs no sentinel value.
+/// Throws a Solar exception on failure so the returned pointer is always a
+/// valid, live fd — the opaque-handle contract needs no sentinel value.
+/// `extern "C-unwind"` so the throw may unwind through the generated C frames
+/// to the nearest `sol_try`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sol_file_open(
+pub unsafe extern "C-unwind" fn sol_file_open(
     path_ptr: *const u8,
     path_len: usize,
     flags: i64,
@@ -142,7 +144,11 @@ pub unsafe extern "C" fn sol_file_open(
     //    thread's own STW allocations would deadlock. Inside the section the
     //    signal only *defers*, so the buffer's whole lifetime — alloc, use by
     //    `open`, drop — stays unparkable; we self-suspend cleanly at the end.
-    unsafe {
+    // A failed open must NOT throw from inside the closure: the unwind would
+    // skip `with_signal_deferred`'s section exit, leaving the thread's critical
+    // section count permanently off by one. Capture the error (an errno-only
+    // `io::Error` — no allocation) and throw after the section ends.
+    let result = unsafe {
         crate::gc::with_signal_deferred(slot, || {
             // NUL-terminated copy of the (unterminated) Solar byte-slice path.
             let mut buf: Vec<u8> = Vec::with_capacity(path_len + 1);
@@ -156,11 +162,9 @@ pub unsafe extern "C" fn sol_file_open(
                 (flags as libc::c_int) | libc::O_CLOEXEC,
                 mode as libc::c_uint,
             );
-            assert!(
-                fd >= 0,
-                "file_open: could not open file (errno {})",
-                std::io::Error::last_os_error()
-            );
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
             let fd = fd as usize;
 
             // Mirror the heap's allocate path: set the allocated bit, advance the
@@ -171,8 +175,12 @@ pub unsafe extern "C" fn sol_file_open(
                 (*mark_word(fd)).fetch_or(bit_mask(fd), Ordering::Relaxed);
             }
 
-            (FD_BASE.get() + fd) as *mut u8
+            Ok((FD_BASE.get() + fd) as *mut u8)
         })
+    };
+    match result {
+        Ok(ptr) => ptr,
+        Err(err) => crate::panic::throw_message(format_args!("file_open failed: {err}")),
     }
 }
 
@@ -214,9 +222,14 @@ fn fd_from_ptr(fd_ptr: *mut u8) -> libc::c_int {
 }
 
 /// Read up to `dst_len` bytes from `fd` into `dst`, returning the count read (0
-/// at EOF). Panics on a non-`EINTR` I/O error. Calls `read(2)` directly.
+/// at EOF). Throws a Solar exception on a non-`EINTR` I/O error. Calls
+/// `read(2)` directly.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sol_file_read(fd_ptr: *mut u8, dst: *mut u8, dst_len: usize) -> usize {
+pub unsafe extern "C-unwind" fn sol_file_read(
+    fd_ptr: *mut u8,
+    dst: *mut u8,
+    dst_len: usize,
+) -> usize {
     let fd = fd_from_ptr(fd_ptr);
     loop {
         let n = unsafe { libc::read(fd, dst as *mut libc::c_void, dst_len) };
@@ -227,15 +240,16 @@ pub unsafe extern "C" fn sol_file_read(fd_ptr: *mut u8, dst: *mut u8, dst_len: u
         if err.kind() == std::io::ErrorKind::Interrupted {
             continue;
         }
-        crate::panic::sol_panic_internal(&format!("file_read failed: {err}"));
+        crate::panic::throw_message(format_args!("file_read failed: {err}"));
     }
 }
 
 /// Write up to `src_len` bytes from `src` to `fd`, returning the count actually
-/// written (a single, possibly partial, `write(2)`). Panics on a non-`EINTR`
-/// I/O error. Calls `write(2)` directly; the looping write-all lives in `@std`.
+/// written (a single, possibly partial, `write(2)`). Throws a Solar exception
+/// on a non-`EINTR` I/O error. Calls `write(2)` directly; the looping write-all
+/// lives in `@std`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sol_file_write_partial(
+pub unsafe extern "C-unwind" fn sol_file_write_partial(
     fd_ptr: *mut u8,
     src: *const u8,
     src_len: usize,
@@ -250,7 +264,7 @@ pub unsafe extern "C" fn sol_file_write_partial(
         if err.kind() == std::io::ErrorKind::Interrupted {
             continue;
         }
-        crate::panic::sol_panic_internal(&format!("file_write_partial failed: {err}"));
+        crate::panic::throw_message(format_args!("file_write_partial failed: {err}"));
     }
 }
 

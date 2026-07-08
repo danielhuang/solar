@@ -288,9 +288,10 @@ pub unsafe extern "C" fn sol_panic(msg: *const u8, len: usize) -> ! {
 /// A Solar `throw` (a `SolarException` payload) is deliberately skipped: it is a
 /// recoverable unwind meant to be caught by `sol_try`, so the hook must let it
 /// propagate rather than print a trace and abort. Every other payload is a real
-/// panic — print the Solar backtrace and abort, as before. (If the throw is
-/// never caught, the unwind reaches `sol_try`'s outer frame / thread entry and
-/// aborts there.)
+/// panic — print the Solar backtrace and abort, as before. (A `SolarException`
+/// only ever unwinds while a `sol_try` is active on the thread — [`throw_raw`]
+/// turns a throw with no active `try` into an abort before unwinding — so a
+/// skipped payload is always caught.)
 pub fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         if info.payload().is::<SolarException>() {
@@ -313,6 +314,29 @@ pub fn install_panic_hook() {
 struct SolarException {
     ptr: *const u8,
     len: usize,
+}
+
+std::thread_local! {
+    /// Number of `sol_try` frames currently active on this thread. A throw with
+    /// no active `try` would unwind into frames that can't legally be unwound
+    /// (the thread-entry asm, `extern "C"` runtime frames), so [`throw_raw`]
+    /// checks this *before* unwinding and turns an uncaught throw into an abort
+    /// with the message and a full Solar stack trace — still taken at the throw
+    /// point, so the trace shows where the error actually happened.
+    static TRY_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Unwind with `(ptr, len)` as the thrown message, or abort with a trace if no
+/// `sol_try` is active on this thread. The caller must already hold the GC
+/// critical section that protects the message across the unwind (see
+/// [`sol_throw`]).
+fn throw_raw(ptr: *const u8, len: usize) -> ! {
+    if TRY_DEPTH.get() == 0 {
+        let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
+        let text = String::from_utf8_lossy(slice);
+        sol_panic_internal(&format!("uncaught exception: {text}"));
+    }
+    std::panic::panic_any(SolarException { ptr, len });
 }
 
 // The payload is moved through `panic_any` (which requires `Send`) but only ever
@@ -341,7 +365,47 @@ pub unsafe extern "C-unwind" fn sol_throw(ptr: *const u8, len: usize) -> ! {
     let slot = crate::gc::MY_SLOT.get();
     assert!(!slot.is_null(), "sol_throw called on unregistered thread");
     unsafe { crate::gc::begin_critical_section(&*slot) };
-    std::panic::panic_any(SolarException { ptr, len });
+    throw_raw(ptr, len)
+}
+
+/// Throw a Solar exception from inside the runtime with a static message.
+/// The `'static` bytes are passed straight through — no copy, and (unlike
+/// [`throw_message`]) no allocator use, so it needs no critical section of its
+/// own beyond the one `sol_throw` takes for the unwind.
+///
+/// Only for runtime code running on behalf of Solar code on a registered
+/// mutator thread (the fallible intrinsics); *internal* errors that may leave
+/// an invariant broken must keep panicking/aborting instead.
+pub(crate) fn throw_str(msg: &'static str) -> ! {
+    unsafe { sol_throw(msg.as_ptr(), msg.len()) }
+}
+
+/// Throw a Solar exception from inside the runtime with a formatted message.
+/// The message is copied into a GC allocation (pointer-free, `mark_noop`) so
+/// the catch handler receives an ordinary GC slice.
+///
+/// The formatting and the temporary `String`'s whole lifetime run inside the GC
+/// critical section that also covers the unwind: the system allocator is used,
+/// and a thread parked by the STW signal mid-`malloc` (holding the allocator
+/// lock) would deadlock the GC thread's own STW allocations — inside the
+/// section the signal only defers. The section is the same one `sol_throw`
+/// would take; `sol_try` releases it after re-rooting the message.
+pub(crate) fn throw_message(args: std::fmt::Arguments) -> ! {
+    // A plain literal (no interpolation) needs no copy at all.
+    if let Some(msg) = args.as_str() {
+        unsafe { sol_throw(msg.as_ptr(), msg.len()) }
+    }
+    let slot = crate::gc::MY_SLOT.get();
+    assert!(
+        !slot.is_null(),
+        "throw_message called on unregistered thread"
+    );
+    unsafe { crate::gc::begin_critical_section(&*slot) };
+    let text = args.to_string();
+    let ptr = unsafe { crate::mem::sol_alloc(text.len().max(1), 1, crate::process::mark_noop) };
+    unsafe { std::ptr::copy_nonoverlapping(text.as_ptr(), ptr, text.len()) };
+    // `text` is dropped by the unwind's landing pad, still inside the section.
+    throw_raw(ptr, text.len())
 }
 
 /// `try(body, handler)`: run `body`; if it throws, run `handler` with the thrown
@@ -356,7 +420,12 @@ pub unsafe extern "C-unwind" fn sol_try(
     handler_env: *mut std::ffi::c_void,
 ) {
     let body = std::panic::AssertUnwindSafe(|| unsafe { body_fn(body_env) });
-    if let Err(payload) = std::panic::catch_unwind(body) {
+    // The depth is restored *before* the handler runs, so a throw from inside
+    // the handler propagates to the enclosing `try` (or aborts if none).
+    TRY_DEPTH.set(TRY_DEPTH.get() + 1);
+    let result = std::panic::catch_unwind(body);
+    TRY_DEPTH.set(TRY_DEPTH.get() - 1);
+    if let Err(payload) = result {
         match payload.downcast::<SolarException>() {
             Ok(exc) => {
                 // Reading the pointer into this stack local re-roots it (the
