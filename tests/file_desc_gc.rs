@@ -5,8 +5,10 @@
 //! three-backend `run` harness. Instead we compile two programs and run each
 //! under a restricted `RLIMIT_NOFILE`.
 //!
-//! Both build an escaping, atomically-published garbage chain (>1 MiB per
-//! generation — the GC's trigger threshold) so the collector actually runs.
+//! Both build an escaping, atomically-published garbage chain (~32 MiB per
+//! generation, so the run's ~3 GiB total churn crosses the collector's 1 GiB
+//! trigger floor (`MIN_SIZE_UNTIL_GC`) several times) and the collector
+//! actually runs.
 //!
 //! * `dropped` opens a file every iteration and immediately drops the handle.
 //!   The collector closes the unreachable fds, keeping the live count tiny, so
@@ -57,8 +59,10 @@ fn run_with_fd_limit(bin: &Path) -> bool {
         .success()
 }
 
-// A spawned thread runs 100 iterations. Each builds a >1 MiB escaping garbage
-// chain (published via an atomic root) so the collector runs while fds churn.
+// A spawned thread runs 100 iterations. Each builds a ~32 MiB escaping garbage
+// chain (1M nodes × 32-byte size class, published via an atomic root), so the
+// 1 GiB GC trigger floor is crossed around every ~32nd iteration — the first
+// cycle runs well before the `dropped` case can accumulate 64 open fds.
 // `OPEN_STMT` is spliced in per test: drop the handle, or retain it in `kept`.
 const TEMPLATE: &str = r#"
 enum GOpt {
@@ -89,7 +93,7 @@ fn main() {
         for iter in 0..100 {
             OPEN_STMT
             let head = g_sentinel;
-            for j in 0..40000 {
+            for j in 0..1000000 {
                 head = (GNode { value: j, next: GOpt::Some(head) })&;
             }
             g_root&.atomic_store(head);
