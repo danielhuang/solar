@@ -222,6 +222,7 @@ module.exports = grammar({
     _expression: ($) =>
       choice(
         $.identifier,
+        $.float_literal,
         $.integer_literal,
         $.boolean_literal,
         $.null_expr,
@@ -510,6 +511,11 @@ module.exports = grammar({
     identifier: (_) => /[a-zA-Z_][a-zA-Z0-9_]*/,
 
     integer_literal: (_) => /(0b[01]+|0o[0-7]+|0x[0-9a-fA-F]+|[0-9]+)(i8|i16|i32|i64|u8|u16|u32|u64|u)?/,
+    // Floats require an `f`/`f32`/`f64` suffix, and a decimal point must be
+    // followed by digits — so `1.f` stays a field access on the integer `1`
+    // (the token can't match without digits after the dot) and `1.method()`
+    // keeps parsing as a method call. `1f` and `1.0f` are floats.
+    float_literal: (_) => /[0-9]+(\.[0-9]+)?(f32|f64|f)/,
 
     boolean_literal: (_) => choice("true", "false"),
 

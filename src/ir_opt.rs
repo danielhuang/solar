@@ -425,6 +425,7 @@ fn collect_locals(nodes: &[Node], id: NodeId, out: &mut HashSet<VarId>) {
             }
         }
         NodeKind::IntegerLiteral(_)
+        | NodeKind::FloatLiteral(_)
         | NodeKind::BooleanLiteral(_)
         | NodeKind::Null
         | NodeKind::FunctionRef(_)

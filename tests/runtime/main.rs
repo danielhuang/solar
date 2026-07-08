@@ -752,3 +752,14 @@ fn num_cpus() {
     let output = run(&fixture("num_cpus.solar"), "num_cpus");
     assert_eq!(output, "at least one\nstable\n");
 }
+
+#[test]
+fn float_math() {
+    let output = run(&fixture("float_math.solar"), "float_math");
+    assert_eq!(
+        output,
+        "4000000\n3750000\n1000000\n1666666\n1500000\nlt\nge\nne\nf32 lt\n1\n\
+         1414213\n3\n4\n3\n-3\n5\n1024\n1000000\n1\n0\n3000000\n785398\n785398\n1570796\n0\n\
+         3\n256\n7\n333333\n"
+    );
+}

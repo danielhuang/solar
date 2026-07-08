@@ -1,0 +1,53 @@
+// Float literals (`1f`/`1.0f32`/`2.5f64` — suffix required), float
+// arithmetic/comparisons, and the math intrinsics via std/math. Results print
+// as scaled integers so output is exact and identical across backends.
+fn scaled(x: Float64) -> Int {
+    Int(x * 1000000f)
+}
+
+fn main() {
+    // Literals and arithmetic.
+    let a = 1.5f;
+    let b = 2.5f64;
+    println(scaled(a + b));       // 4000000
+    println(scaled(a * b));       // 3750000
+    println(scaled(b - a));       // 1000000
+    println(scaled(b / a));       // 1666666
+    println(scaled(5.5f % 2f));   // 1500000 (fmod)
+
+    // Comparisons.
+    if a < b { println("lt"&); }
+    if b >= 2.5f { println("ge"&); }
+    if a != b { println("ne"&); }
+    if 0.5f32 < 1f32 { println("f32 lt"&); }
+
+    // `1.method()` still parses as a method call on the integer 1, and
+    // field-style access after a bare dot stays integral.
+    println(Int(1.to_string().len()));  // 1
+
+    // Intrinsics through std/math.
+    println(scaled(math::sqrt(2f)));               // 1414213
+    println(Int(math::floor(3.7f)));               // 3
+    println(Int(math::ceil(3.2f)));                // 4
+    println(Int(math::round(2.5f)));               // 3 (half away from zero)
+    println(Int(math::trunc(0f - 3.5f)));          // -3
+    println(Int(math::abs(0f - 5f)));              // 5
+    println(Int(math::pow(2f, 10f)));              // 1024
+    println(scaled(math::sin(math::PI / 2f)));     // 1000000
+    println(Int(math::cos(0f)));                   // 1
+    println(scaled(math::tan(0f)));                // 0
+    println(scaled(math::log(math::exp(3f))));     // 3000000
+    println(scaled(math::atan2(1f, 1f)));          // 785398
+    println(scaled(math::atan(1f)));               // 785398
+    println(scaled(math::asin(1f)));               // 1570796
+    println(scaled(math::acos(1f)));               // 0
+
+    // Float32 runs in f32 precision.
+    let s32 = math::sqrt(9f32);
+    println(Int(s32));                             // 3
+    println(Int(math::pow(2f32, 8f32)));           // 256
+
+    // Casts round-trip.
+    println(Int(Float64(7)));                      // 7
+    println(scaled(Float64(1) / 3f));              // 333333
+}

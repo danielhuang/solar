@@ -1,0 +1,70 @@
+import intrinsics from "@intrinsics";
+
+// Float math over the float-math intrinsics. Each function has a Float64 and
+// a Float32 overload returning the operand's type; Float32 math runs in f32
+// precision. Compiled code lowers to the clang builtins (sqrt/floor/ceil/
+// trunc/abs become single instructions, the rest libm calls); the
+// interpreters use the same system libm, so all three backends agree
+// bit-for-bit.
+
+// The circle constant.
+pub const PI: Float64 = 3.141592653589793f;
+
+// Euler's number.
+pub const E: Float64 = 2.718281828459045f;
+
+// PI / 180: multiply degrees by this to get radians.
+pub const DEG_TO_RAD: Float64 = 0.017453292519943295f;
+
+pub fn sqrt(x: Float64) -> Float64 { intrinsics::sqrt(x) }
+pub fn sqrt(x: Float32) -> Float32 { intrinsics::sqrt(x) }
+
+pub fn sin(x: Float64) -> Float64 { intrinsics::sin(x) }
+pub fn sin(x: Float32) -> Float32 { intrinsics::sin(x) }
+
+pub fn cos(x: Float64) -> Float64 { intrinsics::cos(x) }
+pub fn cos(x: Float32) -> Float32 { intrinsics::cos(x) }
+
+pub fn tan(x: Float64) -> Float64 { intrinsics::tan(x) }
+pub fn tan(x: Float32) -> Float32 { intrinsics::tan(x) }
+
+pub fn asin(x: Float64) -> Float64 { intrinsics::asin(x) }
+pub fn asin(x: Float32) -> Float32 { intrinsics::asin(x) }
+
+pub fn acos(x: Float64) -> Float64 { intrinsics::acos(x) }
+pub fn acos(x: Float32) -> Float32 { intrinsics::acos(x) }
+
+pub fn atan(x: Float64) -> Float64 { intrinsics::atan(x) }
+pub fn atan(x: Float32) -> Float32 { intrinsics::atan(x) }
+
+// The angle of the vector (x, y): atan(y/x) adjusted for quadrant.
+pub fn atan2(y: Float64, x: Float64) -> Float64 { intrinsics::atan2(y, x) }
+pub fn atan2(y: Float32, x: Float32) -> Float32 { intrinsics::atan2(y, x) }
+
+pub fn pow(base: Float64, exponent: Float64) -> Float64 { intrinsics::pow(base, exponent) }
+pub fn pow(base: Float32, exponent: Float32) -> Float32 { intrinsics::pow(base, exponent) }
+
+// e raised to the power x.
+pub fn exp(x: Float64) -> Float64 { intrinsics::exp(x) }
+pub fn exp(x: Float32) -> Float32 { intrinsics::exp(x) }
+
+// The natural (base-e) logarithm.
+pub fn log(x: Float64) -> Float64 { intrinsics::log(x) }
+pub fn log(x: Float32) -> Float32 { intrinsics::log(x) }
+
+pub fn floor(x: Float64) -> Float64 { intrinsics::floor(x) }
+pub fn floor(x: Float32) -> Float32 { intrinsics::floor(x) }
+
+pub fn ceil(x: Float64) -> Float64 { intrinsics::ceil(x) }
+pub fn ceil(x: Float32) -> Float32 { intrinsics::ceil(x) }
+
+// Rounds half away from zero (round(2.5) = 3, round(-2.5) = -3).
+pub fn round(x: Float64) -> Float64 { intrinsics::round(x) }
+pub fn round(x: Float32) -> Float32 { intrinsics::round(x) }
+
+// Rounds toward zero (trunc(-3.5) = -3).
+pub fn trunc(x: Float64) -> Float64 { intrinsics::trunc(x) }
+pub fn trunc(x: Float32) -> Float32 { intrinsics::trunc(x) }
+
+pub fn abs(x: Float64) -> Float64 { intrinsics::float_abs(x) }
+pub fn abs(x: Float32) -> Float32 { intrinsics::float_abs(x) }

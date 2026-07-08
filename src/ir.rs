@@ -100,6 +100,9 @@ pub struct Node {
 pub enum NodeKind {
     // Expressions
     IntegerLiteral(i64),
+    /// Raw IEEE-754 bit pattern; the node's `ty` selects the width (f32 bits
+    /// live in the low 32).
+    FloatLiteral(u64),
     BooleanLiteral(bool),
     /// A null nullable reference (`null#[T]`). The node's `ty` is a
     /// `NullableRef`/`NullableRefUnsized` and determines whether it materializes
@@ -440,6 +443,7 @@ fn collect_closure_captures_expr(
         typed_ast::ExprKind::Identifier(_)
         | typed_ast::ExprKind::Global(_)
         | typed_ast::ExprKind::IntegerLiteral(_)
+        | typed_ast::ExprKind::FloatLiteral(_)
         | typed_ast::ExprKind::BooleanLiteral(_)
         | typed_ast::ExprKind::NullLiteral
         | typed_ast::ExprKind::FunctionRef(_) => {}
@@ -849,6 +853,17 @@ impl<'a> FunctionLowerer<'a> {
                 kind: NodeKind::IntegerLiteral(*n),
                 span: expr.span,
             }),
+            typed_ast::ExprKind::FloatLiteral(v) => {
+                let bits = match expr.ty {
+                    Type::Float32 => (*v as f32).to_bits() as u64,
+                    _ => v.to_bits(),
+                };
+                self.push(Node {
+                    ty: expr.ty.clone(),
+                    kind: NodeKind::FloatLiteral(bits),
+                    span: expr.span,
+                })
+            }
             typed_ast::ExprKind::BooleanLiteral(b) => self.push(Node {
                 ty: expr.ty.clone(),
                 kind: NodeKind::BooleanLiteral(*b),

@@ -599,6 +599,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
     fn eval_load(&mut self, nodes: &[Node], id: NodeId) -> Eval<u64> {
         Ok(match &nodes[id.0].kind {
             NodeKind::IntegerLiteral(n) => *n as u64,
+            NodeKind::FloatLiteral(bits) => *bits,
             // A sized `null#[T]` is the zero pointer.
             NodeKind::Null => 0,
             NodeKind::BooleanLiteral(b) => {
@@ -763,6 +764,12 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     _ => unreachable!("only ==/!= allowed on nullable references"),
                 }
             }
+            _ if is_float(&nodes[left.0].ty) => {
+                let ty = nodes[left.0].ty.clone();
+                let a = self.eval_load(nodes, left)?;
+                let b = self.eval_load(nodes, right)?;
+                float_binop(op, a, b, &ty)
+            }
             _ if is_signed(&nodes[left.0].ty) => {
                 let a = self.eval_load(nodes, left)? as i64;
                 let b = self.eval_load(nodes, right)? as i64;
@@ -869,6 +876,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             NodeKind::IntegerLiteral(n) => {
                 let ty = nodes[id.0].ty.clone();
                 self.scalar_store(dst, *n as u64, &ty);
+            }
+            NodeKind::FloatLiteral(bits) => {
+                let ty = nodes[id.0].ty.clone();
+                self.scalar_store(dst, *bits, &ty);
             }
             NodeKind::BooleanLiteral(b) => {
                 self.mem.store(dst, if *b { 1 } else { 0 }, 1);
@@ -1487,6 +1498,30 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             Intrinsic::NumCpus => {
                 self.scalar_store(dst, num_cpus(), result_ty);
             }
+            Intrinsic::Sqrt
+            | Intrinsic::Sin
+            | Intrinsic::Cos
+            | Intrinsic::Tan
+            | Intrinsic::Asin
+            | Intrinsic::Acos
+            | Intrinsic::Atan
+            | Intrinsic::Exp
+            | Intrinsic::Log
+            | Intrinsic::Floor
+            | Intrinsic::Ceil
+            | Intrinsic::Round
+            | Intrinsic::Trunc
+            | Intrinsic::FloatAbs => {
+                let ty = nodes[args[0].0].ty.clone();
+                let raw = self.eval_load(nodes, args[0])?;
+                self.scalar_store(dst, float_unary(&intrinsic, raw, &ty), result_ty);
+            }
+            Intrinsic::Atan2 | Intrinsic::Pow => {
+                let ty = nodes[args[0].0].ty.clone();
+                let a = self.eval_load(nodes, args[0])?;
+                let b = self.eval_load(nodes, args[1])?;
+                self.scalar_store(dst, float_binary(&intrinsic, a, b, &ty), result_ty);
+            }
             Intrinsic::Exit => {
                 let code = self.eval_load(nodes, args[0])? as i32;
                 // Terminates the host process — in-process interpreter runs
@@ -2022,6 +2057,92 @@ pub fn interpret(module: &Module) {
 pub fn interpret_to(module: &Module, stdin: impl Read, stdout: impl Write) {
     let mut interp = Interpreter::new(module, stdin, stdout);
     interp.run();
+}
+
+/// Float `+ - * / %` and comparisons for both interpreters, on raw
+/// bit-pattern operands. IEEE-754: arithmetic never throws (inf/NaN instead
+/// of overflow); `%` is the fmod-style remainder (sign of the dividend);
+/// comparisons return 0/1.
+pub(crate) fn float_binop(op: BinOp, a: u64, b: u64, ty: &Type) -> u64 {
+    macro_rules! apply {
+        ($x:expr, $y:expr, $bits:expr) => {
+            match op {
+                BinOp::Add => $bits($x + $y),
+                BinOp::Sub => $bits($x - $y),
+                BinOp::Mul => $bits($x * $y),
+                BinOp::Div => $bits($x / $y),
+                BinOp::Mod => $bits($x % $y),
+                BinOp::Eq => ($x == $y) as u64,
+                BinOp::Ne => ($x != $y) as u64,
+                BinOp::Lt => ($x < $y) as u64,
+                BinOp::Le => ($x <= $y) as u64,
+                BinOp::Gt => ($x > $y) as u64,
+                BinOp::Ge => ($x >= $y) as u64,
+                _ => unreachable!("operator not supported on floats"),
+            }
+        };
+    }
+    match ty {
+        Type::Float32 => apply!(
+            f32::from_bits(a as u32),
+            f32::from_bits(b as u32),
+            (|v: f32| v.to_bits() as u64)
+        ),
+        Type::Float64 => apply!(f64::from_bits(a), f64::from_bits(b), (|v: f64| v.to_bits())),
+        _ => unreachable!("float binop on non-float type"),
+    }
+}
+
+/// Unary float math for both interpreters, on raw bit-pattern values. Uses
+/// the Rust float methods — the same system libm the compiled builtins call —
+/// so the three backends agree bit-for-bit. Float32 runs in f32 precision.
+pub(crate) fn float_unary(intrinsic: &Intrinsic, raw: u64, ty: &Type) -> u64 {
+    macro_rules! apply {
+        ($x:expr) => {
+            match intrinsic {
+                Intrinsic::Sqrt => $x.sqrt(),
+                Intrinsic::Sin => $x.sin(),
+                Intrinsic::Cos => $x.cos(),
+                Intrinsic::Tan => $x.tan(),
+                Intrinsic::Asin => $x.asin(),
+                Intrinsic::Acos => $x.acos(),
+                Intrinsic::Atan => $x.atan(),
+                Intrinsic::Exp => $x.exp(),
+                Intrinsic::Log => $x.ln(),
+                Intrinsic::Floor => $x.floor(),
+                Intrinsic::Ceil => $x.ceil(),
+                Intrinsic::Round => $x.round(),
+                Intrinsic::Trunc => $x.trunc(),
+                Intrinsic::FloatAbs => $x.abs(),
+                _ => unreachable!("not a unary float intrinsic"),
+            }
+        };
+    }
+    match ty {
+        Type::Float32 => apply!(f32::from_bits(raw as u32)).to_bits() as u64,
+        Type::Float64 => apply!(f64::from_bits(raw)).to_bits(),
+        _ => unreachable!("float intrinsic on non-float type"),
+    }
+}
+
+/// Binary float math (`atan2`, `pow`) for both interpreters.
+pub(crate) fn float_binary(intrinsic: &Intrinsic, a: u64, b: u64, ty: &Type) -> u64 {
+    macro_rules! apply {
+        ($a:expr, $b:expr) => {
+            match intrinsic {
+                Intrinsic::Atan2 => $a.atan2($b),
+                Intrinsic::Pow => $a.powf($b),
+                _ => unreachable!("not a binary float intrinsic"),
+            }
+        };
+    }
+    match ty {
+        Type::Float32 => {
+            apply!(f32::from_bits(a as u32), f32::from_bits(b as u32)).to_bits() as u64
+        }
+        Type::Float64 => apply!(f64::from_bits(a), f64::from_bits(b)).to_bits(),
+        _ => unreachable!("float intrinsic on non-float type"),
+    }
 }
 
 /// Shared `num_cpus` source for both interpreters: the OS's available

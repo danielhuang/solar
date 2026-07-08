@@ -246,6 +246,12 @@ pub enum StatementKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FloatType {
+    Float32,
+    Float64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BinOp {
     Add,
     Sub,
@@ -282,6 +288,11 @@ pub struct Expr {
 pub enum ExprKind {
     Identifier(String),
     IntegerLiteral(i128, IntegerType),
+    /// `1f` / `1.0f32` / `2.5f64` — the suffix is mandatory (a bare `1.0` is
+    /// not a float literal, and `1.f` is field access on the integer `1`).
+    /// A `f32` literal's value is parsed in f32 precision then widened, so no
+    /// double rounding occurs.
+    FloatLiteral(f64, FloatType),
     BooleanLiteral(bool),
     FieldAccess {
         object: Box<Expr>,
@@ -456,6 +467,22 @@ pub enum Intrinsic {
     SystemTime,
     NumCpus,
     Exit,
+    Sqrt,
+    Sin,
+    Cos,
+    Tan,
+    Asin,
+    Acos,
+    Atan,
+    Atan2,
+    Pow,
+    Exp,
+    Log,
+    Floor,
+    Ceil,
+    Round,
+    Trunc,
+    FloatAbs,
     CountTrailingZeros,
     CountLeadingZeros,
     CountOnes,
@@ -511,6 +538,22 @@ const INTRINSIC_NAMES: &[(&str, Intrinsic)] = &[
     ("system_time", Intrinsic::SystemTime),
     ("num_cpus", Intrinsic::NumCpus),
     ("exit", Intrinsic::Exit),
+    ("sqrt", Intrinsic::Sqrt),
+    ("sin", Intrinsic::Sin),
+    ("cos", Intrinsic::Cos),
+    ("tan", Intrinsic::Tan),
+    ("asin", Intrinsic::Asin),
+    ("acos", Intrinsic::Acos),
+    ("atan", Intrinsic::Atan),
+    ("atan2", Intrinsic::Atan2),
+    ("pow", Intrinsic::Pow),
+    ("exp", Intrinsic::Exp),
+    ("log", Intrinsic::Log),
+    ("floor", Intrinsic::Floor),
+    ("ceil", Intrinsic::Ceil),
+    ("round", Intrinsic::Round),
+    ("trunc", Intrinsic::Trunc),
+    ("float_abs", Intrinsic::FloatAbs),
     ("count_trailing_zeros", Intrinsic::CountTrailingZeros),
     ("count_leading_zeros", Intrinsic::CountLeadingZeros),
     ("count_ones", Intrinsic::CountOnes),

@@ -127,7 +127,7 @@ fn bad_undefined_var() {
 }
 
 #[test]
-#[should_panic(expected = "arithmetic operators require integer types, got Bool")]
+#[should_panic(expected = "arithmetic operators require numeric types, got Bool")]
 fn bad_arith_bool() {
     compile(&fixture("typecheck_bad_arith_bool.solar"));
 }
@@ -151,7 +151,7 @@ fn bad_struct_eq() {
 }
 
 #[test]
-#[should_panic(expected = "arithmetic operators require integer types, got &Int")]
+#[should_panic(expected = "arithmetic operators require numeric types, got &Int")]
 fn bad_ref_add() {
     compile(&fixture("typecheck_bad_ref_add.solar"));
 }

@@ -968,7 +968,9 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<String>) {
                 *name = mangled.clone();
             }
         }
-        ExprKind::IntegerLiteral(_, _) | ExprKind::BooleanLiteral(_) => {}
+        ExprKind::IntegerLiteral(_, _)
+        | ExprKind::FloatLiteral(_, _)
+        | ExprKind::BooleanLiteral(_) => {}
         ExprKind::FieldAccess { object, .. } => {
             rewrite_expr(object, ctx, locals);
         }

@@ -827,6 +827,23 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             let value = parse_integer_value(num_str);
             ExprKind::IntegerLiteral(value, int_ty)
         }
+        "float_literal" => {
+            let text = node_text(node, source);
+            let (num_str, float_ty) = if let Some(n) = text.strip_suffix("f32") {
+                (n, FloatType::Float32)
+            } else if let Some(n) = text.strip_suffix("f64") {
+                (n, FloatType::Float64)
+            } else {
+                (text.strip_suffix('f').unwrap(), FloatType::Float64)
+            };
+            // Parse f32 literals in f32 precision (then widen exactly) so the
+            // value is correctly rounded once, not double-rounded through f64.
+            let value = match float_ty {
+                FloatType::Float32 => num_str.parse::<f32>().unwrap() as f64,
+                FloatType::Float64 => num_str.parse::<f64>().unwrap(),
+            };
+            ExprKind::FloatLiteral(value, float_ty)
+        }
         "boolean_literal" => {
             let text = node_text(node, source);
             ExprKind::BooleanLiteral(text == "true")

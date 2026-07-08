@@ -553,6 +553,12 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 deep_copy_value(&val)
             }
             ExprKind::IntegerLiteral(n) => Value::Int(*n),
+            // Floats are raw bit patterns in `Value::Int`; the expression type
+            // selects the width (f32 literals were widened exactly from f32).
+            ExprKind::FloatLiteral(v) => Value::Int(match expr.ty {
+                Type::Float32 => ((*v as f32).to_bits() as u64) as i64,
+                _ => v.to_bits() as i64,
+            }),
             ExprKind::BooleanLiteral(b) => Value::Int(if *b { 1 } else { 0 }),
             ExprKind::NullLiteral => Value::Null,
             ExprKind::Reference(inner) => {
@@ -686,9 +692,15 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     }
                     _ => {
                         let unsigned = left.ty.is_unsigned();
+                        let float = left.ty.is_float();
                         let lv = self.eval_expr(left)?;
                         let rv = self.eval_expr(right)?;
                         match (&lv, &rv) {
+                            // Floats are raw bit patterns in `Value::Int`.
+                            (Value::Int(a), Value::Int(b)) if float => Value::Int(
+                                crate::ir_interp::float_binop(*op, *a as u64, *b as u64, &left.ty)
+                                    as i64,
+                            ),
                             (Value::Int(a), Value::Int(b)) if unsigned => {
                                 // Unsigned operands are stored as u64 bit patterns in i64
                                 let a = *a as u64;
@@ -1336,6 +1348,40 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 Value::Int(crate::ir_interp::time_ns(intrinsic) as i64)
             }
             Intrinsic::NumCpus => Value::Int(crate::ir_interp::num_cpus() as i64),
+            Intrinsic::Sqrt
+            | Intrinsic::Sin
+            | Intrinsic::Cos
+            | Intrinsic::Tan
+            | Intrinsic::Asin
+            | Intrinsic::Acos
+            | Intrinsic::Atan
+            | Intrinsic::Exp
+            | Intrinsic::Log
+            | Intrinsic::Floor
+            | Intrinsic::Ceil
+            | Intrinsic::Round
+            | Intrinsic::Trunc
+            | Intrinsic::FloatAbs => {
+                // Floats are raw bit patterns in `Value::Int` (see cast_numeric_ast).
+                let raw = match self.eval_expr(&arguments[0])? {
+                    Value::Int(n) => n as u64,
+                    _ => unreachable!(),
+                };
+                let ty = &arguments[0].ty;
+                Value::Int(crate::ir_interp::float_unary(intrinsic, raw, ty) as i64)
+            }
+            Intrinsic::Atan2 | Intrinsic::Pow => {
+                let a = match self.eval_expr(&arguments[0])? {
+                    Value::Int(n) => n as u64,
+                    _ => unreachable!(),
+                };
+                let b = match self.eval_expr(&arguments[1])? {
+                    Value::Int(n) => n as u64,
+                    _ => unreachable!(),
+                };
+                let ty = &arguments[0].ty;
+                Value::Int(crate::ir_interp::float_binary(intrinsic, a, b, ty) as i64)
+            }
             Intrinsic::Exit => {
                 let code = match self.eval_expr(&arguments[0])? {
                     Value::Int(n) => n as i32,

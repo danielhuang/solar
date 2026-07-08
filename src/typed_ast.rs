@@ -80,6 +80,10 @@ impl Type {
         )
     }
 
+    pub fn is_float(&self) -> bool {
+        matches!(self, Type::Float32 | Type::Float64)
+    }
+
     pub fn is_numeric(&self) -> bool {
         self.is_integer() || matches!(self, Type::Float32 | Type::Float64)
     }
@@ -325,6 +329,7 @@ fn apply_subst_to_ast_expr(expr: &ast::Expr, subst: &HashMap<String, ast::Type>)
     let kind = match &expr.kind {
         ast::ExprKind::Identifier(_)
         | ast::ExprKind::IntegerLiteral(_, _)
+        | ast::ExprKind::FloatLiteral(_, _)
         | ast::ExprKind::BooleanLiteral(_) => expr.kind.clone(),
         ast::ExprKind::FieldAccess { object, field } => ast::ExprKind::FieldAccess {
             object: Box::new(apply_subst_to_ast_expr(object, subst)),
@@ -741,7 +746,9 @@ fn integer_type_ast_name(it: &ast::IntegerType) -> &'static str {
 /// desugar to byte-array literals in the parser, so they're covered too.)
 fn is_literal_default(e: &ast::Expr) -> bool {
     match &e.kind {
-        ast::ExprKind::IntegerLiteral(..) | ast::ExprKind::BooleanLiteral(_) => true,
+        ast::ExprKind::IntegerLiteral(..)
+        | ast::ExprKind::FloatLiteral(..)
+        | ast::ExprKind::BooleanLiteral(_) => true,
         // `null#[T]` — the untouched-until-main initial value for a static
         // whose real value needs init code.
         ast::ExprKind::NullLiteral(_) => true,
@@ -759,6 +766,13 @@ fn is_literal_default(e: &ast::Expr) -> bool {
 /// Infer the `ast::Type` of a literal default expression (see [`is_literal_default`]).
 fn literal_default_type(e: &ast::Expr) -> Option<ast::Type> {
     match &e.kind {
+        ast::ExprKind::FloatLiteral(_, ft) => Some(ast::Type::Named(
+            match ft {
+                ast::FloatType::Float32 => "Float32",
+                ast::FloatType::Float64 => "Float64",
+            }
+            .to_string(),
+        )),
         ast::ExprKind::IntegerLiteral(_, it) => {
             Some(ast::Type::Named(integer_type_ast_name(it).to_string()))
         }
@@ -1020,6 +1034,8 @@ pub struct Expr {
 #[derive(Debug, Clone)]
 pub enum ExprKind {
     Identifier(String),
+    /// A float literal; the expression's `ty` selects Float32/Float64.
+    FloatLiteral(f64),
     /// A reference to a top-level `static` (a global mutable place).
     Global(String),
     IntegerLiteral(i64),
@@ -1934,18 +1950,19 @@ impl<'a> Lowerer<'a> {
     fn binop_primitive_applies(op: ast::BinOp, lhs_ty: &Type) -> bool {
         let inner = Self::array_inner(lhs_ty);
         match op {
-            ast::BinOp::Add => inner.is_some() || lhs_ty.is_integer(),
+            ast::BinOp::Add => inner.is_some() || lhs_ty.is_integer() || lhs_ty.is_float(),
             ast::BinOp::Sub | ast::BinOp::Mul | ast::BinOp::Div | ast::BinOp::Mod => {
-                lhs_ty.is_integer()
+                lhs_ty.is_integer() || lhs_ty.is_float()
             }
             ast::BinOp::Eq | ast::BinOp::Ne => {
                 lhs_ty.is_integer()
+                    || lhs_ty.is_float()
                     || *lhs_ty == Type::Bool
                     || lhs_ty.is_nullable_ref()
                     || inner.is_some_and(|i| i.is_integer() || *i == Type::Bool)
             }
             ast::BinOp::Lt | ast::BinOp::Le | ast::BinOp::Gt | ast::BinOp::Ge => {
-                lhs_ty.is_integer()
+                lhs_ty.is_integer() || lhs_ty.is_float()
             }
             ast::BinOp::And | ast::BinOp::Or => *lhs_ty == Type::Bool,
             ast::BinOp::BitAnd
@@ -3944,6 +3961,14 @@ impl<'a> Lowerer<'a> {
                     ))
                 }
             }
+            ast::ExprKind::FloatLiteral(v, float_ty) => Ok(Expr {
+                ty: match float_ty {
+                    ast::FloatType::Float32 => Type::Float32,
+                    ast::FloatType::Float64 => Type::Float64,
+                },
+                kind: ExprKind::FloatLiteral(*v),
+                span: expr.span,
+            }),
             ast::ExprKind::IntegerLiteral(n, int_ty) => {
                 let ty = match int_ty {
                     ast::IntegerType::Int8 => Type::Int8,
@@ -4897,10 +4922,10 @@ impl<'a> Lowerer<'a> {
                             // Array concat always produces unsized Array(T)
                             Type::Array(Box::new(inner.clone()))
                         } else {
-                            if !lhs.ty.is_integer() {
+                            if !lhs.ty.is_integer() && !lhs.ty.is_float() {
                                 return Err(CompileError::new(
                                     format!(
-                                        "arithmetic operators require integer types, got {}",
+                                        "arithmetic operators require numeric types, got {}",
                                         lhs.ty
                                     ),
                                     expr.span,
@@ -4910,10 +4935,12 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                     ast::BinOp::Sub | ast::BinOp::Mul | ast::BinOp::Div | ast::BinOp::Mod => {
-                        if !lhs.ty.is_integer() {
+                        // Float arithmetic is IEEE-754: it never throws (inf/NaN
+                        // instead of overflow, and `%` is fmod-style remainder).
+                        if !lhs.ty.is_integer() && !lhs.ty.is_float() {
                             return Err(CompileError::new(
                                 format!(
-                                    "arithmetic operators require integer types, got {}",
+                                    "arithmetic operators require numeric types, got {}",
                                     lhs.ty
                                 ),
                                 expr.span,
@@ -4923,6 +4950,7 @@ impl<'a> Lowerer<'a> {
                     }
                     ast::BinOp::Eq | ast::BinOp::Ne => {
                         let ok = lhs.ty.is_integer()
+                            || lhs.ty.is_float()
                             || lhs.ty == Type::Bool
                             || lhs.ty.is_nullable_ref()
                             || lhs_inner
@@ -4936,9 +4964,9 @@ impl<'a> Lowerer<'a> {
                         Type::Bool
                     }
                     ast::BinOp::Lt | ast::BinOp::Le | ast::BinOp::Gt | ast::BinOp::Ge => {
-                        if !lhs.ty.is_integer() {
+                        if !lhs.ty.is_integer() && !lhs.ty.is_float() {
                             return Err(CompileError::new(
-                                format!("ordering operators require integer types, got {}", lhs.ty),
+                                format!("ordering operators require numeric types, got {}", lhs.ty),
                                 expr.span,
                             ));
                         }
@@ -7121,6 +7149,7 @@ impl<'a> Lowerer<'a> {
 
         let mut lowered_args = Vec::with_capacity(arguments.len());
         let mut ref_inner: Option<Type> = None;
+        let mut float_ty: Option<Type> = None;
         for (i, (ast_arg, param)) in arguments.iter().zip(&spec.params).enumerate() {
             let mut arg = self.lower_expr(ast_arg)?;
             match param {
@@ -7142,6 +7171,32 @@ impl<'a> Lowerer<'a> {
                         return Err(CompileError::new(
                             format!(
                                 "{name}: argument {} must be an array type, got {}",
+                                i + 1,
+                                arg.ty
+                            ),
+                            span,
+                        ));
+                    }
+                }
+                ParamRequirement::IsFloat => {
+                    if !matches!(arg.ty, Type::Float32 | Type::Float64) {
+                        return Err(CompileError::new(
+                            format!(
+                                "{name}: argument {} must be a float type, got {}",
+                                i + 1,
+                                arg.ty
+                            ),
+                            span,
+                        ));
+                    }
+                    float_ty = Some(arg.ty.clone());
+                }
+                ParamRequirement::MatchesFloat => {
+                    let expected = float_ty.as_ref().unwrap();
+                    if arg.ty != *expected {
+                        return Err(CompileError::new(
+                            format!(
+                                "{name}: argument {} must be {expected}, got {}",
                                 i + 1,
                                 arg.ty
                             ),
@@ -7201,6 +7256,7 @@ impl<'a> Lowerer<'a> {
         let return_ty = match spec.ret {
             ReturnSpec::Fixed(ty) => ty,
             ReturnSpec::RefInner => ref_inner.unwrap(),
+            ReturnSpec::FloatArg => float_ty.unwrap(),
         };
 
         Ok(Expr {
@@ -7218,6 +7274,11 @@ enum ParamRequirement {
     Exact(Type),
     IsArray,
     IsInteger,
+    /// A `Float32` or `Float64`; captures the type for `MatchesFloat` params
+    /// and the `FloatArg` return.
+    IsFloat,
+    /// Must equal the type captured by a preceding `IsFloat` param.
+    MatchesFloat,
     RefToAtomic,
     MatchesRefInner,
 }
@@ -7225,6 +7286,9 @@ enum ParamRequirement {
 enum ReturnSpec {
     Fixed(Type),
     RefInner,
+    /// The type captured by the `IsFloat` param (float math returns its
+    /// operand's type).
+    FloatArg,
 }
 
 struct IntrinsicSpec {
@@ -7456,6 +7520,32 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
         ast::Intrinsic::Exit => IntrinsicSpec {
             params: vec![Exact(Type::Int)],
             ret: Fixed(Type::Never),
+        },
+        // Unary float math: take Float32 or Float64, return the operand's
+        // type. Codegen lowers to the clang builtins (llvm.sqrt/... or libm
+        // calls); the interpreters use the Rust float methods — the same
+        // system libm, keeping the three backends bit-identical.
+        ast::Intrinsic::Sqrt
+        | ast::Intrinsic::Sin
+        | ast::Intrinsic::Cos
+        | ast::Intrinsic::Tan
+        | ast::Intrinsic::Asin
+        | ast::Intrinsic::Acos
+        | ast::Intrinsic::Atan
+        | ast::Intrinsic::Exp
+        | ast::Intrinsic::Log
+        | ast::Intrinsic::Floor
+        | ast::Intrinsic::Ceil
+        | ast::Intrinsic::Round
+        | ast::Intrinsic::Trunc
+        | ast::Intrinsic::FloatAbs => IntrinsicSpec {
+            params: vec![IsFloat],
+            ret: FloatArg,
+        },
+        // Binary float math: both operands the same float type.
+        ast::Intrinsic::Atan2 | ast::Intrinsic::Pow => IntrinsicSpec {
+            params: vec![IsFloat, MatchesFloat],
+            ret: FloatArg,
         },
         // Bit-counting intrinsics: take any integer, return a count as `Uint`.
         ast::Intrinsic::CountTrailingZeros

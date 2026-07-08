@@ -1385,6 +1385,7 @@ impl<'a> Codegen<'a> {
     /// Returns a C expression for a scalar value — no sol_alloc.
     fn emit_load(&mut self, nodes: &[Node], id: NodeId) -> String {
         match &nodes[id.0].kind {
+            NodeKind::FloatLiteral(bits) => float_literal_c(*bits, &nodes[id.0].ty),
             NodeKind::IntegerLiteral(n) => {
                 let n = *n;
                 let ty = &nodes[id.0].ty;
@@ -1544,6 +1545,37 @@ impl<'a> Codegen<'a> {
                 self.linef(format!("{result} = {ra};"));
                 self.indent -= 1;
                 self.line("}");
+                result
+            }
+            _ if left_ty.is_float() => {
+                // IEEE-754 arithmetic: plain C operators (never throws — inf/
+                // NaN instead of overflow); `%` is fmod. Comparisons yield Bool.
+                let load_ty = self.c_int_type(left_ty);
+                let la = self.emit_load(nodes, left);
+                let ra = self.emit_load(nodes, right);
+                let result = self.fresh_tmp();
+                let expr = match op {
+                    BinOp::Add => format!("(({load_ty}){la}) + (({load_ty}){ra})"),
+                    BinOp::Sub => format!("(({load_ty}){la}) - (({load_ty}){ra})"),
+                    BinOp::Mul => format!("(({load_ty}){la}) * (({load_ty}){ra})"),
+                    BinOp::Div => format!("(({load_ty}){la}) / (({load_ty}){ra})"),
+                    BinOp::Mod => {
+                        let suffix = if matches!(left_ty, Type::Float32) {
+                            "f"
+                        } else {
+                            ""
+                        };
+                        format!("__builtin_fmod{suffix}(({load_ty}){la}, ({load_ty}){ra})")
+                    }
+                    BinOp::Eq => format!("(({load_ty}){la}) == (({load_ty}){ra})"),
+                    BinOp::Ne => format!("(({load_ty}){la}) != (({load_ty}){ra})"),
+                    BinOp::Lt => format!("(({load_ty}){la}) < (({load_ty}){ra})"),
+                    BinOp::Le => format!("(({load_ty}){la}) <= (({load_ty}){ra})"),
+                    BinOp::Gt => format!("(({load_ty}){la}) > (({load_ty}){ra})"),
+                    BinOp::Ge => format!("(({load_ty}){la}) >= (({load_ty}){ra})"),
+                    _ => unreachable!("operator not supported on floats"),
+                };
+                self.linef(format!("{result_c_ty} {result} = ({result_c_ty})({expr});"));
                 result
             }
             _ if left_ty.is_integer() || *left_ty == Type::Bool => {
@@ -2044,6 +2076,11 @@ impl<'a> Codegen<'a> {
                 } else {
                     format!("{n}")
                 };
+                self.linef(format!("*({c_ty}*){dst} = {literal};"));
+            }
+            NodeKind::FloatLiteral(bits) => {
+                let literal = float_literal_c(*bits, &nodes[id.0].ty);
+                let c_ty = self.c_int_type(&nodes[id.0].ty);
                 self.linef(format!("*({c_ty}*){dst} = {literal};"));
             }
             NodeKind::BooleanLiteral(b) => {
@@ -2873,6 +2910,45 @@ impl<'a> Codegen<'a> {
                 let code = self.emit_load(nodes, args[0]);
                 self.linef(format!("sol_exit((int64_t){code});"));
             }
+            Intrinsic::Sqrt
+            | Intrinsic::Sin
+            | Intrinsic::Cos
+            | Intrinsic::Tan
+            | Intrinsic::Asin
+            | Intrinsic::Acos
+            | Intrinsic::Atan
+            | Intrinsic::Exp
+            | Intrinsic::Log
+            | Intrinsic::Floor
+            | Intrinsic::Ceil
+            | Intrinsic::Round
+            | Intrinsic::Trunc
+            | Intrinsic::FloatAbs => {
+                // Unary float math, lowered to the clang builtins: sqrt/floor/
+                // ceil/trunc/fabs become single instructions, the rest libm
+                // calls (`-lm` is on both link lines). The `f` suffix selects
+                // the Float32 variant so f32 math runs in f32 precision.
+                let ty = nodes[args[0].0].ty.clone();
+                let arg = self.emit_load(nodes, args[0]);
+                let f = float_builtin(&intrinsic);
+                let suffix = if matches!(ty, Type::Float32) { "f" } else { "" };
+                let c_ty = self.c_int_type(&ty);
+                self.linef(format!(
+                    "*({c_ty}*){dst} = __builtin_{f}{suffix}(({c_ty}){arg});"
+                ));
+            }
+            Intrinsic::Atan2 | Intrinsic::Pow => {
+                // Binary float math (both operands the operand type).
+                let ty = nodes[args[0].0].ty.clone();
+                let a = self.emit_load(nodes, args[0]);
+                let b = self.emit_load(nodes, args[1]);
+                let f = float_builtin(&intrinsic);
+                let suffix = if matches!(ty, Type::Float32) { "f" } else { "" };
+                let c_ty = self.c_int_type(&ty);
+                self.linef(format!(
+                    "*({c_ty}*){dst} = __builtin_{f}{suffix}(({c_ty}){a}, ({c_ty}){b});"
+                ));
+            }
             Intrinsic::MonotonicTime | Intrinsic::SystemTime => {
                 let f = if matches!(intrinsic, Intrinsic::MonotonicTime) {
                     "sol_monotonic_time"
@@ -3331,5 +3407,39 @@ impl<'a> Codegen<'a> {
         // synthetic glue between statements isn't attributed to real source lines.
         self.cur_loc = None;
         self.raw_line("#line 1 \"\"");
+    }
+}
+
+/// A C literal that reproduces the exact IEEE-754 value: 17 significant
+/// digits round-trip any f64 (9 for f32), and C's decimal-to-float conversion
+/// is correctly rounded.
+fn float_literal_c(bits: u64, ty: &Type) -> String {
+    match ty {
+        Type::Float32 => format!("{:.8e}f", f32::from_bits(bits as u32)),
+        _ => format!("{:.16e}", f64::from_bits(bits)),
+    }
+}
+
+/// The C builtin name (`__builtin_<name>`; `f`-suffixed for Float32) for a
+/// float-math intrinsic.
+fn float_builtin(intrinsic: &Intrinsic) -> &'static str {
+    match intrinsic {
+        Intrinsic::Sqrt => "sqrt",
+        Intrinsic::Sin => "sin",
+        Intrinsic::Cos => "cos",
+        Intrinsic::Tan => "tan",
+        Intrinsic::Asin => "asin",
+        Intrinsic::Acos => "acos",
+        Intrinsic::Atan => "atan",
+        Intrinsic::Atan2 => "atan2",
+        Intrinsic::Pow => "pow",
+        Intrinsic::Exp => "exp",
+        Intrinsic::Log => "log",
+        Intrinsic::Floor => "floor",
+        Intrinsic::Ceil => "ceil",
+        Intrinsic::Round => "round",
+        Intrinsic::Trunc => "trunc",
+        Intrinsic::FloatAbs => "fabs",
+        _ => unreachable!("not a float-math intrinsic"),
     }
 }
