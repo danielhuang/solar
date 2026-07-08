@@ -128,13 +128,6 @@ pub unsafe extern "C-unwind" fn sol_file_open(
     flags: i64,
     mode: u64,
 ) -> *mut u8 {
-    let slot_ptr = crate::gc::MY_SLOT.get();
-    assert!(
-        !slot_ptr.is_null(),
-        "sol_file_open called on unregistered thread"
-    );
-    let slot = unsafe { &*slot_ptr };
-
     // NUL-terminated GC copy of the (unterminated) Solar byte-slice path — the
     // GC allocator, not the system malloc, so no critical section is needed
     // around its lifetime (a malloc'd buffer once forced the whole body into
@@ -154,15 +147,27 @@ pub unsafe extern "C-unwind" fn sol_file_open(
         let err = std::io::Error::last_os_error();
         crate::panic::throw_message(format_args!("file_open failed: {err}"));
     }
-    let fd = fd as usize;
+    unsafe { register_new_fd(fd as usize) }
+}
 
-    // Mirror the heap's allocate path: set the allocated bit, advance the HWM,
-    // and be born marked if a concurrent mark is already in flight. The
-    // born-marked decision (read `SOL_CONCURRENT_MARKING`, conditionally set
-    // the mark bit) must not be interrupted by the STW signal — exactly like
-    // `sol_alloc`'s allocate-black — so the registration runs in a GC critical
-    // section. (An un-registered fd is never swept, so a cycle landing between
-    // `open` and this section can't close it.)
+/// Register a freshly created fd (an opened file, a socket, an accepted
+/// connection) in the arena bitmaps and return its `FileDesc` pointer.
+///
+/// Mirrors the heap's allocate path: set the allocated bit, advance the HWM,
+/// and be born marked if a concurrent mark is already in flight. The
+/// born-marked decision (read `SOL_CONCURRENT_MARKING`, conditionally set the
+/// mark bit) must not be interrupted by the STW signal — exactly like
+/// `sol_alloc`'s allocate-black — so the registration runs in a GC critical
+/// section. (An un-registered fd is never swept, so a cycle landing between
+/// the fd-producing syscall and this call can't close it.) The caller must be
+/// a registered mutator thread.
+pub(crate) unsafe fn register_new_fd(fd: usize) -> *mut u8 {
+    let slot_ptr = crate::gc::MY_SLOT.get();
+    assert!(
+        !slot_ptr.is_null(),
+        "register_new_fd called on unregistered thread"
+    );
+    let slot = unsafe { &*slot_ptr };
     unsafe {
         crate::gc::with_signal_deferred(slot, || {
             (*alloc_word(fd)).fetch_or(bit_mask(fd), Ordering::Relaxed);
@@ -209,7 +214,7 @@ pub unsafe extern "C" fn sol_file_stderr() -> *mut u8 {
 
 /// Recover the raw fd number from a `FileDesc` pointer (`addr - FD_BASE`).
 #[inline]
-fn fd_from_ptr(fd_ptr: *mut u8) -> libc::c_int {
+pub(crate) fn fd_from_ptr(fd_ptr: *mut u8) -> libc::c_int {
     let base = FD_BASE.get();
     debug_assert!(
         base != 0 && (fd_ptr as usize).wrapping_sub(base) < FD_ARENA_SIZE,

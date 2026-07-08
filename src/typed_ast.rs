@@ -7292,6 +7292,49 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
             params: vec![Exact(Type::FileDesc)],
             ret: Fixed(byte_slice_slice()),
         },
+        // socket(2): (domain, type, protocol) — raw AF_*/SOCK_*/IPPROTO_*
+        // values built by `@std`'s net.solar. The socket is a FileDesc in the
+        // fd arena, so file_read/file_write_partial/file_close work on it.
+        ast::Intrinsic::SocketCreate => IntrinsicSpec {
+            params: vec![Exact(Type::Int), Exact(Type::Int), Exact(Type::Int)],
+            ret: Fixed(Type::FileDesc),
+        },
+        // bind(2)/connect(2): the address crosses as raw sockaddr bytes.
+        ast::Intrinsic::SocketBind | ast::Intrinsic::SocketConnect => IntrinsicSpec {
+            params: vec![Exact(Type::FileDesc), byte_slice()],
+            ret: Fixed(Type::Unit),
+        },
+        // listen(2): (fd, backlog).
+        ast::Intrinsic::SocketListen => IntrinsicSpec {
+            params: vec![Exact(Type::FileDesc), Exact(Type::Int)],
+            ret: Fixed(Type::Unit),
+        },
+        // accept4(2): blocks until a connection arrives.
+        ast::Intrinsic::SocketAccept => IntrinsicSpec {
+            params: vec![Exact(Type::FileDesc)],
+            ret: Fixed(Type::FileDesc),
+        },
+        // setsockopt(2): (fd, level, name, int value).
+        ast::Intrinsic::SocketSetOption => IntrinsicSpec {
+            params: vec![
+                Exact(Type::FileDesc),
+                Exact(Type::Int),
+                Exact(Type::Int),
+                Exact(Type::Int),
+            ],
+            ret: Fixed(Type::Unit),
+        },
+        // getsockname(2): writes raw sockaddr bytes into the buffer, returns
+        // the address's full length.
+        ast::Intrinsic::SocketLocalAddr => IntrinsicSpec {
+            params: vec![Exact(Type::FileDesc), byte_slice()],
+            ret: Fixed(Type::Uint),
+        },
+        // shutdown(2): (fd, how 0/1/2 = read/write/both).
+        ast::Intrinsic::SocketShutdown => IntrinsicSpec {
+            params: vec![Exact(Type::FileDesc), Exact(Type::Int)],
+            ret: Fixed(Type::Unit),
+        },
         // args() / env(): no parameters; return `&[&[Uint8]]`. The runtime
         // copies each argument / `KEY=VALUE` entry into a fresh GC allocation.
         ast::Intrinsic::Args | ast::Intrinsic::Env => IntrinsicSpec {

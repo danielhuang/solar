@@ -14,6 +14,7 @@ pub mod gc;
 pub mod heap;
 pub mod init_cell;
 pub mod mem;
+pub mod net;
 pub mod panic;
 pub mod process;
 pub mod thread;

@@ -1,0 +1,135 @@
+import intrinsics from "@intrinsics";
+
+// TCP networking over the socket intrinsics. Sockets are FileDescs in the same
+// GC-traced fd arena as files: the collector auto-closes unreachable ones, and
+// the generic file read/write intrinsics do the byte transfer. Addresses are
+// IPv4 dotted-quad byte strings (e.g. "127.0.0.1"); the sockaddr_in layout the
+// kernel expects is built here and passed to the intrinsics as raw bytes.
+
+pub struct TcpListener {
+    pub fd: FileDesc,
+}
+
+pub struct TcpStream {
+    pub fd: FileDesc,
+}
+
+// Linux socket constants (an implementation detail of this module).
+const AF_INET = 2;
+const SOCK_STREAM = 1;
+const SOL_SOCKET = 1;
+const SO_REUSEADDR = 2;
+const IPPROTO_TCP = 6;
+const TCP_NODELAY = 1;
+const SHUT_RD = 0;
+const SHUT_WR = 1;
+
+// Builds a 16-byte sockaddr_in into `sa`: family (host order), port
+// (big-endian), the parsed dotted-quad address, and zero padding.
+fn build_sockaddr_in(sa: &[Uint8], addr: &[Uint8], port: Uint) {
+    sa@[0u] = 2u8; // AF_INET, little-endian u16
+    sa@[1u] = 0u8;
+    sa@[2u] = Uint8(port >> 8u); // sin_port is big-endian
+    sa@[3u] = Uint8(port & 255u);
+    // Parse "a.b.c.d" into bytes 4..8 (sin_addr, network byte order).
+    let octet = 0u;
+    let idx = 4u;
+    let i = 0u;
+    let n = addr.len();
+    while i < n {
+        let c = addr@[i];
+        if c == 46u8 {
+            sa@[idx] = Uint8(octet);
+            idx = idx + 1u;
+            octet = 0u;
+        } else {
+            octet = octet * 10u + Uint(c - 48u8);
+        }
+        i = i + 1u;
+    }
+    sa@[idx] = Uint8(octet);
+}
+
+// Creates a TCP socket bound to `addr:port` (dotted-quad IPv4; port 0 asks the
+// OS for an ephemeral port — read it back with `local_port`) and starts
+// listening. SO_REUSEADDR is set so restarts don't trip over TIME_WAIT.
+pub fn listen(addr: &[Uint8], port: Uint, backlog = 128) -> TcpListener {
+    let fd = intrinsics::socket_create(AF_INET, SOCK_STREAM, 0);
+    intrinsics::socket_set_option(fd, SOL_SOCKET, SO_REUSEADDR, 1);
+    let sa = [0u8; 16u];
+    build_sockaddr_in(sa&, addr, port);
+    intrinsics::socket_bind(fd, sa&);
+    intrinsics::socket_listen(fd, backlog);
+    TcpListener { fd: fd }
+}
+
+// Blocks until a client connects and returns the connection.
+pub method accept(self: TcpListener) -> TcpStream {
+    TcpStream { fd: intrinsics::socket_accept(self.fd) }
+}
+
+// The port this listener is actually bound to (useful after binding port 0).
+pub method local_port(self: TcpListener) -> Uint {
+    let sa = [0u8; 16u];
+    intrinsics::socket_local_addr(self.fd, sa&);
+    Uint(sa[2u]) * 256u + Uint(sa[3u]) // sin_port, big-endian
+}
+
+// Stops accepting now instead of when the collector reclaims the listener.
+pub method close(self: TcpListener) {
+    self.fd.close();
+}
+
+// Connects to `addr:port` (dotted-quad IPv4) and returns the stream.
+pub fn connect(addr: &[Uint8], port: Uint) -> TcpStream {
+    let fd = intrinsics::socket_create(AF_INET, SOCK_STREAM, 0);
+    let sa = [0u8; 16u];
+    build_sockaddr_in(sa&, addr, port);
+    intrinsics::socket_connect(fd, sa&);
+    TcpStream { fd: fd }
+}
+
+// Reads up to `buf`'s length bytes, returning the count read (0 once the peer
+// has closed its write side). A single read; may return fewer than requested.
+pub method read(self: TcpStream, buf: &[Uint8]) -> Uint {
+    self.fd.read(buf)
+}
+
+// Reads up to `max_size` bytes into a fresh GC buffer and returns the bytes
+// read. A single read.
+pub method read(self: TcpStream, max_size: Uint) -> &[Uint8] {
+    self.fd.read(max_size)
+}
+
+// Writes up to `src`'s length bytes, returning the count actually written. A
+// single write; may write fewer than requested.
+pub method write_partial(self: TcpStream, src: &[Uint8]) -> Uint {
+    self.fd.write_partial(src)
+}
+
+// Writes the entire `src` buffer, looping over partial writes until done.
+pub method write(self: TcpStream, src: &[Uint8]) {
+    self.fd.write(src);
+}
+
+// Disables (on = true) Nagle's algorithm: small writes go out immediately
+// instead of coalescing while an ack is outstanding.
+pub method set_nodelay(self: TcpStream, on: Bool) {
+    intrinsics::socket_set_option(self.fd, IPPROTO_TCP, TCP_NODELAY, if on { 1 } else { 0 });
+}
+
+// Half-closes the write side: the peer's next read returns 0 (EOF), while this
+// side can keep reading the peer's remaining data.
+pub method shutdown_write(self: TcpStream) {
+    intrinsics::socket_shutdown(self.fd, SHUT_WR);
+}
+
+// Half-closes the read side.
+pub method shutdown_read(self: TcpStream) {
+    intrinsics::socket_shutdown(self.fd, SHUT_RD);
+}
+
+// Closes the connection now instead of when the collector reclaims the stream.
+pub method close(self: TcpStream) {
+    self.fd.close();
+}

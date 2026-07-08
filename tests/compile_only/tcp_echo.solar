@@ -1,0 +1,29 @@
+// TCP loopback echo through std/net: bind an ephemeral port, accept on a
+// server thread, echo one message back, and verify it on the client side.
+fn main() {
+    let listener = net::listen("127.0.0.1"&, 0u);
+    let port = listener.local_port();
+
+    let server = thread::spawn(\ {
+        let conn = listener.accept();
+        let msg = conn.read(64u);
+        conn.write(msg);
+        conn.shutdown_write();
+    });
+
+    let client = net::connect("127.0.0.1"&, port);
+    client.set_nodelay(true);
+    client.write("hello over tcp"&);
+    client.shutdown_write();
+
+    // Read until EOF: the echo may arrive in pieces.
+    let buf = [0u8; 64u];
+    let total = 0u;
+    loop {
+        let n = client.read(buf[total..64u]&);
+        if n == 0u { break; }
+        total = total + n;
+    };
+    println(buf[0u..total]&);
+    server.join();
+}

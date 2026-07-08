@@ -69,3 +69,9 @@ fn sleep() {
     let output = run_codegen_file(&fixture("sleep.solar"), "compile_only_sleep");
     assert_eq!(output, "slept\n");
 }
+
+#[test]
+fn tcp_echo() {
+    let output = run_codegen_file(&fixture("tcp_echo.solar"), "compile_only_tcp_echo");
+    assert_eq!(output, "hello over tcp\n");
+}

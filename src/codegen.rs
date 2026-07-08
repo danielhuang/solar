@@ -697,6 +697,24 @@ impl<'a> Codegen<'a> {
             "extern uint8_t sol_file_stat(const uint8_t* ptr, size_t len, uint64_t* size, uint64_t* mtime, uint64_t* kind);",
         );
         self.line("extern void sol_dir_read(uint8_t* fd, uint8_t* out);");
+        self.line(
+            "extern uint8_t* sol_socket_create(int64_t domain, int64_t type, int64_t protocol);",
+        );
+        self.line(
+            "extern void sol_socket_bind(uint8_t* fd, const uint8_t* addr, size_t addr_len);",
+        );
+        self.line("extern void sol_socket_listen(uint8_t* fd, int64_t backlog);");
+        self.line("extern uint8_t* sol_socket_accept(uint8_t* fd);");
+        self.line(
+            "extern void sol_socket_connect(uint8_t* fd, const uint8_t* addr, size_t addr_len);",
+        );
+        self.line(
+            "extern void sol_socket_set_option(uint8_t* fd, int64_t level, int64_t name, int64_t value);",
+        );
+        self.line(
+            "extern size_t sol_socket_local_addr(uint8_t* fd, uint8_t* dst, size_t dst_len);",
+        );
+        self.line("extern void sol_socket_shutdown(uint8_t* fd, int64_t how);");
         self.line("extern void sol_args(uint8_t* out);");
         self.line("extern void sol_env(uint8_t* out);");
         self.line("extern int64_t sol_checked_add_int(int64_t a, int64_t b);");
@@ -2696,6 +2714,75 @@ impl<'a> Codegen<'a> {
                 // `&[&[Uint8]]` and writes its 16-byte fat pointer into `dst`.
                 let fd = self.emit_load(nodes, args[0]);
                 self.linef(format!("sol_dir_read((uint8_t*){fd}, (uint8_t*){dst});"));
+            }
+            Intrinsic::SocketCreate => {
+                // args: Int domain, Int type, Int protocol. Returns a FileDesc.
+                let domain = self.emit_load(nodes, args[0]);
+                let ty = self.emit_load(nodes, args[1]);
+                let protocol = self.emit_load(nodes, args[2]);
+                self.linef(format!(
+                    "*(uint8_t**){dst} = sol_socket_create((int64_t){domain}, (int64_t){ty}, (int64_t){protocol});"
+                ));
+            }
+            Intrinsic::SocketBind | Intrinsic::SocketConnect => {
+                // args: FileDesc, &[Uint8] raw sockaddr bytes (fat pointer).
+                let f = if matches!(intrinsic, Intrinsic::SocketBind) {
+                    "sol_socket_bind"
+                } else {
+                    "sol_socket_connect"
+                };
+                let fd = self.emit_load(nodes, args[0]);
+                let (ref_place, _) = self.emit_place(nodes, args[1]);
+                let data_ptr = self.fresh_tmp();
+                let data_len = self.fresh_tmp();
+                self.linef(format!("uint8_t* {data_ptr} = *(uint8_t**){ref_place};"));
+                self.linef(format!(
+                    "uint64_t {data_len} = *(uint64_t*)({ref_place} + 8);"
+                ));
+                self.linef(format!("{f}((uint8_t*){fd}, {data_ptr}, {data_len});"));
+            }
+            Intrinsic::SocketListen | Intrinsic::SocketShutdown => {
+                // args: FileDesc, Int (backlog / how).
+                let f = if matches!(intrinsic, Intrinsic::SocketListen) {
+                    "sol_socket_listen"
+                } else {
+                    "sol_socket_shutdown"
+                };
+                let fd = self.emit_load(nodes, args[0]);
+                let arg = self.emit_load(nodes, args[1]);
+                self.linef(format!("{f}((uint8_t*){fd}, (int64_t){arg});"));
+            }
+            Intrinsic::SocketAccept => {
+                // arg: FileDesc of a listening socket. Returns the connection.
+                let fd = self.emit_load(nodes, args[0]);
+                self.linef(format!(
+                    "*(uint8_t**){dst} = sol_socket_accept((uint8_t*){fd});"
+                ));
+            }
+            Intrinsic::SocketSetOption => {
+                // args: FileDesc, Int level, Int name, Int value.
+                let fd = self.emit_load(nodes, args[0]);
+                let level = self.emit_load(nodes, args[1]);
+                let name = self.emit_load(nodes, args[2]);
+                let value = self.emit_load(nodes, args[3]);
+                self.linef(format!(
+                    "sol_socket_set_option((uint8_t*){fd}, (int64_t){level}, (int64_t){name}, (int64_t){value});"
+                ));
+            }
+            Intrinsic::SocketLocalAddr => {
+                // args: FileDesc, &[Uint8] dst buffer. Returns the address len.
+                let fd = self.emit_load(nodes, args[0]);
+                let (ref_place, _) = self.emit_place(nodes, args[1]);
+                let data_ptr = self.fresh_tmp();
+                let data_len = self.fresh_tmp();
+                self.linef(format!("uint8_t* {data_ptr} = *(uint8_t**){ref_place};"));
+                self.linef(format!(
+                    "uint64_t {data_len} = *(uint64_t*)({ref_place} + 8);"
+                ));
+                let c_ty = self.c_int_type(result_ty);
+                self.linef(format!(
+                    "*({c_ty}*){dst} = ({c_ty})sol_socket_local_addr((uint8_t*){fd}, {data_ptr}, {data_len});"
+                ));
             }
             Intrinsic::Args | Intrinsic::Env => {
                 // No args. The runtime builds the `&[&[Uint8]]` and writes its

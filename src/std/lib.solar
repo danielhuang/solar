@@ -3,6 +3,7 @@ pub import vec from "vec.solar";
 pub import sync from "sync.solar";
 pub import thread from "thread.solar";
 pub import file from "file.solar";
+pub import net from "net.solar";
 pub import process from "process.solar";
 pub import iter from "iter.solar";
 pub import simd from "simd.solar";

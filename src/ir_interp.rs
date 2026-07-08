@@ -1569,6 +1569,18 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     self.mem.memcpy(ref_addr, new_addr, size);
                 }
             }
+            Intrinsic::SocketCreate
+            | Intrinsic::SocketBind
+            | Intrinsic::SocketListen
+            | Intrinsic::SocketAccept
+            | Intrinsic::SocketConnect
+            | Intrinsic::SocketSetOption
+            | Intrinsic::SocketLocalAddr
+            | Intrinsic::SocketShutdown => {
+                // Like the thread/futex intrinsics: network I/O is
+                // compiled-runtime only.
+                panic!("socket intrinsics not implemented in IR interpreter");
+            }
             Intrinsic::FutexWait => {
                 panic!("futex_wait not implemented in IR interpreter");
             }
