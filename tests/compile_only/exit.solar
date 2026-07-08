@@ -1,0 +1,9 @@
+import { exit } from "@intrinsics";
+
+// exit(0) terminates immediately: the line after it must never print. (The
+// interpreters implement exit too, but in-process — so this is compiled-only.)
+fn main() {
+    println("before exit"&);
+    exit(0);
+    println("after exit"&);
+}

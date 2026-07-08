@@ -156,3 +156,39 @@ pub unsafe extern "C" fn sol_env(out: *mut u8) {
         });
     }
 }
+
+/// Cached `available_parallelism` result, computed once by [`init_num_cpus`]
+/// during `sol_start`. On Linux `available_parallelism` reads the cgroup CPU
+/// quota, which does several system-allocator allocations (`Vec`/`PathBuf`/
+/// `String` in `std`'s `cgroups::quota`) — calling it from a registered
+/// mutator thread would need a GC critical section (the STW signal parking a
+/// thread mid-`malloc` deadlocks the collector's own pause allocations, the
+/// `sol_file_open` reasoning). Computing it before the GC thread or any
+/// mutator exists sidesteps that entirely and makes the intrinsic a plain
+/// load.
+static NUM_CPUS: InitCell<u64> = InitCell::new(0);
+
+/// Compute and cache the parallelism. Called once from `sol_start`, before
+/// the GC thread and the main mutator are spawned.
+pub fn init_num_cpus() {
+    let n = std::thread::available_parallelism()
+        .map(|n| n.get() as u64)
+        .unwrap_or(1);
+    // SAFETY: runs once from `sol_start` before any thread that reads it.
+    unsafe { NUM_CPUS.set(n) };
+}
+
+/// `num_cpus()`: the OS's available parallelism (>= 1), or 1 if it couldn't be
+/// determined. A cached value — no allocation, no syscall.
+#[unsafe(no_mangle)]
+pub extern "C" fn sol_num_cpus() -> u64 {
+    NUM_CPUS.get().max(1)
+}
+
+/// `exit(code)`: terminate the process immediately with the given status. No
+/// unwinding, no destructors — mirrors `std::process::exit` semantics. Solar's
+/// stdout writes are unbuffered `write(2)` calls, so nothing is lost.
+#[unsafe(no_mangle)]
+pub extern "C" fn sol_exit(code: i64) -> ! {
+    std::process::exit(code as i32)
+}

@@ -80,6 +80,9 @@ pub unsafe extern "C" fn sol_start(
     gc::install_signal_handler();
     heap::init();
     file::init();
+    // Cache available_parallelism while single-threaded: it allocates (cgroup
+    // probing), which is only safe before the GC thread / mutators exist.
+    process::init_num_cpus();
     LazyLock::force(&thread_pool::THREAD_POOL);
 
     // The generated statics root table lives in the program's immutable data

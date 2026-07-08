@@ -746,3 +746,9 @@ fn statics() {
         "3\n9\ninitial\nswapped\nlate is null\n42\nflag set\n13\n"
     );
 }
+
+#[test]
+fn num_cpus() {
+    let output = run(&fixture("num_cpus.solar"), "num_cpus");
+    assert_eq!(output, "at least one\nstable\n");
+}

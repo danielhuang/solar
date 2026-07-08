@@ -1484,6 +1484,15 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             Intrinsic::MonotonicTime | Intrinsic::SystemTime => {
                 self.scalar_store(dst, time_ns(intrinsic), result_ty);
             }
+            Intrinsic::NumCpus => {
+                self.scalar_store(dst, num_cpus(), result_ty);
+            }
+            Intrinsic::Exit => {
+                let code = self.eval_load(nodes, args[0])? as i32;
+                // Terminates the host process — in-process interpreter runs
+                // (the test harness) can only use this in spawned binaries.
+                std::process::exit(code);
+            }
             Intrinsic::ArrayLen => {
                 let len = if let Type::FixedArray(_, n) = &nodes[args[0].0].ty {
                     *n as usize
@@ -2013,6 +2022,14 @@ pub fn interpret(module: &Module) {
 pub fn interpret_to(module: &Module, stdin: impl Read, stdout: impl Write) {
     let mut interp = Interpreter::new(module, stdin, stdout);
     interp.run();
+}
+
+/// Shared `num_cpus` source for both interpreters: the OS's available
+/// parallelism, 1 if it can't be determined — mirroring `sol_num_cpus`.
+pub(crate) fn num_cpus() -> u64 {
+    std::thread::available_parallelism()
+        .map(|n| n.get() as u64)
+        .unwrap_or(1)
 }
 
 /// Shared clock source for the `monotonic_time`/`system_time` intrinsics in

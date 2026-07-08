@@ -20,6 +20,11 @@ pub method join(self: Thread) {
     }
 }
 
+// The number of hardware threads available to the process (always >= 1).
+pub fn num_cpus() -> Uint {
+    intrinsics::num_cpus()
+}
+
 // Sleep for at least `nanoseconds`. A futex wait on a never-woken word
 // supplies the timed block; the loop re-waits on the monotonic clock, since a
 // wait may return early spuriously (e.g. interrupted by a GC signal).

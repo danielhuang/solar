@@ -1335,6 +1335,16 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             Intrinsic::MonotonicTime | Intrinsic::SystemTime => {
                 Value::Int(crate::ir_interp::time_ns(intrinsic) as i64)
             }
+            Intrinsic::NumCpus => Value::Int(crate::ir_interp::num_cpus() as i64),
+            Intrinsic::Exit => {
+                let code = match self.eval_expr(&arguments[0])? {
+                    Value::Int(n) => n as i32,
+                    _ => unreachable!(),
+                };
+                // Terminates the host process — in-process interpreter runs
+                // (the test harness) can only use this in spawned binaries.
+                std::process::exit(code);
+            }
             Intrinsic::ArrayLen => {
                 let arr = self.eval_expr(&arguments[0])?;
                 match arr {

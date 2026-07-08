@@ -81,3 +81,9 @@ fn tcp_echo6() {
     let output = run_codegen_file(&fixture("tcp_echo6.solar"), "compile_only_tcp_echo6");
     assert_eq!(output, "hello over tcp6\n");
 }
+
+#[test]
+fn exit() {
+    let output = run_codegen_file(&fixture("exit.solar"), "compile_only_exit");
+    assert_eq!(output, "before exit\n");
+}

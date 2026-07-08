@@ -7447,6 +7447,16 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
             params: vec![],
             ret: Fixed(Type::Uint64),
         },
+        // num_cpus(): the OS's available parallelism (>= 1).
+        ast::Intrinsic::NumCpus => IntrinsicSpec {
+            params: vec![],
+            ret: Fixed(Type::Uint),
+        },
+        // exit(code): terminate the process immediately with the given status.
+        ast::Intrinsic::Exit => IntrinsicSpec {
+            params: vec![Exact(Type::Int)],
+            ret: Fixed(Type::Never),
+        },
         // Bit-counting intrinsics: take any integer, return a count as `Uint`.
         ast::Intrinsic::CountTrailingZeros
         | ast::Intrinsic::CountLeadingZeros
