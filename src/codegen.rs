@@ -674,10 +674,29 @@ impl<'a> Codegen<'a> {
         self.line("extern void sol_file_close(uint8_t* fd);");
         self.line("extern uint8_t* sol_file_stdin(void);");
         self.line("extern uint8_t* sol_file_stdout(void);");
+        self.line("extern uint8_t* sol_file_stderr(void);");
         self.line("extern size_t sol_file_read(uint8_t* fd, uint8_t* ptr, size_t len);");
         self.line(
             "extern size_t sol_file_write_partial(uint8_t* fd, const uint8_t* ptr, size_t len);",
         );
+        self.line(
+            "extern size_t sol_file_read_at(uint8_t* fd, uint8_t* ptr, size_t len, uint64_t offset);",
+        );
+        self.line(
+            "extern size_t sol_file_write_at(uint8_t* fd, const uint8_t* ptr, size_t len, uint64_t offset);",
+        );
+        self.line("extern void sol_file_sync(uint8_t* fd);");
+        self.line("extern uint8_t sol_file_lock(uint8_t* fd, int64_t op);");
+        self.line("extern void sol_file_remove(const uint8_t* ptr, size_t len);");
+        self.line("extern void sol_dir_remove(const uint8_t* ptr, size_t len);");
+        self.line(
+            "extern void sol_file_rename(const uint8_t* old_ptr, size_t old_len, const uint8_t* new_ptr, size_t new_len);",
+        );
+        self.line("extern void sol_dir_create(const uint8_t* ptr, size_t len, uint64_t mode);");
+        self.line(
+            "extern uint8_t sol_file_stat(const uint8_t* ptr, size_t len, uint64_t* size, uint64_t* mtime, uint64_t* kind);",
+        );
+        self.line("extern void sol_dir_read(uint8_t* fd, uint8_t* out);");
         self.line("extern void sol_args(uint8_t* out);");
         self.line("extern void sol_env(uint8_t* out);");
         self.line("extern int64_t sol_checked_add_int(int64_t a, int64_t b);");
@@ -2562,6 +2581,121 @@ impl<'a> Codegen<'a> {
                 self.linef(format!(
                     "*({c_ty}*){dst} = ({c_ty})sol_file_write_partial((uint8_t*){fd}, {data_ptr}, {data_len});"
                 ));
+            }
+            Intrinsic::FileStderr => {
+                // No args; returns a FileDesc for stderr (opaque uint8_t*).
+                self.linef(format!("*(uint8_t**){dst} = sol_file_stderr();"));
+            }
+            Intrinsic::FileReadAt | Intrinsic::FileWriteAt => {
+                // args: FileDesc, &[Uint8] buffer (fat pointer), Uint absolute
+                // offset. Returns bytes transferred by the single pread/pwrite.
+                let f = if matches!(intrinsic, Intrinsic::FileReadAt) {
+                    "sol_file_read_at"
+                } else {
+                    "sol_file_write_at"
+                };
+                let fd = self.emit_load(nodes, args[0]);
+                let (ref_place, _) = self.emit_place(nodes, args[1]);
+                let offset = self.emit_load(nodes, args[2]);
+                let data_ptr = self.fresh_tmp();
+                let data_len = self.fresh_tmp();
+                self.linef(format!("uint8_t* {data_ptr} = *(uint8_t**){ref_place};"));
+                self.linef(format!(
+                    "uint64_t {data_len} = *(uint64_t*)({ref_place} + 8);"
+                ));
+                let c_ty = self.c_int_type(result_ty);
+                self.linef(format!(
+                    "*({c_ty}*){dst} = ({c_ty}){f}((uint8_t*){fd}, {data_ptr}, {data_len}, (uint64_t){offset});"
+                ));
+            }
+            Intrinsic::FileSync => {
+                // arg: FileDesc. fsync(2); no result.
+                let fd = self.emit_load(nodes, args[0]);
+                self.linef(format!("sol_file_sync((uint8_t*){fd});"));
+            }
+            Intrinsic::FileLock => {
+                // args: FileDesc, Int flock(2) LOCK_* op. Returns Bool (false =
+                // non-blocking request would have to wait).
+                let fd = self.emit_load(nodes, args[0]);
+                let op = self.emit_load(nodes, args[1]);
+                let c_ty = self.c_int_type(result_ty);
+                self.linef(format!(
+                    "*({c_ty}*){dst} = ({c_ty})sol_file_lock((uint8_t*){fd}, (int64_t){op});"
+                ));
+            }
+            Intrinsic::FileRemove | Intrinsic::DirRemove => {
+                // arg: &[Uint8] path (fat pointer). unlink(2)/rmdir(2); no result.
+                let f = if matches!(intrinsic, Intrinsic::FileRemove) {
+                    "sol_file_remove"
+                } else {
+                    "sol_dir_remove"
+                };
+                let (ref_place, _) = self.emit_place(nodes, args[0]);
+                let data_ptr = self.fresh_tmp();
+                let data_len = self.fresh_tmp();
+                self.linef(format!("uint8_t* {data_ptr} = *(uint8_t**){ref_place};"));
+                self.linef(format!(
+                    "uint64_t {data_len} = *(uint64_t*)({ref_place} + 8);"
+                ));
+                self.linef(format!("{f}({data_ptr}, {data_len});"));
+            }
+            Intrinsic::FileRename => {
+                // args: &[Uint8] old path, &[Uint8] new path. rename(2).
+                let (old_place, _) = self.emit_place(nodes, args[0]);
+                let (new_place, _) = self.emit_place(nodes, args[1]);
+                let old_ptr = self.fresh_tmp();
+                let old_len = self.fresh_tmp();
+                let new_ptr = self.fresh_tmp();
+                let new_len = self.fresh_tmp();
+                self.linef(format!("uint8_t* {old_ptr} = *(uint8_t**){old_place};"));
+                self.linef(format!(
+                    "uint64_t {old_len} = *(uint64_t*)({old_place} + 8);"
+                ));
+                self.linef(format!("uint8_t* {new_ptr} = *(uint8_t**){new_place};"));
+                self.linef(format!(
+                    "uint64_t {new_len} = *(uint64_t*)({new_place} + 8);"
+                ));
+                self.linef(format!(
+                    "sol_file_rename({old_ptr}, {old_len}, {new_ptr}, {new_len});"
+                ));
+            }
+            Intrinsic::DirCreate => {
+                // args: &[Uint8] path, Uint permission mode. mkdir(2).
+                let (ref_place, _) = self.emit_place(nodes, args[0]);
+                let mode = self.emit_load(nodes, args[1]);
+                let data_ptr = self.fresh_tmp();
+                let data_len = self.fresh_tmp();
+                self.linef(format!("uint8_t* {data_ptr} = *(uint8_t**){ref_place};"));
+                self.linef(format!(
+                    "uint64_t {data_len} = *(uint64_t*)({ref_place} + 8);"
+                ));
+                self.linef(format!(
+                    "sol_dir_create({data_ptr}, {data_len}, (uint64_t){mode});"
+                ));
+            }
+            Intrinsic::FileStat => {
+                // args: &[Uint8] path, three &Uint64 out-params (size, mtime
+                // nanos, kind). Returns Bool (false = path doesn't exist).
+                let (ref_place, _) = self.emit_place(nodes, args[0]);
+                let size_ptr = self.emit_load(nodes, args[1]);
+                let mtime_ptr = self.emit_load(nodes, args[2]);
+                let kind_ptr = self.emit_load(nodes, args[3]);
+                let data_ptr = self.fresh_tmp();
+                let data_len = self.fresh_tmp();
+                self.linef(format!("uint8_t* {data_ptr} = *(uint8_t**){ref_place};"));
+                self.linef(format!(
+                    "uint64_t {data_len} = *(uint64_t*)({ref_place} + 8);"
+                ));
+                let c_ty = self.c_int_type(result_ty);
+                self.linef(format!(
+                    "*({c_ty}*){dst} = ({c_ty})sol_file_stat({data_ptr}, {data_len}, (uint64_t*){size_ptr}, (uint64_t*){mtime_ptr}, (uint64_t*){kind_ptr});"
+                ));
+            }
+            Intrinsic::DirRead => {
+                // arg: FileDesc of a directory. The runtime builds the batch's
+                // `&[&[Uint8]]` and writes its 16-byte fat pointer into `dst`.
+                let fd = self.emit_load(nodes, args[0]);
+                self.linef(format!("sol_dir_read((uint8_t*){fd}, (uint8_t*){dst});"));
             }
             Intrinsic::Args | Intrinsic::Env => {
                 // No args. The runtime builds the `&[&[Uint8]]` and writes its

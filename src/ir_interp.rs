@@ -4,7 +4,7 @@ use crate::ir::*;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 
-use crate::interp_io::{FileTable, STDIN, STDOUT};
+use crate::interp_io::{FileTable, STDERR, STDIN, STDOUT};
 
 struct Memory {
     data: Vec<u8>,
@@ -206,6 +206,15 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             ptr,
             len: msg.len(),
         }
+    }
+
+    /// Decode a `&[Uint8]` intrinsic argument (e.g. a path) into a `String`.
+    fn slice_arg_utf8(&mut self, nodes: &[Node], id: NodeId) -> Eval<String> {
+        let (ref_addr, _) = self.eval_place(nodes, id)?;
+        let data_ptr = self.mem.load(ref_addr, 8) as usize;
+        let data_len = self.mem.load(ref_addr + 8, 8) as usize;
+        let bytes = self.mem.data[data_ptr..data_ptr + data_len].to_vec();
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
     fn alloc_ty(&mut self, ty: &Type) -> usize {
@@ -1311,6 +1320,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             Intrinsic::FileStdout => {
                 self.scalar_store(dst, STDOUT as u64, result_ty);
             }
+            Intrinsic::FileStderr => {
+                self.scalar_store(dst, STDERR as u64, result_ty);
+            }
             Intrinsic::FileRead => {
                 let fd = self.eval_load(nodes, args[0])? as usize;
                 let (ref_addr, _) = self.eval_place(nodes, args[1])?;
@@ -1337,6 +1349,107 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     }
                 };
                 self.scalar_store(dst, n as u64, result_ty);
+            }
+            Intrinsic::FileReadAt => {
+                let fd = self.eval_load(nodes, args[0])? as usize;
+                let (ref_addr, _) = self.eval_place(nodes, args[1])?;
+                let data_ptr = self.mem.load(ref_addr, 8) as usize;
+                let data_len = self.mem.load(ref_addr + 8, 8) as usize;
+                let offset = self.eval_load(nodes, args[2])?;
+                let mut buf = vec![0u8; data_len];
+                let n = match self.files.read_at(fd, &mut buf, offset) {
+                    Ok(n) => n,
+                    Err(err) => return Err(self.thrown(&format!("file_read_at failed: {err}"))),
+                };
+                self.mem.data[data_ptr..data_ptr + n].copy_from_slice(&buf[..n]);
+                self.scalar_store(dst, n as u64, result_ty);
+            }
+            Intrinsic::FileWriteAt => {
+                let fd = self.eval_load(nodes, args[0])? as usize;
+                let (ref_addr, _) = self.eval_place(nodes, args[1])?;
+                let data_ptr = self.mem.load(ref_addr, 8) as usize;
+                let data_len = self.mem.load(ref_addr + 8, 8) as usize;
+                let offset = self.eval_load(nodes, args[2])?;
+                let bytes = self.mem.data[data_ptr..data_ptr + data_len].to_vec();
+                let n = match self.files.write_at(fd, &bytes, offset) {
+                    Ok(n) => n,
+                    Err(err) => return Err(self.thrown(&format!("file_write_at failed: {err}"))),
+                };
+                self.scalar_store(dst, n as u64, result_ty);
+            }
+            Intrinsic::FileSync => {
+                let fd = self.eval_load(nodes, args[0])? as usize;
+                if let Err(err) = self.files.sync(fd) {
+                    return Err(self.thrown(&format!("file_sync failed: {err}")));
+                }
+            }
+            Intrinsic::FileLock => {
+                let fd = self.eval_load(nodes, args[0])? as usize;
+                let op = self.eval_load(nodes, args[1])? as i64;
+                let got = match self.files.lock(fd, op) {
+                    Ok(got) => got,
+                    Err(err) => return Err(self.thrown(&format!("file_lock failed: {err}"))),
+                };
+                self.scalar_store(dst, got as u64, result_ty);
+            }
+            Intrinsic::FileRemove | Intrinsic::DirRemove => {
+                let path = self.slice_arg_utf8(nodes, args[0])?;
+                let (r, what) = if matches!(intrinsic, Intrinsic::FileRemove) {
+                    (std::fs::remove_file(&path), "file_remove")
+                } else {
+                    (std::fs::remove_dir(&path), "dir_remove")
+                };
+                if let Err(err) = r {
+                    return Err(self.thrown(&format!("{what} failed: {err}")));
+                }
+            }
+            Intrinsic::FileRename => {
+                let old = self.slice_arg_utf8(nodes, args[0])?;
+                let new = self.slice_arg_utf8(nodes, args[1])?;
+                if let Err(err) = std::fs::rename(&old, &new) {
+                    return Err(self.thrown(&format!("file_rename failed: {err}")));
+                }
+            }
+            Intrinsic::DirCreate => {
+                let path = self.slice_arg_utf8(nodes, args[0])?;
+                let mode = self.eval_load(nodes, args[1])? as u32;
+                if let Err(err) = crate::interp_io::create_dir(&path, mode) {
+                    return Err(self.thrown(&format!("dir_create failed: {err}")));
+                }
+            }
+            Intrinsic::FileStat => {
+                let path = self.slice_arg_utf8(nodes, args[0])?;
+                let size_ref = self.eval_load(nodes, args[1])? as usize;
+                let mtime_ref = self.eval_load(nodes, args[2])? as usize;
+                let kind_ref = self.eval_load(nodes, args[3])? as usize;
+                let (found, size, mtime, kind) = match crate::interp_io::stat_path(&path) {
+                    Ok(Some((size, mtime, kind))) => (1u64, size, mtime, kind),
+                    Ok(None) => (0, 0, 0, 0),
+                    Err(err) => return Err(self.thrown(&format!("file_stat failed: {err}"))),
+                };
+                self.mem.store(size_ref, size, 8);
+                self.mem.store(mtime_ref, mtime, 8);
+                self.mem.store(kind_ref, kind, 8);
+                self.scalar_store(dst, found, result_ty);
+            }
+            Intrinsic::DirRead => {
+                let fd = self.eval_load(nodes, args[0])? as usize;
+                let entries = match self.files.dir_read(fd) {
+                    Ok(entries) => entries,
+                    Err(err) => return Err(self.thrown(&format!("dir_read failed: {err}"))),
+                };
+                // Build the `&[&[Uint8]]`: an outer array of 16-byte fat
+                // pointers, each pointing at a fresh byte allocation.
+                let n = entries.len();
+                let outer = self.mem.alloc(n * 16, 8);
+                for (i, e) in entries.iter().enumerate() {
+                    let b = self.mem.alloc(e.len(), 1);
+                    self.mem.data[b..b + e.len()].copy_from_slice(e);
+                    self.mem.store(outer + i * 16, b as u64, 8);
+                    self.mem.store(outer + i * 16 + 8, e.len() as u64, 8);
+                }
+                self.mem.store(dst, outer as u64, 8);
+                self.mem.store(dst + 8, n as u64, 8);
             }
             Intrinsic::Args | Intrinsic::Env => {
                 // The interpreters have no process args/env source; return an

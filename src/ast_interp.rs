@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 
-use crate::interp_io::{FileTable, STDIN, STDOUT};
+use crate::interp_io::{FileTable, STDERR, STDIN, STDOUT};
 use std::rc::Rc;
 
 type Slot = Rc<RefCell<Value>>;
@@ -91,6 +91,33 @@ fn cast_numeric_ast(raw: u64, src: &Type, dst: &Type) -> u64 {
             _ => raw,
         },
     }
+}
+
+/// Decode a `&[Uint8]` value (e.g. an intrinsic's path or buffer argument)
+/// into its raw bytes.
+fn ref_bytes(val: &Value) -> Vec<u8> {
+    match val {
+        Value::Ref(slot) | Value::Unique(slot) => match &*slot.borrow() {
+            Value::Array(elements) => elements
+                .iter()
+                .map(|s| match &*s.borrow() {
+                    Value::Int(n) => *n as u8,
+                    _ => unreachable!(),
+                })
+                .collect(),
+            _ => unreachable!(),
+        },
+        _ => unreachable!(),
+    }
+}
+
+/// Build a fresh `&[Uint8]` value from raw bytes (the inverse of [`ref_bytes`]).
+fn bytes_ref(bytes: &[u8]) -> Value {
+    let slots: Vec<Slot> = bytes
+        .iter()
+        .map(|b| Rc::new(RefCell::new(Value::Int(*b as i64))))
+        .collect();
+    Value::Ref(Rc::new(RefCell::new(Value::Array(slots))))
 }
 
 /// Build a `Thrown` carrying `msg` as a fresh `&[Uint8]` value — the
@@ -1100,6 +1127,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             }
             Intrinsic::FileStdin => Value::Int(STDIN as i64),
             Intrinsic::FileStdout => Value::Int(STDOUT as i64),
+            Intrinsic::FileStderr => Value::Int(STDERR as i64),
             Intrinsic::FileRead => {
                 let fd = match self.eval_expr(&arguments[0])? {
                     Value::Int(n) => n as usize,
@@ -1152,6 +1180,144 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     }
                 };
                 Value::Int(n as i64)
+            }
+            Intrinsic::FileReadAt => {
+                let fd = match self.eval_expr(&arguments[0])? {
+                    Value::Int(n) => n as usize,
+                    _ => unreachable!(),
+                };
+                let dst = self.eval_expr(&arguments[1])?;
+                let offset = match self.eval_expr(&arguments[2])? {
+                    Value::Int(n) => n as u64,
+                    _ => unreachable!(),
+                };
+                match &dst {
+                    Value::Ref(slot) | Value::Unique(slot) => match &*slot.borrow() {
+                        Value::Array(elements) => {
+                            let mut buf = vec![0u8; elements.len()];
+                            let n = match self.files.read_at(fd, &mut buf, offset) {
+                                Ok(n) => n,
+                                Err(err) => {
+                                    return Err(thrown(&format!("file_read_at failed: {err}")));
+                                }
+                            };
+                            for (i, byte) in buf[..n].iter().enumerate() {
+                                *elements[i].borrow_mut() = Value::Int(*byte as i64);
+                            }
+                            Value::Int(n as i64)
+                        }
+                        _ => unreachable!(),
+                    },
+                    _ => unreachable!(),
+                }
+            }
+            Intrinsic::FileWriteAt => {
+                let fd = match self.eval_expr(&arguments[0])? {
+                    Value::Int(n) => n as usize,
+                    _ => unreachable!(),
+                };
+                let bytes = ref_bytes(&self.eval_expr(&arguments[1])?);
+                let offset = match self.eval_expr(&arguments[2])? {
+                    Value::Int(n) => n as u64,
+                    _ => unreachable!(),
+                };
+                let n = match self.files.write_at(fd, &bytes, offset) {
+                    Ok(n) => n,
+                    Err(err) => return Err(thrown(&format!("file_write_at failed: {err}"))),
+                };
+                Value::Int(n as i64)
+            }
+            Intrinsic::FileSync => {
+                let fd = match self.eval_expr(&arguments[0])? {
+                    Value::Int(n) => n as usize,
+                    _ => unreachable!(),
+                };
+                if let Err(err) = self.files.sync(fd) {
+                    return Err(thrown(&format!("file_sync failed: {err}")));
+                }
+                Value::Unit
+            }
+            Intrinsic::FileLock => {
+                let fd = match self.eval_expr(&arguments[0])? {
+                    Value::Int(n) => n as usize,
+                    _ => unreachable!(),
+                };
+                let op = match self.eval_expr(&arguments[1])? {
+                    Value::Int(n) => n,
+                    _ => unreachable!(),
+                };
+                match self.files.lock(fd, op) {
+                    Ok(got) => Value::Int(got as i64),
+                    Err(err) => return Err(thrown(&format!("file_lock failed: {err}"))),
+                }
+            }
+            Intrinsic::FileRemove | Intrinsic::DirRemove => {
+                let bytes = ref_bytes(&self.eval_expr(&arguments[0])?);
+                let path = String::from_utf8_lossy(&bytes).into_owned();
+                let (r, what) = if matches!(intrinsic, Intrinsic::FileRemove) {
+                    (std::fs::remove_file(&path), "file_remove")
+                } else {
+                    (std::fs::remove_dir(&path), "dir_remove")
+                };
+                if let Err(err) = r {
+                    return Err(thrown(&format!("{what} failed: {err}")));
+                }
+                Value::Unit
+            }
+            Intrinsic::FileRename => {
+                let old_bytes = ref_bytes(&self.eval_expr(&arguments[0])?);
+                let new_bytes = ref_bytes(&self.eval_expr(&arguments[1])?);
+                let old = String::from_utf8_lossy(&old_bytes).into_owned();
+                let new = String::from_utf8_lossy(&new_bytes).into_owned();
+                if let Err(err) = std::fs::rename(&old, &new) {
+                    return Err(thrown(&format!("file_rename failed: {err}")));
+                }
+                Value::Unit
+            }
+            Intrinsic::DirCreate => {
+                let bytes = ref_bytes(&self.eval_expr(&arguments[0])?);
+                let path = String::from_utf8_lossy(&bytes).into_owned();
+                let mode = match self.eval_expr(&arguments[1])? {
+                    Value::Int(n) => n as u32,
+                    _ => unreachable!(),
+                };
+                if let Err(err) = crate::interp_io::create_dir(&path, mode) {
+                    return Err(thrown(&format!("dir_create failed: {err}")));
+                }
+                Value::Unit
+            }
+            Intrinsic::FileStat => {
+                let bytes = ref_bytes(&self.eval_expr(&arguments[0])?);
+                let path = String::from_utf8_lossy(&bytes).into_owned();
+                let (found, size, mtime, kind) = match crate::interp_io::stat_path(&path) {
+                    Ok(Some((size, mtime, kind))) => (1i64, size, mtime, kind),
+                    Ok(None) => (0, 0, 0, 0),
+                    Err(err) => return Err(thrown(&format!("file_stat failed: {err}"))),
+                };
+                for (arg, v) in arguments[1..4].iter().zip([size, mtime, kind]) {
+                    match self.eval_expr(arg)? {
+                        Value::Ref(slot) | Value::Unique(slot) => {
+                            *slot.borrow_mut() = Value::Int(v as i64);
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                Value::Int(found)
+            }
+            Intrinsic::DirRead => {
+                let fd = match self.eval_expr(&arguments[0])? {
+                    Value::Int(n) => n as usize,
+                    _ => unreachable!(),
+                };
+                let entries = match self.files.dir_read(fd) {
+                    Ok(entries) => entries,
+                    Err(err) => return Err(thrown(&format!("dir_read failed: {err}"))),
+                };
+                let slots: Vec<Slot> = entries
+                    .iter()
+                    .map(|e| Rc::new(RefCell::new(bytes_ref(e))))
+                    .collect();
+                Value::Ref(Rc::new(RefCell::new(Value::Array(slots))))
             }
             Intrinsic::Args | Intrinsic::Env => {
                 // No process args/env source in the interpreters: return an

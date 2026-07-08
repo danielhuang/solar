@@ -135,53 +135,44 @@ pub unsafe extern "C-unwind" fn sol_file_open(
     );
     let slot = unsafe { &*slot_ptr };
 
-    // The whole body runs in a GC critical section. Two things require it:
-    //  - The born-marked decision (read `SOL_CONCURRENT_MARKING`, conditionally
-    //    set the mark bit) must not be interrupted by the STW signal, exactly
-    //    like `sol_alloc`'s allocate-black.
-    //  - The path buffer uses the system allocator. If the STW signal parked
-    //    this thread mid-`malloc`/`free` (holding the allocator lock), the GC
-    //    thread's own STW allocations would deadlock. Inside the section the
-    //    signal only *defers*, so the buffer's whole lifetime — alloc, use by
-    //    `open`, drop — stays unparkable; we self-suspend cleanly at the end.
-    // A failed open must NOT throw from inside the closure: the unwind would
-    // skip `with_signal_deferred`'s section exit, leaving the thread's critical
-    // section count permanently off by one. Capture the error (an errno-only
-    // `io::Error` — no allocation) and throw after the section ends.
-    let result = unsafe {
+    // NUL-terminated GC copy of the (unterminated) Solar byte-slice path — the
+    // GC allocator, not the system malloc, so no critical section is needed
+    // around its lifetime (a malloc'd buffer once forced the whole body into
+    // one: the STW signal parking this thread mid-`malloc` would deadlock the
+    // GC thread's own allocations).
+    let path = copy_path(path_ptr, path_len);
+
+    // O_CLOEXEC is always set so fds don't leak across exec.
+    let fd = unsafe {
+        libc::open(
+            path,
+            (flags as libc::c_int) | libc::O_CLOEXEC,
+            mode as libc::c_uint,
+        )
+    };
+    if fd < 0 {
+        let err = std::io::Error::last_os_error();
+        crate::panic::throw_message(format_args!("file_open failed: {err}"));
+    }
+    let fd = fd as usize;
+
+    // Mirror the heap's allocate path: set the allocated bit, advance the HWM,
+    // and be born marked if a concurrent mark is already in flight. The
+    // born-marked decision (read `SOL_CONCURRENT_MARKING`, conditionally set
+    // the mark bit) must not be interrupted by the STW signal — exactly like
+    // `sol_alloc`'s allocate-black — so the registration runs in a GC critical
+    // section. (An un-registered fd is never swept, so a cycle landing between
+    // `open` and this section can't close it.)
+    unsafe {
         crate::gc::with_signal_deferred(slot, || {
-            // NUL-terminated copy of the (unterminated) Solar byte-slice path.
-            let mut buf: Vec<u8> = Vec::with_capacity(path_len + 1);
-            std::ptr::copy_nonoverlapping(path_ptr, buf.as_mut_ptr(), path_len);
-            buf.set_len(path_len);
-            buf.push(0);
-
-            // O_CLOEXEC is always set so fds don't leak across exec.
-            let fd = libc::open(
-                buf.as_ptr() as *const libc::c_char,
-                (flags as libc::c_int) | libc::O_CLOEXEC,
-                mode as libc::c_uint,
-            );
-            if fd < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            let fd = fd as usize;
-
-            // Mirror the heap's allocate path: set the allocated bit, advance the
-            // HWM, and be born marked if a concurrent mark is already in flight.
             (*alloc_word(fd)).fetch_or(bit_mask(fd), Ordering::Relaxed);
             FD_HWM.fetch_max(fd as u64 + 1, Ordering::Relaxed);
             if crate::gc::SOL_CONCURRENT_MARKING.load(Ordering::Relaxed) {
                 (*mark_word(fd)).fetch_or(bit_mask(fd), Ordering::Relaxed);
             }
-
-            Ok((FD_BASE.get() + fd) as *mut u8)
-        })
-    };
-    match result {
-        Ok(ptr) => ptr,
-        Err(err) => crate::panic::throw_message(format_args!("file_open failed: {err}")),
+        });
     }
+    (FD_BASE.get() + fd) as *mut u8
 }
 
 /// Return a `FileDesc` for one of the process's standard streams (`fd`).
@@ -208,6 +199,12 @@ pub unsafe extern "C" fn sol_file_stdin() -> *mut u8 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_file_stdout() -> *mut u8 {
     unsafe { std_stream(libc::STDOUT_FILENO) }
+}
+
+/// `FileDesc` for the process's standard error (fd 2). Never auto-closed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sol_file_stderr() -> *mut u8 {
+    unsafe { std_stream(libc::STDERR_FILENO) }
 }
 
 /// Recover the raw fd number from a `FileDesc` pointer (`addr - FD_BASE`).
@@ -265,6 +262,304 @@ pub unsafe extern "C-unwind" fn sol_file_write_partial(
             continue;
         }
         crate::panic::throw_message(format_args!("file_write_partial failed: {err}"));
+    }
+}
+
+/// Read up to `dst_len` bytes from `fd` at absolute `offset` into `dst`,
+/// returning the count read (0 at EOF). Does not move the file cursor. Calls
+/// `pread(2)` directly; throws a Solar exception on a non-`EINTR` error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_file_read_at(
+    fd_ptr: *mut u8,
+    dst: *mut u8,
+    dst_len: usize,
+    offset: u64,
+) -> usize {
+    let fd = fd_from_ptr(fd_ptr);
+    loop {
+        let n =
+            unsafe { libc::pread(fd, dst as *mut libc::c_void, dst_len, offset as libc::off_t) };
+        if n >= 0 {
+            return n as usize;
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        crate::panic::throw_message(format_args!("file_read_at failed: {err}"));
+    }
+}
+
+/// Write up to `src_len` bytes from `src` to `fd` at absolute `offset`,
+/// returning the count actually written (a single, possibly partial,
+/// `pwrite(2)`). Does not move the file cursor. Throws a Solar exception on a
+/// non-`EINTR` error; the looping write-all lives in `@std`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_file_write_at(
+    fd_ptr: *mut u8,
+    src: *const u8,
+    src_len: usize,
+    offset: u64,
+) -> usize {
+    let fd = fd_from_ptr(fd_ptr);
+    loop {
+        let n = unsafe {
+            libc::pwrite(
+                fd,
+                src as *const libc::c_void,
+                src_len,
+                offset as libc::off_t,
+            )
+        };
+        if n >= 0 {
+            return n as usize;
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        crate::panic::throw_message(format_args!("file_write_at failed: {err}"));
+    }
+}
+
+/// Flush `fd`'s data and metadata to stable storage. Calls `fsync(2)` directly;
+/// throws a Solar exception on a non-`EINTR` error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_file_sync(fd_ptr: *mut u8) {
+    let fd = fd_from_ptr(fd_ptr);
+    loop {
+        if unsafe { libc::fsync(fd) } == 0 {
+            return;
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        crate::panic::throw_message(format_args!("file_sync failed: {err}"));
+    }
+}
+
+/// Apply a `flock(2)` operation to `fd`. `op` is the raw `LOCK_*` word built by
+/// `@std` (`LOCK_SH`=1, `LOCK_EX`=2, `LOCK_NB`=4, `LOCK_UN`=8). Returns 1 on
+/// success and 0 when a non-blocking request would have to wait (EWOULDBLOCK);
+/// throws a Solar exception on any other non-`EINTR` error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_file_lock(fd_ptr: *mut u8, op: i64) -> u8 {
+    let fd = fd_from_ptr(fd_ptr);
+    loop {
+        if unsafe { libc::flock(fd, op as libc::c_int) } == 0 {
+            return 1;
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        if err.kind() == std::io::ErrorKind::WouldBlock {
+            return 0;
+        }
+        crate::panic::throw_message(format_args!("file_lock failed: {err}"));
+    }
+}
+
+/// Copy an unterminated Solar byte-slice path into a NUL-terminated GC
+/// allocation (`len + 1` bytes) and return its pointer. Uses `sol_alloc` — the
+/// ordinary GC allocation path, not the system allocator — so callers need no
+/// GC critical section around the buffer's lifetime; the caller must be a
+/// registered mutator thread. The buffer holds no pointers (`mark_noop`) and
+/// stays alive across the syscall via the caller's stack reference
+/// (conservative scan); it becomes garbage as soon as the intrinsic returns.
+fn copy_path(ptr: *const u8, len: usize) -> *const libc::c_char {
+    let buf = unsafe {
+        crate::mem::sol_alloc(len + 1, 1, crate::process::mark_noop as crate::mem::MarkFn)
+    };
+    unsafe {
+        std::ptr::copy_nonoverlapping(ptr, buf, len);
+        *buf.add(len) = 0;
+    }
+    buf as *const libc::c_char
+}
+
+/// Run a path-taking syscall thunk with `EINTR` retry, throwing the canonical
+/// `{what} failed: {err}` Solar exception when it reports an error.
+fn path_call(what: &str, f: impl Fn() -> libc::c_int) {
+    loop {
+        if f() == 0 {
+            return;
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        crate::panic::throw_message(format_args!("{what} failed: {err}"));
+    }
+}
+
+/// Delete the file at `path`. Calls `unlink(2)` directly; throws a Solar
+/// exception on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_file_remove(path_ptr: *const u8, path_len: usize) {
+    let path = copy_path(path_ptr, path_len);
+    path_call("file_remove", || unsafe { libc::unlink(path) });
+}
+
+/// Delete the **empty** directory at `path`. Calls `rmdir(2)` directly; throws
+/// a Solar exception on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_dir_remove(path_ptr: *const u8, path_len: usize) {
+    let path = copy_path(path_ptr, path_len);
+    path_call("dir_remove", || unsafe { libc::rmdir(path) });
+}
+
+/// Atomically rename `old` to `new` (replacing `new` if it exists, like
+/// `rename(2)`). Throws a Solar exception on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_file_rename(
+    old_ptr: *const u8,
+    old_len: usize,
+    new_ptr: *const u8,
+    new_len: usize,
+) {
+    let old = copy_path(old_ptr, old_len);
+    let new = copy_path(new_ptr, new_len);
+    path_call("file_rename", || unsafe { libc::rename(old, new) });
+}
+
+/// Create the directory at `path` with permission bits `mode`. Calls `mkdir(2)`
+/// directly; throws a Solar exception on error (including `EEXIST`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_dir_create(path_ptr: *const u8, path_len: usize, mode: u64) {
+    let path = copy_path(path_ptr, path_len);
+    path_call("dir_create", || unsafe {
+        libc::mkdir(path, mode as libc::mode_t)
+    });
+}
+
+/// `stat(2)` the file at `path`, writing its size in bytes, its mtime as
+/// nanoseconds since the Unix epoch, and its kind (0 = regular file, 1 =
+/// directory, 2 = other) through the three out-pointers. Returns 1 on success;
+/// returns 0 with the out-params zeroed when the path does not exist (`ENOENT`,
+/// or `ENOTDIR` for a non-directory path component); throws a Solar exception
+/// on any other non-`EINTR` error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_file_stat(
+    path_ptr: *const u8,
+    path_len: usize,
+    size_out: *mut u64,
+    mtime_out: *mut u64,
+    kind_out: *mut u64,
+) -> u8 {
+    let path = copy_path(path_ptr, path_len);
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    loop {
+        if unsafe { libc::stat(path, &mut st) } == 0 {
+            break;
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        if matches!(err.raw_os_error(), Some(libc::ENOENT) | Some(libc::ENOTDIR)) {
+            unsafe {
+                *size_out = 0;
+                *mtime_out = 0;
+                *kind_out = 0;
+            }
+            return 0;
+        }
+        crate::panic::throw_message(format_args!("file_stat failed: {err}"));
+    }
+    let kind = match st.st_mode & libc::S_IFMT {
+        libc::S_IFREG => 0,
+        libc::S_IFDIR => 1,
+        _ => 2,
+    };
+    unsafe {
+        *size_out = st.st_size as u64;
+        *mtime_out = (st.st_mtime as u64)
+            .wrapping_mul(1_000_000_000)
+            .wrapping_add(st.st_mtime_nsec as u64);
+        *kind_out = kind;
+    }
+    1
+}
+
+/// Read one `getdents64(2)` batch of entries from a directory opened with
+/// `O_DIRECTORY`, building a `&[&[Uint8]]` into `out` (same GC-construction
+/// invariants as `sol_args` — see `process.rs`). Each entry is one byte-slice:
+/// a kind byte (0 = regular file, 1 = directory, 2 = other/unknown) followed by
+/// the name bytes. Entries come in directory order, **including** `"."` and
+/// `".."` (`@std` filters them), so an empty result always means the directory
+/// is exhausted. Callers loop until then; one intrinsic call is one syscall.
+/// Throws a Solar exception on a non-`EINTR` error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_dir_read(fd_ptr: *mut u8, out: *mut u8) {
+    let fd = fd_from_ptr(fd_ptr);
+    // Stack buffer for the raw dirent batch: no system-allocator use, so no GC
+    // critical section is needed (the `sol_alloc` calls below are the ordinary
+    // GC allocation path, called here from a registered mutator thread).
+    let mut buf = [0u8; 32 * 1024];
+    let nread = loop {
+        let n = unsafe { libc::syscall(libc::SYS_getdents64, fd, buf.as_mut_ptr(), buf.len()) };
+        if n >= 0 {
+            break n as usize;
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        crate::panic::throw_message(format_args!("dir_read failed: {err}"));
+    };
+
+    // linux_dirent64 layout: d_ino u64 @0, d_off i64 @8, d_reclen u16 @16,
+    // d_type u8 @18, d_name (NUL-terminated) @19.
+    let reclen_at =
+        |pos: usize| -> usize { u16::from_le_bytes([buf[pos + 16], buf[pos + 17]]) as usize };
+
+    let mut count = 0usize;
+    let mut pos = 0usize;
+    while pos < nread {
+        count += 1;
+        pos += reclen_at(pos);
+    }
+
+    // Outer array of `count` fat pointers — zeroed before the per-entry allocs
+    // below can trigger a GC (invariant (1) in process.rs).
+    let outer = unsafe {
+        crate::mem::sol_alloc(
+            count * 16,
+            8,
+            crate::process::mark_ptr_array as crate::mem::MarkFn,
+        )
+    };
+    unsafe { std::ptr::write_bytes(outer, 0, count * 16) };
+
+    let mut pos = 0usize;
+    for i in 0..count {
+        let d_type = buf[pos + 18];
+        let kind: u8 = match d_type {
+            libc::DT_REG => 0,
+            libc::DT_DIR => 1,
+            _ => 2,
+        };
+        let name_ptr = unsafe { buf.as_ptr().add(pos + 19) };
+        let name_len = unsafe { libc::strlen(name_ptr as *const libc::c_char) };
+        let len = 1 + name_len;
+        let entry = unsafe {
+            crate::mem::sol_alloc(len, 1, crate::process::mark_noop as crate::mem::MarkFn)
+        };
+        unsafe {
+            *entry = kind;
+            std::ptr::copy_nonoverlapping(name_ptr, entry.add(1), name_len);
+            let slot = outer.add(i * 16);
+            *(slot as *mut *mut u8) = entry;
+            *(slot.add(8) as *mut u64) = len as u64;
+        }
+        pos += reclen_at(pos);
+    }
+
+    unsafe {
+        *(out as *mut *mut u8) = outer;
+        *(out.add(8) as *mut u64) = count as u64;
     }
 }
 

@@ -698,3 +698,12 @@ fn time() {
     let output = run(&fixture("time.solar"), "time");
     assert_eq!(output, "mono ok\nsys ok\n");
 }
+
+#[test]
+fn file_ops() {
+    let output = run(&fixture("file_ops.solar"), "file_ops");
+    assert_eq!(
+        output,
+        "dir created\n5\nworld\nWORLD\n11\n0\n1\nno phantom\nlocked\n2\na.txt listed\nrenamed\ncleaned\n"
+    );
+}

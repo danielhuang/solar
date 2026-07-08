@@ -7150,6 +7150,7 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
         ))))))
     };
     let ref_u32 = || Exact(Type::Ref(Box::new(Type::Uint32)));
+    let ref_u64 = || Exact(Type::Ref(Box::new(Type::Uint64)));
     let u32 = || Exact(Type::Uint32);
     let fn_unit = || {
         Exact(Type::Function {
@@ -7233,10 +7234,12 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
             params: vec![Exact(Type::FileDesc)],
             ret: Fixed(Type::Unit),
         },
-        ast::Intrinsic::FileStdin | ast::Intrinsic::FileStdout => IntrinsicSpec {
-            params: vec![],
-            ret: Fixed(Type::FileDesc),
-        },
+        ast::Intrinsic::FileStdin | ast::Intrinsic::FileStdout | ast::Intrinsic::FileStderr => {
+            IntrinsicSpec {
+                params: vec![],
+                ret: Fixed(Type::FileDesc),
+            }
+        }
         ast::Intrinsic::FileRead => IntrinsicSpec {
             params: vec![Exact(Type::FileDesc), byte_slice()],
             ret: Fixed(Type::Uint),
@@ -7244,6 +7247,50 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
         ast::Intrinsic::FileWritePartial => IntrinsicSpec {
             params: vec![Exact(Type::FileDesc), byte_slice()],
             ret: Fixed(Type::Uint),
+        },
+        // (fd, buffer, absolute byte offset) — pread(2)/pwrite(2): positioned
+        // single-syscall I/O that doesn't move the file cursor.
+        ast::Intrinsic::FileReadAt | ast::Intrinsic::FileWriteAt => IntrinsicSpec {
+            params: vec![Exact(Type::FileDesc), byte_slice(), Exact(Type::Uint)],
+            ret: Fixed(Type::Uint),
+        },
+        ast::Intrinsic::FileSync => IntrinsicSpec {
+            params: vec![Exact(Type::FileDesc)],
+            ret: Fixed(Type::Unit),
+        },
+        // (fd, raw flock(2) LOCK_* op word). Returns false only when a
+        // non-blocking request would have to wait.
+        ast::Intrinsic::FileLock => IntrinsicSpec {
+            params: vec![Exact(Type::FileDesc), Exact(Type::Int)],
+            ret: Fixed(Type::Bool),
+        },
+        // unlink(2) / rmdir(2).
+        ast::Intrinsic::FileRemove | ast::Intrinsic::DirRemove => IntrinsicSpec {
+            params: vec![byte_slice()],
+            ret: Fixed(Type::Unit),
+        },
+        // rename(2): (old path, new path).
+        ast::Intrinsic::FileRename => IntrinsicSpec {
+            params: vec![byte_slice(), byte_slice()],
+            ret: Fixed(Type::Unit),
+        },
+        // mkdir(2): (path, permission bits).
+        ast::Intrinsic::DirCreate => IntrinsicSpec {
+            params: vec![byte_slice(), Exact(Type::Uint)],
+            ret: Fixed(Type::Unit),
+        },
+        // stat(2): (path, out size, out mtime-nanos, out kind 0/1/2 =
+        // file/dir/other). Returns false (outs zeroed) when the path doesn't
+        // exist.
+        ast::Intrinsic::FileStat => IntrinsicSpec {
+            params: vec![byte_slice(), ref_u64(), ref_u64(), ref_u64()],
+            ret: Fixed(Type::Bool),
+        },
+        // getdents64(2): one batch of entries from a directory fd, each entry a
+        // byte-slice of (kind byte, name bytes); empty slice = exhausted.
+        ast::Intrinsic::DirRead => IntrinsicSpec {
+            params: vec![Exact(Type::FileDesc)],
+            ret: Fixed(byte_slice_slice()),
         },
         // args() / env(): no parameters; return `&[&[Uint8]]`. The runtime
         // copies each argument / `KEY=VALUE` entry into a fresh GC allocation.

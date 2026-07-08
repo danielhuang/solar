@@ -1,0 +1,68 @@
+// Exercises the file intrinsics through their @std wrappers: directory
+// create/list/remove, positioned read/write, stat/exists, rename, remove,
+// sync, and locks. Uses a fixed path under target/ (tests run from the crate
+// root in all three backends); starts by removing leftovers from a previous
+// failed run so reruns stay deterministic.
+fn cleanup() {
+    try { file::remove("target/solar_test_file_ops/a.txt"&); } catch (e) {}
+    try { file::remove("target/solar_test_file_ops/b.txt"&); } catch (e) {}
+    try { file::remove("target/solar_test_file_ops/c.txt"&); } catch (e) {}
+    try { file::remove_dir("target/solar_test_file_ops"&); } catch (e) {}
+}
+
+fn main() {
+    cleanup();
+    let d = "target/solar_test_file_ops"&;
+
+    file::create_dir(d);
+    if file::exists(d) { println("dir created"&); }
+
+    let f = file::open("target/solar_test_file_ops/a.txt"&, create = true);
+    f.write("hello world"&);
+    f.sync();
+
+    // Positioned reads/writes: no cursor involved.
+    let buf = [0u8; 5u];
+    let n = f.read_at(buf&, 6u);
+    println(Int(n));
+    println(buf&);
+    f.write_at("WORLD"&, 6u);
+    let n2 = f.read_at(buf&, 6u);
+    println(buf&);
+
+    // stat: size, kind (0 = file, 1 = dir); exists() on a missing path.
+    let info = file::stat("target/solar_test_file_ops/a.txt"&);
+    println(Int(info.size));
+    println(Int(info.kind));
+    let dinfo = file::stat(d);
+    println(Int(dinfo.kind));
+    if file::exists("target/solar_test_file_ops/nope"&) {
+        println("phantom"&);
+    } else {
+        println("no phantom"&);
+    }
+
+    // Advisory lock: uncontended try-lock succeeds, then unlock.
+    if f.lock(block = false) { println("locked"&); }
+    f.unlock();
+
+    // Directory listing (order-independent: count and membership).
+    let f2 = file::open("target/solar_test_file_ops/b.txt"&, create = true);
+    f2.write("x"&);
+    let dh = file::open_dir(d);
+    let entries = dh.read_entries();
+    println(Int(entries.len()));
+    let found_a = false;
+    for e in entries@ {
+        if e.name@ == "a.txt" && e.kind == 0u { found_a = true; }
+    }
+    if found_a { println("a.txt listed"&); }
+
+    // Rename, then remove everything.
+    file::rename("target/solar_test_file_ops/b.txt"&, "target/solar_test_file_ops/c.txt"&);
+    if file::exists("target/solar_test_file_ops/c.txt"&) { println("renamed"&); }
+    file::remove("target/solar_test_file_ops/a.txt"&);
+    file::remove("target/solar_test_file_ops/c.txt"&);
+    file::remove_dir(d);
+    if file::exists(d) { println("leftover"&); } else { println("cleaned"&); }
+}

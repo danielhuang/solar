@@ -78,7 +78,8 @@ pub(crate) unsafe extern "C" fn mark_noop(_ctx: *mut u8, _obj: *mut u8, _size: u
 /// 8-byte word as a candidate pointer — the data pointer at +0 of each 16-byte
 /// element is a real heap edge; the length at +8 is filtered out by the
 /// collector's plausibility check. Mirrors codegen's `_mark_ptr_array`.
-unsafe extern "C" fn mark_ptr_array(ctx: *mut u8, obj: *mut u8, size: u64) {
+/// Also used by `file::sol_dir_read` for its entry array.
+pub(crate) unsafe extern "C" fn mark_ptr_array(ctx: *mut u8, obj: *mut u8, size: u64) {
     let mut off = 0u64;
     while off < size {
         let p = unsafe { *(obj.add(off as usize) as *const *mut u8) };
