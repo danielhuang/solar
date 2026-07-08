@@ -707,3 +707,18 @@ fn file_ops() {
         "dir created\n5\nworld\nWORLD\n11\n0\n1\nno phantom\nlocked\n2\na.txt listed\nrenamed\ncleaned\n"
     );
 }
+
+#[test]
+fn rvalue_field() {
+    let output = run(&fixture("rvalue_field.solar"), "rvalue_field");
+    assert_eq!(output, "3\n4\n8\n18\n");
+}
+
+#[test]
+fn blanket_eq_throw() {
+    let output = run(&fixture("blanket_eq_throw.solar"), "blanket_eq_throw");
+    assert_eq!(
+        output,
+        "operator_eq: type is not a struct or enum\ncontents equal\nstructs equal\n"
+    );
+}

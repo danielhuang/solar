@@ -1,0 +1,21 @@
+// Field access directly on call results (rvalues): IR lowering binds the
+// non-place base to a temp, like the non-place match scrutinee.
+pub struct P {
+    pub x: Int,
+    pub y: Int,
+}
+
+fn make() -> P {
+    P { x: 3, y: 4 }
+}
+
+method scaled(self: P, k: Int) -> P {
+    P { x: self.x * k, y: self.y * k }
+}
+
+fn main() {
+    println(make().x);
+    println(make().y);
+    println(make().scaled(2).y);
+    println(make().scaled(3).scaled(2).x);
+}

@@ -783,7 +783,29 @@ impl<'a> FunctionLowerer<'a> {
                 span: expr.span,
             }),
             typed_ast::ExprKind::FieldAccess { object, field } => {
-                let obj = self.lower_expr(object);
+                let mut obj = self.lower_expr(object);
+                // Field access projects into a place: bind a non-place base
+                // (e.g. a call result — `f(x).field`) to a temp `Let` first,
+                // like the non-place `match` scrutinee and `Reference` spills.
+                if !is_place(&self.nodes, obj) {
+                    let obj_ty = self.nodes[obj.0].ty.clone();
+                    let var = self.fresh_var();
+                    let let_node = self.push(Node {
+                        ty: obj_ty.clone(),
+                        kind: NodeKind::Let {
+                            var,
+                            value: obj,
+                            noescape: false,
+                        },
+                        span: expr.span,
+                    });
+                    self.pending_stmts.push(let_node);
+                    obj = self.push(Node {
+                        ty: obj_ty,
+                        kind: NodeKind::Local(var),
+                        span: expr.span,
+                    });
+                }
                 self.push(Node {
                     ty: expr.ty.clone(),
                     kind: NodeKind::FieldAccess {

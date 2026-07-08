@@ -196,8 +196,7 @@ pub fn stat(path: &[Uint8]) -> FileInfo {
 
 // Does anything exist at `path`?
 pub fn exists(path: &[Uint8]) -> Bool {
-    let info = stat(path);
-    info.found
+    stat(path).found
 }
 
 pub struct DirEntry {

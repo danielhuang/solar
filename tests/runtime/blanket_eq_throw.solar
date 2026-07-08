@@ -1,0 +1,24 @@
+// The blanket reflective operator_eq only supports structs and enums; any
+// other receiver type (here: comparing two `&[Uint8]` refs directly) throws a
+// catchable exception instead of silently answering. Contents compare with
+// `a@ == b@` (the primitive elementwise array equality).
+pub struct Pair {
+    pub a: Int,
+    pub b: Int,
+}
+
+fn main() {
+    let a = "abc"&;
+    let b = "abc"&;
+    try {
+        let e = a == b;
+        println("no throw"&);
+    } catch (msg) {
+        println(msg);
+    }
+    if a@ == b@ { println("contents equal"&); }
+    // Struct equality via the blanket still works.
+    let p1 = Pair { a: 1, b: 2 };
+    let p2 = Pair { a: 1, b: 2 };
+    if p1 == p2 { println("structs equal"&); }
+}

@@ -96,8 +96,9 @@ pub method carrying_mul_add(self: Uint64, rhs: Uint64, carry: Uint64, add: Uint6
 // compared with `==`, so a primitive field uses the built-in comparison, a
 // struct/enum field recurses through this method, and a byte-slice field uses
 // the overload below. A concrete `operator_eq` (e.g. on a specific struct) is
-// more specific and overrides this generic. Keys with field types that are
-// neither sized primitives, structs/enums, nor byte slices are not supported.
+// more specific and overrides this generic. Any other type (e.g. comparing two
+// `&[Uint8]` refs directly — compare contents with `a@ == b@` instead) throws
+// a catchable exception rather than silently answering.
 pub method operator_eq#[T](self: &T, other: &T) -> Bool {
   let eq = true;
   match.reflect T {
@@ -123,7 +124,9 @@ pub method operator_eq#[T](self: &T, other: &T) -> Bool {
         }
       }
     },
-    _ => {},
+    _ => {
+      throw("operator_eq: type is not a struct or enum"&);
+    },
   };
   eq
 }
