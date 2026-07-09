@@ -1,0 +1,50 @@
+fn count_after_concat#[T](src: &[T]) -> Uint {
+  let e = []#[T];
+  let both = e + src@;
+  both&.len()
+}
+
+fn main() {
+  // empty array literal with element type annotation
+  let xs = []#[Int];
+  println(xs&.len());
+
+  // annotated non-empty literal — annotation must match the inferred type
+  let ys = [1, 2, 3]#[Int];
+  println(ys[0u]);
+  println(ys&.len());
+
+  // empty string is []#[Uint8]
+  let s = "";
+  println(s&.len());
+
+  // empty array of references
+  let rs = []#[&Int];
+  println(rs&.len());
+
+  // concat with an empty array
+  let zs = xs + [7, 8];
+  println(zs[0u]);
+  println(zs&.len());
+  let ws = [9] + []#[Int];
+  println(ws&.len());
+
+  // iterating an empty array runs zero times
+  for x in xs {
+    println(x);
+  }
+
+  // annotation with a substituted type parameter
+  println(count_after_concat([10, 20, 30]&));
+  println(count_after_concat(["a"&, "bc"&]&));
+
+  // empty arrays compare equal elementwise
+  if xs == []#[Int] {
+    println(1);
+  }
+  if "" == []#[Uint8] {
+    println(2);
+  }
+
+  println("done"&);
+}

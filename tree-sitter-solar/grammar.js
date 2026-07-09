@@ -357,8 +357,10 @@ module.exports = grammar({
     field_init: ($) =>
       seq(field("name", $.identifier), ":", field("value", $._expression_with_struct)),
 
+    // Optional element-type annotation `[…]#[T]` — required for `[]` (nothing
+    // to infer from), checked against the inferred element type otherwise.
     array_literal: ($) =>
-      seq("[", optional($.element_list), "]"),
+      seq("[", optional($.element_list), "]", optional(field("type_args", $.type_args))),
 
     array_repeat: ($) =>
       seq("[", field("element", $._expression_with_struct), ";", field("count", $._expression), "]"),

@@ -328,7 +328,10 @@ pub enum ExprKind {
         start: Box<Expr>,
         end: Box<Expr>,
     },
-    ArrayLiteral(Vec<Expr>),
+    /// `[a, b, c]`, optionally annotated with the element type: `[]#[T]`.
+    /// The annotation is required for an empty literal and otherwise must
+    /// match the inferred element type.
+    ArrayLiteral(Vec<Expr>, Option<Type>),
     ArrayRepeat {
         element: Box<Expr>,
         count: Box<Expr>,

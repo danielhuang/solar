@@ -404,11 +404,14 @@ fn apply_subst_to_ast_expr(expr: &ast::Expr, subst: &HashMap<String, ast::Type>)
             start: Box::new(apply_subst_to_ast_expr(start, subst)),
             end: Box::new(apply_subst_to_ast_expr(end, subst)),
         },
-        ast::ExprKind::ArrayLiteral(elements) => ast::ExprKind::ArrayLiteral(
+        ast::ExprKind::ArrayLiteral(elements, elem_ty) => ast::ExprKind::ArrayLiteral(
             elements
                 .iter()
                 .map(|e| apply_subst_to_ast_expr(e, subst))
                 .collect(),
+            elem_ty
+                .as_ref()
+                .map(|ty| apply_subst_to_ast_type(ty, subst)),
         ),
         ast::ExprKind::ArrayRepeat { element, count } => ast::ExprKind::ArrayRepeat {
             element: Box::new(apply_subst_to_ast_expr(element, subst)),
@@ -757,7 +760,7 @@ fn is_literal_default(e: &ast::Expr) -> bool {
         // `null#[T]` — the untouched-until-main initial value for a static
         // whose real value needs init code.
         ast::ExprKind::NullLiteral(_) => true,
-        ast::ExprKind::ArrayLiteral(elems) => elems.iter().all(is_literal_default),
+        ast::ExprKind::ArrayLiteral(elems, _) => elems.iter().all(is_literal_default),
         ast::ExprKind::ArrayRepeat { element, count } => {
             is_literal_default(element) && is_literal_default(count)
         }
@@ -782,9 +785,12 @@ fn literal_default_type(e: &ast::Expr) -> Option<ast::Type> {
             Some(ast::Type::Named(integer_type_ast_name(it).to_string()))
         }
         ast::ExprKind::BooleanLiteral(_) => Some(ast::Type::Named("Bool".to_string())),
-        ast::ExprKind::ArrayLiteral(elems) => Some(ast::Type::Slice(Box::new(
-            literal_default_type(elems.first()?)?,
-        ))),
+        ast::ExprKind::ArrayLiteral(elems, elem_ty) => {
+            Some(ast::Type::Slice(Box::new(match elem_ty {
+                Some(ty) => ty.clone(),
+                None => literal_default_type(elems.first()?)?,
+            })))
+        }
         ast::ExprKind::ArrayRepeat { element, .. } => {
             Some(ast::Type::Slice(Box::new(literal_default_type(element)?)))
         }
@@ -4834,12 +4840,24 @@ impl<'a> Lowerer<'a> {
                     span: expr.span,
                 })
             }
-            ast::ExprKind::ArrayLiteral(elements) => {
+            ast::ExprKind::ArrayLiteral(elements, annotated) => {
+                let annotated = annotated
+                    .as_ref()
+                    .map(|ty| self.resolve_ast_type(ty))
+                    .transpose()?;
                 if elements.is_empty() {
-                    return Err(CompileError::new(
-                        "empty array literals are not supported".to_string(),
-                        expr.span,
-                    ));
+                    let Some(elem_ty) = annotated else {
+                        return Err(CompileError::new(
+                            "empty array literal needs an element type annotation: []#[T]"
+                                .to_string(),
+                            expr.span,
+                        ));
+                    };
+                    return Ok(Expr {
+                        ty: Type::Array(Box::new(elem_ty)),
+                        kind: ExprKind::ArrayLiteral(Vec::new()),
+                        span: expr.span,
+                    });
                 }
 
                 let lowered: Vec<Expr> = elements
@@ -4847,6 +4865,16 @@ impl<'a> Lowerer<'a> {
                     .map(|e| self.lower_expr(e))
                     .collect::<Result<Vec<_>, _>>()?;
                 let elem_ty = lowered[0].ty.clone();
+                if let Some(annotated) = &annotated
+                    && *annotated != elem_ty
+                {
+                    return Err(CompileError::new(
+                        format!(
+                            "array literal annotated as [{annotated}] but elements have type {elem_ty}"
+                        ),
+                        expr.span,
+                    ));
+                }
                 for (i, e) in lowered.iter().enumerate().skip(1) {
                     if e.ty != elem_ty {
                         return Err(CompileError::new(
@@ -5538,7 +5566,7 @@ impl<'a> Lowerer<'a> {
                 .collect();
             let name_ref = ast::Expr {
                 kind: ast::ExprKind::Reference(Box::new(ast::Expr {
-                    kind: ast::ExprKind::ArrayLiteral(name_bytes),
+                    kind: ast::ExprKind::ArrayLiteral(name_bytes, None),
                     span,
                 })),
                 span,
@@ -5693,7 +5721,7 @@ impl<'a> Lowerer<'a> {
                 .collect();
             let name_ref = ast::Expr {
                 kind: ast::ExprKind::Reference(Box::new(ast::Expr {
-                    kind: ast::ExprKind::ArrayLiteral(name_bytes),
+                    kind: ast::ExprKind::ArrayLiteral(name_bytes, None),
                     span,
                 })),
                 span,
@@ -5798,7 +5826,7 @@ impl<'a> Lowerer<'a> {
                 .collect();
             let name_ref = ast::Expr {
                 kind: ast::ExprKind::Reference(Box::new(ast::Expr {
-                    kind: ast::ExprKind::ArrayLiteral(name_bytes),
+                    kind: ast::ExprKind::ArrayLiteral(name_bytes, None),
                     span,
                 })),
                 span,
@@ -6003,7 +6031,7 @@ impl<'a> Lowerer<'a> {
                 .collect();
             let name_ref = ast::Expr {
                 kind: ast::ExprKind::Reference(Box::new(ast::Expr {
-                    kind: ast::ExprKind::ArrayLiteral(name_bytes),
+                    kind: ast::ExprKind::ArrayLiteral(name_bytes, None),
                     span,
                 })),
                 span,

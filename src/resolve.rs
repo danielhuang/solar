@@ -1079,7 +1079,15 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<String>) {
             rewrite_expr(start, ctx, locals);
             rewrite_expr(end, ctx, locals);
         }
-        ExprKind::ArrayLiteral(elements) | ExprKind::TupleLiteral(elements) => {
+        ExprKind::ArrayLiteral(elements, elem_ty) => {
+            for e in elements {
+                rewrite_expr(e, ctx, locals);
+            }
+            if let Some(ty) = elem_ty {
+                *ty = rewrite_type(ty, ctx.rename_map, ctx.module_aliases, ctx.type_params);
+            }
+        }
+        ExprKind::TupleLiteral(elements) => {
             for e in elements {
                 rewrite_expr(e, ctx, locals);
             }

@@ -860,6 +860,8 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                         span,
                     })
                     .collect(),
+                // implicit annotation so the empty string works like []#[Uint8]
+                Some(Type::Named("Uint8".to_string())),
             )
         }
         "field_access" => {
@@ -1027,7 +1029,10 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                     elements.push(convert_expr(child, source));
                 }
             }
-            ExprKind::ArrayLiteral(elements)
+            let elem_ty = node
+                .child_by_field_name("type_args")
+                .map(|ta| convert_type_args(ta, source).into_iter().next().unwrap());
+            ExprKind::ArrayLiteral(elements, elem_ty)
         }
         "array_repeat" => {
             let element = convert_expr(node.child_by_field_name("element").unwrap(), source);

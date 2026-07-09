@@ -203,6 +203,15 @@ fn main() {
   let zeros: [Int] = [0; 5u];
   println(zeros[3u]);              // 0
 
+  // element-type annotation: [...]#[T] — required for an empty array literal
+  // (nothing to infer from), checked against the elements otherwise
+  let empty = []#[Int];
+  println(empty&.len());           // 0
+  let annotated = [1, 2]#[Int];
+  if empty + annotated == annotated {
+    println(1);                    // 1
+  }
+
   // fixed-size array type: [T; N]
   let fixed: [Int; 3] = [1, 2, 3];
   println(fixed[1u]);              // 2

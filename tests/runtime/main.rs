@@ -49,6 +49,12 @@ fn hashbrown_map() {
 }
 
 #[test]
+fn empty_array() {
+    let output = run(&fixture("empty_array.solar"), "empty_array");
+    assert_eq!(output, "0\n1\n3\n0\n0\n7\n2\n1\n3\n2\n1\n2\ndone\n");
+}
+
+#[test]
 fn hoist_capture() {
     let output = run(&fixture("hoist_capture.solar"), "hoist_capture");
     assert_eq!(output, "0\n10\n20\n30\n");

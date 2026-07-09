@@ -49,6 +49,18 @@ fn bad_arg() {
 }
 
 #[test]
+#[should_panic(expected = "empty array literal needs an element type annotation: []#[T]")]
+fn empty_array_no_annotation() {
+    compile(&fixture("empty_array_no_annotation.solar"));
+}
+
+#[test]
+#[should_panic(expected = "array literal annotated as [Uint] but elements have type Int")]
+fn array_annotation_mismatch() {
+    compile(&fixture("array_annotation_mismatch.solar"));
+}
+
+#[test]
 #[should_panic(expected = "type mismatch in assignment: expected Int, got Foo")]
 fn bad_assign() {
     compile(&fixture("typecheck_bad_assign.solar"));
