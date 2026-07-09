@@ -1,0 +1,2 @@
+pub struct World { pub n: Int, }
+pub fn make() -> World { World { n: 7 } }

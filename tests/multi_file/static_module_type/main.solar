@@ -1,0 +1,11 @@
+import w from "w.solar";
+// A static whose type AND null-literal initializer name an imported module
+// type (`w::World`). Both the type annotation and the `null#[w::World]` value
+// must be module-alias-rewritten.
+static CACHE: &?w::World = null#[w::World];
+fn main() {
+    if CACHE == null#[w::World] {
+        CACHE = w::make()&;
+    }
+    println(CACHE@.n);
+}

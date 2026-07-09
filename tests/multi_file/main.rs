@@ -144,3 +144,12 @@ fn bad_atomic_struct_with_unique() {
 fn bad_atomic_size() {
     run(&fixture("bad_atomic_size/main.solar"), "bad_atomic_size");
 }
+
+#[test]
+fn static_module_type() {
+    let output = run(
+        &fixture("static_module_type/main.solar"),
+        "static_module_type",
+    );
+    assert_eq!(output, "7\n");
+}

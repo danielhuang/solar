@@ -778,3 +778,12 @@ fn nested_closure_capture() {
     );
     assert_eq!(output, "30\n200\n-10\n");
 }
+
+#[test]
+fn closure_capture_in_fn() {
+    let output = run(
+        &fixture("closure_capture_in_fn.solar"),
+        "closure_capture_in_fn",
+    );
+    assert_eq!(output, "7\n");
+}

@@ -3038,12 +3038,22 @@ impl<'a> Lowerer<'a> {
         let saved_return_type_span = self.current_return_type_span.take();
         let saved_capture_contexts = std::mem::take(&mut self.capture_contexts);
         let saved_nested = std::mem::take(&mut self.nested_function_defs);
+        // This lowering is only to infer the return type; its synthetic
+        // closures are thrown away with `lowered`. Snapshot the closure state
+        // so the throwaway pass leaves none behind — otherwise it registers a
+        // `__closure_N` and bumps the counter, desyncing the *real* lowering's
+        // closures (their capture env would reference the wrong synthetic fn,
+        // surfacing as "undefined variable in IR lowering").
+        let saved_closure_counter = self.closure_counter;
+        let saved_pending_closures = std::mem::take(&mut self.pending_closures);
         let lowered = self.lower_function(&func_def)?;
         self.scopes = saved_scopes;
         self.current_return_type = saved_return_type;
         self.current_return_type_span = saved_return_type_span;
         self.capture_contexts = saved_capture_contexts;
         self.nested_function_defs = saved_nested;
+        self.closure_counter = saved_closure_counter;
+        self.pending_closures = saved_pending_closures;
         self.resolving_return_types.pop();
         let ret_ty = lowered.return_type.clone();
         self.resolved_return_types

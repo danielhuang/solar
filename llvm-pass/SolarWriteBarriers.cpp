@@ -41,6 +41,7 @@
 
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
@@ -56,6 +57,23 @@
 using namespace llvm;
 
 namespace {
+
+// The debug location to stamp on a barrier call inserted next to `Src`. Uses
+// `Src`'s own location when it has one; otherwise — when `Src` was synthesized
+// by the optimizer with no `!dbg` (e.g. a MemCpyOpt/loop-idiom memcpy) — falls
+// back to a line-0 location at the enclosing function's subprogram scope.
+// LLVM's verifier requires every inlinable call in a function that carries
+// debug info to have a `!dbg`, so an empty location on the barrier call would
+// break the module in `-g` (release) builds.
+static DebugLoc barrierDebugLoc(Instruction *Src) {
+  if (DebugLoc DL = Src->getDebugLoc())
+    return DL;
+  Function *F = Src->getFunction();
+  if (F)
+    if (DISubprogram *SP = F->getSubprogram())
+      return DILocation::get(F->getContext(), 0, 0, SP);
+  return DebugLoc();
+}
 
 // Generated Solar code lives in @solar_* functions and @main; the runtime
 // (solar-system) lives elsewhere and must never be touched by these passes.
@@ -321,7 +339,7 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
         if (Val->getType()->isPointerTy()) {
           // Scalar pointer store: shade the stored value.
           CallInst *C = B.CreateCall(WB, {Dst, Val});
-          C->setDebugLoc(SI->getDebugLoc());
+          C->setDebugLoc(barrierDebugLoc(SI));
           ++NStore;
         } else {
           // Vector-of-pointers / wider-than-pointer store (i128, <N x i64>, …):
@@ -329,7 +347,7 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
           // (can't name the individual lanes cheaply).
           uint64_t Sz = DL.getTypeStoreSize(Val->getType());
           CallInst *C = B.CreateCall(MemB, {Dst, ConstantInt::get(I64, Sz)});
-          C->setDebugLoc(SI->getDebugLoc());
+          C->setDebugLoc(barrierDebugLoc(SI));
           ++NVec;
         }
       }
@@ -343,7 +361,7 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
         IRBuilder<> B(MT->getNextNode());
         Value *Len = B.CreateZExtOrTrunc(MT->getLength(), I64);
         CallInst *C = B.CreateCall(MemB, {Dst, Len});
-        C->setDebugLoc(MT->getDebugLoc());
+        C->setDebugLoc(barrierDebugLoc(MT));
         ++NMem;
       }
 

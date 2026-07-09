@@ -1,0 +1,18 @@
+// A closure that captures a local, inside a function whose return type is
+// INFERRED (not explicit). The return-type inference lowers the function in an
+// isolated throwaway pass; that pass must not leave stale synthetic closures
+// behind, or the real closure's capture wiring breaks.
+fn call(f: fn()) { f(); }
+
+fn run() {
+    let x = 7;
+    let running = true;
+    while running {
+        call(\ { println(x); });
+        running = false;
+    }
+}
+
+fn main() {
+    run();
+}

@@ -603,11 +603,23 @@ impl Resolver {
                 TopLevelItem::Static(st) => {
                     let mut st = st.clone();
                     st.name = rename_map.get(&st.name).cloned().unwrap_or(st.name.clone());
-                    // The value is a literal (no name references), but an explicit
-                    // type may reference a renamed/imported type.
+                    // An explicit type may reference a renamed/imported type.
                     if let Some(ty) = &mut st.ty {
                         *ty = rewrite_type(ty, &rename_map, &module_aliases, &[]);
                     }
+                    // The value is a literal, but `null#[T]` carries a type arg
+                    // that may name an imported module type — rewrite it like a
+                    // function-body expression.
+                    let ctx = RewriteCtx {
+                        rename_map: &rename_map,
+                        module_aliases: &module_aliases,
+                        all_module_aliases,
+                        intrinsic_names: &intrinsic_names,
+                        intrinsic_modules: &intrinsic_modules,
+                        type_params: &[],
+                        file_id,
+                    };
+                    rewrite_expr(&mut st.value, &ctx, &HashSet::new());
                     set_file_id_span(&mut st.span, file_id);
                     rewritten.push(TopLevelItem::Static(st));
                 }
