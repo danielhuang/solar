@@ -1,0 +1,28 @@
+// https://blog.meteor.com/an-interesting-kind-of-javascript-memory-leak-8b47d2e7f156
+
+struct Thing {
+  longStr: &[Uint8],
+  someMethod: fn(),
+}
+
+fn main() {
+  let theThing = null#[Thing];
+  let replaceThing = \ {
+    let originalThing = theThing;
+    let unused = \ {
+      if originalThing != null#[Thing] {
+        println("hi"&);
+      }
+    };
+    theThing = (Thing {
+      longStr: [1u8; 1000000u]&,
+      someMethod: \ {
+        println("message"&);
+      }
+    })&;
+  };
+
+  loop {
+    replaceThing();
+  }
+}
