@@ -447,7 +447,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     Type::NullableRef(_) => {
                         let addr = self.mem.load(ref_place, 8) as usize;
                         if addr == 0 {
-                            return Err(self.thrown("null reference dereference"));
+                            return Err(self.thrown("null dereference"));
                         }
                         (addr, None)
                     }
@@ -459,7 +459,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     Type::NullableRefUnsized(_) => {
                         let addr = self.mem.load(ref_place, 8) as usize;
                         if addr == 0 {
-                            return Err(self.thrown("null reference dereference"));
+                            return Err(self.thrown("null dereference"));
                         }
                         let meta = self.mem.load(ref_place + 8, 8) as usize;
                         (addr, Some(meta))

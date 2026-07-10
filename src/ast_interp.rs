@@ -410,7 +410,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let inner_ref = inner_slot.borrow();
                 match &*inner_ref {
                     Value::Ref(target) | Value::Unique(target) => Rc::clone(target),
-                    Value::Null => return Err(thrown("null reference dereference")),
+                    Value::Null => return Err(thrown("null dereference")),
                     _ => unreachable!("type checker guarantees ref/unique"),
                 }
             }

@@ -212,7 +212,7 @@ pub unsafe extern "C-unwind" fn sol_slice_index(
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn sol_null_check(ptr: *const u8) -> *const u8 {
     if ptr.is_null() {
-        crate::panic::throw_str("null reference dereference");
+        crate::panic::throw_str("null dereference");
     }
     ptr
 }

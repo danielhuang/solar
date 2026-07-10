@@ -667,7 +667,7 @@ fn catch_runtime_errors() {
          index out of bounds: index is 5 but length is 3\n\
          slice end (5) > length (3)\n\
          slice start (2) > end (1)\n\
-         null reference dereference\n\
+         null dereference\n\
          array length mismatch: expected 2 elements, got 3\n\
          array length mismatch: expected 2 elements, got 3\n\
          file_open failed: No such file or directory (os error 2)\n\
