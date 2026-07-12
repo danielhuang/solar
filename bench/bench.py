@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Allocation / GC benchmark harness for Solar vs C vs Go vs the JVM collectors.
+"""Allocation / GC benchmark harness for Solar vs C vs Go vs the JVM
+collectors vs .NET vs JavaScript (Node.js/V8).
 
 Runs four benchmarks (allocs3, threads_list2, splay, allocs5), each ported to
 every runtime, and reports throughput (median wall-clock + peak RSS) and
@@ -14,6 +15,7 @@ Prereqs (see README.md "How to reproduce"):
   Go     bench/go/{allocs3,threads_list2,splay,allocs5} (go build)
   Java   bench/java/*.class                             (javac)
   C#     bench/csharp/*/bin/Release/net10.0/*           (dotnet build -c Release)
+  JS     bench/js/*.js                                  (nothing to build; needs node)
 
 Usage:
   bench/bench.py                 # both throughput and latency, 3 rounds
@@ -37,6 +39,17 @@ ROOT = Path(__file__).resolve().parent.parent
 JAVA_DIR = ROOT / "bench" / "java"
 JAVA_OPTS = ["-Xmx8g"]
 
+# Pin the JVM to JDK 21 when present: non-generational ZGC was removed in
+# JDK 24 (-XX:+ZGenerational is ignored there), so the system `java` (25 on
+# this box) can't run the five-collector matrix.
+JAVA_BIN = "/usr/lib/jvm/java-21-openjdk-amd64/bin/java"
+if not Path(JAVA_BIN).exists():
+    JAVA_BIN = "java"
+
+# V8 heap cap, the -Xmx8g equivalent (applies per isolate, i.e. also to each
+# worker_threads worker in the threaded benchmarks).
+NODE_OPTS = ["--max-old-space-size=8192"]
+
 # .NET lives under ~/.dotnet here (installed by dotnet-install.sh), which is not
 # a system-registered location, so the apphost binaries need DOTNET_ROOT to find
 # the shared runtime. GC flavor is chosen per contender via DOTNET_gcServer.
@@ -57,11 +70,13 @@ BENCHMARKS = [("allocs3", "Allocs3"), ("threads_list2", "ThreadsList2"), ("splay
 # --------------------------------------------------------------------------- #
 def contenders(stem: str, cls: str):
     """Return [(label, argv, env, latency_kind), ...] for one benchmark."""
-    java = ["java", *JAVA_OPTS]
+    java = [JAVA_BIN, *JAVA_OPTS]
     return [
         ("Solar",            [str(ROOT / "target" / stem)],          {}, "solar"),
         ("C (malloc/free)",  [str(ROOT / "bench/c" / stem)],         {}, "none"),
         ("Go",               [str(ROOT / "bench/go" / stem)],        {}, "go"),
+        ("JS (Node/V8)",     ["node", *NODE_OPTS,
+                              str(ROOT / "bench/js" / f"{stem}.js")], {}, "node"),
         ("Java G1",          [*java, "-XX:+UseG1GC", cls],           {}, "java"),
         ("Java Parallel",    [*java, "-XX:+UseParallelGC", cls],     {}, "java"),
         ("Java ZGC gen",     [*java, "-XX:+UseZGC", "-XX:+ZGenerational", cls], {}, "java"),
@@ -112,6 +127,7 @@ _SOLAR_RE = re.compile(r"pause([123]) ([0-9.]+)(µs|ms|s)")
 _GO_RE = re.compile(r"([0-9.]+)\+[0-9.]+\+([0-9.]+) ms clock")
 _JAVA_RE = re.compile(r"At safepoint: (\d+) ns")
 _CSHARP_RE = re.compile(r"GCPAUSE ([0-9.]+) ms")
+_NODE_RE = re.compile(r"([0-9.]+) / [0-9.]+ ms")
 
 
 def capture(argv, env) -> str:
@@ -123,11 +139,18 @@ def capture(argv, env) -> str:
     return p.stderr
 
 
-def pause_samples(argv, kind: str, env: dict | None = None) -> list[float]:
-    """Run once with the runtime's GC trace enabled; return STW pauses in ms."""
+def pause_samples(argv, kind: str, env: dict | None = None) -> tuple[list[float], float]:
+    """Run once with the runtime's GC trace enabled; return (STW pauses in ms,
+    wall seconds of the traced run) — the pair feeds both the latency table and
+    the STW-fraction table."""
     env = env or {}
+    start = time.perf_counter()
+
+    def done(samples):
+        return samples, time.perf_counter() - start
+
     if kind == "none":
-        return []
+        return done([])
     if kind == "solar":
         # Solar prints stats to stdout; capture both streams.
         env = {"SOLAR_PRINT_GC_STATS": "1"}
@@ -143,7 +166,7 @@ def pause_samples(argv, kind: str, env: dict | None = None) -> list[float]:
             # arena sweep is concurrent; bracketed [signal …] sub-timings don't
             # match _SOLAR_RE so they're ignored.
             out.extend(parts.values())
-        return out
+        return done(out)
     if kind == "go":
         text = capture(argv, {"GODEBUG": "gctrace=1"})
         # clock triple: STW sweep-term + concurrent mark + STW mark-term. Emit the
@@ -152,18 +175,29 @@ def pause_samples(argv, kind: str, env: dict | None = None) -> list[float]:
         out = []
         for a, c in _GO_RE.findall(text):
             out.extend((float(a), float(c)))
-        return out
+        return done(out)
     if kind == "java":
         # JVM flags must precede the main class; -Xlog defaults to stdout.
         java_argv = argv[:-1] + ["-Xlog:safepoint", argv[-1]]
         p = subprocess.run(java_argv, cwd=JAVA_DIR, capture_output=True, text=True)
         text = p.stdout + p.stderr
-        return [int(ns) / 1e6 for ns in _JAVA_RE.findall(text)]
+        return done([int(ns) / 1e6 for ns in _JAVA_RE.findall(text)])
     if kind == "csharp":
         # No built-in gctrace knob; the program's in-process EventListener
         # (GcPause.cs) prints each STW window to stderr when BENCH_GC_TRACE=1.
         text = capture(argv, {**env, "BENCH_GC_TRACE": "1"})
-        return [float(ms) for ms in _CSHARP_RE.findall(text)]
+        return done([float(ms) for ms in _CSHARP_RE.findall(text)])
+    if kind == "node":
+        # V8's --trace-gc prints one line per collection per isolate (main +
+        # every worker_threads worker), to stdout: "..., X / Y ms ..." where X
+        # is the main-JS-thread pause of that isolate and Y the time spent in
+        # V8's background threads. Each X is one STW stall sample of one JS
+        # thread — the per-pause accounting the other runtimes use.
+        node_argv = [argv[0], "--trace-gc", *argv[1:]]
+        p = subprocess.run(node_argv, cwd=JAVA_DIR, env={**os.environ, **env},
+                           capture_output=True, text=True)
+        text = p.stdout + p.stderr
+        return done([float(ms) for ms in _NODE_RE.findall(text)])
     raise ValueError(kind)
 
 
@@ -201,6 +235,7 @@ def main():
         rss = {lbl: [] for lbl, *_ in conts}
         lat_max = {lbl: [] for lbl, *_ in conts}   # per-run max
         lat_p50 = {lbl: [] for lbl, *_ in conts}   # per-run p50
+        stw = {lbl: [] for lbl, *_ in conts}       # per-run Σpause/wall %
 
         for r in range(1, rounds + 1):
             print(f"  round {r}/{rounds}:", end="", flush=True)
@@ -210,10 +245,12 @@ def main():
                     walls[lbl].append(w)
                     rss[lbl].append(m)
                 if do_lat and kind != "none":
-                    s = pause_samples(argv, kind, env)
+                    s, traced_wall = pause_samples(argv, kind, env)
                     if s:
                         lat_max[lbl].append(max(s))
                         lat_p50[lbl].append(statistics.median(s))
+                    # zero samples == a zero-collection run: STW fraction 0%
+                    stw[lbl].append(100.0 * sum(s) / 1000.0 / traced_wall)
                 print(" .", end="", flush=True)
             print()
 
@@ -225,6 +262,7 @@ def main():
                 # median across rounds of each run's max / p50 (robust to outliers)
                 "lat_max": statistics.median(lat_max[lbl]) if lat_max[lbl] else None,
                 "lat_p50": statistics.median(lat_p50[lbl]) if lat_p50[lbl] else None,
+                "stw": statistics.median(stw[lbl]) if stw[lbl] else None,
             }
 
         # Console summary for this benchmark
@@ -235,6 +273,8 @@ def main():
                 row += f" wall={fmt(m['wall']):>7}s rss={str(m['rss_mb']):>5}MB"
             if do_lat:
                 row += f"  pause max={fmt(m['lat_max']):>8} p50={fmt(m['lat_p50']):>6} ms"
+                if m["stw"] is not None:
+                    row += f" stw={m['stw']:.1f}%"
             print(row)
         print()
 
@@ -275,6 +315,19 @@ def print_markdown(results, do_tp, do_lat):
                     cells += ["none", "none"]
                 else:
                     cells += [fmt(m["lat_max"]), fmt(m["lat_p50"])]
+            print(f"| {lbl} | " + " | ".join(cells) + " |")
+        print()
+        print("## Fraction of wall-clock spent in STW GC (median of rounds)\n")
+        print("| runtime | " + " | ".join(benches) + " |")
+        print("|" + "---|" * (1 + len(benches)))
+        for lbl in labels:
+            cells = []
+            for b in benches:
+                m = results[b][lbl]
+                if lbl.startswith("C "):
+                    cells.append("0%")
+                else:
+                    cells.append("—" if m["stw"] is None else f"{m['stw']:.1f}%")
             print(f"| {lbl} | " + " | ".join(cells) + " |")
 
 
