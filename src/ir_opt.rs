@@ -63,6 +63,14 @@ struct FnFacts {
     /// Node indices that are the direct operand of a `Deref` (read/written
     /// through, so a pointer used there isn't itself leaked).
     deref_operand: HashSet<usize>,
+    /// Deref operands that are NOT plain read-throughs: the `Deref` forms the
+    /// base of a `Ref`'s place (`p@.b&`), which re-derives the pointer `p`
+    /// holds into a fresh reference. If that reference escapes (e.g. it's
+    /// returned), `p`'s pointee escapes with it — so this use must not count
+    /// toward containment/non-escape. (Only the *outermost* deref of the base
+    /// chain re-derives: in `a@.b@.c&` the escaping address lies in `b`'s
+    /// pointee, while `a`'s pointer is merely read through.)
+    ref_base_deref: HashSet<usize>,
     /// `value` node index -> the `Let` var bound to it. Identifies the reference
     /// temp a `Ref` result flows into.
     let_var_of_value: HashMap<usize, VarId>,
@@ -81,10 +89,32 @@ struct FnFacts {
     addr_taken: HashSet<VarId>,
 }
 
+/// Walk the base chain of a `Ref`'s place operand; if it bottoms out at a
+/// `Deref`, record that deref's operand in `out` — the ref re-derives the
+/// pointer that operand holds (see `FnFacts::ref_base_deref`). Index/slice
+/// *index* subexpressions are not part of the base chain (a deref there is an
+/// ordinary value read).
+fn mark_ref_base_deref(nodes: &[Node], ref_operand: NodeId, out: &mut HashSet<usize>) {
+    let mut id = ref_operand;
+    loop {
+        match &nodes[id.0].kind {
+            NodeKind::FieldAccess { object, .. }
+            | NodeKind::Index { object, .. }
+            | NodeKind::Slice { object, .. } => id = *object,
+            NodeKind::Deref(op) => {
+                out.insert(op.0);
+                return;
+            }
+            _ => return,
+        }
+    }
+}
+
 /// Gather the per-function structural facts in a single pass over `nodes`.
 fn collect_fn_facts(nodes: &[Node]) -> FnFacts {
     let mut f = FnFacts {
         deref_operand: HashSet::new(),
+        ref_base_deref: HashSet::new(),
         let_var_of_value: HashMap::new(),
         let_node_of_var: HashMap::new(),
         ref_let_vars: Vec::new(),
@@ -115,6 +145,7 @@ fn collect_fn_facts(nodes: &[Node]) -> FnFacts {
                 if let Some(v) = ref_root_local(nodes, *op) {
                     f.direct_refs.entry(v).or_default().push(idx);
                 }
+                mark_ref_base_deref(nodes, *op, &mut f.ref_base_deref);
             }
             NodeKind::Unique(op) => {
                 // `^place` moves/deep-copies; conservatively give up on its locals.
@@ -155,7 +186,7 @@ fn compute_contained(facts: &FnFacts, good_use: &HashSet<usize>) -> HashSet<VarI
             }
             let contents_ok = facts.local_uses.get(&r).is_none_or(|uses| {
                 uses.iter().all(|&u| {
-                    facts.deref_operand.contains(&u)
+                    (facts.deref_operand.contains(&u) && !facts.ref_base_deref.contains(&u))
                         || good_use.contains(&u)
                         || facts
                             .let_var_of_value
@@ -194,8 +225,10 @@ fn storage_noescape(var: VarId, facts: &FnFacts, contained: &HashSet<VarId>) -> 
 fn reference_param_noescape(var: VarId, facts: &FnFacts, good_use: &HashSet<usize>) -> bool {
     !facts.addr_taken.contains(&var)
         && facts.local_uses.get(&var).is_none_or(|uses| {
-            uses.iter()
-                .all(|&u| facts.deref_operand.contains(&u) || good_use.contains(&u))
+            uses.iter().all(|&u| {
+                (facts.deref_operand.contains(&u) && !facts.ref_base_deref.contains(&u))
+                    || good_use.contains(&u)
+            })
         })
 }
 

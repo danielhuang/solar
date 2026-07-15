@@ -4,6 +4,7 @@ use crate::scope::ScopeStack;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
@@ -1194,8 +1195,43 @@ struct GenericEnumDef {
 #[derive(Clone)]
 struct FunctionEntry {
     type_params: Vec<String>,
-    ast_def: ast::FunctionDef,
+    /// Shared, immutable AST definition. `Rc` so that cloning an entry (or a
+    /// whole overload set) at a call site is a refcount bump, not a deep copy
+    /// of the function body — overload sets can be large (every method of a
+    /// given name program-wide), so deep-cloning them per call site made type
+    /// checking quadratic in program size.
+    ast_def: Rc<ast::FunctionDef>,
     overload_index: usize,
+}
+
+/// Per-method-name index of the concrete overload set, keyed by the base
+/// struct/enum name of the first (`self`) parameter. Built lazily on the first
+/// call of a method name; `method_defs` is immutable after `Lowerer::new`, so
+/// the index never needs invalidation. This lets a method call consider only
+/// the overloads whose receiver type can possibly match, instead of scanning
+/// every same-named method in the program (which was quadratic: #call-sites ×
+/// #methods-with-that-name).
+#[derive(Default)]
+struct MethodIndex {
+    /// Concrete entries (indices into `method_defs[name]`) whose first param's
+    /// resolved type has a struct/enum base name, grouped by that name.
+    by_base: HashMap<String, Vec<usize>>,
+    /// Concrete entries with a non-struct/enum (or unresolvable) first param.
+    /// Always considered — coercions never change a struct/enum base name, so
+    /// these are the only concrete entries a non-matching receiver could hit.
+    wildcard: Vec<usize>,
+    /// Generic entries, in declaration order. Never receiver-filtered.
+    generic: Vec<usize>,
+}
+
+/// Where `resolve_overloaded_call` gets its candidate overloads.
+enum CandidateSource {
+    /// An explicit, already-materialized overload set (free functions, nested
+    /// functions). These sets are small — one name's overloads in one scope.
+    Entries(Vec<FunctionEntry>),
+    /// The global method overload set for the called name, fetched lazily via
+    /// `MethodIndex` so only receiver-compatible overloads are materialized.
+    Methods,
 }
 
 /// Compare specificity of two types at the same position.
@@ -1454,13 +1490,26 @@ struct Lowerer<'a> {
     generic_enums: HashMap<String, GenericEnumDef>,
     function_defs: HashMap<String, Vec<FunctionEntry>>,
     method_defs: HashMap<String, Vec<FunctionEntry>>,
+    /// Lazily-built per-name receiver index over `method_defs` (see `MethodIndex`).
+    method_index: HashMap<String, MethodIndex>,
     /// Mangled function/method name → original un-mangled name, for diagnostics.
     display_names: HashMap<String, String>,
     /// Maps mangled function name → AST def (populated in lower_all for concrete functions)
-    concrete_ast_defs: HashMap<String, ast::FunctionDef>,
+    concrete_ast_defs: HashMap<String, Rc<ast::FunctionDef>>,
     lowered_structs: HashMap<String, StructDef>,
     lowered_enums: HashMap<String, EnumDef>,
     monomorphized_functions: HashMap<String, FunctionDef>,
+    /// Mangled names whose monomorphization is currently on the Rust call
+    /// stack (body being lowered). Used to give a clean error for recursive
+    /// generic functions with an *inferred* return type — with an explicit
+    /// one, the recursive call is served by the signature stub cached in
+    /// `monomorphized_functions` before the body is lowered.
+    monomorphizing: HashSet<String>,
+    /// Depth of nested `ensure_function_monomorphized_with_def` calls. Bounds
+    /// polymorphic recursion (`f#[T]` calling `f#[Box#[T]]` — a genuinely
+    /// infinite family of instantiations) with a clean error instead of a
+    /// stack overflow.
+    mono_depth: usize,
     resolved_return_types: HashMap<String, Type>,
     resolving_return_types: Vec<String>,
     scopes: ScopeStack<Type>,
@@ -1495,6 +1544,22 @@ struct Lowerer<'a> {
     /// outer function's loop. Each entry tracks whether the loop is a value-
     /// producing `loop` and the unified type of its `break` values so far.
     loop_ctx: Vec<LoopCtx>,
+    /// Set (for the duration of one `lower_expr` call) when lowering an
+    /// argument of the `try` intrinsic — consumed by `lower_closure_with_expected`
+    /// to mark the closure as a `try` body / `catch` handler block.
+    next_closure_is_try_block: bool,
+    /// True while lowering statements directly inside a `try` body or `catch`
+    /// handler block (cleared on entering any nested closure or function).
+    /// `return` there is rejected: the block is compiled as a closure, so a
+    /// return could only exit the block, not the enclosing function — a silent
+    /// semantic trap. Users assign to a local and return after the `try`.
+    in_try_block: bool,
+    /// `return <expr>` types (with spans) seen while lowering the body of a
+    /// function/closure whose return type is *inferred* (`current_return_type`
+    /// is `None`). Validated against the inferred return type once it is known
+    /// — without this, `\c { if c { return 5; } println(0); }` inferred `()`
+    /// and the stray `Int` return miscompiled (undeclared `_ret` in codegen).
+    inference_returns: Vec<(Type, ast::SourceSpan)>,
 }
 
 /// Per-loop state used to type `loop` expressions and validate `break`.
@@ -1518,6 +1583,7 @@ impl<'a> Lowerer<'a> {
         let mut display_names: HashMap<String, String> = HashMap::new();
         let mut consts: HashMap<String, &ast::ConstDef> = HashMap::new();
         let mut static_defs: Vec<&ast::StaticDef> = Vec::new();
+        let mut static_names: HashSet<&str> = HashSet::new();
         for item in &source.items {
             match item {
                 ast::TopLevelItem::Struct(s) => {
@@ -1578,7 +1644,7 @@ impl<'a> Lowerer<'a> {
                     let overload_index = entries.len();
                     entries.push(FunctionEntry {
                         type_params: f.type_params.clone(),
-                        ast_def: f,
+                        ast_def: Rc::new(f),
                         overload_index,
                     });
                 }
@@ -1599,7 +1665,7 @@ impl<'a> Lowerer<'a> {
                     let overload_index = entries.len();
                     entries.push(FunctionEntry {
                         type_params: m.type_params.clone(),
-                        ast_def: m,
+                        ast_def: Rc::new(m),
                         overload_index,
                     });
                 }
@@ -1631,7 +1697,7 @@ impl<'a> Lowerer<'a> {
                             st.value.span,
                         ));
                     }
-                    if static_defs.iter().any(|s| s.name == st.name) {
+                    if !static_names.insert(st.name.as_str()) {
                         return Err(CompileError::new(
                             format!("duplicate static definition: `{}`", st.name),
                             st.span,
@@ -1662,28 +1728,33 @@ impl<'a> Lowerer<'a> {
             vec![("function", &function_defs), ("method", &method_defs)];
         for (kind, defs) in all_defs {
             for (name, entries) in defs {
-                // Check duplicate concrete overloads (same param types among concrete entries)
+                // Check duplicate concrete overloads (same param types among
+                // concrete entries). Grouped by a structural key of the param
+                // types instead of pairwise comparison — an overload set holds
+                // every same-named item program-wide, so O(k²) here was
+                // quadratic in program size. Derived `Debug` output is
+                // injective on `ast::Type`, so key equality ⇔ type equality.
                 let concrete: Vec<&FunctionEntry> = entries
                     .iter()
                     .filter(|e| e.type_params.is_empty())
                     .collect();
-                for (i, a) in concrete.iter().enumerate() {
-                    for b in concrete.iter().skip(i + 1) {
-                        if a.ast_def.parameters.len() == b.ast_def.parameters.len()
-                            && a.ast_def
-                                .parameters
-                                .iter()
-                                .zip(b.ast_def.parameters.iter())
-                                .all(|(pa, pb)| pa.ty == pb.ty)
-                        {
-                            return Err(CompileError::new(
-                                format!(
-                                    "duplicate {kind} definition: `{name}` with same parameter types"
-                                ),
-                                b.ast_def.span,
-                            )
-                            .with_label("first definition here", a.ast_def.span));
-                        }
+                let mut seen_params: HashMap<String, &FunctionEntry> = HashMap::new();
+                for b in &concrete {
+                    let key = b
+                        .ast_def
+                        .parameters
+                        .iter()
+                        .map(|p| format!("{:?}", p.ty))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    if let Some(a) = seen_params.insert(key, b) {
+                        return Err(CompileError::new(
+                            format!(
+                                "duplicate {kind} definition: `{name}` with same parameter types"
+                            ),
+                            b.ast_def.span,
+                        )
+                        .with_label("first definition here", a.ast_def.span));
                     }
                 }
 
@@ -1745,11 +1816,14 @@ impl<'a> Lowerer<'a> {
             generic_enums,
             function_defs,
             method_defs,
+            method_index: HashMap::new(),
             display_names,
             concrete_ast_defs: HashMap::new(),
             lowered_structs: HashMap::new(),
             lowered_enums: HashMap::new(),
             monomorphized_functions: HashMap::new(),
+            monomorphizing: HashSet::new(),
+            mono_depth: 0,
             resolved_return_types: HashMap::new(),
             resolving_return_types: Vec::new(),
             scopes: ScopeStack::default(),
@@ -1768,6 +1842,9 @@ impl<'a> Lowerer<'a> {
             static_defs,
             statics: HashMap::new(),
             loop_ctx: Vec::new(),
+            next_closure_is_try_block: false,
+            in_try_block: false,
+            inference_returns: Vec::new(),
         })
     }
 
@@ -2124,6 +2201,20 @@ impl<'a> Lowerer<'a> {
                     Ok(Type::Ref(Box::new(inner_ty)))
                 } else {
                     Ok(Type::RefUnsized(Box::new(inner_ty)))
+                }
+            }
+            // Must recurse through `resolve_ast_type` (not fall through to
+            // `from_ast_type`) so a pointee like `Registry#[Block]` triggers
+            // monomorphization — otherwise the mangled struct name is minted
+            // without an instantiation and the `is_sized` thin/fat decision
+            // panics with "missing struct" (unless some other use happened to
+            // instantiate it first).
+            ast::Type::NullableReference(inner) => {
+                let inner_ty = self.resolve_ast_type(inner)?;
+                if inner_ty.is_sized(&self.lowered_structs) {
+                    Ok(Type::NullableRef(Box::new(inner_ty)))
+                } else {
+                    Ok(Type::NullableRefUnsized(Box::new(inner_ty)))
                 }
             }
             ast::Type::Unique(inner) => {
@@ -2713,7 +2804,7 @@ impl<'a> Lowerer<'a> {
         );
 
         let type_params = gdef.type_params.clone();
-        let ast_def_clone = gdef.ast_def.clone();
+        let ast_def_clone = (*gdef.ast_def).clone();
         let overload_index = gdef.overload_index;
 
         // Compute mangled name
@@ -2727,9 +2818,37 @@ impl<'a> Lowerer<'a> {
             mangled = format!("{mangled}_ov{overload_index}");
         }
 
-        // Already monomorphized?
+        // Already monomorphized (or a signature stub for an in-progress
+        // instantiation — which is all a recursive call site needs)?
         if self.monomorphized_functions.contains_key(&mangled) {
             return Ok(mangled);
+        }
+
+        // A same-substitution recursive call only reaches here when no
+        // signature stub was cached — i.e. the return type is inferred, so it
+        // cannot be known while the body is still being lowered.
+        if self.monomorphizing.contains(&mangled) {
+            return Err(CompileError::new(
+                format!(
+                    "cannot infer return type of recursive generic function `{}` — add an explicit return type annotation",
+                    self.display_name(name)
+                ),
+                ast::SourceSpan::default(),
+            ));
+        }
+
+        // Polymorphic recursion (`f#[T]` calling `f#[Box#[T]]`) produces a new
+        // instantiation at every level — genuinely infinite. Bound the nesting
+        // depth so it fails cleanly instead of overflowing the stack.
+        const MONO_DEPTH_LIMIT: usize = 256;
+        if self.mono_depth >= MONO_DEPTH_LIMIT {
+            return Err(CompileError::new(
+                format!(
+                    "monomorphization depth limit ({MONO_DEPTH_LIMIT}) exceeded while instantiating `{}` — is a generic function recursing with ever-different type arguments?",
+                    self.display_name(name)
+                ),
+                ast::SourceSpan::default(),
+            ));
         }
 
         // Build AST-level substitution map
@@ -2755,8 +2874,46 @@ impl<'a> Lowerer<'a> {
             .map(|s| apply_subst_to_ast_statement(s, &subst))
             .collect();
 
+        // Cache a signature stub (resolved parameters + explicit return type,
+        // empty body) BEFORE lowering the body: a same-substitution recursive
+        // call inside the body is then answered from the cache instead of
+        // re-entering monomorphization forever (stack overflow). Call sites
+        // only read `parameters` and `return_type` from the cached def, so the
+        // stub is a full answer for them; it is overwritten with the real
+        // lowered def below. Only possible with an explicit return type — the
+        // in-progress check above rejects the inferred-return recursive case.
+        if let Some(rt) = &ast_def.return_type {
+            let stub_return = self.resolve_ast_type(rt)?;
+            let stub_params = ast_def
+                .parameters
+                .iter()
+                .map(|p| {
+                    Ok(Parameter {
+                        name: pattern_name_or_placeholder(&p.pattern),
+                        ty: self.resolve_ast_type(&p.ty)?,
+                        span: p.span,
+                    })
+                })
+                .collect::<Result<Vec<_>, CompileError>>()?;
+            self.monomorphized_functions.insert(
+                mangled.clone(),
+                FunctionDef {
+                    name: mangled.clone(),
+                    parameters: stub_params,
+                    return_type: stub_return,
+                    body: Vec::new(),
+                    inline_hint: ast_def.inline_hint,
+                },
+            );
+        }
+
         // Lower the substituted function
-        let lowered = self.lower_function(&ast_def)?;
+        self.monomorphizing.insert(mangled.clone());
+        self.mono_depth += 1;
+        let lowered = self.lower_function(&ast_def);
+        self.mono_depth -= 1;
+        self.monomorphizing.remove(&mangled);
+        let lowered = lowered?;
         self.resolved_return_types
             .insert(mangled.clone(), lowered.return_type.clone());
         self.monomorphized_functions
@@ -2918,7 +3075,7 @@ impl<'a> Lowerer<'a> {
 
         // Register all concrete functions with mangled names and lower them.
         // Collect (mangled_name, ast_def) pairs for all concrete entries.
-        let concrete_funcs: Vec<(String, Vec<ast::Type>, ast::FunctionDef)> = self
+        let concrete_funcs: Vec<(String, Vec<ast::Type>, Rc<ast::FunctionDef>)> = self
             .function_defs
             .iter()
             .flat_map(|(name, entries)| {
@@ -2934,7 +3091,7 @@ impl<'a> Lowerer<'a> {
             })
             .collect::<Vec<_>>();
         // Resolve types and build (mangled, ast_def) pairs
-        let mut func_to_lower: Vec<(String, ast::FunctionDef)> = Vec::new();
+        let mut func_to_lower: Vec<(String, Rc<ast::FunctionDef>)> = Vec::new();
         for (name, ast_param_types, ast_def) in concrete_funcs {
             let param_types: Vec<Type> = ast_param_types
                 .iter()
@@ -3003,6 +3160,7 @@ impl<'a> Lowerer<'a> {
         }
         let mut ast_def = ast_def.clone();
         ast_def.name = mangled.to_string();
+        let ast_def = Rc::new(ast_def);
         // Register for resolve_return_type before lowering (handles cycles)
         self.concrete_ast_defs
             .insert(mangled.to_string(), ast_def.clone());
@@ -3044,22 +3202,24 @@ impl<'a> Lowerer<'a> {
         let saved_return_type_span = self.current_return_type_span.take();
         let saved_capture_contexts = std::mem::take(&mut self.capture_contexts);
         let saved_nested = std::mem::take(&mut self.nested_function_defs);
-        // This lowering is only to infer the return type; its synthetic
-        // closures are thrown away with `lowered`. Snapshot the closure state
-        // so the throwaway pass leaves none behind — otherwise it registers a
-        // `__closure_N` and bumps the counter, desyncing the *real* lowering's
-        // closures (their capture env would reference the wrong synthetic fn,
-        // surfacing as "undefined variable in IR lowering").
-        let saved_closure_counter = self.closure_counter;
-        let saved_pending_closures = std::mem::take(&mut self.pending_closures);
+        // NOTE on closures: this throwaway lowering registers `__closure_N`
+        // synthetic functions and bumps the counter. That must NOT be undone:
+        // the pass can trigger *permanent* lazy lowerings (generic
+        // monomorphizations, concrete methods) whose cached bodies reference
+        // the closure names minted here. Resetting the counter would hand the
+        // same `__closure_N` name to a later, unrelated closure — a
+        // nondeterministic miscompile (wrong closure called) or "undefined
+        // variable in IR lowering" panic, depending on HashMap lowering order.
+        // The counter is global and monotonic, so every closure name is unique;
+        // synthetic functions belonging to the discarded body become orphans
+        // (no surviving `Closure` expr references them) and are skipped by IR
+        // lowering.
         let lowered = self.lower_function(&func_def)?;
         self.scopes = saved_scopes;
         self.current_return_type = saved_return_type;
         self.current_return_type_span = saved_return_type_span;
         self.capture_contexts = saved_capture_contexts;
         self.nested_function_defs = saved_nested;
-        self.closure_counter = saved_closure_counter;
-        self.pending_closures = saved_pending_closures;
         self.resolving_return_types.pop();
         let ret_ty = lowered.return_type.clone();
         self.resolved_return_types
@@ -3073,6 +3233,10 @@ impl<'a> Lowerer<'a> {
         // A function body starts a fresh loop context (lowering can be triggered
         // lazily from inside an enclosing loop during monomorphization).
         let saved_loop_ctx = std::mem::take(&mut self.loop_ctx);
+        // A nested function body is not part of any enclosing `try` block, and
+        // collects its own inferred-return-type records.
+        let saved_in_try_block = std::mem::replace(&mut self.in_try_block, false);
+        let saved_inference_returns = std::mem::take(&mut self.inference_returns);
         let mut param_destructure_stmts: Vec<Statement> = Vec::new();
         let mut parameters: Vec<Parameter> = Vec::new();
         for (i, p) in func.parameters.iter().enumerate() {
@@ -3210,9 +3374,28 @@ impl<'a> Lowerer<'a> {
             inferred
         };
 
+        // With no explicit annotation, `return` statements were lowered
+        // unchecked (`current_return_type` was `None`); validate them against
+        // the inferred type now. A mismatch used to slip through to codegen
+        // as an undeclared `_ret` / wrong-size write.
+        let recorded = std::mem::replace(&mut self.inference_returns, saved_inference_returns);
+        for (ty, span) in recorded {
+            if ty != Type::Never && ty != return_type {
+                return Err(CompileError::new(
+                    format!(
+                        "return type mismatch: expected {return_type} (inferred from the body \
+                         of `{}`), got {ty}",
+                        func.name
+                    ),
+                    span,
+                ));
+            }
+        }
+
         self.nested_function_defs.pop();
         self.pop_scope();
         self.loop_ctx = saved_loop_ctx;
+        self.in_try_block = saved_in_try_block;
         Ok(FunctionDef {
             name: func.name.clone(),
             parameters,
@@ -3703,7 +3886,27 @@ impl<'a> Lowerer<'a> {
                 span: stmt.span,
             }]),
             ast::StatementKind::Return(expr) => {
+                if self.in_try_block {
+                    // A `try` body / `catch` handler is compiled as a closure
+                    // (`sol_try` runs it via `catch_unwind`), so a `return`
+                    // could only exit the block — never the enclosing function
+                    // like the syntax suggests. Reject it instead of silently
+                    // diverging from the user's intent.
+                    return Err(CompileError::new(
+                        "`return` is not supported inside a `try` body or `catch` handler \
+                         (the block is compiled as a closure); assign to a variable and \
+                         `return` after the `try`"
+                            .to_string(),
+                        stmt.span,
+                    ));
+                }
                 let lowered = self.lower_expr(expr)?;
+                if self.current_return_type.is_none() {
+                    // Inferred-return-type context: record for validation against
+                    // the inferred type once the whole body is lowered.
+                    self.inference_returns
+                        .push((lowered.ty.clone(), stmt.span));
+                }
                 let lowered = if let Some(ref expected) = self.current_return_type {
                     let coerced = self.try_coerce(lowered, expected);
                     if coerced.ty != *expected {
@@ -3823,7 +4026,7 @@ impl<'a> Lowerer<'a> {
                         let overload_index = entries.len();
                         entries.push(FunctionEntry {
                             type_params: fdef.type_params.clone(),
-                            ast_def: fdef.clone(),
+                            ast_def: Rc::new(fdef.clone()),
                             overload_index,
                         });
                     }
@@ -3836,7 +4039,7 @@ impl<'a> Lowerer<'a> {
                     let entries = registry.entry(fdef.name.clone()).or_default();
                     entries.push(FunctionEntry {
                         type_params: vec![],
-                        ast_def: fdef.clone(),
+                        ast_def: Rc::new(fdef.clone()),
                         overload_index: 0,
                     });
                 }
@@ -4479,7 +4682,13 @@ impl<'a> Lowerer<'a> {
                 {
                     let entries = self.function_defs[name.as_str()].clone();
                     return self.resolve_overloaded_call(
-                        entries, name, arguments, kwargs, type_args, expr.span, "",
+                        CandidateSource::Entries(entries),
+                        name,
+                        arguments,
+                        kwargs,
+                        type_args,
+                        expr.span,
+                        "",
                     );
                 }
 
@@ -6214,6 +6423,12 @@ impl<'a> Lowerer<'a> {
         // A closure body starts a fresh loop context — `break`/`continue` must
         // not escape into a loop in the enclosing function.
         let saved_loop_ctx = std::mem::take(&mut self.loop_ctx);
+        // Consume the try-block marker (set only while lowering a `try`
+        // intrinsic argument): it applies to THIS closure's direct body. Any
+        // closure nested inside starts a fresh (false) context.
+        let is_try_block = std::mem::take(&mut self.next_closure_is_try_block);
+        let saved_in_try_block = std::mem::replace(&mut self.in_try_block, is_try_block);
+        let saved_inference_returns = std::mem::take(&mut self.inference_returns);
 
         let mut typed_params: Vec<Parameter> = Vec::new();
         for (i, p) in parameters.iter().enumerate() {
@@ -6264,6 +6479,7 @@ impl<'a> Lowerer<'a> {
             .collect();
         self.current_return_type = prev_return_type;
         self.current_return_type_span = prev_return_type_span;
+        self.in_try_block = saved_in_try_block;
 
         self.nested_function_defs.pop();
         self.pop_scope();
@@ -6320,6 +6536,21 @@ impl<'a> Lowerer<'a> {
                 ),
                 span,
             ));
+        }
+
+        // Validate `return` statements lowered while the return type was still
+        // being inferred (see the matching check in `lower_function`).
+        let recorded = std::mem::replace(&mut self.inference_returns, saved_inference_returns);
+        for (ty, ret_span) in recorded {
+            if ty != Type::Never && ty != fn_return_type {
+                return Err(CompileError::new(
+                    format!(
+                        "return type mismatch: expected {fn_return_type} (inferred from the \
+                         closure body), got {ty}"
+                    ),
+                    ret_span,
+                ));
+            }
         }
 
         // Build the synthetic function.
@@ -6398,12 +6629,106 @@ impl<'a> Lowerer<'a> {
         Some(full)
     }
 
+    /// The base struct/enum name a value of `ty` can never coerce away from:
+    /// reference/unique wrappers are stripped; a struct/enum name is the key.
+    /// Returns `None` for every other type (primitives, arrays, functions, and
+    /// notably `Never`, which coerces to anything) — callers must treat `None`
+    /// as "could match any overload".
+    fn type_base_key(ty: &Type) -> Option<&str> {
+        match ty {
+            Type::Ref(inner)
+            | Type::RefUnsized(inner)
+            | Type::NullableRef(inner)
+            | Type::NullableRefUnsized(inner)
+            | Type::Unique(inner)
+            | Type::UniqueUnsized(inner) => Self::type_base_key(inner),
+            Type::Struct(name) | Type::Enum(name) => Some(name),
+            _ => None,
+        }
+    }
+
+    /// Build (once) the receiver index for a method name. `method_defs` is
+    /// immutable after `Lowerer::new`, so the index never needs invalidation.
+    fn build_method_index(&mut self, name: &str) {
+        if self.method_index.contains_key(name) {
+            return;
+        }
+        let entries: Vec<FunctionEntry> = self.method_defs.get(name).cloned().unwrap_or_default();
+        let mut index = MethodIndex::default();
+        for (i, entry) in entries.iter().enumerate() {
+            if !entry.type_params.is_empty() {
+                index.generic.push(i);
+                continue;
+            }
+            let resolved = entry
+                .ast_def
+                .parameters
+                .first()
+                .and_then(|p| self.resolve_ast_type(&p.ty).ok());
+            match resolved.as_ref().and_then(Self::type_base_key) {
+                Some(key) => index.by_base.entry(key.to_string()).or_default().push(i),
+                None => index.wildcard.push(i),
+            }
+        }
+        self.method_index.insert(name.to_string(), index);
+    }
+
+    /// All generic overloads of a method name, in declaration order.
+    fn method_generic_entries(&mut self, name: &str) -> Vec<FunctionEntry> {
+        self.build_method_index(name);
+        let Some(entries) = self.method_defs.get(name) else {
+            return Vec::new();
+        };
+        let index = &self.method_index[name];
+        index.generic.iter().map(|&i| entries[i].clone()).collect()
+    }
+
+    /// The concrete overloads of a method name that a receiver of type `recv`
+    /// could possibly match (receiver-keyed bucket + wildcard bucket), in
+    /// declaration order. A receiver without a base key gets the full set.
+    fn method_concrete_entries(&mut self, name: &str, recv: Option<&Type>) -> Vec<FunctionEntry> {
+        self.build_method_index(name);
+        let Some(entries) = self.method_defs.get(name) else {
+            return Vec::new();
+        };
+        let index = &self.method_index[name];
+        match recv.and_then(|t| Self::type_base_key(t)) {
+            Some(key) => {
+                let bucket = index.by_base.get(key).map_or(&[][..], Vec::as_slice);
+                let mut merged: Vec<usize> = bucket
+                    .iter()
+                    .chain(index.wildcard.iter())
+                    .copied()
+                    .collect();
+                merged.sort_unstable();
+                merged.into_iter().map(|i| entries[i].clone()).collect()
+            }
+            None => entries
+                .iter()
+                .filter(|e| e.type_params.is_empty())
+                .cloned()
+                .collect(),
+        }
+    }
+
+    /// Total number of concrete overloads a `CandidateSource` holds, before any
+    /// receiver filtering (used only to pick the error-message shape, keeping
+    /// diagnostics identical to the pre-index behavior).
+    fn total_concrete_count(&self, source: &CandidateSource, name: &str) -> usize {
+        let count =
+            |entries: &[FunctionEntry]| entries.iter().filter(|e| e.type_params.is_empty()).count();
+        match source {
+            CandidateSource::Entries(entries) => count(entries),
+            CandidateSource::Methods => self.method_defs.get(name).map_or(0, |e| count(e)),
+        }
+    }
+
     /// Shared overload resolution for both function calls and method calls.
     /// `mangle_prefix` is "" for functions, "__method_" for methods.
     #[allow(clippy::too_many_arguments)]
     fn resolve_overloaded_call(
         &mut self,
-        entries: Vec<FunctionEntry>,
+        source: CandidateSource,
         name: &str,
         arguments: &[ast::Expr],
         kwargs: &[(String, ast::Expr)],
@@ -6413,17 +6738,17 @@ impl<'a> Lowerer<'a> {
     ) -> Result<Expr, CompileError> {
         let has_infer_closures = arguments.iter().any(Self::has_infer_params);
 
-        // Collect concrete and generic entries
-        let concrete_entries: Vec<FunctionEntry> = entries
-            .iter()
-            .filter(|e| e.type_params.is_empty())
-            .cloned()
-            .collect();
-        let generic_entries: Vec<FunctionEntry> = entries
-            .iter()
-            .filter(|e| !e.type_params.is_empty())
-            .cloned()
-            .collect();
+        // Generic entries are never receiver-filtered; concrete entries are
+        // fetched per-path below (for methods, filtered by the receiver's base
+        // type so a call only considers overloads it could actually match).
+        let generic_entries: Vec<FunctionEntry> = match &source {
+            CandidateSource::Entries(entries) => entries
+                .iter()
+                .filter(|e| !e.type_params.is_empty())
+                .cloned()
+                .collect(),
+            CandidateSource::Methods => self.method_generic_entries(name),
+        };
         let num_generic_overloads = generic_entries.len();
 
         // If explicit type args provided, skip concrete entries entirely
@@ -6511,11 +6836,22 @@ impl<'a> Lowerer<'a> {
                 .collect::<Result<Vec<_>, _>>()?;
             let arg_types: Vec<Type> = pos_lowered.iter().map(|a| a.ty.clone()).collect();
 
+            // Concrete candidates: for methods, only the overloads whose first
+            // (receiver) parameter's base type can match the receiver.
+            let concrete_entries: Vec<FunctionEntry> = match &source {
+                CandidateSource::Entries(entries) => entries
+                    .iter()
+                    .filter(|e| e.type_params.is_empty())
+                    .cloned()
+                    .collect(),
+                CandidateSource::Methods => self.method_concrete_entries(name, arg_types.first()),
+            };
+
             // Candidate enum for unified matching. Each carries its own fully
             // expanded (kwargs-filled) lowered argument list.
             #[derive(Clone)]
             enum Candidate {
-                Concrete(Vec<Type>, Box<ast::FunctionDef>, Vec<Expr>),
+                Concrete(Vec<Type>, Rc<ast::FunctionDef>, Vec<Expr>),
                 Generic(Box<FunctionEntry>, Vec<ast::Type>, Vec<Expr>),
             }
 
@@ -6554,11 +6890,7 @@ impl<'a> Lowerer<'a> {
                         .map(|p| p.ty.clone())
                         .collect();
                     candidates.push((
-                        Candidate::Concrete(
-                            param_types,
-                            Box::new(entry.ast_def.clone()),
-                            lowered_args,
-                        ),
+                        Candidate::Concrete(param_types, entry.ast_def.clone(), lowered_args),
                         ast_types,
                     ));
                 }
@@ -6632,8 +6964,13 @@ impl<'a> Lowerer<'a> {
 
             if candidates.is_empty() {
                 // When there's exactly one concrete overload and no generics,
-                // give a specific per-argument error message
-                if concrete_entries.len() == 1 && generic_entries.is_empty() {
+                // give a specific per-argument error message. Judged on the
+                // *unfiltered* overload count so receiver filtering doesn't
+                // change which error-message shape a program gets.
+                if concrete_entries.len() == 1
+                    && generic_entries.is_empty()
+                    && self.total_concrete_count(&source, name) == 1
+                {
                     let entry = &concrete_entries[0];
                     match Self::expand_kwargs(&entry.ast_def.parameters, arguments, kwargs) {
                         None => {
@@ -6788,7 +7125,18 @@ impl<'a> Lowerer<'a> {
                 }
             }
         } else {
-            // Has infer closures — try each generic overload with two-pass inference
+            // Has infer closures — try each generic overload with two-pass inference.
+            // No receiver filtering here: an infer-closure call lowers its args
+            // per candidate, so there is no receiver type to key on yet. These
+            // overload sets are small in practice.
+            let concrete_entries: Vec<FunctionEntry> = match &source {
+                CandidateSource::Entries(entries) => entries
+                    .iter()
+                    .filter(|e| e.type_params.is_empty())
+                    .cloned()
+                    .collect(),
+                CandidateSource::Methods => self.method_concrete_entries(name, None),
+            };
             let mut matched_result: Option<Result<Expr, CompileError>> = None;
 
             for gdef in &generic_entries {
@@ -6949,14 +7297,15 @@ impl<'a> Lowerer<'a> {
         arguments: &[ast::Expr],
         kwargs: &[(String, ast::Expr)],
     ) -> Result<Expr, CompileError> {
-        let entries = self.method_defs.get(method).cloned().unwrap_or_default();
-
         // Build combined positional argument list: [receiver, ...arguments]
         let mut all_arguments = vec![receiver.clone()];
         all_arguments.extend(arguments.iter().cloned());
 
+        // Candidates are fetched lazily inside resolve_overloaded_call via the
+        // method receiver index — materializing (and worse, deep-cloning) the
+        // full program-wide overload set per call site was quadratic.
         self.resolve_overloaded_call(
-            entries,
+            CandidateSource::Methods,
             method,
             &all_arguments,
             kwargs,
@@ -7200,7 +7549,15 @@ impl<'a> Lowerer<'a> {
         let mut ref_inner: Option<Type> = None;
         let mut float_ty: Option<Type> = None;
         for (i, (ast_arg, param)) in arguments.iter().zip(&spec.params).enumerate() {
+            // Mark the `try` intrinsic's closure arguments (the `try` body and
+            // `catch` handler blocks) so `return` inside them errors cleanly.
+            if matches!(intrinsic, ast::Intrinsic::Try)
+                && matches!(ast_arg.kind, ast::ExprKind::Closure { .. })
+            {
+                self.next_closure_is_try_block = true;
+            }
             let mut arg = self.lower_expr(ast_arg)?;
+            self.next_closure_is_try_block = false;
             match param {
                 ParamRequirement::Exact(expected) => {
                     // Coerce first so e.g. a `[Uint8]` slice argument coerces to
@@ -7764,6 +8121,24 @@ fn atomic_type_align(ty: &Type, structs: &HashMap<String, StructDef>) -> Option<
 }
 
 pub fn lower(source: &ast::SourceFile) -> Result<SourceFile, CompileError> {
-    let mut lowerer = Lowerer::new(source)?;
-    lowerer.lower_all()
+    // Lowering recursion depth is program-shaped: monomorphization of nested
+    // generic instantiations lowers callee bodies on the Rust call stack (one
+    // `lower_function` chain per nesting level, ~250 KB each), which can
+    // exhaust the default 8 MiB main-thread stack long before the
+    // MONO_DEPTH_LIMIT guard fires. Run the lowerer on a dedicated big-stack
+    // thread (reserved lazily by the OS, not committed) so the guard — not a
+    // stack overflow — is what stops runaway polymorphic recursion.
+    const LOWER_STACK_SIZE: usize = 512 << 20;
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .name("solar-lower".to_string())
+            .stack_size(LOWER_STACK_SIZE)
+            .spawn_scoped(s, || {
+                let mut lowerer = Lowerer::new(source)?;
+                lowerer.lower_all()
+            })
+            .expect("failed to spawn lowering thread")
+            .join()
+            .unwrap_or_else(|p| std::panic::resume_unwind(p))
+    })
 }

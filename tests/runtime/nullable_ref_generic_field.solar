@@ -1,0 +1,47 @@
+// Regression: a NON-generic struct with a `&?T` field whose pointee is a
+// concrete generic instantiation (`&?Registry#[Block]`) panicked the lowerer
+// with `is_sized: missing struct`: resolve_ast_type had no NullableReference
+// arm, so the pointee fell through to from_ast_type, which mangles the name
+// without triggering monomorphization (registry-design.md Q1 — worked around
+// with an unused type param + alias, no longer needed).
+struct Registry#[T] {
+    items: &[T],
+}
+
+struct Block {
+    id: Int,
+}
+
+enum Slot#[T] {
+    Empty,
+    Full(T),
+}
+
+// The Q1 shape: non-generic aggregate, nullable refs to generic instantiations.
+struct Access {
+    block: &?Registry#[Block],
+    ints: &?Registry#[Int],
+    slot: &?Slot#[Int],
+}
+
+fn main() {
+    let a = Access {
+        block: null#[Registry#[Block]],
+        ints: null#[Registry#[Int]],
+        slot: null#[Slot#[Int]],
+    };
+    if a.block == null#[Registry#[Block]] { println("block null"&); }
+
+    let blocks = [Block { id: 7, }];
+    let r = Registry#[Block] { items: blocks&, };
+    a.block = r&;
+    if a.block != null#[Registry#[Block]] { println("block set"&); }
+    println(a.block@.items@[0u].id);
+
+    let s = Slot#[Int]::Full(42);
+    a.slot = s&;
+    match a.slot@ {
+        Slot#[Int]::Empty => { println("empty"&); },
+        Slot#[Int]::Full(v) => { println(v); },
+    }
+}

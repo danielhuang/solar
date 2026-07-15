@@ -1,0 +1,145 @@
+// Overlapping aggregate copies must behave like memmove (as-if-buffered) in
+// all three backends: Solar references alias freely, so exact self-assigns
+// (`x = x;`, `a[i] = a[i]`, `d@ = s@` with d == s) and partially overlapping
+// slice-range assignments in BOTH directions are legal and well-defined.
+// Compiled: sol_memcpy is ptr::copy, the release pass lowers it to
+// llvm.memmove, and per-element copy loops pick their direction from the
+// dst/src order. The debug-codegen run is built with ASAN, which flags
+// overlapping memcpy — this test locks in that no memcpy-semantics primitive
+// remains on any copy path.
+
+struct P {
+  v: Int,
+  r: &Int,
+}
+
+enum E {
+  N,
+  S(Int),
+}
+
+fn alias_copy(d: &P, s: &P) {
+  d@ = s@;
+}
+
+fn print_e(e: E) {
+  match e {
+    E::S(x) => println(x),
+    E::N => println(888),
+  };
+}
+
+fn main() {
+  // Exact self-assign of an array element.
+  let a: [Int] = [1, 2, 3, 4, 5];
+  a[2u] = a[2u];
+  println(a[2u]);                 // 3
+
+  // Whole-variable self-assign of a pointer-carrying struct
+  // (member-wise pointer copy path).
+  let p = P { v: 7, r: 8& };
+  p = p;
+  println(p.v);                   // 7
+  println(p.r@);                  // 8
+
+  // Aliased struct copy through references (d == s).
+  alias_copy(p&, p&);
+  println(p.v);                   // 7
+  println(p.r@);                  // 8
+
+  // Aliased field copy: dest@.v = self@.v with dest == self.
+  let q = p&;
+  q@.v = p.v;
+  q@.r = p.r;
+  println(p.v);                   // 7
+  println(p.r@);                  // 8
+
+  // Fixed-array self-assign.
+  let f: [Int; 3] = [10, 20, 30];
+  f = f;
+  println(f[0u]);                 // 10
+  println(f[1u]);                 // 20
+  println(f[2u]);                 // 30
+
+  // Slice self-assign (exact overlap).
+  a[1u..4u] = a[1u..4u];
+  println(a[1u]);                 // 2
+  println(a[2u]);                 // 3
+  println(a[3u]);                 // 4
+
+  // Partial overlap, dst before src (forward copy is the safe direction).
+  let s1: [Int] = [1, 2, 3, 4, 5];
+  s1[0u..3u] = s1[1u..4u];
+  for i in 0u..5u {
+    println(s1[i]);               // 2 3 4 4 5
+  }
+
+  // Partial overlap, dst after src (needs backward/buffered copy).
+  let s2: [Int] = [1, 2, 3, 4, 5];
+  s2[1u..4u] = s2[0u..3u];
+  for i in 0u..5u {
+    println(s2[i]);               // 1 1 2 3 5
+  }
+
+  // Byte slices — the pointer-free sol_memcpy/llvm.memmove path.
+  let bs = "abcde";
+  bs[1u..5u] = bs[0u..4u];
+  for i in 0u..5u {
+    println(Uint(bs[i]));               // 97 97 98 99 100
+  }
+  let bs2 = "abcde";
+  bs2[0u..4u] = bs2[1u..5u];
+  for i in 0u..5u {
+    println(Uint(bs2[i]));              // 98 99 100 101 101
+  }
+
+  // Pointer-carrying struct elements — the per-element member-wise copy loop.
+  let ps: [P] = [
+    P { v: 1, r: 11& }, P { v: 2, r: 22& }, P { v: 3, r: 33& },
+    P { v: 4, r: 44& }, P { v: 5, r: 55& },
+  ];
+  ps[1u..4u] = ps[0u..3u];        // dst > src
+  for i in 0u..5u {
+    println(ps[i].v);             // 1 1 2 3 5
+    println(ps[i].r@);            // 11 11 22 33 55
+  }
+  let ps2: [P] = [
+    P { v: 1, r: 11& }, P { v: 2, r: 22& }, P { v: 3, r: 33& },
+    P { v: 4, r: 44& }, P { v: 5, r: 55& },
+  ];
+  ps2[0u..3u] = ps2[1u..4u];      // dst < src
+  for i in 0u..5u {
+    println(ps2[i].v);            // 2 3 4 4 5
+    println(ps2[i].r@);           // 22 33 44 44 55
+  }
+
+  // Enum elements — the variant-dispatch copy loop, both directions.
+  let es: [E] = [E::S(1), E::S(2), E::N, E::S(4), E::S(5)];
+  es[1u..4u] = es[0u..3u];        // dst > src
+  for i in 0u..5u {
+    print_e(es[i]);               // 1 1 2 888 5
+  }
+  let es2: [E] = [E::S(1), E::S(2), E::N, E::S(4), E::S(5)];
+  es2[0u..3u] = es2[1u..4u];      // dst < src
+  for i in 0u..5u {
+    print_e(es2[i]);              // 2 888 4 4 5
+  }
+
+  // Unique elements — the deep-copy loop, both directions.
+  let us: [^Int] = [1^, 2^, 3^, 4^, 5^];
+  us[1u..4u] = us[0u..3u];        // dst > src
+  for i in 0u..5u {
+    println(us[i]@);              // 1 1 2 3 5
+  }
+  let us2: [^Int] = [1^, 2^, 3^, 4^, 5^];
+  us2[0u..3u] = us2[1u..4u];      // dst < src
+  for i in 0u..5u {
+    println(us2[i]@);             // 2 3 4 4 5
+  }
+  // The deep copy made them independent: mutating the copied-from element
+  // must not affect the copy.
+  us2[1u]@ = 99;
+  println(us2[0u]@);              // 2 (independent of us2[1u])
+
+  println(0);                     // done marker
+}

@@ -1,0 +1,20 @@
+// Regression: `let s = S@` where `S: &?[Uint8]` (deref of a nullable unsized
+// ref bound to an unsized local) panicked release codegen — emit_meta's Deref
+// arm matched RefUnsized/UniqueUnsized but not NullableRefUnsized, so the
+// fat-pointer length word was never read.
+static S: &?[Uint8] = null#[[Uint8]];
+
+fn main() {
+    let a: [Uint8] = [1u8, 2u8, 3u8];
+    S = a&;
+    let s = S@;
+    println(Int(s[0u]));
+    println(Int(s[2u]));
+    println(s&.len());
+
+    // Same shape through a local nullable ref.
+    let n: &?[Uint8] = a&;
+    let t = n@;
+    println(Int(t[1u]));
+    println(t&.len());
+}

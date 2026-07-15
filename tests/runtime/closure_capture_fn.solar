@@ -1,0 +1,65 @@
+// Regression: closures capturing fn-typed values (function values / other
+// closures) were miscompiled nondeterministically. Root cause: typed_ast's
+// throwaway return-type-inference lowering reset the `__closure_N` counter and
+// discarded the pass's pending synthetic closures, but permanent lazy
+// lowerings triggered inside the pass (generic monomorphizations, concrete
+// methods) kept referencing the discarded names. A later unrelated closure
+// then reused the same `__closure_N` name — wrong closure called, or
+// "undefined variable in IR lowering" — varying with HashMap lowering order.
+struct S {
+    x: Int,
+}
+
+// Method with a closure in its body — lazily lowered on first call.
+method adder(self: &S) -> Int {
+    let k = self@.x;
+    let g = \y: Int { y + k };
+    g(10)
+}
+
+// Inferred return type: whoever calls this first triggers the throwaway
+// return-type-inference lowering, which lazily (and permanently) lowers
+// `adder` and its closure.
+fn helper(s: &S) {
+    s.adder()
+}
+
+fn caller(s: &S) -> Int {
+    helper(s&@)
+}
+
+fn add_one(x: Int) -> Int {
+    x + 1
+}
+
+fn apply(f: fn(Int) -> Int, x: Int) -> Int {
+    f(x)
+}
+
+fn main() {
+    let s = S { x: 5, };
+    // closures in main competing for the (formerly reused) counter numbers
+    let h = \z: Int { z * 3 };
+    println(h(7));
+    println(caller(s&));
+
+    // closure capturing a fn-typed value (a plain function)
+    let g = add_one;
+    let c1 = \x: Int { g(x) + 10 };
+    println(c1(5));
+
+    // closure capturing another closure
+    let k = 3;
+    let inner = \x: Int { x * k };
+    let c2 = \x: Int { inner(x) + 100 };
+    println(c2(4));
+
+    // closures capturing fn values passed through a call
+    println(apply(c1, 7));
+    println(apply(c2, 2));
+
+    // closure capturing both data and a fn value
+    let base = 1000;
+    let c3 = \x: Int { base + inner(x) };
+    println(c3(5));
+}

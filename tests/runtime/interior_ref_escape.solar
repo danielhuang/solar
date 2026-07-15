@@ -1,0 +1,56 @@
+// Regression: escape analysis (ir_opt, release + optimized-IR debug builds)
+// stack-placed a local whose interior reference escaped through a
+// ref-of-deref: `let r = leaf&; r@.b&` re-derives the pointer `r` holds into
+// a fresh reference, which is returned. `r`'s Deref use counted as a plain
+// read-through, so `leaf` passed storage_noescape and was stack-placed — the
+// returned interior pointer dangled (garbage in release, ASAN
+// use-after-return in the debug harness).
+pub struct LayerA {
+    pub tag: Int,
+    pub pad: [Int; 6],
+}
+pub struct LayerB {
+    pub x: Int,
+    pub y: Int,
+}
+pub struct Leaf {
+    pub a: LayerA,
+    pub b: LayerB,
+}
+
+fn make_leaf(i: Int) -> &LayerB {
+    let leaf = Leaf {
+        a: LayerA { tag: i, pad: [i; 6u] },
+        b: LayerB { x: i * 3, y: i * 7 },
+    };
+    let leaf_ref = leaf&;
+    leaf_ref@.b&
+}
+
+// Same shape via a copied reference binding (containment must fail
+// transitively through `r2 = r1`).
+fn make_leaf2(i: Int) -> &LayerB {
+    let leaf = Leaf {
+        a: LayerA { tag: i, pad: [i; 6u] },
+        b: LayerB { x: i * 5, y: i * 11 },
+    };
+    let r1 = leaf&;
+    let r2 = r1;
+    r2@.b&
+}
+
+fn main() {
+    let b0 = make_leaf(5);
+    println(b0@.x); // 15
+    println(b0@.y); // 35
+    let arr: [&LayerB] = [make_leaf(0); 4u];
+    for i in 0..4 {
+        arr[Uint(i)] = make_leaf(i);
+    }
+    for i in 0..4 {
+        println(arr[Uint(i)]@.x); // 0 3 6 9
+    }
+    let c = make_leaf2(3);
+    println(c@.x); // 15
+    println(c@.y); // 33
+}

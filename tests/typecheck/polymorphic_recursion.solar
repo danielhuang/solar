@@ -1,0 +1,15 @@
+struct Box#[T] {
+    v: T,
+}
+
+// Polymorphic recursion: every level instantiates at a NEW type, an infinite
+// family. Must hit the monomorphization depth limit cleanly (formerly a
+// compiler stack overflow).
+fn poly#[T](x: T, n: Int) -> Int {
+    if n == 0 { 0 } else { poly(Box#[T] { v: x, }, n - 1) }
+}
+
+fn main() {
+    let r = poly(1, 3);
+    r;
+}

@@ -1349,7 +1349,11 @@ impl<'a> Codegen<'a> {
             NodeKind::Deref(inner) => {
                 let inner = *inner;
                 match &nodes[inner.0].ty {
-                    Type::RefUnsized(_) | Type::UniqueUnsized(_) => {
+                    // The meta word sits at +8 of the fat pointer for nullable
+                    // refs too (the null check happens where the pointer half
+                    // is actually loaded, e.g. `emit_place`; reading the length
+                    // out of the 16-byte slot needs no check).
+                    Type::RefUnsized(_) | Type::UniqueUnsized(_) | Type::NullableRefUnsized(_) => {
                         let (place, _) = self.emit_place(nodes, inner);
                         let meta_tmp = self.fresh_tmp();
                         self.linef(format!("uint64_t {meta_tmp} = *(uint64_t*)({place} + 8);"));
@@ -1832,6 +1836,42 @@ impl<'a> Codegen<'a> {
         self.emit_copy_ctx(dst, src, ty, size_expr, false)
     }
 
+    /// Emit a direction-aware per-element copy loop: forward when `dst <= src`,
+    /// backward when `dst > src`, so a partially overlapping same-array slice
+    /// assignment (`s[1..4] = s[0..3]` and the reverse) behaves like memmove —
+    /// Solar copies may alias freely. Overlapping slices of one array are always
+    /// element-aligned, so each element pair is either identical or disjoint;
+    /// the per-element `body` copy never sees a shifted overlap (an exact
+    /// self-copy is safe in every element copy path: loads precede the stores
+    /// to the same offsets). `body` receives the element dst/src expressions.
+    fn emit_elem_copy_loop(
+        &mut self,
+        dst: &str,
+        src: &str,
+        count_expr: &str,
+        elem_size: usize,
+        body: impl FnOnce(&mut Self, &str, &str),
+    ) {
+        let n_tmp = self.fresh_tmp();
+        self.linef(format!("size_t {n_tmp} = {count_expr};"));
+        let back_tmp = self.fresh_tmp();
+        self.linef(format!(
+            "int {back_tmp} = (uintptr_t)({dst}) > (uintptr_t)({src});"
+        ));
+        let k = self.fresh_tmp();
+        self.linef(format!("for (size_t {k} = 0; {k} < {n_tmp}; {k}++) {{"));
+        self.indent += 1;
+        let idx = self.fresh_tmp();
+        self.linef(format!(
+            "size_t {idx} = {back_tmp} ? {n_tmp} - 1 - {k} : {k};"
+        ));
+        let edst = format!("(({dst}) + {idx} * {elem_size})");
+        let esrc = format!("(({src}) + {idx} * {elem_size})");
+        body(self, &edst, &esrc);
+        self.indent -= 1;
+        self.line("}");
+    }
+
     /// Copy the *pointee data* of an unsized `ty` (element data for `[T]`,
     /// not its 16-byte fat-pointer value). `size_expr` is the total byte size.
     fn emit_copy_contents(&mut self, dst: &str, src: &str, ty: &Type, size_expr: &str) {
@@ -1888,18 +1928,10 @@ impl<'a> Codegen<'a> {
                 } else {
                     let es = self.type_size(inner);
                     let inner = (**inner).clone();
-                    let count_tmp = self.fresh_tmp();
-                    self.linef(format!("size_t {count_tmp} = ({size_expr}) / {es};"));
-                    let idx = self.fresh_tmp();
-                    self.linef(format!(
-                        "for (size_t {idx} = 0; {idx} < {count_tmp}; {idx}++) {{"
-                    ));
-                    self.indent += 1;
-                    let edst = format!("(({dst}) + {idx} * {es})");
-                    let esrc = format!("(({src}) + {idx} * {es})");
-                    self.emit_plain_copy(&edst, &esrc, &inner, &es.to_string());
-                    self.indent -= 1;
-                    self.line("}");
+                    let count_expr = format!("({size_expr}) / {es}");
+                    self.emit_elem_copy_loop(dst, src, &count_expr, es, |this, edst, esrc| {
+                        this.emit_plain_copy(edst, esrc, &inner, &es.to_string());
+                    });
                 }
             } else {
                 self.emit_plain_copy(dst, src, ty, size_expr);
@@ -2002,33 +2034,18 @@ impl<'a> Codegen<'a> {
                 let es = self.type_size(inner);
                 let inner = (**inner).clone();
                 let count = *count as usize;
-                let idx = self.fresh_tmp();
-                self.linef(format!(
-                    "for (size_t {idx} = 0; {idx} < {count}; {idx}++) {{"
-                ));
-                self.indent += 1;
-                let edst = format!("({dst} + {idx} * {es})");
-                let esrc = format!("({src} + {idx} * {es})");
-                self.emit_copy(&edst, &esrc, &inner, &es.to_string());
-                self.indent -= 1;
-                self.line("}");
+                self.emit_elem_copy_loop(dst, src, &count.to_string(), es, |this, edst, esrc| {
+                    this.emit_copy(edst, esrc, &inner, &es.to_string());
+                });
             }
             Type::Array(inner) => {
                 // Unsized array — size_expr is the total byte size
                 let es = self.type_size(inner);
                 let inner = (**inner).clone();
-                let count_tmp = self.fresh_tmp();
-                self.linef(format!("size_t {count_tmp} = {size_expr} / {es};"));
-                let idx = self.fresh_tmp();
-                self.linef(format!(
-                    "for (size_t {idx} = 0; {idx} < {count_tmp}; {idx}++) {{"
-                ));
-                self.indent += 1;
-                let edst = format!("({dst} + {idx} * {es})");
-                let esrc = format!("({src} + {idx} * {es})");
-                self.emit_copy(&edst, &esrc, &inner, &es.to_string());
-                self.indent -= 1;
-                self.line("}");
+                let count_expr = format!("({size_expr}) / {es}");
+                self.emit_elem_copy_loop(dst, src, &count_expr, es, |this, edst, esrc| {
+                    this.emit_copy(edst, esrc, &inner, &es.to_string());
+                });
             }
             _ => {
                 self.emit_plain_copy(dst, src, ty, size_expr);

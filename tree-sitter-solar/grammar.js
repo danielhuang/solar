@@ -170,9 +170,18 @@ module.exports = grammar({
       seq("if", field("condition", $._expression), field("body", $.block),
           optional(seq("else", field("else_body", choice($.if_statement, $.block))))),
 
+    // `prec.dynamic(1, …)` breaks the GLR tie against `if_statement` for an
+    // `if … else …` sitting at the end of a block: both parses are viable
+    // there, and without an explicit preference the winner was arbitrary — it
+    // flipped to `if_statement` when the enclosing item was the last thing in
+    // the file, silently demoting a multiline tail `if/else` from the block's
+    // value to a statement ("body does not end with an expression"). In true
+    // statement position (more statements follow) only `if_statement` is
+    // viable, so this preference changes nothing there.
     if_expression: ($) =>
-      seq("if", field("condition", $._expression), field("then_body", $.block),
-          "else", field("else_body", choice($.if_expression, $.block))),
+      prec.dynamic(1,
+        seq("if", field("condition", $._expression), field("then_body", $.block),
+            "else", field("else_body", choice($.if_expression, $.block)))),
 
     while_statement: ($) =>
       seq("while", field("condition", $._expression), field("body", $.block)),

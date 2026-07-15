@@ -161,10 +161,16 @@ pub unsafe extern "C" fn sol_memcpy(dst: *mut u8, src: *const u8, size: usize) {
     // it can still be SROA'd / elided. Codegen emits sol_memcpy ONLY for
     // pointer-free bytes (GC-pointer words are copied with typed `uint8_t*`
     // member stores, which the write-barrier pass instruments precisely), so
-    // the `solar-lower-gc-alloc` pass tags its lowered `llvm.memcpy` with
+    // the `solar-lower-gc-alloc` pass tags its lowered `llvm.memmove` with
     // `!solar.nobarrier` and plain-data copies (e.g. `[Uint8]` contents) carry
     // no barrier at all.
-    unsafe { std::ptr::copy_nonoverlapping(src, dst, size) };
+    //
+    // MUST be `ptr::copy` (memmove), not `copy_nonoverlapping`: Solar copies
+    // may alias — `x = x;`, `a[i] = a[i]`, `dst@.f = src@.f` with dst == src,
+    // and slice-range assignment (`s[0..3] = s[1..4]`) can partially overlap
+    // in either direction. The release pipeline lowers this call to
+    // `llvm.memmove` (see solar-lower-gc-alloc) with matching semantics.
+    unsafe { std::ptr::copy(src, dst, size) };
 }
 
 // Bounds/null/length checks below are *user* errors detected before any memory

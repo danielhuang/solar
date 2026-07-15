@@ -109,13 +109,20 @@ struct SolarLowerGcAlloc : PassInfoMixin<SolarLowerGcAlloc> {
         "aligned_alloc", FunctionType::get(PtrTy, {I64, I64}, false));
 
     // sol_memcpy is a plain copy with no GC side effects; rewrite it to the
-    // recognized llvm.memcpy intrinsic so the optimizer can DSE copies into
+    // recognized llvm.memmove intrinsic so the optimizer can DSE copies into
     // dead/elided objects (and treat the args as nocapture/argmem, which a
-    // custom call would not be). Codegen emits sol_memcpy ONLY for
+    // custom call would not be). It must be memMOVE, not memcpy: Solar copy
+    // semantics allow the operands to alias (`x = x;`, overlapping slice-range
+    // assignment), and sol_memcpy is ptr::copy (memmove) in the runtime —
+    // llvm.memcpy's non-overlap requirement would be instant UB. This does not
+    // cost elision: MemCpyOpt turns a memmove whose operands provably don't
+    // alias (the common fresh-allocation fill) back into memcpy early in the
+    // -O3 pipeline, and InstCombine's dead-alloc removal accepts either
+    // intrinsic writing into the allocation. Codegen emits sol_memcpy ONLY for
     // pointer-free bytes (GC-pointer words are copied with typed `store ptr`
-    // member assignments), so the lowered memcpy is tagged `!solar.nobarrier`
+    // member assignments), so the lowered memmove is tagged `!solar.nobarrier`
     // and solar-write-barriers skips it — a plain-data copy (e.g. `[Uint8]`
-    // contents) costs no barrier. Optimizer-synthesized memcpys (loop idiom,
+    // contents) costs no barrier. Optimizer-synthesized transfers (loop idiom,
     // MemCpyOpt rewrites) carry no tag and stay conservatively instrumented.
     Function *SolMemcpy = M.getFunction("sol_memcpy");
 
@@ -167,8 +174,10 @@ struct SolarLowerGcAlloc : PassInfoMixin<SolarLowerGcAlloc> {
         Value *Src = CI->getArgOperand(1);
         Value *Size = CI->getArgOperand(2);
         IRBuilder<> B(CI);
-        // non-volatile; sol_memcpy is copy_nonoverlapping, so memcpy is sound.
-        CallInst *MC = B.CreateMemCpy(Dst, MaybeAlign(), Src, MaybeAlign(), Size);
+        // non-volatile; sol_memcpy is ptr::copy (memmove), and Solar copies may
+        // alias, so memmove is the only sound lowering (see comment above).
+        CallInst *MC =
+            B.CreateMemMove(Dst, MaybeAlign(), Src, MaybeAlign(), Size);
         MC->setDebugLoc(CI->getDebugLoc());
         MC->setMetadata("solar.nobarrier", MDNode::get(Ctx, {}));
         CI->eraseFromParent();
@@ -184,7 +193,7 @@ struct SolarLowerGcAlloc : PassInfoMixin<SolarLowerGcAlloc> {
     if (N || Skipped || NMemcpy)
       errs() << "solar-lower-gc-alloc: " << N << " sol_alloc -> aligned_alloc, "
              << Skipped << " left (non-constant align/mark), " << NMemcpy
-             << " sol_memcpy -> llvm.memcpy\n";
+             << " sol_memcpy -> llvm.memmove\n";
     return (N || NMemcpy) ? PreservedAnalyses::none() : PreservedAnalyses::all();
   }
 
@@ -312,7 +321,7 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
           if (VTy->isPtrOrPtrVectorTy() || DL.getTypeStoreSize(VTy) > 8)
             Stores.push_back(SI);
         } else if (auto *MT = dyn_cast<AnyMemTransferInst>(&I)) {
-          // A memcpy lowered from codegen's `sol_memcpy` copies pointer-free
+          // A memmove lowered from codegen's `sol_memcpy` copies pointer-free
           // bytes by construction (`!solar.nobarrier`) — plain-data copies
           // like `[Uint8]` contents get no barrier. Unmarked transfers
           // (optimizer-synthesized: loop idiom, MemCpyOpt rewrites — which

@@ -263,6 +263,14 @@ pub fn lower(source: &typed_ast::SourceFile) -> Module {
     let functions = source
         .functions
         .values()
+        // Skip orphan synthetic closures: a `__closure_N` no surviving
+        // `Closure` expression references. These are left over from typed_ast's
+        // throwaway return-type-inference lowering (the referencing body was
+        // discarded). They are never callable — a closure's code pointer is
+        // only ever taken by its `Closure` expr — and their captured-variable
+        // identifiers can't be resolved without a captures entry, so lowering
+        // one would panic with "undefined variable".
+        .filter(|f| !f.name.starts_with("__closure_") || closure_captures.contains_key(&f.name))
         .map(|f| {
             // Statics are initialized by assignments prepended to `main` (their
             // values are literals, so this is pure stores — no user code runs
@@ -1461,19 +1469,19 @@ impl<'a> FunctionLowerer<'a> {
                 })
             }
             typed_ast::StatementKind::Expression(expr) => {
+                // Every expression statement — including a `loop` — is wrapped in
+                // `NodeKind::Expr`, so downstream tail detection (function bodies,
+                // if/match arm values) uniformly recognizes a trailing expression.
+                // A raw `NodeKind::Loop` statement therefore only ever comes from
+                // the `while`/`for` desugaring. Statement executors special-case
+                // `Expr(Loop)` (like `Expr(IfExpr)`/`Expr(Match)`) so `return`
+                // still propagates out of a statement-position loop.
                 let id = self.lower_expr(expr);
-                // A bare `loop` statement is executed as a statement (so `return`
-                // and outer `break`/`continue` propagate, like `while`), rather
-                // than wrapped as an expression evaluated into a throwaway.
-                if matches!(&expr.kind, typed_ast::ExprKind::Loop(_)) {
-                    id
-                } else {
-                    self.push(Node {
-                        ty: expr.ty.clone(),
-                        kind: NodeKind::Expr(id),
-                        span: stmt.span,
-                    })
-                }
+                self.push(Node {
+                    ty: expr.ty.clone(),
+                    kind: NodeKind::Expr(id),
+                    span: stmt.span,
+                })
             }
             typed_ast::StatementKind::Return(expr) => {
                 let id = self.lower_expr(expr);

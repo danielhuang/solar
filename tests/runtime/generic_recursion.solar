@@ -1,0 +1,37 @@
+struct Pair {
+    a: Int,
+    b: Int,
+}
+
+// self-recursion, explicit type args
+fn f#[T](x: T, n: Int) -> Int {
+    if n == 0 { 0 } else { f#[T](x, n - 1) + 1 }
+}
+
+// self-recursion, inferred type args at the recursive call
+fn g#[T](x: T, n: Int) -> Int {
+    if n == 0 { 100 } else { g(x, n - 1) + 2 }
+}
+
+// mutual recursion between two generics
+fn even#[T](x: T, n: Int) -> Bool {
+    if n == 0 { true } else { odd(x, n - 1) }
+}
+fn odd#[T](x: T, n: Int) -> Bool {
+    if n == 0 { false } else { even(x, n - 1) }
+}
+
+// recursive generic method
+method depth#[T](self: &Pair, x: T, n: Int) -> Int {
+    if n == 0 { self@.a } else { self.depth(x, n - 1) }
+}
+
+fn main() {
+    println(f#[Int](7, 4));
+    println(f(true, 2));
+    println(g(1u, 5));
+    if even(0, 10) { println("even"&); } else { println("odd"&); }
+    if odd(0, 7) { println("odd7"&); } else { println("not"&); }
+    let p = Pair { a: 42, b: 0, };
+    println(p&.depth(false, 3));
+}

@@ -1,0 +1,73 @@
+// Regression: `break <enum-value>` targeting a value-position `loop` from
+// inside a statement-position `match` arm must carry the full enum (variant
+// index AND payload) into the loop's destination. The IR interpreter used to
+// return zeroed memory (variant 0, payload 0) because a statement-position
+// `loop` was lowered as a raw `Loop` node that tail detection didn't
+// recognize as the value-producing trailing expression.
+enum E {
+    A(Int),
+    B(Int),
+}
+
+fn main() {
+    let e = E::A(42);
+    // Statement-position match (semicolon-terminated, not the loop's tail
+    // expression) breaking with a freshly constructed enum value.
+    let x = loop {
+        match e {
+            E::A(v) => {
+                break E::B(v);
+            },
+            E::B(v) => {
+                break E::A(v);
+            },
+        };
+    };
+    match x {
+        E::A(v) => {
+            let s = v.to_string();
+            println(("A " + s@)&);
+        },
+        E::B(v) => {
+            let s = v.to_string();
+            println(("B " + s@)&);
+        },
+    };
+
+    // Break value bound to a local first.
+    let y = loop {
+        match e {
+            E::A(v) => {
+                let r = E::B(v + 1);
+                break r;
+            },
+            E::B(v) => {
+                break E::A(v);
+            },
+        };
+    };
+    match y {
+        E::A(v) => { println(v); },
+        E::B(v) => { println(v); },
+    };
+
+    // Break inside an if inside a match inside the loop.
+    let src = E::B(9);
+    let z = loop {
+        match src {
+            E::A(v) => {
+                break E::A(v);
+            },
+            E::B(v) => {
+                if v > 3 {
+                    break E::B(v * 2);
+                }
+                break E::A(v);
+            },
+        };
+    };
+    match z {
+        E::A(v) => { println(0 - v); },
+        E::B(v) => { println(v); },
+    }
+}

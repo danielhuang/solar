@@ -120,16 +120,16 @@ fn bytes_ref(bytes: &[u8]) -> Value {
     Value::Ref(Rc::new(RefCell::new(Value::Array(slots))))
 }
 
-/// Build a `Thrown` carrying `msg` as a fresh `&[Uint8]` value — the
+/// Build an `Unwind::Thrown` carrying `msg` as a fresh `&[Uint8]` value — the
 /// interpreter's counterpart of the compiled runtime's throw helpers
 /// (`panic::throw_str`/`throw_message`). The message strings are canonical
 /// across all three backends.
-fn thrown(msg: &str) -> Thrown {
+fn thrown(msg: &str) -> Unwind {
     let bytes: Vec<Slot> = msg
         .bytes()
         .map(|b| Rc::new(RefCell::new(Value::Int(b as i64))))
         .collect();
-    Thrown(Value::Ref(Rc::new(RefCell::new(Value::Array(bytes)))))
+    Unwind::Thrown(Value::Ref(Rc::new(RefCell::new(Value::Array(bytes)))))
 }
 
 /// Extract the bytes of a `&[Uint8]`/`^[Uint8]` value (a ref to a byte array).
@@ -318,34 +318,31 @@ fn assign_value_in_place(dst: &Slot, src: Value) {
     }
 }
 
-/// How a statement/block finished executing — used to propagate early exits.
-enum Flow {
-    /// Proceed to the next statement.
-    Normal,
-    /// Exit the innermost loop, optionally with a value (for `loop` expressions).
-    Break(Option<Value>),
-    /// Skip to the next iteration of the innermost loop.
-    Continue,
-    /// Exit the function with this value.
+/// A non-local exit unwinding through evaluation as the `Err` of `Eval`.
+/// Carrying `return`/`break`/`continue` in the error channel (not just a
+/// `throw`) lets them propagate out of *value-position* bodies — `let x =
+/// loop { … return 5; … }`, a `match` arm, an `if`-expression branch —
+/// through every `eval_expr` layer, matching the compiled backend where they
+/// are plain C control flow. Consumers: `run_loop` (and the `while` statement)
+/// catch `Break`/`Continue`, `exec_function_body` catches `Return` (so it
+/// never crosses a function/closure boundary), and the `try` intrinsic catches
+/// only `Thrown`.
+enum Unwind {
+    /// A Solar `throw`: the thrown message as a `&[Uint8]` value — the
+    /// reference itself, so a `catch` binding aliases the thrown slice. This
+    /// mirrors the compiled backend's `sol_throw`/`sol_try` (Rust panic +
+    /// `catch_unwind`). Caught by the nearest `try`.
+    Thrown(Value),
+    /// `return <v>` — caught at the function-body boundary.
     Return(Value),
+    /// `break [<v>]` — caught by the innermost loop.
+    Break(Option<Value>),
+    /// `continue` — caught by the innermost loop.
+    Continue,
 }
 
-/// How a loop terminated.
-enum LoopExit {
-    /// `break <v>` (or valueless break → Unit).
-    Broke(Value),
-    /// `return <v>` propagated out of the loop.
-    Returned(Value),
-}
-
-/// A propagating Solar `throw`: the thrown message bytes. It unwinds as the
-/// `Err` of `Eval` through every evaluation step until a `try` handler catches
-/// it (or it escapes `main`, which aborts). This mirrors the compiled backend's
-/// `sol_throw`/`sol_try` (Rust panic + `catch_unwind`).
-struct Thrown(Value);
-
-/// Result of any evaluation that may propagate a `throw`.
-type Eval<T> = Result<T, Thrown>;
+/// Result of any evaluation that may propagate a non-local exit.
+type Eval<T> = Result<T, Unwind>;
 
 struct Interpreter<'a, 'io> {
     functions: HashMap<String, &'a FunctionDef>,
@@ -911,24 +908,20 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     _ => else_body,
                 };
                 self.push_scope();
-                let result = self.exec_function_body(branch, &expr.ty)?;
+                let result = self.exec_value_body(branch, &expr.ty);
                 self.pop_scope();
-                result
+                result?
             }
             ExprKind::Block(stmts) => {
                 self.push_scope();
-                let result = self.exec_function_body(stmts, &expr.ty)?;
+                let result = self.exec_value_body(stmts, &expr.ty);
                 self.pop_scope();
-                result
+                result?
             }
             ExprKind::Loop(body) => {
-                // Loop expression: its value comes from `break <v>`. (As with
-                // other expression-position bodies, `return` inside is not
-                // propagated by the interpreter.)
-                match self.run_loop(body)? {
-                    LoopExit::Broke(v) => v,
-                    LoopExit::Returned(v) => v,
-                }
+                // Loop expression: its value comes from `break <v>`; a `return`
+                // inside unwinds past the loop to the function boundary.
+                self.run_loop(body)?
             }
             ExprKind::EnumVariant {
                 enum_name,
@@ -987,9 +980,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                             }
                             _ => {}
                         }
-                        let result = self.exec_function_body(&arm.body, &expr.ty)?;
+                        let result = self.exec_value_body(&arm.body, &expr.ty);
                         self.pop_scope();
-                        return Ok(result);
+                        return result;
                     }
                 }
                 unreachable!("no matching arm in match expression");
@@ -1597,15 +1590,21 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 // Unwind carrying the `&[Uint8]` reference itself (not a copy), so
                 // the value `catch` receives aliases the one passed to `throw`.
                 let val = self.eval_expr(&arguments[0])?;
-                return Err(Thrown(val));
+                return Err(Unwind::Thrown(val));
             }
             Intrinsic::Try => {
                 // try(body, handler): run `body`; if it throws, run `handler`
                 // with the thrown `&[Uint8]` reference (same slot — it aliases).
+                // Only `Thrown` is caught here; any other unwind propagates.
                 let body = self.eval_expr(&arguments[0])?;
                 let handler = self.eval_expr(&arguments[1])?;
-                if let Err(Thrown(reference)) = self.call_function_value(body, vec![]) {
-                    self.call_function_value(handler, vec![reference])?;
+                match self.call_function_value(body, vec![]) {
+                    Err(Unwind::Thrown(reference)) => {
+                        self.call_function_value(handler, vec![reference])?;
+                    }
+                    other => {
+                        other?;
+                    }
                 }
                 Value::Unit
             }
@@ -1648,18 +1647,16 @@ impl<'a, 'io> Interpreter<'a, 'io> {
     }
 
     /// Execute one statement, returning how control flow should proceed.
-    fn exec_statement(&mut self, stmt: &Statement) -> Eval<Flow> {
-        Ok(match &stmt.kind {
+    fn exec_statement(&mut self, stmt: &Statement) -> Eval<()> {
+        match &stmt.kind {
             StatementKind::Let { name, value, .. } => {
                 let val = self.eval_expr(value)?;
                 self.define_var(name.clone(), Rc::new(RefCell::new(val)));
-                Flow::Normal
             }
             StatementKind::Assignment { target, value } => {
                 let val = self.eval_expr(value)?;
                 let slot = self.eval_place(target)?;
                 assign_value_in_place(&slot, val);
-                Flow::Normal
             }
             StatementKind::If {
                 condition,
@@ -1670,18 +1667,16 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 match val {
                     Value::Int(n) if n != 0 => {
                         self.push_scope();
-                        let flow = self.exec_body(body);
+                        let r = self.exec_body(body);
                         self.pop_scope();
-                        flow?
+                        r?;
                     }
                     _ => {
                         if !else_body.is_empty() {
                             self.push_scope();
-                            let flow = self.exec_body(else_body);
+                            let r = self.exec_body(else_body);
                             self.pop_scope();
-                            flow?
-                        } else {
-                            Flow::Normal
+                            r?;
                         }
                     }
                 }
@@ -1691,175 +1686,71 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 match val {
                     Value::Int(n) if n != 0 => {
                         self.push_scope();
-                        let flow = self.exec_body(body);
+                        let r = self.exec_body(body);
                         self.pop_scope();
-                        match flow? {
-                            Flow::Return(v) => return Ok(Flow::Return(v)),
-                            Flow::Break(_) => break Flow::Normal,
+                        match r {
                             // A `continue` or fall-through starts the next iteration.
-                            Flow::Continue | Flow::Normal => {}
+                            Ok(()) | Err(Unwind::Continue) => {}
+                            Err(Unwind::Break(_)) => break,
+                            Err(other) => return Err(other),
                         }
                     }
-                    _ => break Flow::Normal,
+                    _ => break,
                 }
             },
-            // A bare `loop` statement runs through the statement path so `return`
-            // (and outer break/continue) propagate; the break value is discarded.
-            StatementKind::Expression(expr) if matches!(expr.kind, ExprKind::Loop(_)) => {
-                let body = match &expr.kind {
-                    ExprKind::Loop(body) => body,
-                    _ => unreachable!(),
-                };
-                match self.run_loop(body)? {
-                    LoopExit::Returned(v) => Flow::Return(v),
-                    LoopExit::Broke(_) => Flow::Normal,
-                }
-            }
-            // A statement-position `if`/`match` expression (e.g. a trailing one
-            // in a loop body) must propagate control flow out of its branches,
-            // like the statement forms. Its value is discarded. Without this,
-            // `loop { … if c { break } else { … } }` never terminates.
-            StatementKind::Expression(expr) if matches!(expr.kind, ExprKind::If { .. }) => {
-                let (condition, then_body, else_body) = match &expr.kind {
-                    ExprKind::If {
-                        condition,
-                        then_body,
-                        else_body,
-                    } => (condition, then_body, else_body),
-                    _ => unreachable!(),
-                };
-                let val = self.eval_expr(condition)?;
-                match val {
-                    Value::Int(n) if n != 0 => {
-                        self.push_scope();
-                        let flow = self.exec_body(then_body);
-                        self.pop_scope();
-                        flow?
-                    }
-                    _ => {
-                        if !else_body.is_empty() {
-                            self.push_scope();
-                            let flow = self.exec_body(else_body);
-                            self.pop_scope();
-                            flow?
-                        } else {
-                            Flow::Normal
-                        }
-                    }
-                }
-            }
-            StatementKind::Expression(expr) if matches!(expr.kind, ExprKind::Match { .. }) => {
-                self.exec_match_stmt(expr)?
-            }
-            // A bare block expression (e.g. a `match`/`if` arm body `{ break; }`)
-            // in statement position propagates control flow from its statements.
-            StatementKind::Expression(expr) if matches!(expr.kind, ExprKind::Block(_)) => {
-                let body = match &expr.kind {
-                    ExprKind::Block(body) => body,
-                    _ => unreachable!(),
-                };
-                self.push_scope();
-                let flow = self.exec_body(body);
-                self.pop_scope();
-                flow?
-            }
+            // A statement-position expression, evaluated for side effects only.
+            // `return`/`break`/`continue` inside a compound expression (a
+            // trailing `if`/`match`/`loop`/block in a loop body, say)
+            // propagate via `Unwind`.
             StatementKind::Expression(expr) => {
                 self.eval_expr(expr)?;
-                Flow::Normal
             }
             StatementKind::Return(expr) => {
                 let val = self.eval_expr(expr)?;
-                Flow::Return(val)
+                return Err(Unwind::Return(val));
             }
-            StatementKind::Break(value) => Flow::Break(match value.as_ref() {
-                Some(v) => Some(self.eval_expr(v)?),
-                None => None,
-            }),
-            StatementKind::Continue => Flow::Continue,
-        })
-    }
-
-    /// Execute a statement-position `match`, propagating control flow out of the
-    /// taken arm (its value is discarded). Mirrors the `Match` value evaluation
-    /// but runs the arm body with `exec_body`.
-    fn exec_match_stmt(&mut self, expr: &Expr) -> Eval<Flow> {
-        let (scrutinee, arms) = match &expr.kind {
-            ExprKind::Match { scrutinee, arms } => (scrutinee, arms),
-            _ => unreachable!(),
-        };
-        let enum_slot = self.eval_place(scrutinee)?;
-        let disc = {
-            let val = enum_slot.borrow();
-            match &*val {
-                Value::Enum { variant_index, .. } => *variant_index,
-                _ => unreachable!("match on non-enum value"),
+            StatementKind::Break(value) => {
+                let val = match value.as_ref() {
+                    Some(v) => Some(self.eval_expr(v)?),
+                    None => None,
+                };
+                return Err(Unwind::Break(val));
             }
-        };
-        for arm in arms {
-            let matches = match &arm.pattern {
-                TypedPattern::Variant { variant_index, .. } => disc == *variant_index,
-                TypedPattern::Wildcard(_, _) => true,
-            };
-            if matches {
-                self.push_scope();
-                match &arm.pattern {
-                    TypedPattern::Variant {
-                        binding: Some((bname, _)),
-                        ..
-                    } => {
-                        let inner_slot = {
-                            let val = enum_slot.borrow();
-                            match &*val {
-                                Value::Enum {
-                                    value: Some(slot), ..
-                                } => Rc::clone(slot),
-                                _ => unreachable!(),
-                            }
-                        };
-                        self.define_var(bname.clone(), inner_slot);
-                    }
-                    TypedPattern::Wildcard(name, _) => {
-                        self.define_var(name.clone(), Rc::clone(&enum_slot));
-                    }
-                    _ => {}
-                }
-                let flow = self.exec_body(&arm.body);
-                self.pop_scope();
-                return flow;
-            }
+            StatementKind::Continue => return Err(Unwind::Continue),
         }
-        unreachable!("no matching arm in match expression");
+        Ok(())
     }
 
-    /// Run a `loop` body until it breaks or returns.
-    fn run_loop(&mut self, body: &[Statement]) -> Eval<LoopExit> {
+    /// Run a `loop` body until it breaks, yielding the break value. A `return`
+    /// (or throw) inside keeps unwinding past the loop.
+    fn run_loop(&mut self, body: &[Statement]) -> Eval<Value> {
         loop {
             self.push_scope();
-            let flow = self.exec_body(body);
+            let r = self.exec_body(body);
             self.pop_scope();
-            match flow? {
-                Flow::Break(v) => return Ok(LoopExit::Broke(v.unwrap_or(Value::Unit))),
-                Flow::Return(v) => return Ok(LoopExit::Returned(v)),
-                Flow::Continue | Flow::Normal => {}
+            match r {
+                // A `continue` or fall-through starts the next iteration.
+                Ok(()) | Err(Unwind::Continue) => {}
+                Err(Unwind::Break(v)) => return Ok(v.unwrap_or(Value::Unit)),
+                Err(other) => return Err(other),
             }
         }
     }
 
-    /// Execute a list of statements, propagating any early exit.
-    fn exec_body(&mut self, body: &[Statement]) -> Eval<Flow> {
+    /// Execute a list of statements; any early exit propagates as `Unwind`.
+    fn exec_body(&mut self, body: &[Statement]) -> Eval<()> {
         for stmt in body {
-            match self.exec_statement(stmt)? {
-                Flow::Normal => {}
-                flow => return Ok(flow),
-            }
+            self.exec_statement(stmt)?;
         }
-        Ok(Flow::Normal)
+        Ok(())
     }
 
-    /// Execute a function body, returning the function's return value.
-    /// If return_type is non-Unit, the last Expression statement is the implicit return.
-    fn exec_function_body(&mut self, body: &[Statement], return_type: &Type) -> Eval<Value> {
-        let has_tail = *return_type != Type::Unit
+    /// Evaluate a *value-position* body (an `if`-expression branch, a `match`
+    /// arm, a block expression): run the statements, then the tail expression
+    /// for the value. Early exits (`return`/`break`/`continue`/throw) keep
+    /// unwinding — this is NOT a function boundary.
+    fn exec_value_body(&mut self, body: &[Statement], value_type: &Type) -> Eval<Value> {
+        let has_tail = *value_type != Type::Unit
             && body
                 .last()
                 .is_some_and(|s| matches!(s.kind, StatementKind::Expression(_)));
@@ -1873,12 +1764,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
 
         // Execute all statements before the tail
         for stmt in init {
-            match self.exec_statement(stmt)? {
-                Flow::Return(val) => return Ok(val), // early return
-                Flow::Normal => {}
-                Flow::Break(_) => unreachable!("break outside loop"),
-                Flow::Continue => unreachable!("continue outside loop"),
-            }
+            self.exec_statement(stmt)?;
         }
 
         // Evaluate tail expression for its value
@@ -1890,6 +1776,20 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             self.eval_expr(expr)
         } else {
             Ok(Value::Unit)
+        }
+    }
+
+    /// Execute a function body, returning the function's return value.
+    /// If return_type is non-Unit, the last Expression statement is the
+    /// implicit return. This is the function boundary: a `return` unwinding
+    /// out of the body (even from a value-position sub-body) is caught here,
+    /// so it never escapes a closure into the enclosing function.
+    fn exec_function_body(&mut self, body: &[Statement], return_type: &Type) -> Eval<Value> {
+        match self.exec_value_body(body, return_type) {
+            Err(Unwind::Return(val)) => Ok(val),
+            Err(Unwind::Break(_)) => unreachable!("break escaped a function body"),
+            Err(Unwind::Continue) => unreachable!("continue escaped a function body"),
+            other => other,
         }
     }
 

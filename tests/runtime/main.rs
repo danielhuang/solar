@@ -793,3 +793,95 @@ fn closure_capture_in_fn() {
     );
     assert_eq!(output, "7\n");
 }
+
+#[test]
+fn loop_break_enum() {
+    let output = run(&fixture("loop_break_enum.solar"), "loop_break_enum");
+    assert_eq!(output, "B 42\n43\n18\n");
+}
+
+#[test]
+fn loop_break_nested() {
+    let output = run(&fixture("loop_break_nested.solar"), "loop_break_nested");
+    assert_eq!(output, "300\n1005\n30\n28\n");
+}
+
+/// Closures capturing fn-typed values + the lazily-lowered-method-inside-
+/// return-type-inference shape. Run several times per process: the historical
+/// failure depended on HashMap lowering order and varied run to run.
+#[test]
+fn closure_capture_fn() {
+    for i in 0..5 {
+        let output = run(
+            &fixture("closure_capture_fn.solar"),
+            &format!("closure_capture_fn_{i}"),
+        );
+        assert_eq!(output, "21\n15\n16\n112\n18\n106\n1015\n");
+    }
+}
+
+/// Self- and mutually-recursive generic functions/methods (same type args each
+/// level) — formerly a monomorphizer stack overflow; a signature stub cached
+/// before body lowering now serves the recursive call.
+#[test]
+fn generic_recursion() {
+    let output = run(&fixture("generic_recursion.solar"), "generic_recursion");
+    assert_eq!(output, "4\n2\n110\neven\nodd7\n42\n");
+}
+
+/// A non-generic struct with `&?T` fields whose pointees are concrete generic
+/// instantiations (registry-design Q1) — formerly `is_sized: missing struct`.
+#[test]
+fn nullable_ref_generic_field() {
+    let output = run(
+        &fixture("nullable_ref_generic_field.solar"),
+        "nullable_ref_generic_field",
+    );
+    assert_eq!(output, "block null\nblock set\n7\n42\n");
+}
+
+#[test]
+fn tail_if_eof() {
+    let output = run(&fixture("tail_if_eof.solar"), "tail_if_eof");
+    assert_eq!(output, "10\n20\n");
+}
+
+/// Interior reference escaping through a ref-of-deref (`let r = v&; r@.b&`
+/// returned) — escape analysis must keep `v` heap-boxed. The harness runs
+/// optimized IR under ASAN, so a wrong stack placement fails here.
+#[test]
+fn interior_ref_escape() {
+    let output = run(&fixture("interior_ref_escape.solar"), "interior_ref_escape");
+    assert_eq!(output, "15\n35\n0\n3\n6\n9\n15\n33\n");
+}
+
+/// Overlapping aggregate copies are legal in Solar (references alias freely)
+/// and must behave like memmove in all three backends: exact self-assigns
+/// (`x = x;`, `a[i] = a[i]`, aliased `d@ = s@`) and partially overlapping
+/// slice-range assignments in both directions. The debug-codegen run is built
+/// with ASAN, whose interceptors flag overlapping memcpy — so a regression to
+/// memcpy semantics on any copy path fails here even when the bytes happen to
+/// come out right.
+#[test]
+fn overlap_copy() {
+    let output = run(&fixture("overlap_copy.solar"), "overlap_copy");
+    assert_eq!(
+        output,
+        "3\n7\n8\n7\n8\n7\n8\n10\n20\n30\n2\n3\n4\n\
+         2\n3\n4\n4\n5\n1\n1\n2\n3\n5\n\
+         97\n97\n98\n99\n100\n98\n99\n100\n101\n101\n\
+         1\n11\n1\n11\n2\n22\n3\n33\n5\n55\n\
+         2\n22\n3\n33\n4\n44\n4\n44\n5\n55\n\
+         1\n1\n2\n888\n5\n2\n888\n4\n4\n5\n\
+         1\n1\n2\n3\n5\n2\n3\n4\n4\n5\n2\n0\n"
+    );
+}
+
+#[test]
+fn nullable_unsized_deref() {
+    let output = run(
+        &fixture("nullable_unsized_deref.solar"),
+        "nullable_unsized_deref",
+    );
+    assert_eq!(output, "1\n3\n3\n2\n3\n");
+}

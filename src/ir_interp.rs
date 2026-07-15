@@ -129,17 +129,6 @@ fn cast_numeric(raw: u64, src: &Type, dst: &Type) -> u64 {
     }
 }
 
-enum ControlFlow {
-    /// Proceed to the next statement.
-    Normal,
-    /// Exit the current function.
-    Return,
-    /// Exit the innermost loop.
-    Break,
-    /// Skip to the next iteration of the innermost loop.
-    Continue,
-}
-
 /// A propagating Solar `throw`: the thrown message bytes. It unwinds as the
 /// `Err` of `Eval` through every evaluation step until a `try` handler catches
 /// it (or it escapes `main`, which aborts). Mirrors the compiled backend's
@@ -151,8 +140,30 @@ struct Thrown {
     len: usize,
 }
 
-/// Result of any evaluation that may propagate a `throw`.
-type Eval<T> = Result<T, Thrown>;
+/// A non-local exit unwinding through evaluation as the `Err` of `Eval`.
+/// Carrying `return`/`break`/`continue` in the error channel (not just
+/// `throw`) lets them propagate out of *value-position* bodies — `let x =
+/// loop { … return 5; … }`, a `match` arm, an `if`-expression branch —
+/// through every `eval_into` layer, matching the compiled backend where
+/// they are plain C control flow. Consumers: `run_loop` catches
+/// `Break`/`Continue`, `exec_function_body` catches `Return` (so it never
+/// crosses a function/closure boundary), and the `try` intrinsic catches
+/// only `Thrown`.
+enum Unwind {
+    /// A Solar `throw` — caught by the nearest `try`.
+    Thrown(Thrown),
+    /// `return <v>` — the value is already written to the current function's
+    /// return slot (`ret_dst` stack); caught at the function-body boundary.
+    Return,
+    /// `break [<v>]` — any value is already written to the innermost
+    /// `loop_dst`; caught by the innermost `run_loop`.
+    Break,
+    /// `continue` — caught by the innermost `run_loop`.
+    Continue,
+}
+
+/// Result of any evaluation that may propagate a non-local exit.
+type Eval<T> = Result<T, Unwind>;
 
 struct Interpreter<'a, 'io> {
     module: &'a Module,
@@ -166,6 +177,11 @@ struct Interpreter<'a, 'io> {
     /// Result destinations of the enclosing loop expressions; `break <v>` writes
     /// the value into the innermost one.
     loop_dst: Vec<usize>,
+    /// Return slots of the function bodies currently executing (innermost
+    /// last); `return <v>` writes into the innermost one. A stack (not a
+    /// parameter) because a `return` can sit inside a value-position body
+    /// reached through `eval_into`, which doesn't know the function's slot.
+    ret_dst: Vec<usize>,
     /// Storage address of each `Module::statics` slot (zeroed at start; their
     /// literal initial values are stored by the assignments IR lowering
     /// prepended to `main`).
@@ -207,6 +223,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             var_meta: HashMap::new(),
             files: FileTable::new(stdin, stdout),
             loop_dst: Vec::new(),
+            ret_dst: Vec::new(),
             static_addrs,
         }
     }
@@ -215,13 +232,13 @@ impl<'a, 'io> Interpreter<'a, 'io> {
     /// the interpreter's counterpart of the compiled runtime's throw helpers
     /// (`panic::throw_str`/`throw_message`). The message strings are canonical
     /// across all three backends.
-    fn thrown(&mut self, msg: &str) -> Thrown {
+    fn thrown(&mut self, msg: &str) -> Unwind {
         let ptr = self.mem.alloc(msg.len().max(1), 1);
         self.mem.data[ptr..ptr + msg.len()].copy_from_slice(msg.as_bytes());
-        Thrown {
+        Unwind::Thrown(Thrown {
             ptr,
             len: msg.len(),
-        }
+        })
     }
 
     /// Decode a `&[Uint8]` intrinsic argument (e.g. a path) into a `String`.
@@ -306,9 +323,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     || type_contains_enum(inner, &self.module.datatypes) =>
             {
                 let es = type_size(inner, &self.module.datatypes);
-                for i in 0..(*count as usize) {
-                    self.copy_value(dst + i * es, src + i * es, inner, None);
-                }
+                self.copy_elements(dst, src, *count as usize, es, inner);
             }
             Type::Array(inner)
                 if type_contains_unique(inner, &self.module.datatypes)
@@ -316,17 +331,31 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             {
                 let count = meta.unwrap();
                 let es = type_size(inner, &self.module.datatypes);
-                for i in 0..count {
-                    self.copy_value(dst + i * es, src + i * es, inner, None);
-                }
+                self.copy_elements(dst, src, count, es, inner);
             }
             _ => {
                 let size = match meta {
                     Some(m) => full_size(ty, &self.module.datatypes, m),
                     None => type_size(ty, &self.module.datatypes),
                 };
+                // `copy_within` is overlap-safe (memmove semantics), matching
+                // the compiled backend's `sol_memcpy`/`llvm.memmove` — Solar
+                // copies may alias (`x = x;`, overlapping slice assignment).
                 self.mem.memcpy(dst, src, size);
             }
+        }
+    }
+
+    /// Per-element copy with memmove direction handling: forward when
+    /// `dst <= src`, backward when `dst > src`, so partially overlapping
+    /// same-array slice assignments (`s[1..4] = s[0..3]` and the reverse)
+    /// match the other backends' memmove semantics. Overlapping slices of one
+    /// array are element-aligned, so each element pair is identical or
+    /// disjoint — `copy_value` on an element never sees a shifted overlap.
+    fn copy_elements(&mut self, dst: usize, src: usize, count: usize, es: usize, inner: &Type) {
+        for k in 0..count {
+            let i = if dst > src { count - 1 - k } else { k };
+            self.copy_value(dst + i * es, src + i * es, inner, None);
         }
     }
 
@@ -588,7 +617,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
     ) -> Eval<(usize, Option<usize>)> {
         let (init, tail) = body.split_at(body.len() - 1);
         for &id in init {
-            self.exec_stmt(nodes, id, 0)?;
+            self.exec_stmt(nodes, id)?;
         }
         match &nodes[tail[0].0].kind {
             NodeKind::Expr(inner) => self.eval_place(nodes, *inner),
@@ -1123,11 +1152,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 self.exec_branch_into(nodes, branch, dst)?;
             }
             NodeKind::Loop { body } => {
-                // Loop expression: `break <v>` writes its value into `dst`. (As
-                // with other expression-position bodies, `return` from inside is
-                // not propagated by the interpreter.)
+                // Loop expression: `break <v>` writes its value into `dst`; a
+                // `return` inside unwinds past this loop to the function
+                // boundary (its value goes to the `ret_dst` stack, not `dst`).
                 let body = body.clone();
-                self.run_loop(nodes, &body, dst, dst)?;
+                self.run_loop(nodes, &body, dst)?;
             }
             NodeKind::EnumVariant {
                 enum_name,
@@ -1701,10 +1730,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let (ref_addr, _) = self.eval_place(nodes, args[0])?;
                 let data_ptr = self.mem.load(ref_addr, 8) as usize;
                 let data_len = self.mem.load(ref_addr + 8, 8) as usize;
-                return Err(Thrown {
+                return Err(Unwind::Thrown(Thrown {
                     ptr: data_ptr,
                     len: data_len,
-                });
+                }));
             }
             Intrinsic::Try => {
                 // args[0] = body fn(), args[1] = handler fn(&[Uint8]).
@@ -1722,13 +1751,16 @@ impl<'a, 'io> Interpreter<'a, 'io> {
 
                 // Run the body; on a throw, hand the handler a `&[Uint8]` whose
                 // fat pointer is the thrown one (same ptr/len) — so it aliases
-                // the slice passed to `throw`, no copy.
-                if let Err(Thrown { ptr, len }) = self.invoke_fn_value(body_idx, body_env, &[], dst)
-                {
-                    let arg_addr = self.mem.alloc(16, 8);
-                    self.mem.store(arg_addr, ptr as u64, 8);
-                    self.mem.store(arg_addr + 8, len as u64, 8);
-                    self.invoke_fn_value(h_idx, h_env, &[arg_addr], dst)?;
+                // the slice passed to `throw`, no copy. Only `Thrown` is caught
+                // here; any other unwind propagates.
+                match self.invoke_fn_value(body_idx, body_env, &[], dst) {
+                    Err(Unwind::Thrown(Thrown { ptr, len })) => {
+                        let arg_addr = self.mem.alloc(16, 8);
+                        self.mem.store(arg_addr, ptr as u64, 8);
+                        self.mem.store(arg_addr + 8, len as u64, 8);
+                        self.invoke_fn_value(h_idx, h_env, &[arg_addr], dst)?;
+                    }
+                    other => other?,
                 }
             }
             Intrinsic::Cast(_, _) => {
@@ -1774,8 +1806,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         result
     }
 
-    fn exec_stmt(&mut self, nodes: &[Node], id: NodeId, ret_dst: usize) -> Eval<ControlFlow> {
-        Ok(match &nodes[id.0].kind {
+    fn exec_stmt(&mut self, nodes: &[Node], id: NodeId) -> Eval<()> {
+        match &nodes[id.0].kind {
             NodeKind::Let { var, value, .. } => {
                 let var = *var;
                 let value = *value;
@@ -1790,7 +1822,6 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 if let Some(m) = meta {
                     self.var_meta.insert(var, m);
                 }
-                ControlFlow::Normal
             }
             NodeKind::Assign { target, value } => {
                 let target = *target;
@@ -1804,7 +1835,6 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     );
                 }
                 self.eval_into(nodes, value, place)?;
-                ControlFlow::Normal
             }
             NodeKind::If {
                 condition,
@@ -1816,11 +1846,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let else_body = else_body.clone();
                 let cond = self.eval_load(nodes, condition)?;
                 if cond != 0 {
-                    self.exec_body(nodes, &then_body, ret_dst)?
+                    self.exec_body(nodes, &then_body)?;
                 } else if !else_body.is_empty() {
-                    self.exec_body(nodes, &else_body, ret_dst)?
-                } else {
-                    ControlFlow::Normal
+                    self.exec_body(nodes, &else_body)?;
                 }
             }
             NodeKind::Loop { body } => {
@@ -1833,145 +1861,62 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 } else {
                     self.alloc_ty(&ty)
                 };
-                self.run_loop(nodes, &body, dst, ret_dst)?
+                self.run_loop(nodes, &body, dst)?;
             }
             NodeKind::Break(value) => {
                 if let Some(v) = *value {
                     let dst = *self.loop_dst.last().expect("break value outside a loop");
                     self.eval_into(nodes, v, dst)?;
                 }
-                ControlFlow::Break
+                return Err(Unwind::Break);
             }
-            NodeKind::Continue => ControlFlow::Continue,
+            NodeKind::Continue => return Err(Unwind::Continue),
             NodeKind::Expr(inner) => {
+                // A statement-position expression, evaluated for side effects
+                // only. `return`/`break`/`continue` inside a compound expression
+                // (`if`/`match`/`loop` bodies) propagate via `Unwind`.
                 let inner = *inner;
-                // A statement-position compound expression (a trailing `if`/
-                // `match` in a block, e.g. a loop body) must propagate control
-                // flow — `break`/`continue`/`return` — out of its branches, just
-                // like the statement forms do. Its value is discarded. Without
-                // this, `loop { … if c { break } else { … } }` never terminates,
-                // because evaluating it only for its value drops the `break`.
-                match &nodes[inner.0].kind {
-                    NodeKind::IfExpr {
-                        condition,
-                        then_body,
-                        else_body,
-                    } => {
-                        let condition = *condition;
-                        let then_body = then_body.clone();
-                        let else_body = else_body.clone();
-                        let cond = self.eval_load(nodes, condition)?;
-                        if cond != 0 {
-                            self.exec_body(nodes, &then_body, ret_dst)?
-                        } else if !else_body.is_empty() {
-                            self.exec_body(nodes, &else_body, ret_dst)?
-                        } else {
-                            ControlFlow::Normal
-                        }
-                    }
-                    NodeKind::Match { .. } => self.exec_match_stmt(nodes, inner, ret_dst)?,
-                    _ => {
-                        let ty = &nodes[inner.0].ty;
-                        if *ty == Type::Unit {
-                            self.eval_into(nodes, inner, 0)?;
-                        } else {
-                            let tmp = self.alloc_ty(ty);
-                            self.eval_into(nodes, inner, tmp)?;
-                        }
-                        ControlFlow::Normal
-                    }
+                let ty = &nodes[inner.0].ty;
+                if *ty == Type::Unit {
+                    self.eval_into(nodes, inner, 0)?;
+                } else {
+                    let tmp = self.alloc_ty(ty);
+                    self.eval_into(nodes, inner, tmp)?;
                 }
             }
             NodeKind::Return(inner) => {
                 let inner = *inner;
+                let ret_dst = *self.ret_dst.last().expect("return outside a function body");
                 self.eval_into(nodes, inner, ret_dst)?;
-                ControlFlow::Return
+                return Err(Unwind::Return);
             }
             _ => unreachable!(),
-        })
-    }
-
-    /// Execute a statement-position `match` expression, propagating control flow
-    /// out of the taken arm (its value is discarded). Mirrors the value-path
-    /// `Match` evaluation but runs the arm body with `exec_body`.
-    fn exec_match_stmt(&mut self, nodes: &[Node], id: NodeId, ret_dst: usize) -> Eval<ControlFlow> {
-        let (scrutinee, arms) = match &nodes[id.0].kind {
-            NodeKind::Match { scrutinee, arms } => (*scrutinee, arms.clone()),
-            _ => unreachable!(),
-        };
-        let enum_base = if is_place(nodes, scrutinee) {
-            let (addr, _) = self.eval_place(nodes, scrutinee)?;
-            addr
-        } else {
-            let ty = nodes[scrutinee.0].ty.clone();
-            let tmp = self.alloc_ty(&ty);
-            self.eval_into(nodes, scrutinee, tmp)?;
-            tmp
-        };
-        let disc = self.mem.load(enum_base, 8);
-        let enum_name = match &nodes[scrutinee.0].ty {
-            Type::Enum(name) => name.clone(),
-            _ => unreachable!(),
-        };
-        for arm in &arms {
-            let matches = match &arm.pattern {
-                MatchPattern::Variant { variant_index, .. } => disc == *variant_index,
-                MatchPattern::Wildcard(_, _) => true,
-            };
-            if matches {
-                match &arm.pattern {
-                    MatchPattern::Variant {
-                        variant_name,
-                        binding: Some((var, _ty)),
-                        ..
-                    } => {
-                        let dt = &self.module.datatypes[enum_name.as_str()];
-                        let fl = dt.fields.iter().find(|f| f.name == *variant_name).unwrap();
-                        self.vars.insert(*var, enum_base + fl.offset);
-                    }
-                    MatchPattern::Wildcard(var, _) => {
-                        self.vars.insert(*var, enum_base);
-                    }
-                    _ => {}
-                }
-                return self.exec_body(nodes, &arm.body, ret_dst);
-            }
         }
-        unreachable!("no matching arm in match expression");
+        Ok(())
     }
 
     /// Run a loop body repeatedly until it breaks. `dst` is where `break <v>`
-    /// writes its value. Returns the resulting control flow (`Break` becomes
-    /// `Normal`; `Return` propagates).
-    fn run_loop(
-        &mut self,
-        nodes: &[Node],
-        body: &[NodeId],
-        dst: usize,
-        ret_dst: usize,
-    ) -> Eval<ControlFlow> {
+    /// writes its value. `Break` is caught here; `Return` (and `Thrown`) keep
+    /// unwinding.
+    fn run_loop(&mut self, nodes: &[Node], body: &[NodeId], dst: usize) -> Eval<()> {
         self.loop_dst.push(dst);
         let result = loop {
-            match self.exec_body(nodes, body, ret_dst) {
-                Ok(ControlFlow::Break) => break Ok(ControlFlow::Normal),
-                Ok(ControlFlow::Return) => break Ok(ControlFlow::Return),
+            match self.exec_body(nodes, body) {
                 // A fall-through or `continue` starts the next iteration.
-                Ok(ControlFlow::Normal | ControlFlow::Continue) => {}
-                Err(t) => break Err(t),
+                Ok(()) | Err(Unwind::Continue) => {}
+                Err(Unwind::Break) => break Ok(()),
+                Err(other) => break Err(other),
             }
         };
         self.loop_dst.pop();
         result
     }
 
-    fn exec_body(&mut self, nodes: &[Node], body: &[NodeId], ret_dst: usize) -> Eval<ControlFlow> {
+    fn exec_body(&mut self, nodes: &[Node], body: &[NodeId]) -> Eval<()> {
         for &id in body {
-            match self.exec_stmt(nodes, id, ret_dst)? {
-                ControlFlow::Normal => {}
-                cf => return Ok(cf),
-            }
+            self.exec_stmt(nodes, id)?;
         }
-        Ok(ControlFlow::Normal)
+        Ok(())
     }
 
     fn exec_branch_into(&mut self, nodes: &[Node], body: &[NodeId], dst: usize) -> Eval<()> {
@@ -1987,7 +1932,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         };
 
         for &id in init {
-            self.exec_stmt(nodes, id, dst)?;
+            self.exec_stmt(nodes, id)?;
         }
 
         if let Some(tid) = tail {
@@ -2000,6 +1945,21 @@ impl<'a, 'io> Interpreter<'a, 'io> {
     }
 
     fn exec_function_body(&mut self, func: &Function, ret_dst: usize) -> Eval<()> {
+        self.ret_dst.push(ret_dst);
+        let result = self.exec_function_body_inner(func, ret_dst);
+        self.ret_dst.pop();
+        match result {
+            // `return` stops at the function boundary: the value is already in
+            // `ret_dst` (a closure's `return` exits the closure, never the
+            // enclosing function — matching compiled C semantics).
+            Err(Unwind::Return) => Ok(()),
+            Err(Unwind::Break) => unreachable!("break escaped a function body"),
+            Err(Unwind::Continue) => unreachable!("continue escaped a function body"),
+            other => other,
+        }
+    }
+
+    fn exec_function_body_inner(&mut self, func: &Function, ret_dst: usize) -> Eval<()> {
         let nodes = &func.nodes;
         let body = &func.body;
 
@@ -2016,12 +1976,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         };
 
         for &id in init {
-            match self.exec_stmt(nodes, id, ret_dst)? {
-                ControlFlow::Return => return Ok(()),
-                ControlFlow::Normal => {}
-                ControlFlow::Break => unreachable!("break outside loop"),
-                ControlFlow::Continue => unreachable!("continue outside loop"),
-            }
+            self.exec_stmt(nodes, id)?;
         }
 
         if let Some(tid) = tail {
@@ -2039,7 +1994,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             .get("main")
             .unwrap_or_else(|| panic!("no main function"));
         assert!(main_func.params.is_empty(), "main must take no parameters");
-        if let Err(Thrown { ptr, len }) = self.exec_function_body(main_func, 0) {
+        if let Err(Unwind::Thrown(Thrown { ptr, len })) = self.exec_function_body(main_func, 0) {
             // A `throw` that escapes `main` is uncaught; mirror the compiled
             // runtime, which aborts with the message.
             let bytes = self.mem.data[ptr..ptr + len].to_vec();

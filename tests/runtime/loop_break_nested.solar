@@ -1,0 +1,64 @@
+// Regression: a value-yielding `loop { ... if c { break v; } }` in tail
+// position (function body tail, match-arm value) used to return garbage/0 in
+// the IR interpreter and compiled code: the statement-lowered raw `Loop` node
+// wasn't recognized by trailing-expression detection, so the break value went
+// to a throwaway slot. Also covers `return` propagating out of a
+// statement-position bare `loop`.
+enum E {
+    A(Int),
+    B(Int),
+}
+
+// Loop as the trailing function-body expression, break inside a
+// statement-position if (the CAS-loop shape).
+fn cas_shape(n: Int) -> Int {
+    let i = 0;
+    loop {
+        i = i + 1;
+        if i == n {
+            break i * 100;
+        }
+    }
+}
+
+// Loop as a match-arm value expression.
+fn arm_value(e: &E) -> Int {
+    match e@ {
+        E::A(v) => loop {
+            break v + 1000;
+        },
+        E::B(v) => { v },
+    }
+}
+
+// Loop value assigned to a let, break inside a statement-position if.
+fn let_value(n: Int) -> Int {
+    let i = 0;
+    let x = loop {
+        i = i + 1;
+        if i == n {
+            break i * 10;
+        }
+    };
+    x
+}
+
+// `return` must propagate out of a statement-position bare loop.
+fn ret_from_loop(n: Int) -> Int {
+    let i = 0;
+    loop {
+        i = i + 1;
+        if i == n {
+            return i * 7;
+        }
+    };
+    0
+}
+
+fn main() {
+    println(cas_shape(3));
+    let e = E::A(5);
+    println(arm_value(e&));
+    println(let_value(3));
+    println(ret_from_loop(4));
+}

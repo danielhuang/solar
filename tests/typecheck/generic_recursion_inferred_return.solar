@@ -1,0 +1,11 @@
+// A self-recursive generic function with an INFERRED return type: the return
+// type cannot be known while the body is still being lowered, so this must be
+// a clean error (formerly a compiler stack overflow).
+fn h#[T](x: T, n: Int) {
+    if n == 0 { 0 } else { h(x, n - 1) }
+}
+
+fn main() {
+    let r = h(1, 3);
+    r;
+}
