@@ -23,7 +23,7 @@ fn main() {
         }
     };
 
-    let ir = typed.to_ir();
+    let ir = typed.to_mangled().to_ir();
 
     if emit_c {
         print!("{}", solar::codegen::generate(&ir.ir, file, &ir.source_map));

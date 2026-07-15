@@ -6,6 +6,7 @@ pub mod interp_io;
 pub mod ir;
 pub mod ir_interp;
 pub mod ir_opt;
+pub mod mangled_ast;
 pub mod parser;
 pub mod pipeline;
 pub mod resolve;

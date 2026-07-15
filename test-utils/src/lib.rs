@@ -60,7 +60,7 @@ pub fn run_ast_file(file_path: &Path) -> String {
 /// Compile a file and run the IR interpreter.
 pub fn run_ir_file(file_path: &Path) -> String {
     let typed = solar::pipeline::compile(file_path).unwrap();
-    let ir = typed.to_ir();
+    let ir = typed.to_mangled().to_ir();
     run_ir(&ir)
 }
 
@@ -69,6 +69,7 @@ pub fn run_codegen_file(file_path: &Path, test_name: &str) -> String {
     ensure_runtime_built();
     let typed = solar::pipeline::compile(file_path).unwrap();
     typed
+        .to_mangled()
         .to_ir()
         .to_c(&file_path.display().to_string())
         .to_binary(test_name, CompileMode::Debug)
@@ -83,7 +84,7 @@ pub fn run(file_path: &Path, test_name: &str) -> String {
     // `optimized()` runs `ir_opt`, so the debug-codegen build below exercises the
     // escape analysis / stack placement under ASAN — a wrongly-stacked escaping
     // value then surfaces as a use-after-scope/return (or a wrong result).
-    let ir = typed.to_ir().optimized();
+    let ir = typed.to_mangled().to_ir().optimized();
     let ir_out = run_ir(&ir);
     assert_eq!(
         ast_out, ir_out,

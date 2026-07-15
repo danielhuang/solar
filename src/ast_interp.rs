@@ -695,10 +695,14 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                         let rv = self.eval_expr(right)?;
                         match (&lv, &rv) {
                             // Floats are raw bit patterns in `Value::Int`.
-                            (Value::Int(a), Value::Int(b)) if float => Value::Int(
-                                crate::ir_interp::float_binop(*op, *a as u64, *b as u64, &left.ty)
-                                    as i64,
-                            ),
+                            (Value::Int(a), Value::Int(b)) if float => {
+                                Value::Int(crate::ir_interp::float_binop(
+                                    *op,
+                                    *a as u64,
+                                    *b as u64,
+                                    left.ty == crate::typed_ast::Type::Float32,
+                                ) as i64)
+                            }
                             (Value::Int(a), Value::Int(b)) if unsigned => {
                                 // Unsigned operands are stored as u64 bit patterns in i64
                                 let a = *a as u64;
@@ -1361,8 +1365,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     Value::Int(n) => n as u64,
                     _ => unreachable!(),
                 };
-                let ty = &arguments[0].ty;
-                Value::Int(crate::ir_interp::float_unary(intrinsic, raw, ty) as i64)
+                let is_f32 = arguments[0].ty == crate::typed_ast::Type::Float32;
+                Value::Int(crate::ir_interp::float_unary(intrinsic, raw, is_f32) as i64)
             }
             Intrinsic::Atan2 | Intrinsic::Pow => {
                 let a = match self.eval_expr(&arguments[0])? {
@@ -1373,8 +1377,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     Value::Int(n) => n as u64,
                     _ => unreachable!(),
                 };
-                let ty = &arguments[0].ty;
-                Value::Int(crate::ir_interp::float_binary(intrinsic, a, b, ty) as i64)
+                let is_f32 = arguments[0].ty == crate::typed_ast::Type::Float32;
+                Value::Int(crate::ir_interp::float_binary(intrinsic, a, b, is_f32) as i64)
             }
             Intrinsic::Exit => {
                 let code = match self.eval_expr(&arguments[0])? {

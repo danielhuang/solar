@@ -482,7 +482,7 @@ mod tests {
         let result = pipeline::compile(&path);
         let _ = std::fs::remove_file(&path);
         let typed = result.unwrap_or_else(|(errs, _)| panic!("compile failed: {errs:?}"));
-        typed.to_ir().optimized().ir
+        typed.to_mangled().to_ir().optimized().ir
     }
 
     /// Find a (root-file) function by its original name. IR names are

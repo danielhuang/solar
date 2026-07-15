@@ -35,6 +35,7 @@ fn build(src: &str, name: &str, mode: CompileMode) -> PathBuf {
     std::fs::write(&path, src).unwrap();
     let typed = solar::pipeline::compile(&path).unwrap();
     typed
+        .to_mangled()
         .to_ir()
         .optimized()
         .to_c(&path.display().to_string())

@@ -1,11 +1,11 @@
 use crate::ast::BinOp;
 use crate::ast::Intrinsic;
 use crate::ast::SourceSpan;
+use crate::mangled_ast;
 use crate::scope::ScopeStack;
-use crate::typed_ast;
 use std::collections::HashMap;
 
-pub use crate::typed_ast::Type;
+pub use crate::mangled_ast::Type;
 
 // --- Memory layout ---
 
@@ -235,12 +235,12 @@ pub enum MatchPattern {
 
 // --- Lowering ---
 
-pub fn lower(source: &typed_ast::SourceFile) -> Module {
+pub fn lower(source: &mangled_ast::SourceFile) -> Module {
     let datatypes = build_datatypes(source);
     let mut next_var = 0..;
 
     // Collect closure capture info: synthetic_fn_name -> Vec<CapturedVar>
-    let mut closure_captures: HashMap<String, Vec<typed_ast::CapturedVar>> = HashMap::new();
+    let mut closure_captures: HashMap<String, Vec<mangled_ast::CapturedVar>> = HashMap::new();
     for func in source.functions.values() {
         collect_closure_captures(&func.body, &mut closure_captures);
     }
@@ -277,11 +277,11 @@ pub fn lower(source: &typed_ast::SourceFile) -> Module {
             // before them).
             if f.name == "main" && !source.statics.is_empty() {
                 let mut main_fn = f.clone();
-                let inits = source.statics.iter().map(|st| typed_ast::Statement {
-                    kind: typed_ast::StatementKind::Assignment {
-                        target: typed_ast::Expr {
+                let inits = source.statics.iter().map(|st| mangled_ast::Statement {
+                    kind: mangled_ast::StatementKind::Assignment {
+                        target: mangled_ast::Expr {
                             ty: st.ty.clone(),
-                            kind: typed_ast::ExprKind::Global(st.name.clone()),
+                            kind: mangled_ast::ExprKind::Global(st.name.clone()),
                             span: st.init.span,
                         },
                         value: st.init.clone(),
@@ -315,19 +315,19 @@ pub fn lower(source: &typed_ast::SourceFile) -> Module {
 }
 
 fn collect_closure_captures(
-    stmts: &[typed_ast::Statement],
-    map: &mut HashMap<String, Vec<typed_ast::CapturedVar>>,
+    stmts: &[mangled_ast::Statement],
+    map: &mut HashMap<String, Vec<mangled_ast::CapturedVar>>,
 ) {
     for stmt in stmts {
         match &stmt.kind {
-            typed_ast::StatementKind::Let { value, .. } => {
+            mangled_ast::StatementKind::Let { value, .. } => {
                 collect_closure_captures_expr(value, map)
             }
-            typed_ast::StatementKind::Assignment { target, value } => {
+            mangled_ast::StatementKind::Assignment { target, value } => {
                 collect_closure_captures_expr(target, map);
                 collect_closure_captures_expr(value, map);
             }
-            typed_ast::StatementKind::If {
+            mangled_ast::StatementKind::If {
                 condition,
                 body,
                 else_body,
@@ -336,88 +336,88 @@ fn collect_closure_captures(
                 collect_closure_captures(body, map);
                 collect_closure_captures(else_body, map);
             }
-            typed_ast::StatementKind::While { condition, body } => {
+            mangled_ast::StatementKind::While { condition, body } => {
                 collect_closure_captures_expr(condition, map);
                 collect_closure_captures(body, map);
             }
-            typed_ast::StatementKind::Expression(e) => collect_closure_captures_expr(e, map),
-            typed_ast::StatementKind::Return(e) => collect_closure_captures_expr(e, map),
-            typed_ast::StatementKind::Break(value) => {
+            mangled_ast::StatementKind::Expression(e) => collect_closure_captures_expr(e, map),
+            mangled_ast::StatementKind::Return(e) => collect_closure_captures_expr(e, map),
+            mangled_ast::StatementKind::Break(value) => {
                 if let Some(v) = value {
                     collect_closure_captures_expr(v, map);
                 }
             }
-            typed_ast::StatementKind::Continue => {}
+            mangled_ast::StatementKind::Continue => {}
         }
     }
 }
 
 fn collect_closure_captures_expr(
-    expr: &typed_ast::Expr,
-    map: &mut HashMap<String, Vec<typed_ast::CapturedVar>>,
+    expr: &mangled_ast::Expr,
+    map: &mut HashMap<String, Vec<mangled_ast::CapturedVar>>,
 ) {
     match &expr.kind {
-        typed_ast::ExprKind::Closure {
+        mangled_ast::ExprKind::Closure {
             synthetic_fn,
             captures,
         } => {
             map.insert(synthetic_fn.clone(), captures.clone());
         }
-        typed_ast::ExprKind::FieldAccess { object, .. } => {
+        mangled_ast::ExprKind::FieldAccess { object, .. } => {
             collect_closure_captures_expr(object, map);
         }
-        typed_ast::ExprKind::Deref(inner)
-        | typed_ast::ExprKind::Reference(inner)
-        | typed_ast::ExprKind::Unique(inner)
-        | typed_ast::ExprKind::Not(inner) => {
+        mangled_ast::ExprKind::Deref(inner)
+        | mangled_ast::ExprKind::Reference(inner)
+        | mangled_ast::ExprKind::Unique(inner)
+        | mangled_ast::ExprKind::Not(inner) => {
             collect_closure_captures_expr(inner, map);
         }
-        typed_ast::ExprKind::Call { arguments, .. } => {
+        mangled_ast::ExprKind::Call { arguments, .. } => {
             for a in arguments {
                 collect_closure_captures_expr(a, map);
             }
         }
-        typed_ast::ExprKind::CallIndirect { callee, arguments } => {
+        mangled_ast::ExprKind::CallIndirect { callee, arguments } => {
             collect_closure_captures_expr(callee, map);
             for a in arguments {
                 collect_closure_captures_expr(a, map);
             }
         }
-        typed_ast::ExprKind::StructLiteral { fields, .. } => {
+        mangled_ast::ExprKind::StructLiteral { fields, .. } => {
             for f in fields {
                 collect_closure_captures_expr(&f.value, map);
             }
         }
-        typed_ast::ExprKind::Index { object, index } => {
+        mangled_ast::ExprKind::Index { object, index } => {
             collect_closure_captures_expr(object, map);
             collect_closure_captures_expr(index, map);
         }
-        typed_ast::ExprKind::Slice { object, start, end } => {
+        mangled_ast::ExprKind::Slice { object, start, end } => {
             collect_closure_captures_expr(object, map);
             collect_closure_captures_expr(start, map);
             collect_closure_captures_expr(end, map);
         }
-        typed_ast::ExprKind::ArrayLiteral(elems) => {
+        mangled_ast::ExprKind::ArrayLiteral(elems) => {
             for e in elems {
                 collect_closure_captures_expr(e, map);
             }
         }
-        typed_ast::ExprKind::ArrayRepeat { element, count } => {
+        mangled_ast::ExprKind::ArrayRepeat { element, count } => {
             collect_closure_captures_expr(element, map);
             collect_closure_captures_expr(count, map);
         }
-        typed_ast::ExprKind::ArrayInit { count, init } => {
+        mangled_ast::ExprKind::ArrayInit { count, init } => {
             collect_closure_captures_expr(count, map);
             collect_closure_captures_expr(init, map);
         }
-        typed_ast::ExprKind::ArraySizeCoerce { expr: inner, .. } => {
+        mangled_ast::ExprKind::ArraySizeCoerce { expr: inner, .. } => {
             collect_closure_captures_expr(inner, map);
         }
-        typed_ast::ExprKind::BinaryOp { left, right, .. } => {
+        mangled_ast::ExprKind::BinaryOp { left, right, .. } => {
             collect_closure_captures_expr(left, map);
             collect_closure_captures_expr(right, map);
         }
-        typed_ast::ExprKind::If {
+        mangled_ast::ExprKind::If {
             condition,
             then_body,
             else_body,
@@ -426,35 +426,35 @@ fn collect_closure_captures_expr(
             collect_closure_captures(then_body, map);
             collect_closure_captures(else_body, map);
         }
-        typed_ast::ExprKind::Block(stmts) => {
+        mangled_ast::ExprKind::Block(stmts) => {
             collect_closure_captures(stmts, map);
         }
-        typed_ast::ExprKind::Loop(stmts) => {
+        mangled_ast::ExprKind::Loop(stmts) => {
             collect_closure_captures(stmts, map);
         }
-        typed_ast::ExprKind::EnumVariant { value, .. } => {
+        mangled_ast::ExprKind::EnumVariant { value, .. } => {
             if let Some(v) = value {
                 collect_closure_captures_expr(v, map);
             }
         }
-        typed_ast::ExprKind::Match { scrutinee, arms } => {
+        mangled_ast::ExprKind::Match { scrutinee, arms } => {
             collect_closure_captures_expr(scrutinee, map);
             for arm in arms {
                 collect_closure_captures(&arm.body, map);
             }
         }
-        typed_ast::ExprKind::IntrinsicCall { arguments, .. } => {
+        mangled_ast::ExprKind::IntrinsicCall { arguments, .. } => {
             for a in arguments {
                 collect_closure_captures_expr(a, map);
             }
         }
-        typed_ast::ExprKind::Identifier(_)
-        | typed_ast::ExprKind::Global(_)
-        | typed_ast::ExprKind::IntegerLiteral(_)
-        | typed_ast::ExprKind::FloatLiteral(_)
-        | typed_ast::ExprKind::BooleanLiteral(_)
-        | typed_ast::ExprKind::NullLiteral
-        | typed_ast::ExprKind::FunctionRef(_) => {}
+        mangled_ast::ExprKind::Identifier(_)
+        | mangled_ast::ExprKind::Global(_)
+        | mangled_ast::ExprKind::IntegerLiteral(_)
+        | mangled_ast::ExprKind::FloatLiteral(_)
+        | mangled_ast::ExprKind::BooleanLiteral(_)
+        | mangled_ast::ExprKind::NullLiteral
+        | mangled_ast::ExprKind::FunctionRef(_) => {}
     }
 }
 
@@ -611,11 +611,11 @@ fn branch_tail_is_place(nodes: &[Node], body: &[NodeId]) -> bool {
 }
 
 enum PendingType<'a> {
-    Struct(&'a typed_ast::StructDef),
-    Enum(&'a typed_ast::EnumDef),
+    Struct(&'a mangled_ast::StructDef),
+    Enum(&'a mangled_ast::EnumDef),
 }
 
-fn build_datatypes(source: &typed_ast::SourceFile) -> HashMap<String, DataType> {
+fn build_datatypes(source: &mangled_ast::SourceFile) -> HashMap<String, DataType> {
     let mut result: HashMap<String, DataType> = HashMap::new();
 
     let mut remaining: Vec<PendingType> = Vec::new();
@@ -677,7 +677,7 @@ fn can_resolve_type(ty: &Type, resolved: &HashMap<String, DataType>) -> bool {
     }
 }
 
-fn layout_struct(s: &typed_ast::StructDef, resolved: &HashMap<String, DataType>) -> DataType {
+fn layout_struct(s: &mangled_ast::StructDef, resolved: &HashMap<String, DataType>) -> DataType {
     let mut offset = 0usize;
     let mut max_align = 1usize;
     let mut fields = Vec::new();
@@ -721,7 +721,7 @@ fn layout_struct(s: &typed_ast::StructDef, resolved: &HashMap<String, DataType>)
     }
 }
 
-fn layout_enum(e: &typed_ast::EnumDef, resolved: &HashMap<String, DataType>) -> DataType {
+fn layout_enum(e: &mangled_ast::EnumDef, resolved: &HashMap<String, DataType>) -> DataType {
     // Layout: [discriminant: u64][variant0_data][variant1_data]...
     let mut offset = 8usize; // discriminant is 8 bytes
     let mut max_align = 8usize; // at least 8 for discriminant
@@ -831,7 +831,7 @@ impl<'a> FunctionLowerer<'a> {
         std::mem::take(&mut self.pending_stmts)
     }
 
-    fn lower_body(&mut self, stmts: &[typed_ast::Statement]) -> Vec<NodeId> {
+    fn lower_body(&mut self, stmts: &[mangled_ast::Statement]) -> Vec<NodeId> {
         let mut body = Vec::new();
         for s in stmts {
             let id = self.lower_stmt(s);
@@ -841,9 +841,9 @@ impl<'a> FunctionLowerer<'a> {
         body
     }
 
-    fn lower_expr(&mut self, expr: &typed_ast::Expr) -> NodeId {
+    fn lower_expr(&mut self, expr: &mangled_ast::Expr) -> NodeId {
         match &expr.kind {
-            typed_ast::ExprKind::Identifier(name) => {
+            mangled_ast::ExprKind::Identifier(name) => {
                 let var = self.lookup(name);
                 self.push(Node {
                     ty: expr.ty.clone(),
@@ -851,17 +851,17 @@ impl<'a> FunctionLowerer<'a> {
                     span: expr.span,
                 })
             }
-            typed_ast::ExprKind::Global(name) => self.push(Node {
+            mangled_ast::ExprKind::Global(name) => self.push(Node {
                 ty: expr.ty.clone(),
                 kind: NodeKind::Global(self.static_idx[name.as_str()]),
                 span: expr.span,
             }),
-            typed_ast::ExprKind::IntegerLiteral(n) => self.push(Node {
+            mangled_ast::ExprKind::IntegerLiteral(n) => self.push(Node {
                 ty: expr.ty.clone(),
                 kind: NodeKind::IntegerLiteral(*n),
                 span: expr.span,
             }),
-            typed_ast::ExprKind::FloatLiteral(v) => {
+            mangled_ast::ExprKind::FloatLiteral(v) => {
                 let bits = match expr.ty {
                     Type::Float32 => (*v as f32).to_bits() as u64,
                     _ => v.to_bits(),
@@ -872,17 +872,17 @@ impl<'a> FunctionLowerer<'a> {
                     span: expr.span,
                 })
             }
-            typed_ast::ExprKind::BooleanLiteral(b) => self.push(Node {
+            mangled_ast::ExprKind::BooleanLiteral(b) => self.push(Node {
                 ty: expr.ty.clone(),
                 kind: NodeKind::BooleanLiteral(*b),
                 span: expr.span,
             }),
-            typed_ast::ExprKind::NullLiteral => self.push(Node {
+            mangled_ast::ExprKind::NullLiteral => self.push(Node {
                 ty: expr.ty.clone(),
                 kind: NodeKind::Null,
                 span: expr.span,
             }),
-            typed_ast::ExprKind::FieldAccess { object, field } => {
+            mangled_ast::ExprKind::FieldAccess { object, field } => {
                 let mut obj = self.lower_expr(object);
                 // Field access projects into a place: bind a non-place base
                 // (e.g. a call result — `f(x).field`) to a temp `Let` first,
@@ -915,7 +915,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: expr.span,
                 })
             }
-            typed_ast::ExprKind::Deref(inner) => {
+            mangled_ast::ExprKind::Deref(inner) => {
                 let id = self.lower_expr(inner);
                 self.push(Node {
                     ty: expr.ty.clone(),
@@ -923,7 +923,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: expr.span,
                 })
             }
-            typed_ast::ExprKind::Not(inner) => {
+            mangled_ast::ExprKind::Not(inner) => {
                 let id = self.lower_expr(inner);
                 self.push(Node {
                     ty: expr.ty.clone(),
@@ -931,7 +931,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: expr.span,
                 })
             }
-            typed_ast::ExprKind::Reference(inner) => {
+            mangled_ast::ExprKind::Reference(inner) => {
                 let id = self.lower_expr(inner);
                 // If the inner expression is not a place, allocate a temporary
                 // so the Ref always points to a valid memory location.
@@ -980,7 +980,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: expr.span,
                 })
             }
-            typed_ast::ExprKind::Unique(inner) => {
+            mangled_ast::ExprKind::Unique(inner) => {
                 let id = self.lower_expr(inner);
                 let id = if is_place(&self.nodes, id) {
                     id
@@ -1026,7 +1026,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: expr.span,
                 })
             }
-            typed_ast::ExprKind::Call {
+            mangled_ast::ExprKind::Call {
                 function,
                 arguments,
             } => {
@@ -1040,7 +1040,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: expr.span,
                 })
             }
-            typed_ast::ExprKind::IntrinsicCall {
+            mangled_ast::ExprKind::IntrinsicCall {
                 intrinsic,
                 arguments,
             } => {
@@ -1054,12 +1054,12 @@ impl<'a> FunctionLowerer<'a> {
                     span: expr.span,
                 })
             }
-            typed_ast::ExprKind::FunctionRef(name) => self.push(Node {
+            mangled_ast::ExprKind::FunctionRef(name) => self.push(Node {
                 ty: expr.ty.clone(),
                 kind: NodeKind::FunctionRef(name.clone()),
                 span: expr.span,
             }),
-            typed_ast::ExprKind::CallIndirect { callee, arguments } => {
+            mangled_ast::ExprKind::CallIndirect { callee, arguments } => {
                 let callee_id = self.lower_expr(callee);
                 let args: Vec<NodeId> = arguments.iter().map(|a| self.lower_expr(a)).collect();
                 self.push(Node {
@@ -1071,7 +1071,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: expr.span,
                 })
             }
-            typed_ast::ExprKind::StructLiteral { name, fields } => {
+            mangled_ast::ExprKind::StructLiteral { name, fields } => {
                 let fields: Vec<(String, NodeId)> = fields
                     .iter()
                     .map(|f| (f.name.clone(), self.lower_expr(&f.value)))
@@ -1085,7 +1085,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: expr.span,
                 })
             }
-            typed_ast::ExprKind::Index { object, index } => {
+            mangled_ast::ExprKind::Index { object, index } => {
                 let obj = self.lower_expr(object);
                 let idx = self.lower_expr(index);
                 self.push(Node {
@@ -1097,7 +1097,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: expr.span,
                 })
             }
-            typed_ast::ExprKind::Slice { object, start, end } => {
+            mangled_ast::ExprKind::Slice { object, start, end } => {
                 let obj = self.lower_expr(object);
                 let s = self.lower_expr(start);
                 let e = self.lower_expr(end);
@@ -1111,7 +1111,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: expr.span,
                 })
             }
-            typed_ast::ExprKind::ArrayLiteral(elements) => {
+            mangled_ast::ExprKind::ArrayLiteral(elements) => {
                 let elems: Vec<NodeId> = elements.iter().map(|e| self.lower_expr(e)).collect();
                 self.push(Node {
                     ty: expr.ty.clone(),
@@ -1119,7 +1119,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: expr.span,
                 })
             }
-            typed_ast::ExprKind::ArrayRepeat { element, count } => {
+            mangled_ast::ExprKind::ArrayRepeat { element, count } => {
                 let elem = self.lower_expr(element);
                 let cnt = self.lower_expr(count);
                 self.push(Node {
@@ -1131,7 +1131,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: expr.span,
                 })
             }
-            typed_ast::ExprKind::ArrayInit { count, init } => {
+            mangled_ast::ExprKind::ArrayInit { count, init } => {
                 let cnt = self.lower_expr(count);
                 let ini = self.lower_expr(init);
                 self.push(Node {
@@ -1143,7 +1143,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: expr.span,
                 })
             }
-            typed_ast::ExprKind::ArraySizeCoerce { expr: inner, size } => {
+            mangled_ast::ExprKind::ArraySizeCoerce { expr: inner, size } => {
                 let val = self.lower_expr(inner);
                 self.push(Node {
                     ty: expr.ty.clone(),
@@ -1154,7 +1154,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: expr.span,
                 })
             }
-            typed_ast::ExprKind::BinaryOp { op, left, right } => {
+            mangled_ast::ExprKind::BinaryOp { op, left, right } => {
                 let l = self.lower_expr(left);
                 let r = self.lower_expr(right);
                 self.push(Node {
@@ -1167,7 +1167,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: expr.span,
                 })
             }
-            typed_ast::ExprKind::If {
+            mangled_ast::ExprKind::If {
                 condition,
                 then_body,
                 else_body,
@@ -1194,18 +1194,18 @@ impl<'a> FunctionLowerer<'a> {
                     span: expr.span,
                 })
             }
-            typed_ast::ExprKind::Block(stmts) => {
+            mangled_ast::ExprKind::Block(stmts) => {
                 self.push_scope();
                 // Lower all but last as pending stmts, lower tail expr and return its NodeId
                 let has_tail = stmts
                     .last()
-                    .is_some_and(|s| matches!(s.kind, typed_ast::StatementKind::Expression(_)));
+                    .is_some_and(|s| matches!(s.kind, mangled_ast::StatementKind::Expression(_)));
                 if has_tail {
                     let (init, tail) = stmts.split_at(stmts.len() - 1);
                     let mut body = self.lower_body(init);
                     // The tail expression produces the block's value
                     let tail_id = match &tail[0].kind {
-                        typed_ast::StatementKind::Expression(e) => self.lower_expr(e),
+                        mangled_ast::StatementKind::Expression(e) => self.lower_expr(e),
                         _ => unreachable!(),
                     };
                     body.extend(self.drain_pending());
@@ -1224,7 +1224,7 @@ impl<'a> FunctionLowerer<'a> {
                     })
                 }
             }
-            typed_ast::ExprKind::Loop(stmts) => {
+            mangled_ast::ExprKind::Loop(stmts) => {
                 self.push_scope();
                 let body = self.lower_body(stmts);
                 self.pop_scope();
@@ -1236,7 +1236,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: expr.span,
                 })
             }
-            typed_ast::ExprKind::EnumVariant {
+            mangled_ast::ExprKind::EnumVariant {
                 enum_name,
                 variant_name,
                 variant_index,
@@ -1254,7 +1254,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: expr.span,
                 })
             }
-            typed_ast::ExprKind::Match { scrutinee, arms } => {
+            mangled_ast::ExprKind::Match { scrutinee, arms } => {
                 let mut scrut = self.lower_expr(scrutinee);
                 // If the scrutinee isn't a place (e.g. a call result), bind it to
                 // a temp so codegen reads it from a named slot rather than boxing
@@ -1291,7 +1291,7 @@ impl<'a> FunctionLowerer<'a> {
                     .map(|arm| {
                         self.push_scope();
                         let pattern = match &arm.pattern {
-                            typed_ast::TypedPattern::Variant {
+                            mangled_ast::TypedPattern::Variant {
                                 enum_name,
                                 variant_name,
                                 variant_index,
@@ -1308,7 +1308,7 @@ impl<'a> FunctionLowerer<'a> {
                                     binding: binding_ir,
                                 }
                             }
-                            typed_ast::TypedPattern::Wildcard(name, ty) => {
+                            mangled_ast::TypedPattern::Wildcard(name, ty) => {
                                 let var = self.define(name);
                                 MatchPattern::Wildcard(var, ty.clone())
                             }
@@ -1328,7 +1328,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: expr.span,
                 })
             }
-            typed_ast::ExprKind::Closure {
+            mangled_ast::ExprKind::Closure {
                 synthetic_fn,
                 captures,
             } => {
@@ -1370,9 +1370,9 @@ impl<'a> FunctionLowerer<'a> {
         }
     }
 
-    fn lower_stmt(&mut self, stmt: &typed_ast::Statement) -> NodeId {
+    fn lower_stmt(&mut self, stmt: &mangled_ast::Statement) -> NodeId {
         match &stmt.kind {
-            typed_ast::StatementKind::Let { name, ty, value } => {
+            mangled_ast::StatementKind::Let { name, ty, value } => {
                 let val = self.lower_expr(value);
                 let var = self.define(name);
                 self.push(Node {
@@ -1385,7 +1385,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: stmt.span,
                 })
             }
-            typed_ast::StatementKind::Assignment { target, value } => {
+            mangled_ast::StatementKind::Assignment { target, value } => {
                 let tgt = self.lower_expr(target);
                 let tgt_pending = self.drain_pending();
                 let val = self.lower_expr(value);
@@ -1399,7 +1399,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: stmt.span,
                 })
             }
-            typed_ast::StatementKind::If {
+            mangled_ast::StatementKind::If {
                 condition,
                 body,
                 else_body,
@@ -1428,7 +1428,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: stmt.span,
                 })
             }
-            typed_ast::StatementKind::While { condition, body } => {
+            mangled_ast::StatementKind::While { condition, body } => {
                 // Lower condition (may produce pending stmts from block exprs)
                 let cond = self.lower_expr(condition);
                 let cond_pending = self.drain_pending();
@@ -1468,7 +1468,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: stmt.span,
                 })
             }
-            typed_ast::StatementKind::Expression(expr) => {
+            mangled_ast::StatementKind::Expression(expr) => {
                 // Every expression statement — including a `loop` — is wrapped in
                 // `NodeKind::Expr`, so downstream tail detection (function bodies,
                 // if/match arm values) uniformly recognizes a trailing expression.
@@ -1483,7 +1483,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: stmt.span,
                 })
             }
-            typed_ast::StatementKind::Return(expr) => {
+            mangled_ast::StatementKind::Return(expr) => {
                 let id = self.lower_expr(expr);
                 self.push(Node {
                     ty: expr.ty.clone(),
@@ -1491,7 +1491,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: stmt.span,
                 })
             }
-            typed_ast::StatementKind::Break(value) => {
+            mangled_ast::StatementKind::Break(value) => {
                 let value_id = value.as_ref().map(|v| self.lower_expr(v));
                 self.push(Node {
                     ty: Type::Unit,
@@ -1499,7 +1499,7 @@ impl<'a> FunctionLowerer<'a> {
                     span: stmt.span,
                 })
             }
-            typed_ast::StatementKind::Continue => self.push(Node {
+            mangled_ast::StatementKind::Continue => self.push(Node {
                 ty: Type::Unit,
                 kind: NodeKind::Continue,
                 span: stmt.span,
@@ -1509,9 +1509,9 @@ impl<'a> FunctionLowerer<'a> {
 }
 
 fn lower_function(
-    func: &typed_ast::FunctionDef,
+    func: &mangled_ast::FunctionDef,
     next_var: &mut RangeFrom<u32>,
-    captures: Option<&Vec<typed_ast::CapturedVar>>,
+    captures: Option<&Vec<mangled_ast::CapturedVar>>,
     datatypes: &HashMap<String, DataType>,
     static_idx: &HashMap<String, usize>,
 ) -> Function {

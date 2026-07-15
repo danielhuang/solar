@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::error::{CompileError, SourceMap};
-use crate::{codegen, ir, ir_opt, resolve, typed_ast};
+use crate::{codegen, ir, ir_opt, mangled_ast, resolve, typed_ast};
 
 /// Entry point: file path -> resolved + type-checked program.
 pub fn compile(file_path: &Path) -> Result<Typed, (Vec<CompileError>, SourceMap)> {
@@ -17,8 +17,25 @@ pub struct Typed {
 }
 
 impl Typed {
+    /// Lower the type-checked AST into the mangled AST. Currently a no-op
+    /// structural map (see `mangled_ast::lower`).
+    pub fn to_mangled(self) -> Mangled {
+        let mangled = mangled_ast::lower(&self.typed);
+        Mangled {
+            mangled,
+            source_map: self.source_map,
+        }
+    }
+}
+
+pub struct Mangled {
+    pub mangled: mangled_ast::SourceFile,
+    pub source_map: SourceMap,
+}
+
+impl Mangled {
     pub fn to_ir(self) -> Ir {
-        let ir = ir::lower(&self.typed);
+        let ir = ir::lower(&self.mangled);
         Ir {
             ir,
             source_map: self.source_map,

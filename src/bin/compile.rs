@@ -22,6 +22,7 @@ fn main() {
 
     let stem = file_path.file_stem().unwrap().to_str().unwrap();
     let binary = typed
+        .to_mangled()
         .to_ir()
         .optimized()
         .to_c(input)

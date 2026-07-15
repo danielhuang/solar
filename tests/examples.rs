@@ -27,7 +27,7 @@ fn all_examples_lower_to_ir() {
         let name = path.file_name().unwrap().to_str().unwrap();
         eprintln!("lowering {name}");
         let typed = solar::pipeline::compile(path).unwrap();
-        typed.to_ir();
+        typed.to_mangled().to_ir();
     }
 }
 
@@ -45,6 +45,7 @@ fn all_examples_compile_debug() {
         let test_name = format!("example_compile_{}", name.replace(".solar", ""));
         solar::pipeline::compile(path)
             .unwrap()
+            .to_mangled()
             .to_ir()
             .optimized()
             .to_c(&path.display().to_string())

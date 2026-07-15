@@ -19,7 +19,11 @@ fn std_code_gets_std_line_directives() {
     .unwrap();
 
     let typed = pipeline::compile(&path).unwrap();
-    let c = typed.to_ir().to_c(&path.display().to_string()).c_source;
+    let c = typed
+        .to_mangled()
+        .to_ir()
+        .to_c(&path.display().to_string())
+        .c_source;
 
     // Std code is attributed to the std files...
     assert!(

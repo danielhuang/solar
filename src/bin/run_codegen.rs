@@ -13,6 +13,7 @@ fn main() {
 
     let binary = solar::pipeline::compile(file_path)
         .unwrap()
+        .to_mangled()
         .to_ir()
         .to_c(filename)
         .to_binary(test_name, CompileMode::Debug);

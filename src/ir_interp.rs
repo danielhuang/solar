@@ -797,7 +797,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let ty = nodes[left.0].ty.clone();
                 let a = self.eval_load(nodes, left)?;
                 let b = self.eval_load(nodes, right)?;
-                float_binop(op, a, b, &ty)
+                float_binop(op, a, b, ty == Type::Float32)
             }
             _ if is_signed(&nodes[left.0].ty) => {
                 let a = self.eval_load(nodes, left)? as i64;
@@ -1543,13 +1543,21 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             | Intrinsic::FloatAbs => {
                 let ty = nodes[args[0].0].ty.clone();
                 let raw = self.eval_load(nodes, args[0])?;
-                self.scalar_store(dst, float_unary(intrinsic, raw, &ty), result_ty);
+                self.scalar_store(
+                    dst,
+                    float_unary(intrinsic, raw, ty == Type::Float32),
+                    result_ty,
+                );
             }
             Intrinsic::Atan2 | Intrinsic::Pow => {
                 let ty = nodes[args[0].0].ty.clone();
                 let a = self.eval_load(nodes, args[0])?;
                 let b = self.eval_load(nodes, args[1])?;
-                self.scalar_store(dst, float_binary(intrinsic, a, b, &ty), result_ty);
+                self.scalar_store(
+                    dst,
+                    float_binary(intrinsic, a, b, ty == Type::Float32),
+                    result_ty,
+                );
             }
             Intrinsic::Exit => {
                 let code = self.eval_load(nodes, args[0])? as i32;
@@ -2018,7 +2026,7 @@ pub fn interpret_to(module: &Module, stdin: impl Read, stdout: impl Write) {
 /// bit-pattern operands. IEEE-754: arithmetic never throws (inf/NaN instead
 /// of overflow); `%` is the fmod-style remainder (sign of the dividend);
 /// comparisons return 0/1.
-pub(crate) fn float_binop(op: BinOp, a: u64, b: u64, ty: &Type) -> u64 {
+pub(crate) fn float_binop(op: BinOp, a: u64, b: u64, is_f32: bool) -> u64 {
     macro_rules! apply {
         ($x:expr, $y:expr, $bits:expr) => {
             match op {
@@ -2037,21 +2045,21 @@ pub(crate) fn float_binop(op: BinOp, a: u64, b: u64, ty: &Type) -> u64 {
             }
         };
     }
-    match ty {
-        Type::Float32 => apply!(
+    if is_f32 {
+        apply!(
             f32::from_bits(a as u32),
             f32::from_bits(b as u32),
             (|v: f32| v.to_bits() as u64)
-        ),
-        Type::Float64 => apply!(f64::from_bits(a), f64::from_bits(b), (|v: f64| v.to_bits())),
-        _ => unreachable!("float binop on non-float type"),
+        )
+    } else {
+        apply!(f64::from_bits(a), f64::from_bits(b), (|v: f64| v.to_bits()))
     }
 }
 
 /// Unary float math for both interpreters, on raw bit-pattern values. Uses
 /// the Rust float methods — the same system libm the compiled builtins call —
 /// so the three backends agree bit-for-bit. Float32 runs in f32 precision.
-pub(crate) fn float_unary(intrinsic: &Intrinsic, raw: u64, ty: &Type) -> u64 {
+pub(crate) fn float_unary(intrinsic: &Intrinsic, raw: u64, is_f32: bool) -> u64 {
     macro_rules! apply {
         ($x:expr) => {
             match intrinsic {
@@ -2073,15 +2081,15 @@ pub(crate) fn float_unary(intrinsic: &Intrinsic, raw: u64, ty: &Type) -> u64 {
             }
         };
     }
-    match ty {
-        Type::Float32 => apply!(f32::from_bits(raw as u32)).to_bits() as u64,
-        Type::Float64 => apply!(f64::from_bits(raw)).to_bits(),
-        _ => unreachable!("float intrinsic on non-float type"),
+    if is_f32 {
+        apply!(f32::from_bits(raw as u32)).to_bits() as u64
+    } else {
+        apply!(f64::from_bits(raw)).to_bits()
     }
 }
 
 /// Binary float math (`atan2`, `pow`) for both interpreters.
-pub(crate) fn float_binary(intrinsic: &Intrinsic, a: u64, b: u64, ty: &Type) -> u64 {
+pub(crate) fn float_binary(intrinsic: &Intrinsic, a: u64, b: u64, is_f32: bool) -> u64 {
     macro_rules! apply {
         ($a:expr, $b:expr) => {
             match intrinsic {
@@ -2091,12 +2099,10 @@ pub(crate) fn float_binary(intrinsic: &Intrinsic, a: u64, b: u64, ty: &Type) -> 
             }
         };
     }
-    match ty {
-        Type::Float32 => {
-            apply!(f32::from_bits(a as u32), f32::from_bits(b as u32)).to_bits() as u64
-        }
-        Type::Float64 => apply!(f64::from_bits(a), f64::from_bits(b)).to_bits(),
-        _ => unreachable!("float intrinsic on non-float type"),
+    if is_f32 {
+        apply!(f32::from_bits(a as u32), f32::from_bits(b as u32)).to_bits() as u64
+    } else {
+        apply!(f64::from_bits(a), f64::from_bits(b)).to_bits()
     }
 }
 
