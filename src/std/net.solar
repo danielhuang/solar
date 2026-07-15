@@ -35,7 +35,7 @@ fn is_ipv6(addr: &[Uint8]) -> Bool {
     let i = 0u;
     let n = addr.len();
     while i < n {
-        if addr@[i] == 58u8 { found = true; }
+        if addr@[i] == ':' { found = true; }
         i = i + 1u;
     }
     found
@@ -48,12 +48,12 @@ fn parse_ipv4_range(addr: &[Uint8], from: Uint, to: Uint, out: &[Uint8], at: Uin
     let i = from;
     while i < to {
         let c = addr@[i];
-        if c == 46u8 {
+        if c == '.' {
             out@[idx] = Uint8(octet);
             idx = idx + 1u;
             octet = 0u;
         } else {
-            octet = octet * 10u + Uint(c - 48u8);
+            octet = octet * 10u + Uint(c - '0');
         }
         i = i + 1u;
     }
@@ -66,10 +66,10 @@ pub fn parse_ipv4(addr: &[Uint8], out: &[Uint8]) {
 }
 
 fn hex_digit(c: Uint8) -> Uint {
-    if c >= 48u8 && c <= 57u8 {
-        Uint(c - 48u8)
+    if c >= '0' && c <= '9' {
+        Uint(c - '0')
     } else {
-        if c >= 97u8 { Uint(c - 97u8) + 10u } else { Uint(c - 65u8) + 10u }
+        if c >= 'a' { Uint(c - 'a') + 10u } else { Uint(c - 'A') + 10u }
     }
 }
 
@@ -84,8 +84,8 @@ fn parse_groups(addr: &[Uint8], from: Uint, to: Uint, out: &[Uint8], at: Uint) -
     let has_dot = false;
     let i = from;
     while i <= to {
-        let c = if i == to { 58u8 } else { addr@[i] }; // treat the end as ':'
-        if c == 58u8 {
+        let c = if i == to { ':' } else { addr@[i] }; // treat the end as ':'
+        if c == ':' {
             if i > group_start {
                 if has_dot {
                     parse_ipv4_range(addr, group_start, i, out, w);
@@ -100,7 +100,7 @@ fn parse_groups(addr: &[Uint8], from: Uint, to: Uint, out: &[Uint8], at: Uint) -
             has_dot = false;
             group_start = i + 1u;
         } else {
-            if c == 46u8 { has_dot = true; } else { val = val * 16u + hex_digit(c); }
+            if c == '.' { has_dot = true; } else { val = val * 16u + hex_digit(c); }
         }
         i = i + 1u;
     }
@@ -116,7 +116,7 @@ pub fn parse_ipv6(addr: &[Uint8], out: &[Uint8]) {
     let gap = n + 1u;
     let i = 0u;
     while i + 1u < n {
-        if addr@[i] == 58u8 && addr@[i + 1u] == 58u8 {
+        if addr@[i] == ':' && addr@[i + 1u] == ':' {
             gap = i;
             i = n;
         } else {

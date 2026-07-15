@@ -864,6 +864,16 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                 Some(Type::Named("Uint8".to_string())),
             )
         }
+        "char_literal" => {
+            let text = node_text(node, source);
+            let inner = &text[1..text.len() - 1]; // strip single quotes
+            let bytes = unescape_string(inner);
+            assert!(
+                bytes.len() == 1,
+                "character literal must be a single byte, got {inner:?}"
+            );
+            ExprKind::IntegerLiteral(bytes[0] as i128, IntegerType::Uint8)
+        }
         "field_access" => {
             let object = convert_expr(node.child_by_field_name("object").unwrap(), source);
             let field_node = node.child_by_field_name("field").unwrap();
@@ -1429,6 +1439,7 @@ fn unescape_string(s: &str) -> Vec<u8> {
             match chars.next().expect("unexpected end of string escape") {
                 '\\' => out.push(b'\\'),
                 '"' => out.push(b'"'),
+                '\'' => out.push(b'\''),
                 'n' => out.push(b'\n'),
                 't' => out.push(b'\t'),
                 '0' => out.push(0),

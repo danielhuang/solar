@@ -1,0 +1,27 @@
+fn check(cond: Bool) {
+  if cond { println("1"&); } else { println("0"&); }
+}
+
+fn main() {
+  // A char literal is a Uint8 byte value.
+  check('A' == 65u8);
+  check('a' == 97u8);
+  check('0' == 48u8);
+  check(' ' == 32u8);
+
+  // Escapes.
+  check('\n' == 10u8);
+  check('\t' == 9u8);
+  check('\\' == 92u8);
+  check('\'' == 39u8);
+  check('\0' == 0u8);
+
+  // Arithmetic in char contexts.
+  let c = '7';
+  check(c - '0' == 7u8);
+  check('a' - 'A' == 32u8);
+
+  // Chars build byte arrays just like string bytes.
+  let word = ['H', 'i', '!'];
+  println(word&);
+}

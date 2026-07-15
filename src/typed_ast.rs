@@ -3904,8 +3904,7 @@ impl<'a> Lowerer<'a> {
                 if self.current_return_type.is_none() {
                     // Inferred-return-type context: record for validation against
                     // the inferred type once the whole body is lowered.
-                    self.inference_returns
-                        .push((lowered.ty.clone(), stmt.span));
+                    self.inference_returns.push((lowered.ty.clone(), stmt.span));
                 }
                 let lowered = if let Some(ref expected) = self.current_return_type {
                     let coerced = self.try_coerce(lowered, expected);

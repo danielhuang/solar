@@ -229,8 +229,8 @@ fn read_phase() -> Int {
   let i = 0u;
   while i < n {
     let c = buf@[i];
-    if c >= 48u8 && c <= 57u8 {
-      val = val * 10 + Int(c - 48u8);
+    if c >= '0' && c <= '9' {
+      val = val * 10 + Int(c - '0');
       any = true;
     } else {
       if any { i = n; }

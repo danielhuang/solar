@@ -236,6 +236,7 @@ module.exports = grammar({
         $.boolean_literal,
         $.null_expr,
         $.string_literal,
+        $.char_literal,
         $.array_literal,
         $.array_repeat,
         $.binary_expression,
@@ -534,5 +535,9 @@ module.exports = grammar({
     null_expr: ($) => seq("null", field("type_args", $.type_args)),
 
     string_literal: (_) => /"([^"\\]|\\.)*"/,
+
+    // A single-byte character literal, e.g. 'a', '\n', '\'', '\\'. Desugars to
+    // a Uint8 integer literal in the parser. Exactly one char (or escape) long.
+    char_literal: (_) => /'([^'\\]|\\.)'/,
   },
 });

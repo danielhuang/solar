@@ -178,6 +178,11 @@ fn main() {
   println(Int(0x10u8));      // 16
   println(Int(0b100u32));    // 4
 
+  // character literals are Uint8 byte values, e.g. 'A' == 65, '\n' == 10
+  println(Int('A'));         // 65
+  println(Int('0' + 5u8));   // 53 ('5')
+  println(['H', 'i', '!']&); // Hi!
+
   // if-else statement
   if x > 100 {
     println(0);

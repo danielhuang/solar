@@ -36,7 +36,7 @@ pub method to_string(self: Int) -> &[Uint8] {
   }
   if self < 0 {
     i = i - 1u;
-    buf[i] = 45u8; // '-'
+    buf[i] = '-';
   }
   buf[i..20u]&
 }
@@ -161,7 +161,7 @@ pub fn write_stdout(s: &[Uint8]) {
 }
 
 pub fn println(s: &[Uint8]) {
-    write_stdout((s@ + [10u8])&);
+    write_stdout((s@ + ['\n'])&);
 }
 
 // Prints any value's `to_string()` representation followed by a newline. The
