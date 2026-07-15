@@ -1,0 +1,7 @@
+node_modules/
+*.vsix
+
+# Generated from ../tree-sitter-solar (see README) — not the source of truth.
+*.wasm
+syntaxes/tree-sitter-solar.wasm
+queries/highlights.scm
