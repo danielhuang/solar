@@ -260,12 +260,36 @@ fn convert_struct_def(node: tree_sitter::Node, source: &str) -> StructDef {
                 fields.push(convert_field_def(child, source));
             }
         }
+    } else if let Some(tuple_body) = named_child_by_kind(node, "tuple_struct_body") {
+        if let Some(field_list) = named_child_by_kind(tuple_body, "tuple_struct_field_list") {
+            let mut cursor = field_list.walk();
+            for (index, child) in field_list.named_children(&mut cursor).enumerate() {
+                debug_assert_eq!(child.kind(), "tuple_struct_field");
+                let is_field_pub = has_pub_keyword(child, source);
+                if !is_pub && is_field_pub {
+                    let pos = child.start_position();
+                    panic!(
+                        "{}:{}: `pub` field in non-pub struct `{}`",
+                        pos.row + 1,
+                        pos.column + 1,
+                        name
+                    );
+                }
+                fields.push(FieldDef {
+                    name: format!("_{index}"),
+                    ty: convert_type(child.child_by_field_name("type").unwrap(), source),
+                    is_pub: is_field_pub,
+                    span: source_span(child),
+                });
+            }
+        }
     }
     StructDef {
         def_id: DefId::new(0, name.clone()),
         name,
         type_params,
         fields,
+        is_tuple: named_child_by_kind(node, "tuple_struct_body").is_some(),
         is_pub,
         span: source_span(node),
     }

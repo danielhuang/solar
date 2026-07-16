@@ -86,12 +86,31 @@ module.exports = grammar({
 
     // ── Struct ──────────────────────────────────────────────
     struct_def: ($) =>
-      seq(optional("pub"), "struct", field("name", $.identifier), optional(field("type_params", $.type_params)), "{", optional($.field_list), "}"),
+      seq(
+        optional("pub"),
+        "struct",
+        field("name", $.identifier),
+        optional(field("type_params", $.type_params)),
+        choice(
+          seq("{", optional($.field_list), "}"),
+          seq($.tuple_struct_body, optional(";")),
+        ),
+      ),
 
     field_list: ($) => repeat1(seq($.field_def, ",")),
 
     field_def: ($) =>
       seq(optional("pub"), field("name", $.identifier), ":", field("type", $._type)),
+
+    // Tuple structs desugar to normal fields named `_0`, `_1`, and so on.
+    // Keeping their types in a separate list lets the parser perform that
+    // desugaring without adding a second struct representation downstream.
+    tuple_struct_field_list: ($) =>
+      seq($.tuple_struct_field, repeat(seq(",", $.tuple_struct_field)), optional(",")),
+
+    tuple_struct_field: ($) => seq(optional("pub"), field("type", $._type)),
+
+    tuple_struct_body: ($) => seq("(", optional($.tuple_struct_field_list), ")"),
 
     // ── Enum ───────────────────────────────────────────────
     enum_def: ($) =>

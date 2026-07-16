@@ -211,6 +211,36 @@ fn struct_literal_span() {
 }
 
 #[test]
+fn tuple_struct_desugars_and_numeric_access_does_not_capture_float_literals() {
+    let ast = parse("struct Pair(Int, Float64);\nfn f() {\n    let p = Pair(1, 1.0f);\n    p.0\n}");
+    let pair = match &ast.items[0] {
+        TopLevelItem::Struct(pair) => pair,
+        _ => panic!("expected struct"),
+    };
+    assert!(pair.is_tuple);
+    assert_eq!(
+        pair.fields.iter().map(|f| &f.name).collect::<Vec<_>>(),
+        ["_0", "_1"]
+    );
+    let func = match &ast.items[1] {
+        TopLevelItem::Function(func) => func,
+        _ => panic!("expected function"),
+    };
+    let value = match &func.body[0].kind {
+        StatementKind::Let { value, .. } => value,
+        _ => panic!("expected let"),
+    };
+    let ExprKind::Call { arguments, .. } = &value.kind else {
+        panic!("expected constructor call");
+    };
+    assert!(matches!(arguments[1].kind, ExprKind::FloatLiteral(_, _)));
+    let StatementKind::Expression(access) = &func.body[1].kind else {
+        panic!("expected field access");
+    };
+    assert!(matches!(&access.kind, ExprKind::FieldAccess { field, .. } if field == "_0"));
+}
+
+#[test]
 fn array_literal_span() {
     let ast = parse("fn f() {\n    [1, 2, 3]\n}");
     let func = match &ast.items[0] {

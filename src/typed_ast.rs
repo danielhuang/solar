@@ -4460,6 +4460,84 @@ impl<'a> Lowerer<'a> {
                         span,
                     )
                 };
+                // `TupleStruct(a, b)` is syntactic sugar for
+                // `TupleStruct { _0: a, _1: b }`.  The parser has already
+                // desugared its declaration's fields to those normal names.
+                // Do this before ordinary call resolution so tuple structs do
+                // not need synthetic constructor functions.
+                if matches!(
+                    function.as_ref().kind,
+                    ast::ExprKind::Identifier(_) | ast::ExprKind::GlobalRef(_)
+                ) {
+                    // Calls are value expressions, so resolver intentionally
+                    // leaves a struct name as an Identifier. Recover its
+                    // provenance from the known tuple-struct definitions.
+                    let tuple_def = match &function.as_ref().kind {
+                        ast::ExprKind::GlobalRef(def)
+                            if self.structs.get(def).is_some_and(|s| s.is_tuple)
+                                || self
+                                    .generic_structs
+                                    .get(def)
+                                    .is_some_and(|s| s.ast_def.is_tuple) =>
+                        {
+                            Some(def.clone())
+                        }
+                        ast::ExprKind::Identifier(name) => self
+                            .structs
+                            .iter()
+                            .find(|(_, s)| s.name == *name && s.is_tuple)
+                            .map(|(def, _)| def.clone())
+                            .or_else(|| {
+                                self.generic_structs
+                                    .iter()
+                                    .find(|(_, s)| s.ast_def.name == *name && s.ast_def.is_tuple)
+                                    .map(|(def, _)| def.clone())
+                            }),
+                        _ => None,
+                    };
+                    if let Some(def) = tuple_def {
+                        let tuple_name = &def.name;
+                        if !kwargs.is_empty() {
+                            return Err(reject_kwargs(expr.span));
+                        }
+                        let id = self.resolve_struct_name(&def, type_args)?;
+                        let struct_def = self.lowered_structs.get(&id).unwrap().clone();
+                        if arguments.len() != struct_def.fields.len() {
+                            return Err(CompileError::new(
+                                format!(
+                                    "{tuple_name}: expected {} arguments, got {}",
+                                    struct_def.fields.len(),
+                                    arguments.len()
+                                ),
+                                expr.span,
+                            ));
+                        }
+                        let mut fields = Vec::with_capacity(arguments.len());
+                        for (argument, field) in arguments.iter().zip(struct_def.fields.iter()) {
+                            self.check_field_visibility(&id, &field.name, expr.span)?;
+                            let lowered = self.lower_expr(argument)?;
+                            let value = self.try_coerce(lowered, &field.ty);
+                            if value.ty != field.ty {
+                                return Err(CompileError::new(
+                                    format!(
+                                        "type mismatch in field `{}` of {tuple_name}: expected {}, got {}",
+                                        field.name, field.ty, value.ty
+                                    ),
+                                    value.span,
+                                ));
+                            }
+                            fields.push(FieldInit {
+                                name: field.name.clone(),
+                                value,
+                            });
+                        }
+                        return Ok(Expr {
+                            ty: Type::Struct(id.clone()),
+                            kind: ExprKind::StructLiteral { id, fields },
+                            span: expr.span,
+                        });
+                    }
+                }
                 // Intercept enum variant construction: EnumVariant(value)
                 if let ast::ExprKind::EnumVariant {
                     module_path: _,

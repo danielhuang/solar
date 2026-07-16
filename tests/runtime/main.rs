@@ -14,6 +14,12 @@ fn hashbrown_tag() {
 }
 
 #[test]
+fn tuple_struct() {
+    let output = run(&fixture("tuple_struct.solar"), "tuple_struct");
+    assert_eq!(output, "7\n1\n9\n");
+}
+
+#[test]
 fn hashbrown_bitmask() {
     let output = run(&fixture("hashbrown_bitmask.solar"), "hashbrown_bitmask");
     assert_eq!(output, "0\n2\n5\n0\n");

@@ -1,0 +1,9 @@
+struct Pair(Int, Float64);
+
+fn main() {
+    let pair = Pair(7, 1.0f);
+    println(pair.0);
+    if pair.1 > 0.5f { println(1); }
+    pair.0 = 9;
+    println(pair.0);
+}

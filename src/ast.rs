@@ -147,6 +147,9 @@ pub struct StructDef {
     pub def_id: DefId,
     pub type_params: Vec<String>,
     pub fields: Vec<FieldDef>,
+    /// Whether this was declared as `struct Name(T0, T1)`.  Its fields are
+    /// still the ordinary `_0`, `_1`, ... fields used throughout the pipeline.
+    pub is_tuple: bool,
     pub is_pub: bool,
     pub span: SourceSpan,
 }
