@@ -8,6 +8,9 @@ use std::fmt;
 #[derive(Debug, Clone, Default)]
 pub struct SourceMap {
     files: HashMap<u32, (String, String)>,
+    /// The entry (root) file. Its definitions are NOT module-mangled — they keep
+    /// their bare source names (so `main` stays `main`). Set by `resolve`.
+    root_file_id: Option<u32>,
 }
 
 impl SourceMap {
@@ -23,6 +26,40 @@ impl SourceMap {
         self.files
             .get(&file_id)
             .map(|(f, s)| (f.as_str(), s.as_str()))
+    }
+
+    pub fn set_root_file_id(&mut self, file_id: u32) {
+        self.root_file_id = Some(file_id);
+    }
+
+    pub fn root_file_id(&self) -> Option<u32> {
+        self.root_file_id
+    }
+
+    /// The module-mangling prefix for a file's definitions — the piece formerly
+    /// produced by `resolve::module_prefix`, now applied here at the
+    /// `mangled_ast` stage. Empty for the root file (bare names). Otherwise
+    /// `__mod{len}_{stem}` where `stem` is the file's sanitized basename.
+    pub fn module_prefix(&self, file_id: u32) -> String {
+        if self.root_file_id == Some(file_id) {
+            return String::new();
+        }
+        let filename = self.files.get(&file_id).map(|(f, _)| f.as_str());
+        let stem = filename
+            .and_then(|f| std::path::Path::new(f).file_stem())
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let sanitized: String = stem
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        format!("__mod{}_{}", sanitized.len(), sanitized)
     }
 }
 

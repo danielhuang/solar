@@ -20,7 +20,7 @@ impl Typed {
     /// Lower the type-checked AST into the mangled AST. Currently a no-op
     /// structural map (see `mangled_ast::lower`).
     pub fn to_mangled(self) -> Mangled {
-        let mangled = mangled_ast::lower(&self.typed);
+        let mangled = mangled_ast::lower(&self.typed, &self.source_map);
         Mangled {
             mangled,
             source_map: self.source_map,

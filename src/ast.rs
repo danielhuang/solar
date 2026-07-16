@@ -11,6 +11,44 @@ pub struct SourceSpan {
     pub file_id: u32,
 }
 
+/// Provenance identity of a top-level definition: the file it was defined in
+/// plus its original (un-mangled) source name. This is what the front-end
+/// (parser, resolve, typed_ast) carries INSTEAD of a pre-mangled unique string;
+/// the actual module-mangling into a single flat virtual file is deferred to
+/// the `mangled_ast` stage, which renders each `DefId` to a unique C-safe
+/// symbol. `file` is a `SourceMap` FileId (see `resolve`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct DefId {
+    pub file: u32,
+    pub name: String,
+}
+
+/// Sentinel file id for compiler-synthesized types that have no source file
+/// (e.g. anonymous tuples). `mangled_ast` renders these specially.
+pub const SYNTHETIC_FILE: u32 = u32::MAX;
+
+impl DefId {
+    pub fn new(file: u32, name: impl Into<String>) -> Self {
+        DefId {
+            file,
+            name: name.into(),
+        }
+    }
+
+    /// A synthetic (source-file-less) def identity, e.g. a tuple shape, a
+    /// closure, or a numeric constructor — rendered bare (no module prefix).
+    pub fn synthetic(name: impl Into<String>) -> Self {
+        DefId::new(SYNTHETIC_FILE, name)
+    }
+}
+
+impl std::fmt::Display for DefId {
+    /// Renders the (un-mangled) source name — for diagnostics.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name)
+    }
+}
+
 #[derive(Debug)]
 pub struct SourceFile {
     pub items: Vec<TopLevelItem>,
@@ -104,6 +142,9 @@ pub struct TypeAliasDef {
 #[derive(Debug, Clone)]
 pub struct StructDef {
     pub name: String,
+    /// Provenance: original source name + defining file. Set by `resolve`;
+    /// `name` may later be rewritten to a mangled identity, but this is not.
+    pub def_id: DefId,
     pub type_params: Vec<String>,
     pub fields: Vec<FieldDef>,
     pub is_pub: bool,
@@ -121,6 +162,8 @@ pub struct FieldDef {
 #[derive(Debug, Clone)]
 pub struct EnumDef {
     pub name: String,
+    /// Provenance: original source name + defining file (see `StructDef::def_id`).
+    pub def_id: DefId,
     pub type_params: Vec<String>,
     pub variants: Vec<VariantDef>,
     pub is_pub: bool,
@@ -171,7 +214,7 @@ pub enum DestructurePattern {
     Tuple(Vec<DestructurePattern>),
     Struct {
         module: Option<String>,
-        name: String,
+        name: DefId,
         fields: Vec<DestructureField>,
     },
     Array(Vec<DestructurePattern>),
@@ -286,7 +329,13 @@ pub struct Expr {
 
 #[derive(Debug, Clone)]
 pub enum ExprKind {
+    /// A bare name — a local variable, or (pre-resolve) an as-yet-unresolved
+    /// reference. `resolve` rewrites references to top-level functions / consts
+    /// / statics into [`ExprKind::GlobalRef`], leaving only locals here.
     Identifier(String),
+    /// A resolved reference to a top-level definition (function, const, or
+    /// static), carrying its provenance `DefId`. Produced by `resolve`.
+    GlobalRef(DefId),
     IntegerLiteral(i128, IntegerType),
     /// `1f` / `1.0f32` / `2.5f64` — the suffix is mandatory (a bare `1.0` is
     /// not a float literal, and `1.f` is field access on the integer `1`).
@@ -315,7 +364,7 @@ pub enum ExprKind {
     },
     StructLiteral {
         module: Option<String>,
-        name: String,
+        name: DefId,
         type_args: Vec<Type>,
         fields: Vec<FieldInit>,
     },
@@ -357,7 +406,7 @@ pub enum ExprKind {
     },
     EnumVariant {
         module_path: Vec<String>,
-        enum_name: String,
+        enum_name: DefId,
         type_args: Vec<Type>,
         variant_name: String,
     },
@@ -629,7 +678,7 @@ pub enum ReflectPattern {
 pub enum Pattern {
     Variant {
         module_path: Vec<String>,
-        enum_name: String,
+        enum_name: DefId,
         type_args: Vec<Type>,
         variant_name: String,
         binding: Option<String>,
@@ -675,9 +724,13 @@ impl IntegerType {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
-    Named(String),
+    /// A named type reference. After `resolve`, `def.file` is the resolved
+    /// defining file (a real `DefId` for a struct/enum, or file `0` for a
+    /// builtin/type-parameter name, which `typed_ast` dispatches on `def.name`).
+    /// The parser stamps `file: 0`; `resolve` fills the real file.
+    Named(DefId),
     Generic {
-        name: String,
+        name: DefId,
         type_args: Vec<Type>,
     },
     Reference(Box<Type>),

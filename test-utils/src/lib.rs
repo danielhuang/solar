@@ -2,7 +2,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::Once;
 
-use solar::pipeline::{CompileMode, Ir, Typed};
+use solar::pipeline::{CompileMode, Ir, Mangled};
 
 static BUILD_RUNTIME: Once = Once::new();
 
@@ -39,9 +39,9 @@ pub fn ensure_release_runtime_built() {
     });
 }
 
-pub fn run_ast(typed: &Typed) -> String {
+pub fn run_ast(mangled: &Mangled) -> String {
     let mut buf = Vec::new();
-    solar::ast_interp::interpret_to(&typed.typed, std::io::empty(), &mut buf);
+    solar::ast_interp::interpret_to(&mangled.mangled, std::io::empty(), &mut buf);
     String::from_utf8(buf).unwrap()
 }
 
@@ -53,8 +53,8 @@ pub fn run_ir(ir: &Ir) -> String {
 
 /// Compile a file and run the AST interpreter.
 pub fn run_ast_file(file_path: &Path) -> String {
-    let typed = solar::pipeline::compile(file_path).unwrap();
-    run_ast(&typed)
+    let mangled = solar::pipeline::compile(file_path).unwrap().to_mangled();
+    run_ast(&mangled)
 }
 
 /// Compile a file and run the IR interpreter.
@@ -79,12 +79,12 @@ pub fn run_codegen_file(file_path: &Path, test_name: &str) -> String {
 /// Run all three backends and assert identical output.
 pub fn run(file_path: &Path, test_name: &str) -> String {
     ensure_runtime_built();
-    let typed = solar::pipeline::compile(file_path).unwrap();
-    let ast_out = run_ast(&typed);
+    let mangled = solar::pipeline::compile(file_path).unwrap().to_mangled();
+    let ast_out = run_ast(&mangled);
     // `optimized()` runs `ir_opt`, so the debug-codegen build below exercises the
     // escape analysis / stack placement under ASAN — a wrongly-stacked escaping
     // value then surfaces as a use-after-scope/return (or a wrong result).
-    let ir = typed.to_mangled().to_ir().optimized();
+    let ir = mangled.to_ir().optimized();
     let ir_out = run_ir(&ir);
     assert_eq!(
         ast_out, ir_out,

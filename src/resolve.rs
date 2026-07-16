@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 const STDLIB_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/std");
 
 type FileId = u32;
-type ModuleAliasMap = HashMap<String, (FileId, String)>;
+type ModuleAliasMap = HashMap<String, FileId>;
 type AllModuleAliases = HashMap<FileId, ModuleAliasMap>;
 
 struct ParsedFile {
@@ -200,36 +200,9 @@ impl Resolver {
         exports
     }
 
-    /// Derive a module prefix from a file path stem.
-    fn module_prefix(path: &Path) -> String {
-        let stem = path
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        let sanitized: String = stem
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || c == '_' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-        // `__mod` + a self-delimiting (length-prefixed) module name, so the item
-        // name can be appended directly and the demangler can recover the module:
-        // `__mod3_lib` + `write_stdout` -> `__mod3_libwrite_stdout`. The length
-        // prefix also makes the module boundary injective (`a_b` vs `a` + `_b`).
-        format!("__mod{}_{}", sanitized.len(), sanitized)
-    }
-
-    /// Compute module aliases for a file (module imports only).
-    fn compute_module_aliases(
-        &self,
-        file_id: FileId,
-        root_id: FileId,
-    ) -> HashMap<String, (FileId, String)> {
+    /// Compute module aliases for a file (module imports only): alias → the
+    /// aliased module's defining file id.
+    fn compute_module_aliases(&self, file_id: FileId, _root_id: FileId) -> ModuleAliasMap {
         let file = &self.files[file_id as usize];
         let base_dir = file.path.parent().unwrap_or(Path::new(".")).to_path_buf();
         let mut aliases = HashMap::new();
@@ -240,8 +213,7 @@ impl Resolver {
             {
                 if imp.path == "@std" {
                     if let Some(std_id) = self.std_root_id {
-                        let source_prefix = self.file_prefix(std_id, root_id);
-                        aliases.insert(alias.clone(), (std_id, source_prefix));
+                        aliases.insert(alias.clone(), std_id);
                     }
                 } else {
                     let resolved_path = base_dir.join(&imp.path);
@@ -249,8 +221,7 @@ impl Resolver {
                         .canonicalize()
                         .unwrap_or_else(|_| resolved_path.clone());
                     if let Some(&source_file_id) = self.path_to_id.get(&canonical) {
-                        let source_prefix = self.file_prefix(source_file_id, root_id);
-                        aliases.insert(alias.clone(), (source_file_id, source_prefix));
+                        aliases.insert(alias.clone(), source_file_id);
                     }
                 }
             }
@@ -258,28 +229,22 @@ impl Resolver {
         aliases
     }
 
-    fn file_prefix(&self, file_id: FileId, root_id: FileId) -> String {
-        if file_id == root_id {
-            String::new()
-        } else {
-            Self::module_prefix(&self.files[file_id as usize].path)
-        }
-    }
-
     /// Build rename map for a file and rewrite its AST.
     fn resolve_file(
         &self,
         file_id: FileId,
-        root_id: FileId,
-        all_module_aliases: &HashMap<FileId, HashMap<String, (FileId, String)>>,
+        _root_id: FileId,
+        all_module_aliases: &AllModuleAliases,
     ) -> Result<Vec<TopLevelItem>, Vec<CompileError>> {
         let file = &self.files[file_id as usize];
-        let prefix = self.file_prefix(file_id, root_id);
 
-        // Build rename map: original_name -> mangled_name
-        let mut rename_map: HashMap<String, String> = HashMap::new();
-        // Module aliases: alias -> (file_id, prefix)
-        let mut module_aliases: HashMap<String, (FileId, String)> = HashMap::new();
+        // Build rename map: original source name -> resolved provenance `DefId`.
+        // References (types, struct/enum construction, function/const/static
+        // identifiers) are resolved to these `DefId`s directly — the final
+        // module-mangling is deferred to `mangled_ast`.
+        let mut rename_map: HashMap<String, DefId> = HashMap::new();
+        // Module aliases: alias -> defining file id.
+        let mut module_aliases: ModuleAliasMap = HashMap::new();
 
         // Collect this file's own definitions
         let mut local_defs: HashSet<String> = HashSet::new();
@@ -291,48 +256,34 @@ impl Resolver {
             match item {
                 TopLevelItem::Struct(s) => {
                     local_defs.insert(s.name.clone());
-                    if !prefix.is_empty() {
-                        rename_map.insert(s.name.clone(), format!("{prefix}{}", s.name));
-                    }
+                    rename_map.insert(s.name.clone(), DefId::new(file_id, s.name.clone()));
                 }
                 TopLevelItem::Enum(e) => {
                     local_defs.insert(e.name.clone());
-                    if !prefix.is_empty() {
-                        rename_map.insert(e.name.clone(), format!("{prefix}{}", e.name));
-                    }
+                    rename_map.insert(e.name.clone(), DefId::new(file_id, e.name.clone()));
                 }
                 TopLevelItem::Function(f) => {
                     local_defs.insert(f.name.clone());
-                    if !prefix.is_empty() {
-                        rename_map.insert(f.name.clone(), format!("{prefix}{}", f.name));
-                    }
+                    rename_map.insert(f.name.clone(), DefId::new(file_id, f.name.clone()));
                 }
                 TopLevelItem::Method(m) => {
                     local_defs.insert(m.name.clone());
                     local_method_defs.insert(m.name.clone());
                     // Methods get renamed via self-type mangling in typed_ast,
                     // but the name itself needs prefixing for the resolve stage
-                    if !prefix.is_empty() {
-                        rename_map.insert(m.name.clone(), format!("{prefix}{}", m.name));
-                    }
+                    rename_map.insert(m.name.clone(), DefId::new(file_id, m.name.clone()));
                 }
                 TopLevelItem::TypeAlias(ta) => {
                     local_defs.insert(ta.name.clone());
-                    if !prefix.is_empty() {
-                        rename_map.insert(ta.name.clone(), format!("{prefix}{}", ta.name));
-                    }
+                    rename_map.insert(ta.name.clone(), DefId::new(file_id, ta.name.clone()));
                 }
                 TopLevelItem::Const(c) => {
                     local_defs.insert(c.name.clone());
-                    if !prefix.is_empty() {
-                        rename_map.insert(c.name.clone(), format!("{prefix}{}", c.name));
-                    }
+                    rename_map.insert(c.name.clone(), DefId::new(file_id, c.name.clone()));
                 }
                 TopLevelItem::Static(st) => {
                     local_defs.insert(st.name.clone());
-                    if !prefix.is_empty() {
-                        rename_map.insert(st.name.clone(), format!("{prefix}{}", st.name));
-                    }
+                    rename_map.insert(st.name.clone(), DefId::new(file_id, st.name.clone()));
                 }
                 TopLevelItem::Import(_) => {}
             }
@@ -397,7 +348,6 @@ impl Resolver {
                         .unwrap_or_else(|_| resolved_path.clone());
                     self.path_to_id[&canonical]
                 };
-                let source_prefix = self.file_prefix(source_file_id, root_id);
                 let exports = self.collect_exports(source_file_id);
 
                 match &imp.kind {
@@ -408,11 +358,10 @@ impl Resolver {
                                 // Path import: resolve module chain starting from source file
                                 let mod_segs = name.module_segments();
                                 let source_aliases = all_module_aliases.get(&source_file_id);
-                                let empty_aliases: HashMap<String, (FileId, String)> =
-                                    HashMap::new();
+                                let empty_aliases: ModuleAliasMap = HashMap::new();
                                 let aliases = source_aliases.unwrap_or(&empty_aliases);
 
-                                if let Some((final_fid, final_prefix)) =
+                                if let Some(final_fid) =
                                     resolve_module_chain_full(mod_segs, aliases, all_module_aliases)
                                 {
                                     let final_exports = self.collect_exports(final_fid);
@@ -433,10 +382,8 @@ impl Resolver {
                                             imp.span,
                                         )]);
                                     }
-                                    rename_map.insert(
-                                        local,
-                                        format!("{final_prefix}{}", name.local_name()),
-                                    );
+                                    rename_map
+                                        .insert(local, DefId::new(final_fid, name.local_name()));
                                 } else {
                                     return Err(vec![CompileError::new(
                                         format!(
@@ -471,13 +418,13 @@ impl Resolver {
                                 if method_overload {
                                     continue;
                                 }
-                                rename_map.insert(local.clone(), format!("{source_prefix}{local}"));
+                                rename_map
+                                    .insert(local.clone(), DefId::new(source_file_id, &local));
                             }
                         }
                     }
                     ImportKind::Module(alias) => {
-                        module_aliases
-                            .insert(alias.clone(), (source_file_id, source_prefix.clone()));
+                        module_aliases.insert(alias.clone(), source_file_id);
                     }
                     ImportKind::Wildcard => {
                         for (name, kinds) in &exports {
@@ -498,7 +445,7 @@ impl Resolver {
                                     imp.span,
                                 )]);
                             }
-                            rename_map.insert(name.clone(), format!("{source_prefix}{name}"));
+                            rename_map.insert(name.clone(), DefId::new(source_file_id, name));
                         }
                         // Propagate pub module re-exports
                         if let Some(source_aliases) = all_module_aliases.get(&source_file_id) {
@@ -507,9 +454,9 @@ impl Resolver {
                                     && src_imp.is_pub
                                     && src_imp.path != "@intrinsics"
                                     && let ImportKind::Module(alias) = &src_imp.kind
-                                    && let Some((fid, pfx)) = source_aliases.get(alias)
+                                    && let Some(fid) = source_aliases.get(alias)
                                 {
-                                    module_aliases.insert(alias.clone(), (*fid, pfx.clone()));
+                                    module_aliases.insert(alias.clone(), *fid);
                                 }
                             }
                         }
@@ -524,7 +471,10 @@ impl Resolver {
             match item {
                 TopLevelItem::Struct(s) => {
                     let mut s = s.clone();
-                    s.name = rename_map.get(&s.name).cloned().unwrap_or(s.name.clone());
+                    // Record provenance (defining file + original name) before the
+                    // name is rewritten to its module-mangled form. The mangling
+                    // itself is deferred to `mangled_ast`.
+                    s.def_id = DefId::new(file_id, s.name.clone());
                     // Rewrite field types and set file_id on field spans
                     for field in &mut s.fields {
                         field.ty =
@@ -536,7 +486,7 @@ impl Resolver {
                 }
                 TopLevelItem::Enum(e) => {
                     let mut e = e.clone();
-                    e.name = rename_map.get(&e.name).cloned().unwrap_or(e.name.clone());
+                    e.def_id = DefId::new(file_id, e.name.clone());
                     // Rewrite variant inner types
                     for variant in &mut e.variants {
                         if let Some(ty) = &mut variant.inner_type {
@@ -548,7 +498,6 @@ impl Resolver {
                 }
                 TopLevelItem::Function(f) => {
                     let mut f = f.clone();
-                    f.name = rename_map.get(&f.name).cloned().unwrap_or(f.name.clone());
                     rewrite_function_body(
                         &mut f,
                         &rename_map,
@@ -579,7 +528,6 @@ impl Resolver {
                 }
                 TopLevelItem::TypeAlias(ta) => {
                     let mut ta = ta.clone();
-                    ta.name = rename_map.get(&ta.name).cloned().unwrap_or(ta.name.clone());
                     ta.target_type = rewrite_type(
                         &ta.target_type,
                         &rename_map,
@@ -591,7 +539,6 @@ impl Resolver {
                 }
                 TopLevelItem::Const(c) => {
                     let mut c = c.clone();
-                    c.name = rename_map.get(&c.name).cloned().unwrap_or(c.name.clone());
                     // The value is a literal (no name references), but an explicit
                     // type may reference a renamed/imported type.
                     if let Some(ty) = &mut c.ty {
@@ -602,7 +549,6 @@ impl Resolver {
                 }
                 TopLevelItem::Static(st) => {
                     let mut st = st.clone();
-                    st.name = rename_map.get(&st.name).cloned().unwrap_or(st.name.clone());
                     // An explicit type may reference a renamed/imported type.
                     if let Some(ty) = &mut st.ty {
                         *ty = rewrite_type(ty, &rename_map, &module_aliases, &[]);
@@ -637,61 +583,78 @@ fn set_file_id_span(span: &mut SourceSpan, file_id: FileId) {
     span.file_id = file_id;
 }
 
+/// Resolve a `Type::Named`/`Generic` reference `DefId` to its real provenance
+/// `DefId` (defining file + name). Builtins and type parameters are left with
+/// file `0` — `typed_ast` dispatches on the name for those. This is what lets a
+/// **struct/enum type reference carry the real `DefId`** instead of a stringified
+/// `__def{file}_…` name that a later stage would parse back.
+fn resolve_type_ref(
+    name: &DefId,
+    rename_map: &HashMap<String, DefId>,
+    module_aliases: &ModuleAliasMap,
+    type_params: &[String],
+) -> DefId {
+    // `module::Local` module-qualified reference.
+    if let Some((module, local)) = name.name.split_once("::") {
+        return match module_aliases.get(module) {
+            Some(fid) => DefId::new(*fid, local),
+            None => name.clone(),
+        };
+    }
+    if type_params.contains(&name.name) {
+        return name.clone();
+    }
+    rename_map
+        .get(&name.name)
+        .cloned()
+        .unwrap_or_else(|| name.clone())
+}
+
+/// Resolve a struct/enum reference (`name`) with an optional single-segment
+/// `module` qualifier (struct literals, struct destructure patterns) to its real
+/// provenance `DefId` in place.
+fn resolve_qualified_def(
+    name: &mut DefId,
+    module: Option<String>,
+    rename_map: &HashMap<String, DefId>,
+    module_aliases: &ModuleAliasMap,
+) {
+    match module {
+        Some(m) => {
+            if let Some(fid) = module_aliases.get(&m) {
+                *name = DefId::new(*fid, &name.name);
+            }
+        }
+        None => {
+            if let Some(defid) = rename_map.get(&name.name) {
+                *name = defid.clone();
+            }
+        }
+    }
+}
+
 /// Rewrite a type, replacing names via the rename map and resolving module-qualified types.
 fn rewrite_type(
     ty: &Type,
-    rename_map: &HashMap<String, String>,
+    rename_map: &HashMap<String, DefId>,
     module_aliases: &ModuleAliasMap,
     type_params: &[String],
 ) -> Type {
     match ty {
-        Type::Named(name) => {
-            // Check for module-qualified type: "module::Name"
-            if let Some((module, local_name)) = name.split_once("::") {
-                if let Some((_fid, prefix)) = module_aliases.get(module) {
-                    Type::Named(format!("{prefix}{local_name}"))
-                } else {
-                    // Not a known module — leave as-is (might be an error caught later)
-                    ty.clone()
-                }
-            } else if type_params.contains(name) {
-                // Don't rename type parameters
-                ty.clone()
-            } else if let Some(mangled) = rename_map.get(name) {
-                Type::Named(mangled.clone())
-            } else {
-                ty.clone()
-            }
-        }
+        Type::Named(name) => Type::Named(resolve_type_ref(
+            name,
+            rename_map,
+            module_aliases,
+            type_params,
+        )),
         Type::Generic { name, type_args } => {
             let rewritten_args: Vec<Type> = type_args
                 .iter()
                 .map(|t| rewrite_type(t, rename_map, module_aliases, type_params))
                 .collect();
-            // Check for module-qualified generic: "module::Name"
-            if let Some((module, local_name)) = name.split_once("::") {
-                if let Some((_fid, prefix)) = module_aliases.get(module) {
-                    Type::Generic {
-                        name: format!("{prefix}{local_name}"),
-                        type_args: rewritten_args,
-                    }
-                } else {
-                    Type::Generic {
-                        name: name.clone(),
-                        type_args: rewritten_args,
-                    }
-                }
-            } else if type_params.contains(name) {
-                Type::Generic {
-                    name: name.clone(),
-                    type_args: rewritten_args,
-                }
-            } else {
-                let new_name = rename_map.get(name).cloned().unwrap_or(name.clone());
-                Type::Generic {
-                    name: new_name,
-                    type_args: rewritten_args,
-                }
+            Type::Generic {
+                name: resolve_type_ref(name, rename_map, module_aliases, type_params),
+                type_args: rewritten_args,
             }
         }
         Type::Reference(inner) => Type::Reference(Box::new(rewrite_type(
@@ -751,7 +714,7 @@ fn rewrite_type(
 
 /// Context for rewriting AST names during module resolution.
 struct RewriteCtx<'a> {
-    rename_map: &'a HashMap<String, String>,
+    rename_map: &'a HashMap<String, DefId>,
     module_aliases: &'a ModuleAliasMap,
     all_module_aliases: &'a AllModuleAliases,
     intrinsic_names: &'a HashSet<String>,
@@ -763,7 +726,7 @@ struct RewriteCtx<'a> {
 /// Rewrite all names in a function's parameters, return type, and body.
 fn rewrite_function_body(
     f: &mut FunctionDef,
-    rename_map: &HashMap<String, String>,
+    rename_map: &HashMap<String, DefId>,
     module_aliases: &ModuleAliasMap,
     all_module_aliases: &AllModuleAliases,
     intrinsic_names: &HashSet<String>,
@@ -828,7 +791,7 @@ fn collect_pattern_names(pat: &DestructurePattern, names: &mut HashSet<String>) 
 
 fn rewrite_destructure_pattern(
     pat: &mut DestructurePattern,
-    rename_map: &HashMap<String, String>,
+    rename_map: &HashMap<String, DefId>,
     module_aliases: &ModuleAliasMap,
 ) {
     match pat {
@@ -843,13 +806,7 @@ fn rewrite_destructure_pattern(
             name,
             fields,
         } => {
-            if let Some(m) = module.take() {
-                if let Some((_fid, prefix)) = module_aliases.get(&m) {
-                    *name = format!("{prefix}{name}");
-                }
-            } else if let Some(mangled) = rename_map.get(name.as_str()) {
-                *name = mangled.clone();
-            }
+            resolve_qualified_def(name, module.take(), rename_map, module_aliases);
             for f in fields {
                 rewrite_destructure_pattern(&mut f.pattern, rename_map, module_aliases);
             }
@@ -974,12 +931,15 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<String>) {
     expr.span.file_id = ctx.file_id;
     match &mut expr.kind {
         ExprKind::Identifier(name) => {
+            // A non-local name is a reference to a top-level function / const /
+            // static — resolve it to its provenance `DefId`.
             if !locals.contains(name.as_str())
-                && let Some(mangled) = ctx.rename_map.get(name.as_str())
+                && let Some(defid) = ctx.rename_map.get(name.as_str())
             {
-                *name = mangled.clone();
+                expr.kind = ExprKind::GlobalRef(defid.clone());
             }
         }
+        ExprKind::GlobalRef(_) => {}
         ExprKind::IntegerLiteral(_, _)
         | ExprKind::FloatLiteral(_, _)
         | ExprKind::BooleanLiteral(_) => {}
@@ -1024,7 +984,7 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<String>) {
                 ..
             } = &function.kind
                 && module_path.is_empty()
-                && ctx.intrinsic_modules.contains(enum_name.as_str())
+                && ctx.intrinsic_modules.contains(enum_name.name.as_str())
             {
                 let intrinsic = Intrinsic::from_name(variant_name)
                     .unwrap_or_else(|| panic!("unknown intrinsic: {variant_name}"));
@@ -1056,13 +1016,7 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<String>) {
             type_args,
             fields,
         } => {
-            if let Some(m) = module.take() {
-                if let Some((_fid, prefix)) = ctx.module_aliases.get(&m) {
-                    *name = format!("{prefix}{name}");
-                }
-            } else if let Some(mangled) = ctx.rename_map.get(name.as_str()) {
-                *name = mangled.clone();
-            }
+            resolve_qualified_def(name, module.take(), ctx.rename_map, ctx.module_aliases);
             for ta in type_args {
                 *ta = rewrite_type(ta, ctx.rename_map, ctx.module_aliases, ctx.type_params);
             }
@@ -1141,21 +1095,23 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<String>) {
             variant_name,
         } => {
             if !module_path.is_empty() {
-                if let Some(prefix) =
-                    resolve_module_chain(module_path, ctx.module_aliases, ctx.all_module_aliases)
-                {
-                    *enum_name = format!("{prefix}{enum_name}");
+                if let Some(fid) = resolve_module_chain_full(
+                    module_path,
+                    ctx.module_aliases,
+                    ctx.all_module_aliases,
+                ) {
+                    *enum_name = DefId::new(fid, &enum_name.name);
                 }
                 module_path.clear();
-            } else if ctx.intrinsic_modules.contains(enum_name.as_str()) {
+            } else if ctx.intrinsic_modules.contains(enum_name.name.as_str()) {
                 return;
-            } else if ctx.module_aliases.contains_key(enum_name.as_str()) {
-                let (_fid, prefix) = &ctx.module_aliases[enum_name.as_str()];
-                let mangled = format!("{prefix}{variant_name}");
-                expr.kind = ExprKind::Identifier(mangled);
+            } else if let Some(fid) = ctx.module_aliases.get(enum_name.name.as_str()).cloned() {
+                // `alias::Item` where `alias` is a module — a reference to a
+                // top-level function / const in that module.
+                expr.kind = ExprKind::GlobalRef(DefId::new(fid, variant_name.clone()));
                 return;
-            } else if let Some(mangled) = ctx.rename_map.get(enum_name.as_str()) {
-                *enum_name = mangled.clone();
+            } else if let Some(defid) = ctx.rename_map.get(enum_name.name.as_str()) {
+                *enum_name = defid.clone();
             }
             for ta in type_args {
                 *ta = rewrite_type(ta, ctx.rename_map, ctx.module_aliases, ctx.type_params);
@@ -1171,7 +1127,22 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<String>) {
                     ctx.all_module_aliases,
                     ctx.type_params,
                 );
-                rewrite_expr(&mut arm.body, ctx, locals);
+                // The arm's pattern binding is a local in the arm body — it must
+                // shadow any same-named top-level def so its references aren't
+                // rewritten to that def's mangled name.
+                let mut arm_locals = locals.clone();
+                match &arm.pattern {
+                    Pattern::Variant {
+                        binding: Some(b), ..
+                    } => {
+                        arm_locals.insert(b.clone());
+                    }
+                    Pattern::Wildcard(name) => {
+                        arm_locals.insert(name.clone());
+                    }
+                    _ => {}
+                }
+                rewrite_expr(&mut arm.body, ctx, &arm_locals);
             }
         }
         ExprKind::MatchReflect { ty, arms } => {
@@ -1206,53 +1177,27 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<String>) {
     }
 }
 
-/// Like `resolve_module_chain` but returns `(FileId, prefix)` instead of just the prefix.
+/// Follow a module-path chain (`a::b::c`) through the alias maps to the final
+/// module's defining file id.
 fn resolve_module_chain_full(
     segments: &[String],
     current_aliases: &ModuleAliasMap,
     all_module_aliases: &AllModuleAliases,
-) -> Option<(FileId, String)> {
+) -> Option<FileId> {
     if segments.is_empty() {
         return None;
     }
-    let (mut current_fid, mut current_prefix) = current_aliases.get(&segments[0])?.clone();
+    let mut current_fid = *current_aliases.get(&segments[0])?;
     for seg in &segments[1..] {
-        let aliases = all_module_aliases.get(&current_fid)?;
-        let (fid, prefix) = aliases.get(seg)?.clone();
-        current_fid = fid;
-        current_prefix = prefix;
+        current_fid = *all_module_aliases.get(&current_fid)?.get(seg)?;
     }
-    Some((current_fid, current_prefix))
+    Some(current_fid)
 }
 
 /// Walk a chain of module aliases to resolve a multi-segment module path.
-/// E.g., for `d::c::b::a::Enum::Variant`, module_path = ["d", "c", "b", "a"].
-/// Returns the prefix for the final module in the chain.
-fn resolve_module_chain(
-    segments: &[String],
-    current_aliases: &ModuleAliasMap,
-    all_module_aliases: &AllModuleAliases,
-) -> Option<String> {
-    if segments.is_empty() {
-        return None;
-    }
-    // Look up the first segment in the current file's module aliases
-    let (mut current_fid, mut current_prefix) = current_aliases.get(&segments[0])?.clone();
-
-    // Follow the chain through each subsequent segment
-    for seg in &segments[1..] {
-        let aliases = all_module_aliases.get(&current_fid)?;
-        let (fid, prefix) = aliases.get(seg)?.clone();
-        current_fid = fid;
-        current_prefix = prefix;
-    }
-
-    Some(current_prefix)
-}
-
 fn rewrite_pattern(
     pat: &mut Pattern,
-    rename_map: &HashMap<String, String>,
+    rename_map: &HashMap<String, DefId>,
     module_aliases: &ModuleAliasMap,
     all_module_aliases: &AllModuleAliases,
     type_params: &[String],
@@ -1265,14 +1210,14 @@ fn rewrite_pattern(
             ..
         } => {
             if !module_path.is_empty() {
-                if let Some(prefix) =
-                    resolve_module_chain(module_path, module_aliases, all_module_aliases)
+                if let Some(fid) =
+                    resolve_module_chain_full(module_path, module_aliases, all_module_aliases)
                 {
-                    *enum_name = format!("{prefix}{enum_name}");
+                    *enum_name = DefId::new(fid, &enum_name.name);
                 }
                 module_path.clear();
-            } else if let Some(mangled) = rename_map.get(enum_name.as_str()) {
-                *enum_name = mangled.clone();
+            } else if let Some(defid) = rename_map.get(enum_name.name.as_str()) {
+                *enum_name = defid.clone();
             }
             for ta in type_args {
                 *ta = rewrite_type(ta, rename_map, module_aliases, type_params);
@@ -1312,6 +1257,9 @@ fn resolve_impl(
 
     // Parse root file
     let root_id = resolver.parse_file(file_path)?;
+    // Record the root: its definitions render to bare (un-module-mangled) names
+    // in `mangled_ast` (so `main` stays `main`).
+    resolver.source_map.set_root_file_id(root_id);
 
     // Recursively parse imported files
     resolver.parse_imports(root_id)?;

@@ -1,8 +1,15 @@
 //! Mangled AST — a structural mirror of `typed_ast` that sits between type
-//! checking and IR lowering in the pipeline. It has its own parallel set of
-//! node types so it can later diverge from `typed_ast` (e.g. carrying
-//! name-mangled symbols). For now [`lower`] is a **no-op**: it maps every
-//! `typed_ast` node onto the identically-shaped `mangled_ast` node.
+//! checking and IR lowering in the pipeline. Its node types are identical in
+//! shape to `typed_ast`'s EXCEPT that every definition identity is a final,
+//! unique C symbol **string** here, whereas in `typed_ast` it is a
+//! provenance-carrying **structural value**: `TypeId { def: DefId, args }` for a
+//! type, `FuncId { def, args, overload, method }` for a function/method, and
+//! `DefId { file, name }` for a static. [`lower`] is where the deferred
+//! **module-mangling into a single virtual file** happens — the ONLY place any
+//! `__mod…`/`enc_id` mangling exists: it renders each structural id to its final
+//! symbol (module-prefixed by the defining file, bare for the root and for
+//! synthetic defs), so downstream (`ir`, `codegen`, `panic`) sees the same
+//! symbols it always did. Nothing before this stage stringifies a `DefId`.
 
 use crate::ast;
 use crate::typed_ast as ta;
@@ -402,313 +409,441 @@ pub enum TypedPattern {
     Wildcard(String, Type),
 }
 
-// --- Lowering: typed_ast -> mangled_ast (identity for now) ---
+// --- Lowering: typed_ast -> mangled_ast (module-mangling happens here) ---
 
-/// Map a type-checked source file into the mangled AST. Currently a no-op that
-/// copies every node onto its identically-shaped `mangled_ast` counterpart.
-pub fn lower(source: &ta::SourceFile) -> SourceFile {
+use crate::error::SourceMap;
+
+/// Map a type-checked source file into the mangled AST. This is where the
+/// deferred **module-mangling into a single virtual file** happens: every
+/// provenance-carrying identity (`typed_ast::TypeId` for types, and the
+/// `__def{file}_…` provenance-token name strings that `resolve` baked into the
+/// AST) is rendered into its final, unique C symbol, applying each file's module
+/// prefix (bare for the root file). Downstream (`ir`, `codegen`, `panic`) is
+/// unchanged — it sees the same `__mod…` symbols it always did.
+pub fn lower(source: &ta::SourceFile, source_map: &SourceMap) -> SourceFile {
+    let r = Renderer { sm: source_map };
     SourceFile {
         structs: source
             .structs
             .iter()
-            .map(|(k, v)| (k.clone(), conv_struct(v)))
+            .map(|(k, v)| (r.type_name(k), r.conv_struct(v)))
             .collect(),
         enums: source
             .enums
             .iter()
-            .map(|(k, v)| (k.clone(), conv_enum(v)))
+            .map(|(k, v)| (r.type_name(k), r.conv_enum(v)))
             .collect(),
         functions: source
             .functions
             .iter()
-            .map(|(k, v)| (k.clone(), conv_function(v)))
+            .map(|(k, v)| (r.func_symbol(k), r.conv_function(v)))
             .collect(),
-        statics: source.statics.iter().map(conv_static).collect(),
+        statics: source.statics.iter().map(|s| r.conv_static(s)).collect(),
     }
 }
 
-fn conv_type(t: &ta::Type) -> Type {
-    use ta::Type as T;
-    match t {
-        T::Int8 => Type::Int8,
-        T::Int16 => Type::Int16,
-        T::Int32 => Type::Int32,
-        T::Int64 => Type::Int64,
-        T::Int => Type::Int,
-        T::Uint8 => Type::Uint8,
-        T::Uint16 => Type::Uint16,
-        T::Uint32 => Type::Uint32,
-        T::Uint64 => Type::Uint64,
-        T::Uint => Type::Uint,
-        T::Float32 => Type::Float32,
-        T::Float64 => Type::Float64,
-        T::Bool => Type::Bool,
-        T::Struct(n) => Type::Struct(n.clone()),
-        T::Enum(n) => Type::Enum(n.clone()),
-        T::Array(inner) => Type::Array(Box::new(conv_type(inner))),
-        T::FixedArray(inner, n) => Type::FixedArray(Box::new(conv_type(inner)), *n),
-        T::Ref(inner) => Type::Ref(Box::new(conv_type(inner))),
-        T::RefUnsized(inner) => Type::RefUnsized(Box::new(conv_type(inner))),
-        T::NullableRef(inner) => Type::NullableRef(Box::new(conv_type(inner))),
-        T::NullableRefUnsized(inner) => Type::NullableRefUnsized(Box::new(conv_type(inner))),
-        T::Unique(inner) => Type::Unique(Box::new(conv_type(inner))),
-        T::UniqueUnsized(inner) => Type::UniqueUnsized(Box::new(conv_type(inner))),
-        T::Function {
-            params,
-            return_type,
-        } => Type::Function {
-            params: params.iter().map(conv_type).collect(),
-            return_type: Box::new(conv_type(return_type)),
-        },
-        T::FileDesc => Type::FileDesc,
-        T::Unit => Type::Unit,
-        T::Never => Type::Never,
+/// Self-delimiting identifier encoding (`<byte-len>_<s>`).
+fn enc_id(s: &str) -> String {
+    format!("{}_{}", s.len(), s)
+}
+
+/// Renders provenance-token identities into final module-mangled C symbols.
+struct Renderer<'a> {
+    sm: &'a SourceMap,
+}
+
+impl Renderer<'_> {
+    /// The base identifier of a definition, module-prefixed by its defining file
+    /// (bare for the root file, and for synthetic defs — closures, numeric
+    /// constructors, tuples — which are already globally unique).
+    fn base_name(&self, def: &ast::DefId) -> String {
+        if def.file == ast::SYNTHETIC_FILE {
+            def.name.clone()
+        } else {
+            format!("{}{}", self.sm.module_prefix(def.file), def.name)
+        }
     }
-}
 
-fn conv_static(s: &ta::StaticItem) -> StaticItem {
-    StaticItem {
-        name: s.name.clone(),
-        ty: conv_type(&s.ty),
-        init: conv_expr(&s.init),
+    /// The final identity string of a struct/enum type instance.
+    fn type_name(&self, id: &ta::TypeId) -> String {
+        if id.def.file == ast::SYNTHETIC_FILE && id.def.name == ta::TUPLE_DEF_NAME {
+            // Anonymous tuple: `0T{n}_{elem types}`.
+            let mut s = format!("0T{}_", id.args.len());
+            for a in &id.args {
+                s.push_str(&self.mangle_type(a));
+            }
+            return s;
+        }
+        self.mangle_name(&self.base_name(&id.def), &id.args)
     }
-}
 
-fn conv_struct(s: &ta::StructDef) -> StructDef {
-    StructDef {
-        name: s.name.clone(),
-        fields: s.fields.iter().map(conv_field).collect(),
+    /// The final C symbol of a function/method instance.
+    fn func_symbol(&self, fid: &ta::FuncId) -> String {
+        // Methods render their bare base name (`__method_`-prefixed); free
+        // functions get the module prefix.
+        let base = if fid.method {
+            fid.def.name.clone()
+        } else {
+            self.base_name(&fid.def)
+        };
+        let mut s = self.mangle_name(&base, &fid.args);
+        if fid.method {
+            s = format!("__method_{s}");
+        }
+        if let Some(ov) = fid.overload {
+            s = format!("{s}_ov{ov}");
+        }
+        s
     }
-}
 
-fn conv_field(f: &ta::FieldDef) -> FieldDef {
-    FieldDef {
-        name: f.name.clone(),
-        ty: conv_type(&f.ty),
+    /// `mangle_name`: the bare base when there are no args, else
+    /// `enc_id(base) 'G' <n> '_' <arg types>` (matching the historical scheme).
+    fn mangle_name(&self, base: &str, args: &[ta::Type]) -> String {
+        if args.is_empty() {
+            base.to_string()
+        } else {
+            let mut s = format!("{}G{}_", enc_id(base), args.len());
+            for a in args {
+                s.push_str(&self.mangle_type(a));
+            }
+            s
+        }
     }
-}
 
-fn conv_enum(e: &ta::EnumDef) -> EnumDef {
-    EnumDef {
-        name: e.name.clone(),
-        variants: e.variants.iter().map(conv_variant).collect(),
+    /// A type fragment in the mangling grammar.
+    fn mangle_type(&self, t: &ta::Type) -> String {
+        use ta::Type as T;
+        match t {
+            T::Int8 => enc_id("Int8"),
+            T::Int16 => enc_id("Int16"),
+            T::Int32 => enc_id("Int32"),
+            T::Int64 => enc_id("Int64"),
+            T::Int => enc_id("Int"),
+            T::Uint8 => enc_id("Uint8"),
+            T::Uint16 => enc_id("Uint16"),
+            T::Uint32 => enc_id("Uint32"),
+            T::Uint64 => enc_id("Uint64"),
+            T::Uint => enc_id("Uint"),
+            T::Float32 => enc_id("Float32"),
+            T::Float64 => enc_id("Float64"),
+            T::Bool => enc_id("Bool"),
+            T::Struct(id) | T::Enum(id) => enc_id(&self.type_name(id)),
+            T::Ref(inner) | T::RefUnsized(inner) => format!("R{}", self.mangle_type(inner)),
+            T::NullableRef(inner) | T::NullableRefUnsized(inner) => {
+                format!("Q{}", self.mangle_type(inner))
+            }
+            T::Unique(inner) | T::UniqueUnsized(inner) => format!("U{}", self.mangle_type(inner)),
+            T::Array(inner) => format!("S{}", self.mangle_type(inner)),
+            T::FixedArray(inner, n) => format!("A{}_{}", n, self.mangle_type(inner)),
+            T::Function {
+                params,
+                return_type,
+            } => {
+                let mut s = format!("F{}_", params.len());
+                for p in params {
+                    s.push_str(&self.mangle_type(p));
+                }
+                s.push_str(&self.mangle_type(return_type));
+                s
+            }
+            T::FileDesc => enc_id("FileDesc"),
+            T::Unit => enc_id("Unit"),
+            T::Never => enc_id("Never"),
+        }
     }
-}
 
-fn conv_variant(v: &ta::EnumVariantDef) -> EnumVariantDef {
-    EnumVariantDef {
-        name: v.name.clone(),
-        inner_type: v.inner_type.as_ref().map(conv_type),
-        index: v.index,
+    fn conv_type(&self, t: &ta::Type) -> Type {
+        use ta::Type as T;
+        match t {
+            T::Int8 => Type::Int8,
+            T::Int16 => Type::Int16,
+            T::Int32 => Type::Int32,
+            T::Int64 => Type::Int64,
+            T::Int => Type::Int,
+            T::Uint8 => Type::Uint8,
+            T::Uint16 => Type::Uint16,
+            T::Uint32 => Type::Uint32,
+            T::Uint64 => Type::Uint64,
+            T::Uint => Type::Uint,
+            T::Float32 => Type::Float32,
+            T::Float64 => Type::Float64,
+            T::Bool => Type::Bool,
+            T::Struct(id) => Type::Struct(self.type_name(id)),
+            T::Enum(id) => Type::Enum(self.type_name(id)),
+            T::Array(inner) => Type::Array(Box::new(self.conv_type(inner))),
+            T::FixedArray(inner, n) => Type::FixedArray(Box::new(self.conv_type(inner)), *n),
+            T::Ref(inner) => Type::Ref(Box::new(self.conv_type(inner))),
+            T::RefUnsized(inner) => Type::RefUnsized(Box::new(self.conv_type(inner))),
+            T::NullableRef(inner) => Type::NullableRef(Box::new(self.conv_type(inner))),
+            T::NullableRefUnsized(inner) => {
+                Type::NullableRefUnsized(Box::new(self.conv_type(inner)))
+            }
+            T::Unique(inner) => Type::Unique(Box::new(self.conv_type(inner))),
+            T::UniqueUnsized(inner) => Type::UniqueUnsized(Box::new(self.conv_type(inner))),
+            T::Function {
+                params,
+                return_type,
+            } => Type::Function {
+                params: params.iter().map(|p| self.conv_type(p)).collect(),
+                return_type: Box::new(self.conv_type(return_type)),
+            },
+            T::FileDesc => Type::FileDesc,
+            T::Unit => Type::Unit,
+            T::Never => Type::Never,
+        }
     }
-}
 
-fn conv_function(f: &ta::FunctionDef) -> FunctionDef {
-    FunctionDef {
-        name: f.name.clone(),
-        parameters: f.parameters.iter().map(conv_param).collect(),
-        return_type: conv_type(&f.return_type),
-        body: f.body.iter().map(conv_stmt).collect(),
-        inline_hint: f.inline_hint,
+    fn conv_static(&self, s: &ta::StaticItem) -> StaticItem {
+        StaticItem {
+            name: self.base_name(&s.id),
+            ty: self.conv_type(&s.ty),
+            init: self.conv_expr(&s.init),
+        }
     }
-}
 
-fn conv_param(p: &ta::Parameter) -> Parameter {
-    Parameter {
-        name: p.name.clone(),
-        ty: conv_type(&p.ty),
-        span: p.span,
+    fn conv_struct(&self, s: &ta::StructDef) -> StructDef {
+        StructDef {
+            name: self.type_name(&s.id),
+            fields: s.fields.iter().map(|f| self.conv_field(f)).collect(),
+        }
     }
-}
 
-fn conv_capture(c: &ta::CapturedVar) -> CapturedVar {
-    CapturedVar {
-        name: c.name.clone(),
-        ty: conv_type(&c.ty),
+    fn conv_field(&self, f: &ta::FieldDef) -> FieldDef {
+        FieldDef {
+            name: f.name.clone(),
+            ty: self.conv_type(&f.ty),
+        }
     }
-}
 
-fn conv_stmt(s: &ta::Statement) -> Statement {
-    Statement {
-        kind: conv_stmt_kind(&s.kind),
-        span: s.span,
+    fn conv_enum(&self, e: &ta::EnumDef) -> EnumDef {
+        EnumDef {
+            name: self.type_name(&e.id),
+            variants: e.variants.iter().map(|v| self.conv_variant(v)).collect(),
+        }
     }
-}
 
-fn conv_stmt_kind(k: &ta::StatementKind) -> StatementKind {
-    use ta::StatementKind as K;
-    match k {
-        K::Let { name, ty, value } => StatementKind::Let {
-            name: name.clone(),
-            ty: conv_type(ty),
-            value: conv_expr(value),
-        },
-        K::Assignment { target, value } => StatementKind::Assignment {
-            target: conv_expr(target),
-            value: conv_expr(value),
-        },
-        K::If {
-            condition,
-            body,
-            else_body,
-        } => StatementKind::If {
-            condition: conv_expr(condition),
-            body: body.iter().map(conv_stmt).collect(),
-            else_body: else_body.iter().map(conv_stmt).collect(),
-        },
-        K::While { condition, body } => StatementKind::While {
-            condition: conv_expr(condition),
-            body: body.iter().map(conv_stmt).collect(),
-        },
-        K::Expression(e) => StatementKind::Expression(conv_expr(e)),
-        K::Return(e) => StatementKind::Return(conv_expr(e)),
-        K::Break(e) => StatementKind::Break(e.as_ref().map(conv_expr)),
-        K::Continue => StatementKind::Continue,
+    fn conv_variant(&self, v: &ta::EnumVariantDef) -> EnumVariantDef {
+        EnumVariantDef {
+            name: v.name.clone(),
+            inner_type: v.inner_type.as_ref().map(|t| self.conv_type(t)),
+            index: v.index,
+        }
     }
-}
 
-fn conv_expr(e: &ta::Expr) -> Expr {
-    Expr {
-        ty: conv_type(&e.ty),
-        kind: conv_expr_kind(&e.kind),
-        span: e.span,
+    fn conv_function(&self, f: &ta::FunctionDef) -> FunctionDef {
+        FunctionDef {
+            name: self.func_symbol(&f.id),
+            parameters: f.parameters.iter().map(|p| self.conv_param(p)).collect(),
+            return_type: self.conv_type(&f.return_type),
+            body: f.body.iter().map(|s| self.conv_stmt(s)).collect(),
+            inline_hint: f.inline_hint,
+        }
     }
-}
 
-fn conv_boxed(e: &ta::Expr) -> Box<Expr> {
-    Box::new(conv_expr(e))
-}
-
-fn conv_expr_kind(k: &ta::ExprKind) -> ExprKind {
-    use ta::ExprKind as K;
-    match k {
-        K::Identifier(name) => ExprKind::Identifier(name.clone()),
-        K::FloatLiteral(v) => ExprKind::FloatLiteral(*v),
-        K::Global(name) => ExprKind::Global(name.clone()),
-        K::IntegerLiteral(v) => ExprKind::IntegerLiteral(*v),
-        K::BooleanLiteral(v) => ExprKind::BooleanLiteral(*v),
-        K::FieldAccess { object, field } => ExprKind::FieldAccess {
-            object: conv_boxed(object),
-            field: field.clone(),
-        },
-        K::Deref(e) => ExprKind::Deref(conv_boxed(e)),
-        K::Reference(e) => ExprKind::Reference(conv_boxed(e)),
-        K::Unique(e) => ExprKind::Unique(conv_boxed(e)),
-        K::Not(e) => ExprKind::Not(conv_boxed(e)),
-        K::NullLiteral => ExprKind::NullLiteral,
-        K::Call {
-            function,
-            arguments,
-        } => ExprKind::Call {
-            function: function.clone(),
-            arguments: arguments.iter().map(conv_expr).collect(),
-        },
-        K::FunctionRef(name) => ExprKind::FunctionRef(name.clone()),
-        K::CallIndirect { callee, arguments } => ExprKind::CallIndirect {
-            callee: conv_boxed(callee),
-            arguments: arguments.iter().map(conv_expr).collect(),
-        },
-        K::StructLiteral { name, fields } => ExprKind::StructLiteral {
-            name: name.clone(),
-            fields: fields.iter().map(conv_field_init).collect(),
-        },
-        K::Index { object, index } => ExprKind::Index {
-            object: conv_boxed(object),
-            index: conv_boxed(index),
-        },
-        K::Slice { object, start, end } => ExprKind::Slice {
-            object: conv_boxed(object),
-            start: conv_boxed(start),
-            end: conv_boxed(end),
-        },
-        K::ArrayLiteral(elems) => ExprKind::ArrayLiteral(elems.iter().map(conv_expr).collect()),
-        K::ArrayRepeat { element, count } => ExprKind::ArrayRepeat {
-            element: conv_boxed(element),
-            count: conv_boxed(count),
-        },
-        K::ArrayInit { count, init } => ExprKind::ArrayInit {
-            count: conv_boxed(count),
-            init: conv_boxed(init),
-        },
-        K::ArraySizeCoerce { expr, size } => ExprKind::ArraySizeCoerce {
-            expr: conv_boxed(expr),
-            size: *size,
-        },
-        K::BinaryOp { op, left, right } => ExprKind::BinaryOp {
-            op: *op,
-            left: conv_boxed(left),
-            right: conv_boxed(right),
-        },
-        K::If {
-            condition,
-            then_body,
-            else_body,
-        } => ExprKind::If {
-            condition: conv_boxed(condition),
-            then_body: then_body.iter().map(conv_stmt).collect(),
-            else_body: else_body.iter().map(conv_stmt).collect(),
-        },
-        K::Block(body) => ExprKind::Block(body.iter().map(conv_stmt).collect()),
-        K::Loop(body) => ExprKind::Loop(body.iter().map(conv_stmt).collect()),
-        K::Closure {
-            synthetic_fn,
-            captures,
-        } => ExprKind::Closure {
-            synthetic_fn: synthetic_fn.clone(),
-            captures: captures.iter().map(conv_capture).collect(),
-        },
-        K::EnumVariant {
-            enum_name,
-            variant_name,
-            variant_index,
-            value,
-        } => ExprKind::EnumVariant {
-            enum_name: enum_name.clone(),
-            variant_name: variant_name.clone(),
-            variant_index: *variant_index,
-            value: value.as_deref().map(conv_boxed),
-        },
-        K::Match { scrutinee, arms } => ExprKind::Match {
-            scrutinee: conv_boxed(scrutinee),
-            arms: arms.iter().map(conv_match_arm).collect(),
-        },
-        K::IntrinsicCall {
-            intrinsic,
-            arguments,
-        } => ExprKind::IntrinsicCall {
-            intrinsic: intrinsic.clone(),
-            arguments: arguments.iter().map(conv_expr).collect(),
-        },
+    fn conv_param(&self, p: &ta::Parameter) -> Parameter {
+        Parameter {
+            name: p.name.clone(),
+            ty: self.conv_type(&p.ty),
+            span: p.span,
+        }
     }
-}
 
-fn conv_field_init(f: &ta::FieldInit) -> FieldInit {
-    FieldInit {
-        name: f.name.clone(),
-        value: conv_expr(&f.value),
+    fn conv_capture(&self, c: &ta::CapturedVar) -> CapturedVar {
+        CapturedVar {
+            name: c.name.clone(),
+            ty: self.conv_type(&c.ty),
+        }
     }
-}
 
-fn conv_match_arm(a: &ta::TypedMatchArm) -> TypedMatchArm {
-    TypedMatchArm {
-        pattern: conv_pattern(&a.pattern),
-        body: a.body.iter().map(conv_stmt).collect(),
+    fn conv_stmt(&self, s: &ta::Statement) -> Statement {
+        Statement {
+            kind: self.conv_stmt_kind(&s.kind),
+            span: s.span,
+        }
     }
-}
 
-fn conv_pattern(p: &ta::TypedPattern) -> TypedPattern {
-    match p {
-        ta::TypedPattern::Variant {
-            enum_name,
-            variant_name,
-            variant_index,
-            binding,
-        } => TypedPattern::Variant {
-            enum_name: enum_name.clone(),
-            variant_name: variant_name.clone(),
-            variant_index: *variant_index,
-            binding: binding.as_ref().map(|(n, t)| (n.clone(), conv_type(t))),
-        },
-        ta::TypedPattern::Wildcard(name, ty) => TypedPattern::Wildcard(name.clone(), conv_type(ty)),
+    fn conv_stmt_kind(&self, k: &ta::StatementKind) -> StatementKind {
+        use ta::StatementKind as K;
+        match k {
+            K::Let { name, ty, value } => StatementKind::Let {
+                name: name.clone(),
+                ty: self.conv_type(ty),
+                value: self.conv_expr(value),
+            },
+            K::Assignment { target, value } => StatementKind::Assignment {
+                target: self.conv_expr(target),
+                value: self.conv_expr(value),
+            },
+            K::If {
+                condition,
+                body,
+                else_body,
+            } => StatementKind::If {
+                condition: self.conv_expr(condition),
+                body: body.iter().map(|s| self.conv_stmt(s)).collect(),
+                else_body: else_body.iter().map(|s| self.conv_stmt(s)).collect(),
+            },
+            K::While { condition, body } => StatementKind::While {
+                condition: self.conv_expr(condition),
+                body: body.iter().map(|s| self.conv_stmt(s)).collect(),
+            },
+            K::Expression(e) => StatementKind::Expression(self.conv_expr(e)),
+            K::Return(e) => StatementKind::Return(self.conv_expr(e)),
+            K::Break(e) => StatementKind::Break(e.as_ref().map(|e| self.conv_expr(e))),
+            K::Continue => StatementKind::Continue,
+        }
+    }
+
+    fn conv_expr(&self, e: &ta::Expr) -> Expr {
+        Expr {
+            ty: self.conv_type(&e.ty),
+            kind: self.conv_expr_kind(&e.kind),
+            span: e.span,
+        }
+    }
+
+    fn conv_boxed(&self, e: &ta::Expr) -> Box<Expr> {
+        Box::new(self.conv_expr(e))
+    }
+
+    fn conv_expr_kind(&self, k: &ta::ExprKind) -> ExprKind {
+        use ta::ExprKind as K;
+        match k {
+            K::Identifier(name) => ExprKind::Identifier(name.clone()),
+            K::FloatLiteral(v) => ExprKind::FloatLiteral(*v),
+            K::Global(def) => ExprKind::Global(self.base_name(def)),
+            K::IntegerLiteral(v) => ExprKind::IntegerLiteral(*v),
+            K::BooleanLiteral(v) => ExprKind::BooleanLiteral(*v),
+            K::FieldAccess { object, field } => ExprKind::FieldAccess {
+                object: self.conv_boxed(object),
+                field: field.clone(),
+            },
+            K::Deref(e) => ExprKind::Deref(self.conv_boxed(e)),
+            K::Reference(e) => ExprKind::Reference(self.conv_boxed(e)),
+            K::Unique(e) => ExprKind::Unique(self.conv_boxed(e)),
+            K::Not(e) => ExprKind::Not(self.conv_boxed(e)),
+            K::NullLiteral => ExprKind::NullLiteral,
+            K::Call {
+                function,
+                arguments,
+            } => ExprKind::Call {
+                function: self.func_symbol(function),
+                arguments: arguments.iter().map(|a| self.conv_expr(a)).collect(),
+            },
+            K::FunctionRef(fid) => ExprKind::FunctionRef(self.func_symbol(fid)),
+            K::CallIndirect { callee, arguments } => ExprKind::CallIndirect {
+                callee: self.conv_boxed(callee),
+                arguments: arguments.iter().map(|a| self.conv_expr(a)).collect(),
+            },
+            K::StructLiteral { id, fields } => ExprKind::StructLiteral {
+                name: self.type_name(id),
+                fields: fields.iter().map(|f| self.conv_field_init(f)).collect(),
+            },
+            K::Index { object, index } => ExprKind::Index {
+                object: self.conv_boxed(object),
+                index: self.conv_boxed(index),
+            },
+            K::Slice { object, start, end } => ExprKind::Slice {
+                object: self.conv_boxed(object),
+                start: self.conv_boxed(start),
+                end: self.conv_boxed(end),
+            },
+            K::ArrayLiteral(elems) => {
+                ExprKind::ArrayLiteral(elems.iter().map(|e| self.conv_expr(e)).collect())
+            }
+            K::ArrayRepeat { element, count } => ExprKind::ArrayRepeat {
+                element: self.conv_boxed(element),
+                count: self.conv_boxed(count),
+            },
+            K::ArrayInit { count, init } => ExprKind::ArrayInit {
+                count: self.conv_boxed(count),
+                init: self.conv_boxed(init),
+            },
+            K::ArraySizeCoerce { expr, size } => ExprKind::ArraySizeCoerce {
+                expr: self.conv_boxed(expr),
+                size: *size,
+            },
+            K::BinaryOp { op, left, right } => ExprKind::BinaryOp {
+                op: *op,
+                left: self.conv_boxed(left),
+                right: self.conv_boxed(right),
+            },
+            K::If {
+                condition,
+                then_body,
+                else_body,
+            } => ExprKind::If {
+                condition: self.conv_boxed(condition),
+                then_body: then_body.iter().map(|s| self.conv_stmt(s)).collect(),
+                else_body: else_body.iter().map(|s| self.conv_stmt(s)).collect(),
+            },
+            K::Block(body) => ExprKind::Block(body.iter().map(|s| self.conv_stmt(s)).collect()),
+            K::Loop(body) => ExprKind::Loop(body.iter().map(|s| self.conv_stmt(s)).collect()),
+            K::Closure {
+                synthetic_fn,
+                captures,
+            } => ExprKind::Closure {
+                // Closure names (`__closure_N`) are already globally unique.
+                synthetic_fn: synthetic_fn.clone(),
+                captures: captures.iter().map(|c| self.conv_capture(c)).collect(),
+            },
+            K::EnumVariant {
+                enum_id,
+                variant_name,
+                variant_index,
+                value,
+            } => ExprKind::EnumVariant {
+                enum_name: self.type_name(enum_id),
+                variant_name: variant_name.clone(),
+                variant_index: *variant_index,
+                value: value.as_deref().map(|e| self.conv_boxed(e)),
+            },
+            K::Match { scrutinee, arms } => ExprKind::Match {
+                scrutinee: self.conv_boxed(scrutinee),
+                arms: arms.iter().map(|a| self.conv_match_arm(a)).collect(),
+            },
+            K::IntrinsicCall {
+                intrinsic,
+                arguments,
+            } => ExprKind::IntrinsicCall {
+                intrinsic: intrinsic.clone(),
+                arguments: arguments.iter().map(|a| self.conv_expr(a)).collect(),
+            },
+        }
+    }
+
+    fn conv_field_init(&self, f: &ta::FieldInit) -> FieldInit {
+        FieldInit {
+            name: f.name.clone(),
+            value: self.conv_expr(&f.value),
+        }
+    }
+
+    fn conv_match_arm(&self, a: &ta::TypedMatchArm) -> TypedMatchArm {
+        TypedMatchArm {
+            pattern: self.conv_pattern(&a.pattern),
+            body: a.body.iter().map(|s| self.conv_stmt(s)).collect(),
+        }
+    }
+
+    fn conv_pattern(&self, p: &ta::TypedPattern) -> TypedPattern {
+        match p {
+            ta::TypedPattern::Variant {
+                enum_id,
+                variant_name,
+                variant_index,
+                binding,
+            } => TypedPattern::Variant {
+                enum_name: self.type_name(enum_id),
+                variant_name: variant_name.clone(),
+                variant_index: *variant_index,
+                binding: binding
+                    .as_ref()
+                    .map(|(n, t)| (n.clone(), self.conv_type(t))),
+            },
+            ta::TypedPattern::Wildcard(name, ty) => {
+                TypedPattern::Wildcard(name.clone(), self.conv_type(ty))
+            }
+        }
     }
 }

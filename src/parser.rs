@@ -9,7 +9,14 @@ pub fn generate_numeric_constructors(items: &mut Vec<TopLevelItem>) {
         "Float32", "Float64",
     ];
 
-    let span = SourceSpan::default();
+    // Numeric constructors are compiler-synthesized and globally unique — use
+    // the synthetic file so `typed_ast`/`mangled_ast` treat them as bare names
+    // (no module prefix), and so their references (bare `Identifier`s that
+    // `resolve` never sees) resolve to a stable `DefId`.
+    let span = SourceSpan {
+        file_id: SYNTHETIC_FILE,
+        ..SourceSpan::default()
+    };
 
     for &target_name in TYPES {
         for &from_name in TYPES {
@@ -26,11 +33,11 @@ pub fn generate_numeric_constructors(items: &mut Vec<TopLevelItem>) {
                 type_params: vec![],
                 parameters: vec![Parameter {
                     pattern: DestructurePattern::Name("x".to_string()),
-                    ty: Type::Named(from_name.to_string()),
+                    ty: Type::Named(DefId::new(0, from_name)),
                     default: None,
                     span,
                 }],
-                return_type: Some(Type::Named(target_name.to_string())),
+                return_type: Some(Type::Named(DefId::new(0, target_name))),
                 return_type_span: None,
                 body: vec![Statement {
                     kind: StatementKind::Expression(Expr {
@@ -255,6 +262,7 @@ fn convert_struct_def(node: tree_sitter::Node, source: &str) -> StructDef {
         }
     }
     StructDef {
+        def_id: DefId::new(0, name.clone()),
         name,
         type_params,
         fields,
@@ -344,6 +352,7 @@ fn convert_enum_def(node: tree_sitter::Node, source: &str) -> EnumDef {
         }
     }
     EnumDef {
+        def_id: DefId::new(0, name.clone()),
         name,
         type_params,
         variants,
@@ -439,9 +448,9 @@ fn convert_try_statement(node: tree_sitter::Node, source: &str) -> Statement {
     let binding_ty = match node.child_by_field_name("binding_type") {
         Some(t) => convert_type(t, source),
         // `&[Uint8]`
-        None => Type::Reference(Box::new(Type::Slice(Box::new(Type::Named(
-            "Uint8".to_string(),
-        ))))),
+        None => Type::Reference(Box::new(Type::Slice(Box::new(Type::Named(DefId::new(
+            0, "Uint8",
+        )))))),
     };
 
     let body_closure = Expr {
@@ -540,7 +549,7 @@ fn convert_destructure_pattern(node: tree_sitter::Node, source: &str) -> Destruc
             }
             DestructurePattern::Struct {
                 module,
-                name,
+                name: DefId::new(0, name),
                 fields,
             }
         }
@@ -861,7 +870,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                     })
                     .collect(),
                 // implicit annotation so the empty string works like []#[Uint8]
-                Some(Type::Named("Uint8".to_string())),
+                Some(Type::Named(DefId::new(0, "Uint8"))),
             )
         }
         "char_literal" => {
@@ -945,7 +954,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                 let function = Expr {
                     kind: ExprKind::EnumVariant {
                         module_path,
-                        enum_name,
+                        enum_name: DefId::new(0, enum_name),
                         type_args: enum_type_args,
                         variant_name: last_name,
                     },
@@ -1008,7 +1017,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             }
             ExprKind::StructLiteral {
                 module,
-                name,
+                name: DefId::new(0, name),
                 type_args,
                 fields,
             }
@@ -1087,7 +1096,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             let module_path: Vec<String> = segments.into_iter().map(|(n, _)| n).collect();
             ExprKind::EnumVariant {
                 module_path,
-                enum_name,
+                enum_name: DefId::new(0, enum_name),
                 type_args,
                 variant_name,
             }
@@ -1264,7 +1273,7 @@ fn convert_pattern(node: tree_sitter::Node, source: &str) -> Pattern {
                 node_text(node.child_by_field_name("binding").unwrap(), source).to_string();
             Pattern::Variant {
                 module_path,
-                enum_name,
+                enum_name: DefId::new(0, enum_name),
                 type_args,
                 variant_name,
                 binding: Some(binding),
@@ -1289,7 +1298,7 @@ fn convert_pattern(node: tree_sitter::Node, source: &str) -> Pattern {
             let module_path: Vec<String> = segments.into_iter().map(|(n, _)| n).collect();
             Pattern::Variant {
                 module_path,
-                enum_name,
+                enum_name: DefId::new(0, enum_name),
                 type_args,
                 variant_name,
                 binding: None,
@@ -1311,9 +1320,12 @@ fn convert_type(node: tree_sitter::Node, source: &str) -> Type {
             let name = node_text(ident, source).to_string();
             if let Some(ta_node) = node.child_by_field_name("type_args") {
                 let type_args = convert_type_args(ta_node, source);
-                Type::Generic { name, type_args }
+                Type::Generic {
+                    name: DefId::new(0, name),
+                    type_args,
+                }
             } else {
-                Type::Named(name)
+                Type::Named(DefId::new(0, name))
             }
         }
         "qualified_type" => {
@@ -1323,11 +1335,11 @@ fn convert_type(node: tree_sitter::Node, source: &str) -> Type {
             if let Some(ta_node) = node.child_by_field_name("type_args") {
                 let type_args = convert_type_args(ta_node, source);
                 Type::Generic {
-                    name: format!("{module}::{name}"),
+                    name: DefId::new(0, format!("{module}::{name}")),
                     type_args,
                 }
             } else {
-                Type::Named(format!("{module}::{name}"))
+                Type::Named(DefId::new(0, format!("{module}::{name}")))
             }
         }
         "reference_type" => {

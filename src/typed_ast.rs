@@ -6,7 +6,79 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
 
-#[derive(Debug, Clone, PartialEq)]
+pub use crate::ast::DefId;
+
+/// Identity of a struct/enum type *instance*: the defining generic's provenance
+/// (`DefId`) plus concrete monomorphization arguments (empty for a non-generic
+/// type). Replaces the old pre-mangled identity string — the unique C symbol is
+/// rendered later, in `mangled_ast`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TypeId {
+    pub def: DefId,
+    pub args: Vec<Type>,
+}
+
+impl TypeId {
+    /// A non-generic type identity (no monomorphization args).
+    pub fn plain(def: DefId) -> Self {
+        TypeId {
+            def,
+            args: Vec::new(),
+        }
+    }
+}
+
+impl fmt::Display for TypeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.def.name)?;
+        if !self.args.is_empty() {
+            write!(f, "#[")?;
+            for (i, a) in self.args.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{a}")?;
+            }
+            write!(f, "]")?;
+        }
+        Ok(())
+    }
+}
+
+/// Identity of a function/method *instance*: its provenance (`def` — file + base
+/// name), the concrete arguments that disambiguate it (parameter types for a
+/// concrete overload, type arguments for a generic instantiation; for a method,
+/// the receiver type is the first arg), an optional overload-disambiguation
+/// index, and whether it is a method. `mangled_ast` renders this to the final C
+/// symbol (`__method_`-prefixed and base-name-bare for methods; module-prefixed
+/// otherwise; `_ov{n}` suffix when `overload` is set).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FuncId {
+    pub def: DefId,
+    pub args: Vec<Type>,
+    pub overload: Option<usize>,
+    pub method: bool,
+}
+
+impl FuncId {
+    /// A free-function identity with the given disambiguating args.
+    pub fn free(def: DefId, args: Vec<Type>) -> Self {
+        FuncId {
+            def,
+            args,
+            overload: None,
+            method: false,
+        }
+    }
+}
+
+impl fmt::Display for FuncId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.def.name)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     Int8,
     Int16,
@@ -21,8 +93,8 @@ pub enum Type {
     Float32,
     Float64,
     Bool,
-    Struct(String),
-    Enum(String),
+    Struct(TypeId),
+    Enum(TypeId),
     Array(Box<Type>),
     FixedArray(Box<Type>, u64),
     Ref(Box<Type>),
@@ -112,7 +184,7 @@ impl Type {
         matches!(self, Type::NullableRef(_) | Type::NullableRefUnsized(_))
     }
 
-    pub fn is_sized(&self, structs: &HashMap<String, StructDef>) -> bool {
+    pub fn is_sized(&self, structs: &HashMap<TypeId, StructDef>) -> bool {
         match self {
             Type::Array(_) => false,
             Type::FixedArray(_, _) | Type::Function { .. } => true,
@@ -144,8 +216,8 @@ impl fmt::Display for Type {
             Type::Float32 => write!(f, "Float32"),
             Type::Float64 => write!(f, "Float64"),
             Type::Bool => write!(f, "Bool"),
-            Type::Struct(name) => write!(f, "{name}"),
-            Type::Enum(name) => write!(f, "{name}"),
+            Type::Struct(id) => write!(f, "{id}"),
+            Type::Enum(id) => write!(f, "{id}"),
             Type::Array(inner) => write!(f, "[{inner}]"),
             Type::FixedArray(inner, n) => write!(f, "[{inner}; {n}]"),
             Type::Ref(inner) => write!(f, "&{inner}"),
@@ -203,6 +275,18 @@ fn body_tail_is_place(body: &[Statement]) -> bool {
     })
 }
 
+/// Synthetic `DefId` name for anonymous tuple types (rendered to the `0T…`
+/// mangling in `mangled_ast`).
+pub(crate) const TUPLE_DEF_NAME: &str = "0tuple";
+
+/// The provenance `DefId` of a top-level definition — its defining file (from
+/// its span, set by `resolve`) plus its un-mangled source name. `resolve` no
+/// longer renames definition names, so this is the identity references resolve
+/// to as well.
+fn def_id_of_def(name: &str, span: ast::SourceSpan) -> DefId {
+    DefId::new(span.file_id, name)
+}
+
 fn from_ast_type(ty: &ast::Type) -> Type {
     from_ast_type_with_subst(ty, &HashMap::new())
 }
@@ -210,10 +294,11 @@ fn from_ast_type(ty: &ast::Type) -> Type {
 fn from_ast_type_with_subst(ty: &ast::Type, subst: &HashMap<String, Type>) -> Type {
     match ty {
         ast::Type::Named(name) => {
-            if let Some(concrete) = subst.get(name) {
+            // A type-parameter substitution (keyed by the bare parameter name).
+            if let Some(concrete) = subst.get(&name.name) {
                 return concrete.clone();
             }
-            match name.as_str() {
+            match name.name.as_str() {
                 "Int8" => Type::Int8,
                 "Int16" => Type::Int16,
                 "Int32" => Type::Int32,
@@ -231,7 +316,9 @@ fn from_ast_type_with_subst(ty: &ast::Type, subst: &HashMap<String, Type>) -> Ty
                 // `Unit` names the unit type — the type printer already emits it
                 // (e.g. as a function's inferred return), so it must round-trip.
                 "Unit" => Type::Unit,
-                other => Type::Struct(other.to_string()),
+                // Otherwise a struct/enum reference — its real provenance `DefId`
+                // was resolved by `resolve` and carried on the AST node directly.
+                _ => Type::Struct(TypeId::plain(name.clone())),
             }
         }
         ast::Type::Generic { name, type_args } => {
@@ -239,8 +326,10 @@ fn from_ast_type_with_subst(ty: &ast::Type, subst: &HashMap<String, Type>) -> Ty
                 .iter()
                 .map(|t| from_ast_type_with_subst(t, subst))
                 .collect();
-            let mangled = mangle_name(name, &concrete_args);
-            Type::Struct(mangled)
+            Type::Struct(TypeId {
+                def: name.clone(),
+                args: concrete_args,
+            })
         }
         ast::Type::Reference(inner) => Type::Ref(Box::new(from_ast_type_with_subst(inner, subst))),
         ast::Type::NullableReference(inner) => {
@@ -271,8 +360,10 @@ fn from_ast_type_with_subst(ty: &ast::Type, subst: &HashMap<String, Type>) -> Ty
                 .iter()
                 .map(|t| from_ast_type_with_subst(t, subst))
                 .collect();
-            let mangled = mangle_tuple_name(&concrete_args);
-            Type::Struct(mangled)
+            Type::Struct(TypeId {
+                def: DefId::synthetic(TUPLE_DEF_NAME),
+                args: concrete_args,
+            })
         }
         ast::Type::Infer => panic!("cannot resolve Infer type without context"),
     }
@@ -281,7 +372,7 @@ fn from_ast_type_with_subst(ty: &ast::Type, subst: &HashMap<String, Type>) -> Ty
 fn apply_subst_to_ast_type(ty: &ast::Type, subst: &HashMap<String, ast::Type>) -> ast::Type {
     match ty {
         ast::Type::Named(name) => {
-            if let Some(replacement) = subst.get(name) {
+            if let Some(replacement) = subst.get(&name.name) {
                 replacement.clone()
             } else {
                 ty.clone()
@@ -334,6 +425,7 @@ fn apply_subst_to_ast_type(ty: &ast::Type, subst: &HashMap<String, ast::Type>) -
 fn apply_subst_to_ast_expr(expr: &ast::Expr, subst: &HashMap<String, ast::Type>) -> ast::Expr {
     let kind = match &expr.kind {
         ast::ExprKind::Identifier(_)
+        | ast::ExprKind::GlobalRef(_)
         | ast::ExprKind::IntegerLiteral(_, _)
         | ast::ExprKind::FloatLiteral(_, _)
         | ast::ExprKind::BooleanLiteral(_) => expr.kind.clone(),
@@ -775,17 +867,17 @@ fn is_literal_default(e: &ast::Expr) -> bool {
 /// Infer the `ast::Type` of a literal default expression (see [`is_literal_default`]).
 fn literal_default_type(e: &ast::Expr) -> Option<ast::Type> {
     match &e.kind {
-        ast::ExprKind::FloatLiteral(_, ft) => Some(ast::Type::Named(
+        ast::ExprKind::FloatLiteral(_, ft) => Some(ast::Type::Named(DefId::new(
+            0,
             match ft {
                 ast::FloatType::Float32 => "Float32",
                 ast::FloatType::Float64 => "Float64",
-            }
-            .to_string(),
-        )),
+            },
+        ))),
         ast::ExprKind::IntegerLiteral(_, it) => {
-            Some(ast::Type::Named(integer_type_ast_name(it).to_string()))
+            Some(ast::Type::Named(DefId::new(0, integer_type_ast_name(it))))
         }
-        ast::ExprKind::BooleanLiteral(_) => Some(ast::Type::Named("Bool".to_string())),
+        ast::ExprKind::BooleanLiteral(_) => Some(ast::Type::Named(DefId::new(0, "Bool"))),
         ast::ExprKind::ArrayLiteral(elems, elem_ty) => {
             Some(ast::Type::Slice(Box::new(match elem_ty {
                 Some(ty) => ty.clone(),
@@ -861,107 +953,13 @@ fn pattern_name(pat: &ast::DestructurePattern) -> &str {
     }
 }
 
-// --- Name mangling ---
-//
-// The mangling below is INJECTIVE and REVERSIBLE: distinct Solar entities map to
-// distinct C identifiers, and the original name can be recovered from the symbol
-// alone (no side table). `solar-system/src/panic.rs::demangle_solar` is the exact
-// inverse — keep the two in sync.
-//
-// The key primitive is a self-delimiting identifier `enc_id(s) = "<byte-len>_<s>"`:
-// to read it, take the decimal run up to the first `_`, skip the `_`, then take
-// that many bytes — so `s` may itself contain `_` or digits with no ambiguity.
-//
-// Grammar (all fragments are valid C identifier characters `[A-Za-z0-9_]`):
-//   type     := leaf | 'R' type | 'Q' type | 'U' type | 'S' type
-//             | 'A' <n> '_' type                       (fixed array of n)
-//             | 'F' <n> '_' type{n} type               (fn: n params then return)
-//   leaf     := enc_id(canonical-name)                 (primitive / struct / enum)
-//   name     := base                                   (no type args)
-//             | enc_id(base) 'G' <n> '_' type{n}        (generic / overload-keyed)
-//   tuple    := "0T" <n> '_' type{n}                   ("0T" can't start a Solar ident)
-// A type position dispatches on its first byte: a digit starts a leaf (`enc_id`),
-// the tags R/Q/U/S/A/F start a constructor. `R` covers `&`, `Q` `&?`, `U` `^`,
-// `S` `[T]`. Struct/enum leaves embed their own (already mangled) identity, so the
-// demangler recurses into them to render e.g. `Box#[Int]`.
-
-/// Self-delimiting identifier encoding (see module note above).
-fn enc_id(s: &str) -> String {
-    format!("{}_{}", s.len(), s)
-}
-
-fn mangle_name(base: &str, concrete_args: &[Type]) -> String {
-    if concrete_args.is_empty() {
-        // No type args (e.g. a non-generic, non-overloaded entity): keep the bare
-        // name so identities like module structs stay readable.
-        base.to_string()
-    } else {
-        let mut name = format!("{}G{}_", enc_id(base), concrete_args.len());
-        for arg in concrete_args {
-            name.push_str(&mangle_type(arg));
-        }
-        name
-    }
-}
-
-fn mangle_type(ty: &Type) -> String {
-    match ty {
-        Type::Int8 => enc_id("Int8"),
-        Type::Int16 => enc_id("Int16"),
-        Type::Int32 => enc_id("Int32"),
-        Type::Int64 => enc_id("Int64"),
-        Type::Int => enc_id("Int"),
-        Type::Uint8 => enc_id("Uint8"),
-        Type::Uint16 => enc_id("Uint16"),
-        Type::Uint32 => enc_id("Uint32"),
-        Type::Uint64 => enc_id("Uint64"),
-        Type::Uint => enc_id("Uint"),
-        Type::Float32 => enc_id("Float32"),
-        Type::Float64 => enc_id("Float64"),
-        Type::Bool => enc_id("Bool"),
-        Type::Struct(name) | Type::Enum(name) => enc_id(name),
-        Type::Ref(inner) | Type::RefUnsized(inner) => format!("R{}", mangle_type(inner)),
-        Type::NullableRef(inner) | Type::NullableRefUnsized(inner) => {
-            format!("Q{}", mangle_type(inner))
-        }
-        Type::Unique(inner) | Type::UniqueUnsized(inner) => format!("U{}", mangle_type(inner)),
-        Type::Array(inner) => format!("S{}", mangle_type(inner)),
-        Type::FixedArray(inner, n) => format!("A{}_{}", n, mangle_type(inner)),
-        Type::Function {
-            params,
-            return_type,
-        } => {
-            let mut s = format!("F{}_", params.len());
-            for p in params {
-                s.push_str(&mangle_type(p));
-            }
-            s.push_str(&mangle_type(return_type));
-            s
-        }
-        Type::FileDesc => enc_id("FileDesc"),
-        Type::Unit => enc_id("Unit"),
-        Type::Never => enc_id("Never"),
-    }
-}
-
-fn mangle_tuple_name(element_types: &[Type]) -> String {
-    // "0T" prefix: starts with a digit so it can't be a Solar identifier, and the
-    // leading `0` distinguishes it from an `enc_id` length (which never has a
-    // leading zero).
-    let mut name = format!("0T{}_", element_types.len());
-    for ty in element_types {
-        name.push_str(&mangle_type(ty));
-    }
-    name
-}
-
 // --- Typed AST nodes ---
 
 #[derive(Debug)]
 pub struct SourceFile {
-    pub structs: HashMap<String, StructDef>,
-    pub enums: HashMap<String, EnumDef>,
-    pub functions: HashMap<String, FunctionDef>,
+    pub structs: HashMap<TypeId, StructDef>,
+    pub enums: HashMap<TypeId, EnumDef>,
+    pub functions: HashMap<FuncId, FunctionDef>,
     /// Top-level `static` declarations, in source order. Each init is the
     /// lowered literal expression; downstream layers store it into the global
     /// before `main`'s body runs.
@@ -970,14 +968,14 @@ pub struct SourceFile {
 
 #[derive(Debug, Clone)]
 pub struct StaticItem {
-    pub name: String,
+    pub id: DefId,
     pub ty: Type,
     pub init: Expr,
 }
 
 #[derive(Debug, Clone)]
 pub struct StructDef {
-    pub name: String,
+    pub id: TypeId,
     pub fields: Vec<FieldDef>,
 }
 
@@ -989,7 +987,7 @@ pub struct FieldDef {
 
 #[derive(Debug, Clone)]
 pub struct FunctionDef {
-    pub name: String,
+    pub id: FuncId,
     pub parameters: Vec<Parameter>,
     pub return_type: Type,
     pub body: Vec<Statement>,
@@ -1049,7 +1047,7 @@ pub enum ExprKind {
     /// A float literal; the expression's `ty` selects Float32/Float64.
     FloatLiteral(f64),
     /// A reference to a top-level `static` (a global mutable place).
-    Global(String),
+    Global(DefId),
     IntegerLiteral(i64),
     BooleanLiteral(bool),
     FieldAccess {
@@ -1066,16 +1064,16 @@ pub enum ExprKind {
     /// concrete `NullableRef`/`NullableRefUnsized` type.
     NullLiteral,
     Call {
-        function: String,
+        function: FuncId,
         arguments: Vec<Expr>,
     },
-    FunctionRef(String),
+    FunctionRef(FuncId),
     CallIndirect {
         callee: Box<Expr>,
         arguments: Vec<Expr>,
     },
     StructLiteral {
-        name: String,
+        id: TypeId,
         fields: Vec<FieldInit>,
     },
     Index {
@@ -1117,7 +1115,7 @@ pub enum ExprKind {
         captures: Vec<CapturedVar>,
     },
     EnumVariant {
-        enum_name: String,
+        enum_id: TypeId,
         variant_name: String,
         variant_index: usize,
         value: Option<Box<Expr>>,
@@ -1146,7 +1144,7 @@ pub struct CapturedVar {
 
 #[derive(Debug, Clone)]
 pub struct EnumDef {
-    pub name: String,
+    pub id: TypeId,
     pub variants: Vec<EnumVariantDef>,
 }
 
@@ -1166,7 +1164,7 @@ pub struct TypedMatchArm {
 #[derive(Debug, Clone)]
 pub enum TypedPattern {
     Variant {
-        enum_name: String,
+        enum_id: TypeId,
         variant_name: String,
         variant_index: usize,
         binding: Option<(String, Type)>,
@@ -1215,7 +1213,7 @@ struct FunctionEntry {
 struct MethodIndex {
     /// Concrete entries (indices into `method_defs[name]`) whose first param's
     /// resolved type has a struct/enum base name, grouped by that name.
-    by_base: HashMap<String, Vec<usize>>,
+    by_base: HashMap<DefId, Vec<usize>>,
     /// Concrete entries with a non-struct/enum (or unresolvable) first param.
     /// Always considered — coercions never change a struct/enum base name, so
     /// these are the only concrete entries a non-matching receiver could hit.
@@ -1242,8 +1240,8 @@ fn compare_type_specificity(
     b: &ast::Type,
     b_type_params: &[String],
 ) -> Ordering {
-    let a_is_param = matches!(a, ast::Type::Named(n) if a_type_params.contains(n));
-    let b_is_param = matches!(b, ast::Type::Named(n) if b_type_params.contains(n));
+    let a_is_param = matches!(a, ast::Type::Named(n) if a_type_params.contains(&n.name));
+    let b_is_param = matches!(b, ast::Type::Named(n) if b_type_params.contains(&n.name));
     match (a_is_param, b_is_param) {
         (true, false) => Ordering::Less,    // b is more specific
         (false, true) => Ordering::Greater, // a is more specific
@@ -1330,17 +1328,17 @@ fn types_alpha_equivalent(
     mapping: &mut HashMap<String, String>,
     reverse: &mut HashMap<String, String>,
 ) -> bool {
-    let a_is_param = matches!(a, ast::Type::Named(n) if a_type_params.contains(n));
-    let b_is_param = matches!(b, ast::Type::Named(n) if b_type_params.contains(n));
+    let a_is_param = matches!(a, ast::Type::Named(n) if a_type_params.contains(&n.name));
+    let b_is_param = matches!(b, ast::Type::Named(n) if b_type_params.contains(&n.name));
     match (a_is_param, b_is_param) {
         (true, true) => {
             let a_name = if let ast::Type::Named(n) = a {
-                n
+                &n.name
             } else {
                 unreachable!()
             };
             let b_name = if let ast::Type::Named(n) = b {
-                n
+                &n.name
             } else {
                 unreachable!()
             };
@@ -1460,7 +1458,7 @@ fn params_alpha_equivalent(
 /// Check that every type param appears somewhere in the parameter types.
 fn type_param_appears_in(ty: &ast::Type, param: &str) -> bool {
     match ty {
-        ast::Type::Named(name) => name == param,
+        ast::Type::Named(name) => name.name == param,
         ast::Type::Generic { type_args, .. } => {
             type_args.iter().any(|t| type_param_appears_in(t, param))
         }
@@ -1484,34 +1482,33 @@ fn type_param_appears_in(ty: &ast::Type, param: &str) -> bool {
 }
 
 struct Lowerer<'a> {
-    structs: HashMap<String, &'a ast::StructDef>,
-    enums: HashMap<String, &'a ast::EnumDef>,
-    generic_structs: HashMap<String, GenericStructDef>,
-    generic_enums: HashMap<String, GenericEnumDef>,
-    function_defs: HashMap<String, Vec<FunctionEntry>>,
+    structs: HashMap<DefId, &'a ast::StructDef>,
+    enums: HashMap<DefId, &'a ast::EnumDef>,
+    generic_structs: HashMap<DefId, GenericStructDef>,
+    generic_enums: HashMap<DefId, GenericEnumDef>,
+    function_defs: HashMap<DefId, Vec<FunctionEntry>>,
     method_defs: HashMap<String, Vec<FunctionEntry>>,
     /// Lazily-built per-name receiver index over `method_defs` (see `MethodIndex`).
     method_index: HashMap<String, MethodIndex>,
     /// Mangled function/method name → original un-mangled name, for diagnostics.
-    display_names: HashMap<String, String>,
     /// Maps mangled function name → AST def (populated in lower_all for concrete functions)
-    concrete_ast_defs: HashMap<String, Rc<ast::FunctionDef>>,
-    lowered_structs: HashMap<String, StructDef>,
-    lowered_enums: HashMap<String, EnumDef>,
-    monomorphized_functions: HashMap<String, FunctionDef>,
+    concrete_ast_defs: HashMap<FuncId, Rc<ast::FunctionDef>>,
+    lowered_structs: HashMap<TypeId, StructDef>,
+    lowered_enums: HashMap<TypeId, EnumDef>,
+    monomorphized_functions: HashMap<FuncId, FunctionDef>,
     /// Mangled names whose monomorphization is currently on the Rust call
     /// stack (body being lowered). Used to give a clean error for recursive
     /// generic functions with an *inferred* return type — with an explicit
     /// one, the recursive call is served by the signature stub cached in
     /// `monomorphized_functions` before the body is lowered.
-    monomorphizing: HashSet<String>,
+    monomorphizing: HashSet<FuncId>,
     /// Depth of nested `ensure_function_monomorphized_with_def` calls. Bounds
     /// polymorphic recursion (`f#[T]` calling `f#[Box#[T]]` — a genuinely
     /// infinite family of instantiations) with a clean error instead of a
     /// stack overflow.
     mono_depth: usize,
-    resolved_return_types: HashMap<String, Type>,
-    resolving_return_types: Vec<String>,
+    resolved_return_types: HashMap<FuncId, Type>,
+    resolving_return_types: Vec<FuncId>,
     scopes: ScopeStack<Type>,
     current_return_type: Option<Type>,
     current_return_type_span: Option<ast::SourceSpan>,
@@ -1526,19 +1523,18 @@ struct Lowerer<'a> {
     /// from above an outer closure forces the outer closure to capture it too
     /// (transitive capture through nesting).
     capture_contexts: Vec<CaptureContext>,
-    reverse_mono: HashMap<String, (String, Vec<Type>)>,
     nested_function_defs: Vec<HashMap<String, Vec<FunctionEntry>>>,
-    type_aliases: HashMap<String, (Vec<String>, ast::Type)>,
+    type_aliases: HashMap<DefId, (Vec<String>, ast::Type)>,
     /// Top-level const declarations, by (possibly module-mangled) name. Their
     /// literal values are substituted at each use site during lowering.
-    consts: HashMap<String, &'a ast::ConstDef>,
+    consts: HashMap<DefId, &'a ast::ConstDef>,
     /// Block-scoped local const declarations, pushed/popped with `scopes`.
     const_scopes: Vec<HashMap<String, ast::ConstDef>>,
     /// Top-level `static` declarations (globals), in source order.
     static_defs: Vec<&'a ast::StaticDef>,
     /// Resolved types of the statics, by name — filled early in `lower_all` so
     /// function bodies can reference them as `ExprKind::Global` places.
-    statics: HashMap<String, Type>,
+    statics: HashMap<DefId, Type>,
     /// Stack of enclosing loops in the *current* function. Cleared when entering
     /// a closure or nested function so `break`/`continue` can't escape into an
     /// outer function's loop. Each entry tracks whether the loop is a value-
@@ -1574,31 +1570,30 @@ struct LoopCtx {
 
 impl<'a> Lowerer<'a> {
     fn new(source: &'a ast::SourceFile) -> Result<Self, CompileError> {
-        let mut structs: HashMap<String, &ast::StructDef> = HashMap::new();
-        let mut enums = HashMap::new();
-        let mut generic_structs = HashMap::new();
-        let mut generic_enums = HashMap::new();
-        let mut function_defs: HashMap<String, Vec<FunctionEntry>> = HashMap::new();
+        let mut structs: HashMap<DefId, &ast::StructDef> = HashMap::new();
+        let mut enums: HashMap<DefId, &ast::EnumDef> = HashMap::new();
+        let mut generic_structs: HashMap<DefId, GenericStructDef> = HashMap::new();
+        let mut generic_enums: HashMap<DefId, GenericEnumDef> = HashMap::new();
+        let mut function_defs: HashMap<DefId, Vec<FunctionEntry>> = HashMap::new();
         let mut method_defs: HashMap<String, Vec<FunctionEntry>> = HashMap::new();
-        let mut display_names: HashMap<String, String> = HashMap::new();
-        let mut consts: HashMap<String, &ast::ConstDef> = HashMap::new();
+        let mut consts: HashMap<DefId, &ast::ConstDef> = HashMap::new();
         let mut static_defs: Vec<&ast::StaticDef> = Vec::new();
         let mut static_names: HashSet<&str> = HashSet::new();
         for item in &source.items {
             match item {
                 ast::TopLevelItem::Struct(s) => {
                     if s.type_params.is_empty() {
-                        if let Some(prev) = structs.get(&s.name) {
+                        if let Some(prev) = structs.get(&s.def_id) {
                             return Err(CompileError::new(
-                                format!("duplicate struct definition: `{}`", s.name),
+                                format!("duplicate struct definition: `{}`", s.def_id.name),
                                 s.span,
                             )
                             .with_label("first defined here", prev.span));
                         }
-                        structs.insert(s.name.clone(), s);
+                        structs.insert(s.def_id.clone(), s);
                     } else if generic_structs
                         .insert(
-                            s.name.clone(),
+                            s.def_id.clone(),
                             GenericStructDef {
                                 type_params: s.type_params.clone(),
                                 ast_def: s.clone(),
@@ -1614,15 +1609,15 @@ impl<'a> Lowerer<'a> {
                 }
                 ast::TopLevelItem::Enum(e) => {
                     if e.type_params.is_empty() {
-                        if enums.insert(e.name.clone(), e).is_some() {
+                        if enums.insert(e.def_id.clone(), e).is_some() {
                             return Err(CompileError::new(
-                                format!("duplicate enum definition: `{}`", e.name),
+                                format!("duplicate enum definition: `{}`", e.def_id.name),
                                 e.span,
                             ));
                         }
                     } else if generic_enums
                         .insert(
-                            e.name.clone(),
+                            e.def_id.clone(),
                             GenericEnumDef {
                                 type_params: e.type_params.clone(),
                                 ast_def: e.clone(),
@@ -1639,8 +1634,9 @@ impl<'a> Lowerer<'a> {
                 ast::TopLevelItem::Function(f) => {
                     let mut f = f.clone();
                     prepare_keyword_params(&mut f)?;
-                    display_names.insert(f.name.clone(), f.display_name.clone());
-                    let entries = function_defs.entry(f.name.clone()).or_default();
+                    let entries = function_defs
+                        .entry(def_id_of_def(&f.name, f.span))
+                        .or_default();
                     let overload_index = entries.len();
                     entries.push(FunctionEntry {
                         type_params: f.type_params.clone(),
@@ -1660,7 +1656,6 @@ impl<'a> Lowerer<'a> {
                     }
                     let mut m = m.clone();
                     prepare_keyword_params(&mut m)?;
-                    display_names.insert(m.name.clone(), m.display_name.clone());
                     let entries = method_defs.entry(m.name.clone()).or_default();
                     let overload_index = entries.len();
                     entries.push(FunctionEntry {
@@ -1679,7 +1674,7 @@ impl<'a> Lowerer<'a> {
                             c.value.span,
                         ));
                     }
-                    if consts.insert(c.name.clone(), c).is_some() {
+                    if consts.insert(def_id_of_def(&c.name, c.span), c).is_some() {
                         return Err(CompileError::new(
                             format!("duplicate const definition: `{}`", c.name),
                             c.span,
@@ -1711,12 +1706,14 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        // Collect type aliases
-        let mut type_aliases: HashMap<String, (Vec<String>, ast::Type)> = HashMap::new();
+        // Collect type aliases, keyed by their provenance `DefId` (decoded from
+        // the resolver-renamed name, or file `0` on the resolve-bypassing raw
+        // path — matching how a type reference's `DefId` is formed).
+        let mut type_aliases: HashMap<DefId, (Vec<String>, ast::Type)> = HashMap::new();
         for item in &source.items {
             if let ast::TopLevelItem::TypeAlias(ta) = item {
                 type_aliases.insert(
-                    ta.name.clone(),
+                    def_id_of_def(&ta.name, ta.span),
                     (ta.type_params.clone(), ta.target_type.clone()),
                 );
             }
@@ -1724,9 +1721,13 @@ impl<'a> Lowerer<'a> {
 
         // Validate function and method entries: duplicate concrete overloads, unused type params,
         // alpha-equivalent collision detection
-        let all_defs: Vec<(&str, &HashMap<String, Vec<FunctionEntry>>)> =
-            vec![("function", &function_defs), ("method", &method_defs)];
-        for (kind, defs) in all_defs {
+        let function_entries: Vec<(String, &Vec<FunctionEntry>)> = function_defs
+            .iter()
+            .map(|(d, e)| (d.name.clone(), e))
+            .collect();
+        let method_entries: Vec<(String, &Vec<FunctionEntry>)> =
+            method_defs.iter().map(|(n, e)| (n.clone(), e)).collect();
+        for (kind, defs) in [("function", function_entries), ("method", method_entries)] {
             for (name, entries) in defs {
                 // Check duplicate concrete overloads (same param types among
                 // concrete entries). Grouped by a structural key of the param
@@ -1817,7 +1818,6 @@ impl<'a> Lowerer<'a> {
             function_defs,
             method_defs,
             method_index: HashMap::new(),
-            display_names,
             concrete_ast_defs: HashMap::new(),
             lowered_structs: HashMap::new(),
             lowered_enums: HashMap::new(),
@@ -1834,7 +1834,6 @@ impl<'a> Lowerer<'a> {
             for_counter: 0,
             pending_closures: Vec::new(),
             capture_contexts: Vec::new(),
-            reverse_mono: HashMap::new(),
             nested_function_defs: Vec::new(),
             type_aliases,
             consts,
@@ -1848,25 +1847,20 @@ impl<'a> Lowerer<'a> {
         })
     }
 
-    /// The un-mangled name of a function/method for diagnostics, falling back to
-    /// the raw (mangled) name if unknown.
+    /// The un-mangled name of a function/method for diagnostics. Definition
+    /// names are no longer renamed by `resolve`, so this is now the identity.
     fn display_name<'n>(&'n self, name: &'n str) -> &'n str {
-        self.display_names
-            .get(name)
-            .map(String::as_str)
-            .unwrap_or(name)
+        name
     }
 
     /// Look up the AST struct definition for a (possibly monomorphized) struct name.
     /// Returns the ast::StructDef which has span.file_id and field is_pub info.
-    fn ast_struct_def(&self, struct_name: &str) -> Option<&ast::StructDef> {
-        if let Some(def) = self.structs.get(struct_name) {
+    fn ast_struct_def(&self, id: &TypeId) -> Option<&ast::StructDef> {
+        if let Some(def) = self.structs.get(&id.def) {
             return Some(def);
         }
-        // For monomorphized generic structs, look up the original name
-        if let Some((original_name, _)) = self.reverse_mono.get(struct_name)
-            && let Some(gdef) = self.generic_structs.get(original_name)
-        {
+        // Monomorphized generic structs resolve to their generic template.
+        if let Some(gdef) = self.generic_structs.get(&id.def) {
             return Some(&gdef.ast_def);
         }
         None
@@ -1876,11 +1870,11 @@ impl<'a> Lowerer<'a> {
     /// Non-pub fields can only be accessed from the same file where the struct is defined.
     fn check_field_visibility(
         &self,
-        struct_name: &str,
+        struct_id: &TypeId,
         field_name: &str,
         access_span: ast::SourceSpan,
     ) -> Result<(), CompileError> {
-        if let Some(ast_def) = self.ast_struct_def(struct_name)
+        if let Some(ast_def) = self.ast_struct_def(struct_id)
             && access_span.file_id != ast_def.span.file_id
             && let Some(field) = ast_def.fields.iter().find(|f| f.name == field_name)
             && !field.is_pub
@@ -1897,8 +1891,11 @@ impl<'a> Lowerer<'a> {
     /// Also resolves `Struct(name)` → `Enum(name)` when name refers to an enum.
     fn resolve_refs(&self, ty: Type) -> Type {
         match ty {
-            Type::Struct(ref name) if self.lowered_enums.contains_key(name) => {
-                Type::Enum(name.clone())
+            Type::Struct(ref id)
+                if self.lowered_enums.contains_key(id)
+                    || (id.args.is_empty() && self.enums.contains_key(&id.def)) =>
+            {
+                Type::Enum(id.clone())
             }
             Type::Ref(inner) => {
                 let inner = self.resolve_refs(*inner);
@@ -1949,13 +1946,36 @@ impl<'a> Lowerer<'a> {
 
     /// Look up a const declaration in scope: innermost local const scope first,
     /// then top-level consts.
+    /// Look up a **local** (block-scoped) const by bare name. Top-level consts
+    /// are referenced via `GlobalRef` and resolved through `self.consts`.
     fn lookup_const(&self, name: &str) -> Option<ast::ConstDef> {
         for scope in self.const_scopes.iter().rev() {
             if let Some(c) = scope.get(name) {
                 return Some(c.clone());
             }
         }
-        self.consts.get(name).map(|c| (*c).clone())
+        None
+    }
+
+    /// Lower a const's literal value at a use site (coercing to its annotation).
+    fn lower_const_value(&mut self, cdef: &ast::ConstDef) -> Result<Expr, CompileError> {
+        let value = self.lower_expr(&cdef.value)?;
+        if let Some(ann) = &cdef.ty {
+            let resolved = self.resolve_ast_type(ann)?;
+            let coerced = self.try_coerce(value, &resolved);
+            if coerced.ty != resolved {
+                return Err(CompileError::new(
+                    format!(
+                        "const `{}`: value of type {} does not match declared type {resolved}",
+                        cdef.name, coerced.ty
+                    ),
+                    cdef.value.span,
+                ));
+            }
+            Ok(coerced)
+        } else {
+            Ok(value)
+        }
     }
 
     fn define_var(&mut self, name: String, ty: Type) {
@@ -2153,7 +2173,7 @@ impl<'a> Lowerer<'a> {
 
     /// Resolve a type alias, returning the target type with type args substituted.
     /// Returns None if the name is not an alias.
-    fn resolve_type_alias(&self, name: &str, type_args: &[ast::Type]) -> Option<ast::Type> {
+    fn resolve_type_alias(&self, name: &DefId, type_args: &[ast::Type]) -> Option<ast::Type> {
         let (params, target) = self.type_aliases.get(name)?;
         if params.is_empty() && type_args.is_empty() {
             Some(target.clone())
@@ -2182,12 +2202,12 @@ impl<'a> Lowerer<'a> {
                 if let Some(resolved) = self.resolve_type_alias(name, type_args) {
                     return self.resolve_ast_type(&resolved);
                 }
-                if self.generic_structs.contains_key(name.as_str()) {
-                    let mangled = self.ensure_struct_monomorphized(name, type_args)?;
-                    Ok(Type::Struct(mangled))
-                } else if self.generic_enums.contains_key(name.as_str()) {
-                    let mangled = self.ensure_enum_monomorphized(name, type_args)?;
-                    Ok(Type::Enum(mangled))
+                if self.generic_structs.contains_key(name) {
+                    let id = self.ensure_struct_monomorphized(name, type_args)?;
+                    Ok(Type::Struct(id))
+                } else if self.generic_enums.contains_key(name) {
+                    let id = self.ensure_enum_monomorphized(name, type_args)?;
+                    Ok(Type::Enum(id))
                 } else {
                     Err(CompileError::new(
                         format!("undefined generic type: {name}"),
@@ -2267,7 +2287,7 @@ impl<'a> Lowerer<'a> {
     ) -> Result<Type, CompileError> {
         match ty {
             ast::Type::Named(name) => {
-                if let Some(replacement) = subst.get(name) {
+                if let Some(replacement) = subst.get(&name.name) {
                     self.resolve_ast_type(replacement)
                 } else {
                     self.resolve_ast_type(ty)
@@ -2350,9 +2370,9 @@ impl<'a> Lowerer<'a> {
 
     fn resolve_struct_name(
         &mut self,
-        name: &str,
+        name: &DefId,
         type_args: &[ast::Type],
-    ) -> Result<String, CompileError> {
+    ) -> Result<TypeId, CompileError> {
         // Check if name is a type alias that resolves to a struct
         if let Some(resolved) = self.resolve_type_alias(name, type_args) {
             return match &resolved {
@@ -2369,13 +2389,15 @@ impl<'a> Lowerer<'a> {
         }
         if type_args.is_empty() {
             // Non-generic struct
-            if !(self.structs.contains_key(name) || self.lowered_structs.contains_key(name)) {
+            let def = name.clone();
+            let id = TypeId::plain(def.clone());
+            if !(self.structs.contains_key(&def) || self.lowered_structs.contains_key(&id)) {
                 return Err(CompileError::new(
-                    format!("undefined struct: {name}"),
+                    format!("undefined struct: {}", def.name),
                     ast::SourceSpan::default(),
                 ));
             }
-            Ok(name.to_string())
+            Ok(id)
         } else {
             self.ensure_struct_monomorphized(name, type_args)
         }
@@ -2383,9 +2405,9 @@ impl<'a> Lowerer<'a> {
 
     fn resolve_enum_name(
         &mut self,
-        name: &str,
+        name: &DefId,
         type_args: &[ast::Type],
-    ) -> Result<String, CompileError> {
+    ) -> Result<TypeId, CompileError> {
         // Check if name is a type alias that resolves to an enum
         if let Some(resolved) = self.resolve_type_alias(name, type_args) {
             return match &resolved {
@@ -2402,13 +2424,15 @@ impl<'a> Lowerer<'a> {
         }
         if type_args.is_empty() {
             // Non-generic enum
-            if !(self.enums.contains_key(name) || self.lowered_enums.contains_key(name)) {
+            let def = name.clone();
+            let id = TypeId::plain(def.clone());
+            if !(self.enums.contains_key(&def) || self.lowered_enums.contains_key(&id)) {
                 return Err(CompileError::new(
-                    format!("undefined enum: {name}"),
+                    format!("undefined enum: {}", def.name),
                     ast::SourceSpan::default(),
                 ));
             }
-            Ok(name.to_string())
+            Ok(id)
         } else {
             self.ensure_enum_monomorphized(name, type_args)
         }
@@ -2416,19 +2440,21 @@ impl<'a> Lowerer<'a> {
 
     fn ensure_struct_monomorphized(
         &mut self,
-        name: &str,
+        name: &DefId,
         type_args: &[ast::Type],
-    ) -> Result<String, CompileError> {
-        let gdef = self.generic_structs.get(name).ok_or_else(|| {
+    ) -> Result<TypeId, CompileError> {
+        let def = name.clone();
+        let gdef = self.generic_structs.get(&def).ok_or_else(|| {
             CompileError::new(
-                format!("undefined generic struct: {name}"),
+                format!("undefined generic struct: {}", def.name),
                 ast::SourceSpan::default(),
             )
         })?;
         if gdef.type_params.len() != type_args.len() {
             return Err(CompileError::new(
                 format!(
-                    "generic struct {name}: expected {} type arguments, got {}",
+                    "generic struct {}: expected {} type arguments, got {}",
+                    def.name,
                     gdef.type_params.len(),
                     type_args.len()
                 ),
@@ -2436,13 +2462,16 @@ impl<'a> Lowerer<'a> {
             ));
         }
 
-        // Build concrete type args to compute mangled name
+        // Build concrete type args -> the structural identity of this instance.
         let concrete_args: Vec<Type> = type_args.iter().map(from_ast_type).collect();
-        let mangled = mangle_name(name, &concrete_args);
+        let id = TypeId {
+            def: def.clone(),
+            args: concrete_args,
+        };
 
         // Already monomorphized?
-        if self.lowered_structs.contains_key(&mangled) {
-            return Ok(mangled);
+        if self.lowered_structs.contains_key(&id) {
+            return Ok(id);
         }
 
         // Build AST-level substitution map (type param name -> concrete ast::Type)
@@ -2458,9 +2487,9 @@ impl<'a> Lowerer<'a> {
 
         // Insert a placeholder to prevent infinite recursion for self-referential types
         self.lowered_structs.insert(
-            mangled.clone(),
+            id.clone(),
             StructDef {
-                name: mangled.clone(),
+                id: id.clone(),
                 fields: Vec::new(),
             },
         );
@@ -2476,27 +2505,27 @@ impl<'a> Lowerer<'a> {
             })
             .collect::<Result<Vec<_>, CompileError>>()?;
 
-        self.lowered_structs.get_mut(&mangled).unwrap().fields = fields;
-        self.reverse_mono
-            .insert(mangled.clone(), (name.to_string(), concrete_args));
-        Ok(mangled)
+        self.lowered_structs.get_mut(&id).unwrap().fields = fields;
+        Ok(id)
     }
 
     fn ensure_enum_monomorphized(
         &mut self,
-        name: &str,
+        name: &DefId,
         type_args: &[ast::Type],
-    ) -> Result<String, CompileError> {
-        let gdef = self.generic_enums.get(name).ok_or_else(|| {
+    ) -> Result<TypeId, CompileError> {
+        let def = name.clone();
+        let gdef = self.generic_enums.get(&def).ok_or_else(|| {
             CompileError::new(
-                format!("undefined generic enum: {name}"),
+                format!("undefined generic enum: {}", def.name),
                 ast::SourceSpan::default(),
             )
         })?;
         if gdef.type_params.len() != type_args.len() {
             return Err(CompileError::new(
                 format!(
-                    "generic enum {name}: expected {} type arguments, got {}",
+                    "generic enum {}: expected {} type arguments, got {}",
+                    def.name,
                     gdef.type_params.len(),
                     type_args.len()
                 ),
@@ -2504,13 +2533,16 @@ impl<'a> Lowerer<'a> {
             ));
         }
 
-        // Build concrete type args to compute mangled name
+        // Build concrete type args -> the structural identity of this instance.
         let concrete_args: Vec<Type> = type_args.iter().map(from_ast_type).collect();
-        let mangled = mangle_name(name, &concrete_args);
+        let id = TypeId {
+            def: def.clone(),
+            args: concrete_args,
+        };
 
         // Already monomorphized?
-        if self.lowered_enums.contains_key(&mangled) {
-            return Ok(mangled);
+        if self.lowered_enums.contains_key(&id) {
+            return Ok(id);
         }
 
         // Build AST-level substitution map
@@ -2541,23 +2573,24 @@ impl<'a> Lowerer<'a> {
             .collect::<Result<Vec<_>, CompileError>>()?;
 
         let edef = EnumDef {
-            name: mangled.clone(),
+            id: id.clone(),
             variants,
         };
-        self.lowered_enums.insert(mangled.clone(), edef);
-        self.reverse_mono
-            .insert(mangled.clone(), (name.to_string(), concrete_args));
-        Ok(mangled)
+        self.lowered_enums.insert(id.clone(), edef);
+        Ok(id)
     }
 
     /// Ensure a synthetic tuple struct exists for the given element types.
-    /// Returns the mangled name, e.g. `__Tuple_Int_Bool`.
-    fn ensure_tuple_struct(&mut self, element_types: &[Type]) -> String {
-        let mangled = mangle_tuple_name(element_types);
+    /// Returns its structural identity.
+    fn ensure_tuple_struct(&mut self, element_types: &[Type]) -> TypeId {
+        let id = TypeId {
+            def: DefId::synthetic(TUPLE_DEF_NAME),
+            args: element_types.to_vec(),
+        };
 
         // Already created?
-        if self.lowered_structs.contains_key(&mangled) {
-            return mangled;
+        if self.lowered_structs.contains_key(&id) {
+            return id;
         }
 
         let fields: Vec<FieldDef> = element_types
@@ -2570,34 +2603,46 @@ impl<'a> Lowerer<'a> {
             .collect();
 
         self.lowered_structs.insert(
-            mangled.clone(),
+            id.clone(),
             StructDef {
-                name: mangled.clone(),
+                id: id.clone(),
                 fields,
             },
         );
 
-        mangled
+        id
+    }
+
+    /// Reconstruct the AST enum name + type args for a lowered enum instance,
+    /// so a synthetically-built `ast::Pattern::Variant` re-resolves to it.
+    fn enum_pattern_parts(&self, id: &TypeId) -> (DefId, Vec<ast::Type>) {
+        (
+            id.def.clone(),
+            id.args
+                .iter()
+                .map(|a| self.concrete_type_to_ast_type(a))
+                .collect(),
+        )
     }
 
     fn concrete_type_to_ast_type(&self, ty: &Type) -> ast::Type {
         match ty {
-            Type::Int8 => ast::Type::Named("Int8".to_string()),
-            Type::Int16 => ast::Type::Named("Int16".to_string()),
-            Type::Int32 => ast::Type::Named("Int32".to_string()),
-            Type::Int64 => ast::Type::Named("Int64".to_string()),
-            Type::Int => ast::Type::Named("Int".to_string()),
-            Type::Uint8 => ast::Type::Named("Uint8".to_string()),
-            Type::Uint16 => ast::Type::Named("Uint16".to_string()),
-            Type::Uint32 => ast::Type::Named("Uint32".to_string()),
-            Type::Uint64 => ast::Type::Named("Uint64".to_string()),
-            Type::Uint => ast::Type::Named("Uint".to_string()),
-            Type::Float32 => ast::Type::Named("Float32".to_string()),
-            Type::Float64 => ast::Type::Named("Float64".to_string()),
-            Type::Bool => ast::Type::Named("Bool".to_string()),
-            Type::FileDesc => ast::Type::Named("FileDesc".to_string()),
-            Type::Unit => ast::Type::Named("Unit".to_string()),
-            Type::Never => ast::Type::Named("Never".to_string()),
+            Type::Int8 => ast::Type::Named(DefId::new(0, "Int8")),
+            Type::Int16 => ast::Type::Named(DefId::new(0, "Int16")),
+            Type::Int32 => ast::Type::Named(DefId::new(0, "Int32")),
+            Type::Int64 => ast::Type::Named(DefId::new(0, "Int64")),
+            Type::Int => ast::Type::Named(DefId::new(0, "Int")),
+            Type::Uint8 => ast::Type::Named(DefId::new(0, "Uint8")),
+            Type::Uint16 => ast::Type::Named(DefId::new(0, "Uint16")),
+            Type::Uint32 => ast::Type::Named(DefId::new(0, "Uint32")),
+            Type::Uint64 => ast::Type::Named(DefId::new(0, "Uint64")),
+            Type::Uint => ast::Type::Named(DefId::new(0, "Uint")),
+            Type::Float32 => ast::Type::Named(DefId::new(0, "Float32")),
+            Type::Float64 => ast::Type::Named(DefId::new(0, "Float64")),
+            Type::Bool => ast::Type::Named(DefId::new(0, "Bool")),
+            Type::FileDesc => ast::Type::Named(DefId::new(0, "FileDesc")),
+            Type::Unit => ast::Type::Named(DefId::new(0, "Unit")),
+            Type::Never => ast::Type::Named(DefId::new(0, "Never")),
             Type::NullableRef(inner) | Type::NullableRefUnsized(inner) => {
                 ast::Type::NullableReference(Box::new(self.concrete_type_to_ast_type(inner)))
             }
@@ -2625,17 +2670,25 @@ impl<'a> Lowerer<'a> {
                     Some(Box::new(self.concrete_type_to_ast_type(return_type)))
                 },
             },
-            Type::Struct(name) | Type::Enum(name) => {
-                if let Some((base_name, concrete_args)) = self.reverse_mono.get(name) {
+            Type::Struct(id) | Type::Enum(id) => {
+                if id.def.file == crate::ast::SYNTHETIC_FILE && id.def.name == TUPLE_DEF_NAME {
+                    ast::Type::Tuple(
+                        id.args
+                            .iter()
+                            .map(|t| self.concrete_type_to_ast_type(t))
+                            .collect(),
+                    )
+                } else if id.args.is_empty() {
+                    ast::Type::Named(id.def.clone())
+                } else {
                     ast::Type::Generic {
-                        name: base_name.clone(),
-                        type_args: concrete_args
+                        name: id.def.clone(),
+                        type_args: id
+                            .args
                             .iter()
                             .map(|t| self.concrete_type_to_ast_type(t))
                             .collect(),
                     }
-                } else {
-                    ast::Type::Named(name.clone())
                 }
             }
         }
@@ -2650,27 +2703,24 @@ impl<'a> Lowerer<'a> {
         bindings: &mut HashMap<String, ast::Type>,
     ) -> bool {
         match pattern {
-            ast::Type::Named(name) if type_params.contains(name) => {
+            ast::Type::Named(name) if type_params.contains(&name.name) => {
                 let inferred = self.concrete_type_to_ast_type(concrete);
-                if let Some(existing) = bindings.get(name) {
+                if let Some(existing) = bindings.get(&name.name) {
                     if *existing != inferred {
                         return false;
                     }
                 } else {
-                    bindings.insert(name.clone(), inferred);
+                    bindings.insert(name.name.clone(), inferred);
                 }
             }
             ast::Type::Named(_) => {}
             ast::Type::Generic { name, type_args } => match concrete {
-                Type::Struct(mangled) | Type::Enum(mangled) => {
-                    if let Some((base_name, concrete_args)) = self.reverse_mono.get(mangled)
-                        && base_name == name
-                        && concrete_args.len() == type_args.len()
-                    {
-                        for (pat_arg, conc_arg) in type_args.iter().zip(concrete_args.iter()) {
-                            if !self.try_unify_type(pat_arg, conc_arg, type_params, bindings) {
-                                return false;
-                            }
+                Type::Struct(id) | Type::Enum(id)
+                    if *name == id.def && id.args.len() == type_args.len() =>
+                {
+                    for (pat_arg, conc_arg) in type_args.iter().zip(id.args.iter()) {
+                        if !self.try_unify_type(pat_arg, conc_arg, type_params, bindings) {
+                            return false;
                         }
                     }
                 }
@@ -2795,7 +2845,7 @@ impl<'a> Lowerer<'a> {
         type_args: &[ast::Type],
         num_overloads: usize,
         mangle_prefix: &str,
-    ) -> Result<String, CompileError> {
+    ) -> Result<FuncId, CompileError> {
         assert!(
             gdef.type_params.len() == type_args.len(),
             "generic function {name}: expected {} type arguments, got {}",
@@ -2807,16 +2857,18 @@ impl<'a> Lowerer<'a> {
         let ast_def_clone = (*gdef.ast_def).clone();
         let overload_index = gdef.overload_index;
 
-        // Compute mangled name
+        // Structural instance identity: the base def + concrete type args (+
+        // overload disambiguation + method flag). `mangled_ast` renders it.
         let concrete_args: Vec<Type> = type_args
             .iter()
             .map(|t| self.resolve_ast_type(t))
             .collect::<Result<Vec<_>, _>>()?;
-        let mut mangled = format!("{mangle_prefix}{}", mangle_name(name, &concrete_args));
-        // Disambiguate when multiple generic overloads exist
-        if num_overloads > 1 {
-            mangled = format!("{mangled}_ov{overload_index}");
-        }
+        let mangled = FuncId {
+            def: def_id_of_def(&ast_def_clone.name, ast_def_clone.span),
+            args: concrete_args,
+            overload: (num_overloads > 1).then_some(overload_index),
+            method: mangle_prefix == "__method_",
+        };
 
         // Already monomorphized (or a signature stub for an in-progress
         // instantiation — which is all a recursive call site needs)?
@@ -2858,9 +2910,9 @@ impl<'a> Lowerer<'a> {
             .map(|(param, arg)| (param.clone(), arg.clone()))
             .collect();
 
-        // Clone the AST def and apply substitution
+        // Clone the AST def and apply substitution (its `name` stays the
+        // un-mangled base — the lowered def's identity is the `FuncId` above).
         let mut ast_def = ast_def_clone;
-        ast_def.name = mangled.clone();
         ast_def.type_params.clear();
         for param in &mut ast_def.parameters {
             param.ty = apply_subst_to_ast_type(&param.ty, &subst);
@@ -2898,7 +2950,7 @@ impl<'a> Lowerer<'a> {
             self.monomorphized_functions.insert(
                 mangled.clone(),
                 FunctionDef {
-                    name: mangled.clone(),
+                    id: mangled.clone(),
                     parameters: stub_params,
                     return_type: stub_return,
                     body: Vec::new(),
@@ -2913,7 +2965,8 @@ impl<'a> Lowerer<'a> {
         let lowered = self.lower_function(&ast_def);
         self.mono_depth -= 1;
         self.monomorphizing.remove(&mangled);
-        let lowered = lowered?;
+        let mut lowered = lowered?;
+        lowered.id = mangled.clone();
         self.resolved_return_types
             .insert(mangled.clone(), lowered.return_type.clone());
         self.monomorphized_functions
@@ -2922,26 +2975,28 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_all(&mut self) -> Result<SourceFile, CompileError> {
-        let struct_names: Vec<String> = self.structs.keys().cloned().collect();
-        let enum_names: Vec<String> = self.enums.keys().cloned().collect();
+        let struct_defs: Vec<DefId> = self.structs.keys().cloned().collect();
+        let enum_defs: Vec<DefId> = self.enums.keys().cloned().collect();
 
         // Insert placeholder structs (for self-referential type resolution)
-        for name in &struct_names {
+        for def in &struct_defs {
+            let id = TypeId::plain(def.clone());
             self.lowered_structs.insert(
-                name.clone(),
+                id.clone(),
                 StructDef {
-                    name: name.clone(),
+                    id: id.clone(),
                     fields: Vec::new(),
                 },
             );
         }
 
         // Insert placeholder enums (for self-referential type resolution)
-        for name in &enum_names {
+        for def in &enum_defs {
+            let id = TypeId::plain(def.clone());
             self.lowered_enums.insert(
-                name.clone(),
+                id.clone(),
                 EnumDef {
-                    name: name.clone(),
+                    id: id.clone(),
                     variants: Vec::new(),
                 },
             );
@@ -2958,9 +3013,9 @@ impl<'a> Lowerer<'a> {
         // after pass 1 every sizedness query is answered correctly and pass 2
         // re-resolves every field to its final representation.
         for _pass in 0..2 {
-            for name in &struct_names {
-                let def = *self.structs.get(name).unwrap();
-                let fields: Vec<FieldDef> = def
+            for def in &struct_defs {
+                let sdef = *self.structs.get(def).unwrap();
+                let fields: Vec<FieldDef> = sdef
                     .fields
                     .iter()
                     .map(|f| {
@@ -2970,14 +3025,17 @@ impl<'a> Lowerer<'a> {
                         })
                     })
                     .collect::<Result<Vec<_>, CompileError>>()?;
-                self.lowered_structs.get_mut(name).unwrap().fields = fields;
+                self.lowered_structs
+                    .get_mut(&TypeId::plain(def.clone()))
+                    .unwrap()
+                    .fields = fields;
             }
         }
 
         // Lower enum variants using resolve_ast_type (triggers monomorphization of generics)
-        for name in &enum_names {
-            let def = *self.enums.get(name).unwrap();
-            let variants: Vec<EnumVariantDef> = def
+        for def in &enum_defs {
+            let edef = *self.enums.get(def).unwrap();
+            let variants: Vec<EnumVariantDef> = edef
                 .variants
                 .iter()
                 .enumerate()
@@ -2993,7 +3051,10 @@ impl<'a> Lowerer<'a> {
                     })
                 })
                 .collect::<Result<Vec<_>, CompileError>>()?;
-            self.lowered_enums.get_mut(name).unwrap().variants = variants;
+            self.lowered_enums
+                .get_mut(&TypeId::plain(def.clone()))
+                .unwrap()
+                .variants = variants;
         }
 
         // Resolve and register statics: type from the annotation (coercing the
@@ -3002,7 +3063,8 @@ impl<'a> Lowerer<'a> {
         // functions are lowered so bodies can reference them.
         let mut statics_out: Vec<StaticItem> = Vec::new();
         for st in self.static_defs.clone() {
-            if self.consts.contains_key(&st.name) {
+            let st_def = def_id_of_def(&st.name, st.span);
+            if self.consts.contains_key(&st_def) {
                 return Err(CompileError::new(
                     format!("`{}` is declared as both a const and a static", st.name),
                     st.span,
@@ -3034,37 +3096,30 @@ impl<'a> Lowerer<'a> {
                     st.span,
                 ));
             }
-            self.statics.insert(st.name.clone(), init.ty.clone());
+            self.statics.insert(st_def.clone(), init.ty.clone());
             statics_out.push(StaticItem {
-                name: st.name.clone(),
+                id: st_def,
                 ty: init.ty.clone(),
                 init,
             });
         }
 
-        // Build local structs/enums from non-generic definitions
-        let mut structs: HashMap<String, StructDef> = struct_names
-            .iter()
-            .map(|name| (name.clone(), self.lowered_structs[name].clone()))
-            .collect();
-        let mut enums: HashMap<String, EnumDef> = enum_names
-            .iter()
-            .map(|name| (name.clone(), self.lowered_enums[name].clone()))
-            .collect();
-
-        // Validate: unsized fields must be last in struct
-        for (name, sdef) in &structs {
+        // Validate: unsized fields must be last in struct (over non-generic defs,
+        // where we can point at the AST field span).
+        for def in &struct_defs {
+            let id = TypeId::plain(def.clone());
+            let sdef = &self.lowered_structs[&id];
             for (i, field) in sdef.fields.iter().enumerate() {
                 if !field.ty.is_sized(&self.lowered_structs) && i != sdef.fields.len() - 1 {
                     let span = self
                         .structs
-                        .get(name.as_str())
+                        .get(def)
                         .and_then(|ast_sdef| ast_sdef.fields.get(i))
                         .map(|f| f.span)
                         .unwrap_or_default();
                     return Err(CompileError::new(
                         format!(
-                            "struct `{name}`: unsized field `{}` must be the last field",
+                            "struct `{id}`: unsized field `{}` must be the last field",
                             field.name
                         ),
                         span,
@@ -3073,69 +3128,69 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        // Register all concrete functions with mangled names and lower them.
-        // Collect (mangled_name, ast_def) pairs for all concrete entries.
-        let concrete_funcs: Vec<(String, Vec<ast::Type>, Rc<ast::FunctionDef>)> = self
+        // Register all concrete (non-generic) functions and lower them. Each
+        // concrete overload's identity is a `FuncId` whose args are its
+        // parameter types (which disambiguate overloads).
+        let concrete_funcs: Vec<(DefId, Vec<ast::Type>, Rc<ast::FunctionDef>)> = self
             .function_defs
             .iter()
-            .flat_map(|(name, entries)| {
+            .flat_map(|(def, entries)| {
                 entries
                     .iter()
                     .filter(|e| e.type_params.is_empty())
                     .map(|e| {
                         let ast_param_types: Vec<ast::Type> =
                             e.ast_def.parameters.iter().map(|p| p.ty.clone()).collect();
-                        (name.clone(), ast_param_types, e.ast_def.clone())
+                        (def.clone(), ast_param_types, e.ast_def.clone())
                     })
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
-        // Resolve types and build (mangled, ast_def) pairs
-        let mut func_to_lower: Vec<(String, Rc<ast::FunctionDef>)> = Vec::new();
-        for (name, ast_param_types, ast_def) in concrete_funcs {
+        let mut func_to_lower: Vec<(FuncId, Rc<ast::FunctionDef>)> = Vec::new();
+        for (def, ast_param_types, ast_def) in concrete_funcs {
             let param_types: Vec<Type> = ast_param_types
                 .iter()
                 .map(|t| self.resolve_ast_type(t))
                 .collect::<Result<Vec<_>, _>>()?;
-            let mangled = mangle_name(&name, &param_types);
-            self.concrete_ast_defs
-                .insert(mangled.clone(), ast_def.clone());
-            func_to_lower.push((mangled, ast_def));
+            let fid = FuncId::free(def, param_types);
+            self.concrete_ast_defs.insert(fid.clone(), ast_def.clone());
+            func_to_lower.push((fid, ast_def));
         }
 
         // NOTE: concrete methods are NOT pre-registered here.
         // They are lowered on demand via ensure_concrete_lowered at call sites.
 
         let mut functions = HashMap::new();
-        for (mangled, ast_def) in &func_to_lower {
+        for (fid, ast_def) in &func_to_lower {
             let mut lowered = self.lower_function(ast_def)?;
-            lowered.name = mangled.clone();
+            lowered.id = fid.clone();
             self.resolved_return_types
-                .insert(mangled.clone(), lowered.return_type.clone());
-            functions.insert(mangled.clone(), lowered);
+                .insert(fid.clone(), lowered.return_type.clone());
+            functions.insert(fid.clone(), lowered);
         }
 
         // Add synthetic closure functions
         for closure_fn in std::mem::take(&mut self.pending_closures) {
-            functions.insert(closure_fn.name.clone(), closure_fn);
+            functions.insert(closure_fn.id.clone(), closure_fn);
         }
 
         // Merge monomorphized generic functions into the output
-        for (name, fdef) in std::mem::take(&mut self.monomorphized_functions) {
-            functions.entry(name).or_insert(fdef);
+        for (fid, fdef) in std::mem::take(&mut self.monomorphized_functions) {
+            functions.entry(fid).or_insert(fdef);
         }
 
-        // Merge monomorphized generic structs/enums into the output
-        for (name, sdef) in &self.lowered_structs {
-            if !structs.contains_key(name) {
-                structs.insert(name.clone(), sdef.clone());
-            }
-        }
-        for (name, edef) in &self.lowered_enums {
-            if !enums.contains_key(name) {
-                enums.insert(name.clone(), edef.clone());
-            }
-        }
+        // Assemble the output struct/enum tables, keyed by each type's structural
+        // `TypeId`. `mangled_ast` renders these to the final unique C symbols.
+        let structs: HashMap<TypeId, StructDef> = self
+            .lowered_structs
+            .values()
+            .map(|sd| (sd.id.clone(), sd.clone()))
+            .collect();
+        let enums: HashMap<TypeId, EnumDef> = self
+            .lowered_enums
+            .values()
+            .map(|ed| (ed.id.clone(), ed.clone()))
+            .collect();
 
         Ok(SourceFile {
             structs,
@@ -3150,7 +3205,7 @@ impl<'a> Lowerer<'a> {
     /// For methods, this lazily lowers the method on first use.
     fn ensure_concrete_lowered(
         &mut self,
-        mangled: &str,
+        mangled: &FuncId,
         ast_def: &ast::FunctionDef,
     ) -> Result<(), CompileError> {
         if self.monomorphized_functions.contains_key(mangled)
@@ -3158,22 +3213,21 @@ impl<'a> Lowerer<'a> {
         {
             return Ok(());
         }
-        let mut ast_def = ast_def.clone();
-        ast_def.name = mangled.to_string();
-        let ast_def = Rc::new(ast_def);
+        let ast_def = Rc::new(ast_def.clone());
         // Register for resolve_return_type before lowering (handles cycles)
         self.concrete_ast_defs
-            .insert(mangled.to_string(), ast_def.clone());
-        let lowered = self.lower_function(&ast_def)?;
+            .insert(mangled.clone(), ast_def.clone());
+        let mut lowered = self.lower_function(&ast_def)?;
+        lowered.id = mangled.clone();
         self.resolved_return_types
-            .insert(mangled.to_string(), lowered.return_type.clone());
+            .insert(mangled.clone(), lowered.return_type.clone());
         self.monomorphized_functions
-            .insert(mangled.to_string(), lowered);
+            .insert(mangled.clone(), lowered);
         Ok(())
     }
 
     /// Get the return type of a function, lowering it on-demand if needed.
-    fn resolve_return_type(&mut self, name: &str) -> Result<Type, CompileError> {
+    fn resolve_return_type(&mut self, name: &FuncId) -> Result<Type, CompileError> {
         // Explicit return type — no lowering needed
         if let Some(func_def) = self.concrete_ast_defs.get(name)
             && let Some(rt) = &func_def.return_type
@@ -3186,7 +3240,7 @@ impl<'a> Lowerer<'a> {
             return Ok(ty.clone());
         }
         // Cycle detection
-        if self.resolving_return_types.contains(&name.to_string()) {
+        if self.resolving_return_types.contains(name) {
             return Err(CompileError::new(
                 format!(
                     "cannot infer return type of recursive function `{name}` — add an explicit return type annotation"
@@ -3195,7 +3249,7 @@ impl<'a> Lowerer<'a> {
             ));
         }
         // Lower the function in an isolated scope to determine its return type
-        self.resolving_return_types.push(name.to_string());
+        self.resolving_return_types.push(name.clone());
         let func_def = self.concrete_ast_defs.get(name).unwrap().clone();
         let saved_scopes = std::mem::take(&mut self.scopes);
         let saved_return_type = self.current_return_type.take();
@@ -3223,7 +3277,7 @@ impl<'a> Lowerer<'a> {
         self.resolving_return_types.pop();
         let ret_ty = lowered.return_type.clone();
         self.resolved_return_types
-            .insert(name.to_string(), ret_ty.clone());
+            .insert(name.clone(), ret_ty.clone());
         Ok(ret_ty)
     }
 
@@ -3397,7 +3451,9 @@ impl<'a> Lowerer<'a> {
         self.loop_ctx = saved_loop_ctx;
         self.in_try_block = saved_in_try_block;
         Ok(FunctionDef {
-            name: func.name.clone(),
+            // Placeholder identity — the caller (concrete registration / mono /
+            // closure) overwrites `.id` with the real `FuncId` it computed.
+            id: FuncId::free(def_id_of_def(&func.name, func.span), Vec::new()),
             parameters,
             return_type,
             body,
@@ -4079,6 +4135,65 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Lower a resolved reference to a top-level function / const / static.
+    fn lower_global_ref(
+        &mut self,
+        def: &DefId,
+        span: ast::SourceSpan,
+    ) -> Result<Expr, CompileError> {
+        if let Some(ty) = self.statics.get(def) {
+            // A top-level static: a global mutable place.
+            return Ok(Expr {
+                ty: ty.clone(),
+                kind: ExprKind::Global(def.clone()),
+                span,
+            });
+        }
+        if let Some(cdef) = self.consts.get(def).map(|c| (*c).clone()) {
+            // Substitute the const's literal value at the use site.
+            let value = self.lower_const_value(&cdef)?;
+            return Ok(Expr {
+                ty: value.ty,
+                kind: value.kind,
+                span,
+            });
+        }
+        if let Some(entries) = self.function_defs.get(def).cloned() {
+            // A top-level function used as a value — only a single concrete
+            // overload can be taken by reference.
+            let concrete_count = entries.iter().filter(|e| e.type_params.is_empty()).count();
+            if entries.len() > 1 || concrete_count != entries.len() {
+                return Err(CompileError::new(
+                    format!(
+                        "ambiguous function reference: `{}` has multiple overloads",
+                        def.name
+                    ),
+                    span,
+                ));
+            }
+            let params: Vec<Type> = entries[0]
+                .ast_def
+                .parameters
+                .iter()
+                .map(|p| self.resolve_ast_type(&p.ty))
+                .collect::<Result<Vec<_>, _>>()?;
+            let fid = FuncId::free(def.clone(), params.clone());
+            let return_type = Box::new(self.resolve_return_type(&fid)?);
+            return Ok(Expr {
+                ty: Type::Function {
+                    params,
+                    return_type,
+                },
+                kind: ExprKind::FunctionRef(fid),
+                span,
+            });
+        }
+        Err(CompileError::new(
+            format!("undefined reference: {}", def.name),
+            span,
+        ))
+    }
+
     fn lower_expr(&mut self, expr: &ast::Expr) -> Result<Expr, CompileError> {
         match &expr.kind {
             ast::ExprKind::Identifier(name) => {
@@ -4102,88 +4217,21 @@ impl<'a> Lowerer<'a> {
                         kind: ExprKind::Identifier(name.clone()),
                         span: expr.span,
                     })
-                } else if let Some(ty) = self.statics.get(name) {
-                    // A top-level static: a global mutable place.
-                    Ok(Expr {
-                        ty: ty.clone(),
-                        kind: ExprKind::Global(name.clone()),
-                        span: expr.span,
-                    })
                 } else if let Some(cdef) = self.lookup_const(name) {
-                    // Substitute the const's literal value at the use site.
-                    let value = self.lower_expr(&cdef.value)?;
-                    let value = if let Some(ann) = &cdef.ty {
-                        let resolved = self.resolve_ast_type(ann)?;
-                        let coerced = self.try_coerce(value, &resolved);
-                        if coerced.ty != resolved {
-                            return Err(CompileError::new(
-                                format!(
-                                    "const `{name}`: value of type {} does not match declared type {resolved}",
-                                    coerced.ty
-                                ),
-                                cdef.value.span,
-                            ));
-                        }
-                        coerced
-                    } else {
-                        value
-                    };
+                    // A block-local const: substitute its literal value.
+                    let value = self.lower_const_value(&cdef)?;
                     Ok(Expr {
                         ty: value.ty,
                         kind: value.kind,
                         span: expr.span,
                     })
-                } else if self.function_defs.contains_key(name.as_str()) {
-                    let entries = self.function_defs[name.as_str()].clone();
-                    // Only allow function-as-value for single concrete overload
-                    let concrete_count =
-                        entries.iter().filter(|e| e.type_params.is_empty()).count();
-                    if entries.len() > 1 || concrete_count != entries.len() {
-                        return Err(CompileError::new(
-                            format!(
-                                "ambiguous function reference: `{name}` has multiple overloads"
-                            ),
-                            expr.span,
-                        ));
-                    }
-                    let entry = &entries[0];
-                    let ast_params: Vec<ast::Type> = entry
-                        .ast_def
-                        .parameters
-                        .iter()
-                        .map(|p| p.ty.clone())
-                        .collect();
-                    let params: Vec<Type> = ast_params
-                        .iter()
-                        .map(|t| self.resolve_ast_type(t))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    let mangled = mangle_name(name, &params);
-                    let return_type = Box::new(self.resolve_return_type(&mangled)?);
-                    Ok(Expr {
-                        ty: Type::Function {
-                            params,
-                            return_type,
-                        },
-                        kind: ExprKind::FunctionRef(mangled),
-                        span: expr.span,
-                    })
-                } else if self.concrete_ast_defs.contains_key(name.as_str()) {
-                    // Mangled function name (referenced directly)
-                    let func_def = self.concrete_ast_defs.get(name.as_str()).unwrap().clone();
-                    let params: Vec<Type> = func_def
-                        .parameters
-                        .iter()
-                        .map(|p| self.resolve_ast_type(&p.ty))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    let return_type = Box::new(self.resolve_return_type(name)?);
-                    Ok(Expr {
-                        ty: Type::Function {
-                            params,
-                            return_type,
-                        },
-                        kind: ExprKind::FunctionRef(name.clone()),
-                        span: expr.span,
-                    })
+                } else if let Some(def) =
+                    self.function_defs.keys().find(|d| d.name == *name).cloned()
+                {
+                    // A top-level function referenced by bare name: a numeric
+                    // constructor (synthetic), or the resolve-bypassing raw
+                    // typecheck path (real references are `GlobalRef`).
+                    self.lower_global_ref(&def, expr.span)
                 } else {
                     Err(CompileError::new(
                         format!("undefined variable: {name}"),
@@ -4191,6 +4239,7 @@ impl<'a> Lowerer<'a> {
                     ))
                 }
             }
+            ast::ExprKind::GlobalRef(def) => self.lower_global_ref(def, expr.span),
             ast::ExprKind::FloatLiteral(v, float_ty) => Ok(Expr {
                 ty: match float_ty {
                     ast::FloatType::Float32 => Type::Float32,
@@ -4234,8 +4283,8 @@ impl<'a> Lowerer<'a> {
             }),
             ast::ExprKind::FieldAccess { object, field } => {
                 let obj = self.lower_expr(object)?;
-                let struct_name = match &obj.ty {
-                    Type::Struct(name) => name.clone(),
+                let struct_id = match &obj.ty {
+                    Type::Struct(id) => id.clone(),
                     other => {
                         return Err(CompileError::new(
                             format!("field access on non-struct type {other}"),
@@ -4243,23 +4292,20 @@ impl<'a> Lowerer<'a> {
                         ));
                     }
                 };
-                let struct_def =
-                    self.lowered_structs
-                        .get(struct_name.as_str())
-                        .ok_or_else(|| {
-                            CompileError::new(format!("undefined struct: {struct_name}"), expr.span)
-                        })?;
+                let struct_def = self.lowered_structs.get(&struct_id).ok_or_else(|| {
+                    CompileError::new(format!("undefined struct: {struct_id}"), expr.span)
+                })?;
                 let field_def = struct_def
                     .fields
                     .iter()
                     .find(|f| f.name == *field)
                     .ok_or_else(|| {
                         CompileError::new(
-                            format!("struct {struct_name} has no field `{field}`"),
+                            format!("struct {struct_id} has no field `{field}`"),
                             expr.span,
                         )
                     })?;
-                self.check_field_visibility(&struct_name, field, expr.span)?;
+                self.check_field_visibility(&struct_id, field, expr.span)?;
                 let ty = field_def.ty.clone();
                 Ok(Expr {
                     ty,
@@ -4384,7 +4430,7 @@ impl<'a> Lowerer<'a> {
                 Ok(Expr {
                     ty: Type::Enum(resolved_name.clone()),
                     kind: ExprKind::EnumVariant {
-                        enum_name: resolved_name,
+                        enum_id: resolved_name.clone(),
                         variant_name: variant_name.clone(),
                         variant_index: vdef.index,
                         value: None,
@@ -4475,7 +4521,7 @@ impl<'a> Lowerer<'a> {
                     return Ok(Expr {
                         ty: Type::Enum(resolved_name.clone()),
                         kind: ExprKind::EnumVariant {
-                            enum_name: resolved_name,
+                            enum_id: resolved_name.clone(),
                             variant_name: variant_name.clone(),
                             variant_index,
                             value: Some(Box::new(coerced)),
@@ -4675,11 +4721,28 @@ impl<'a> Lowerer<'a> {
                 }
 
                 // Unified overload resolution: generic + concrete candidates
+                if let ast::ExprKind::GlobalRef(def) = &function.as_ref().kind
+                    && self.function_defs.contains_key(def)
+                {
+                    let entries = self.function_defs[def].clone();
+                    return self.resolve_overloaded_call(
+                        CandidateSource::Entries(entries),
+                        &def.name,
+                        arguments,
+                        kwargs,
+                        type_args,
+                        expr.span,
+                        "",
+                    );
+                }
+                // A call to a top-level function via a bare `Identifier` callee:
+                // a numeric constructor (synthetic), or the resolve-bypassing raw
+                // typecheck path.
                 if let ast::ExprKind::Identifier(name) = &function.as_ref().kind
                     && self.lookup_var(name).is_none()
-                    && self.function_defs.contains_key(name.as_str())
+                    && let Some(def) = self.function_defs.keys().find(|d| d.name == *name).cloned()
                 {
-                    let entries = self.function_defs[name.as_str()].clone();
+                    let entries = self.function_defs[&def].clone();
                     return self.resolve_overloaded_call(
                         CandidateSource::Entries(entries),
                         name,
@@ -4701,16 +4764,12 @@ impl<'a> Lowerer<'a> {
                 match callee.kind {
                     ExprKind::FunctionRef(ref func_name) => {
                         // Direct call to a function-as-value (single concrete overload)
-                        let func_def = self
-                            .concrete_ast_defs
-                            .get(func_name.as_str())
-                            .unwrap()
-                            .clone();
+                        let func_def = self.concrete_ast_defs.get(func_name).unwrap().clone();
                         if arguments.len() != func_def.parameters.len() {
                             return Err(CompileError::new(
                                 format!(
                                     "{}: expected {} arguments, got {}",
-                                    self.display_name(func_name),
+                                    func_name.def.name,
                                     func_def.parameters.len(),
                                     arguments.len()
                                 ),
@@ -4742,7 +4801,7 @@ impl<'a> Lowerer<'a> {
                                 return Err(CompileError::new(
                                     format!(
                                         "type mismatch in argument `{pname}` of {}: expected {pty}, got {}",
-                                        self.display_name(func_name),
+                                        func_name.def.name,
                                         coerced.ty
                                     ),
                                     coerced.span,
@@ -4844,7 +4903,7 @@ impl<'a> Lowerer<'a> {
 
                 let struct_ast_span = self
                     .structs
-                    .get(name.as_str())
+                    .get(&resolved_name.def)
                     .map(|s| s.span)
                     .unwrap_or_default();
 
@@ -4892,7 +4951,7 @@ impl<'a> Lowerer<'a> {
                 Ok(Expr {
                     ty: Type::Struct(resolved_name.clone()),
                     kind: ExprKind::StructLiteral {
-                        name: resolved_name,
+                        id: resolved_name.clone(),
                         fields: lowered_fields,
                     },
                     span: expr.span,
@@ -5042,7 +5101,7 @@ impl<'a> Lowerer<'a> {
                 Ok(Expr {
                     ty: Type::Struct(mangled.clone()),
                     kind: ExprKind::StructLiteral {
-                        name: mangled,
+                        id: mangled.clone(),
                         fields,
                     },
                     span: expr.span,
@@ -5533,7 +5592,7 @@ impl<'a> Lowerer<'a> {
                         }
                     };
                     TypedPattern::Variant {
-                        enum_name: enum_name.clone(),
+                        enum_id: enum_name.clone(),
                         variant_name: variant_name.clone(),
                         variant_index: vdef.index,
                         binding: binding_typed,
@@ -5633,12 +5692,10 @@ impl<'a> Lowerer<'a> {
         let resolved = self.resolve_ast_type(ty)?;
         let kind = match &resolved {
             Type::Enum(_) => Some("enum"),
-            Type::Struct(name) => {
-                if !(self.structs.contains_key(name.as_str())
-                    || self.lowered_structs.contains_key(name))
-                {
+            Type::Struct(id) => {
+                if !(self.structs.contains_key(&id.def) || self.lowered_structs.contains_key(id)) {
                     return Err(CompileError::new(
-                        format!("undefined type in match.reflect: {name}"),
+                        format!("undefined type in match.reflect: {id}"),
                         span,
                     ));
                 }
@@ -5859,10 +5916,10 @@ impl<'a> Lowerer<'a> {
     ) -> Result<Vec<Statement>, CompileError> {
         let probe0 = self.lower_expr(obj0)?;
         let probe1 = self.lower_expr(obj1)?;
-        let struct_of = |ty: &Type| -> Option<String> {
+        let struct_of = |ty: &Type| -> Option<TypeId> {
             match ty {
                 Type::Ref(inner) | Type::RefUnsized(inner) => match inner.as_ref() {
-                    Type::Struct(name) => Some(name.clone()),
+                    Type::Struct(id) => Some(id.clone()),
                     _ => None,
                 },
                 _ => None,
@@ -5983,10 +6040,10 @@ impl<'a> Lowerer<'a> {
     ) -> Result<Vec<Statement>, CompileError> {
         let probe0 = self.lower_expr(obj0)?;
         let probe1 = self.lower_expr(obj1)?;
-        let enum_of = |ty: &Type| -> Option<String> {
+        let enum_of = |ty: &Type| -> Option<TypeId> {
             match ty {
                 Type::Ref(inner) | Type::RefUnsized(inner) => match inner.as_ref() {
-                    Type::Enum(name) => Some(name.clone()),
+                    Type::Enum(id) => Some(id.clone()),
                     _ => None,
                 },
                 _ => None,
@@ -6023,6 +6080,7 @@ impl<'a> Lowerer<'a> {
             span,
         };
 
+        let (enum_ast_name, enum_ast_targs) = self.enum_pattern_parts(&enum_name);
         let mut outer_arms = Vec::new();
         for (variant_index, (vname, has_data)) in variants.into_iter().enumerate() {
             let name_bytes: Vec<ast::Expr> = vname
@@ -6088,8 +6146,8 @@ impl<'a> Lowerer<'a> {
                 ast::MatchArm {
                     pattern: ast::Pattern::Variant {
                         module_path: vec![],
-                        enum_name: enum_name.clone(),
-                        type_args: vec![],
+                        enum_name: enum_ast_name.clone(),
+                        type_args: enum_ast_targs.clone(),
                         variant_name: vname.clone(),
                         binding: has_data.then(|| bind1.clone()),
                     },
@@ -6120,8 +6178,8 @@ impl<'a> Lowerer<'a> {
             outer_arms.push(ast::MatchArm {
                 pattern: ast::Pattern::Variant {
                     module_path: vec![],
-                    enum_name: enum_name.clone(),
-                    type_args: vec![],
+                    enum_name: enum_ast_name.clone(),
+                    type_args: enum_ast_targs.clone(),
                     variant_name: vname,
                     binding: has_data.then(|| bind0.clone()),
                 },
@@ -6218,6 +6276,7 @@ impl<'a> Lowerer<'a> {
             .map(|v| (v.name.clone(), v.inner_type.is_some()))
             .collect();
 
+        let (enum_ast_name, enum_ast_targs) = self.enum_pattern_parts(&enum_name);
         let n = self.destructure_counter;
         self.destructure_counter += 1;
         let tmp_name = format!("__reflect_variant_{n}");
@@ -6332,8 +6391,8 @@ impl<'a> Lowerer<'a> {
             arms.push(ast::MatchArm {
                 pattern: ast::Pattern::Variant {
                     module_path: vec![],
-                    enum_name: enum_name.clone(),
-                    type_args: vec![],
+                    enum_name: enum_ast_name.clone(),
+                    type_args: enum_ast_targs.clone(),
                     variant_name: vname,
                     binding: has_data.then(|| binding_name.clone()),
                 },
@@ -6558,7 +6617,10 @@ impl<'a> Lowerer<'a> {
         // just add them as leading params. At the IR level these will be wired
         // through the env.
         let synthetic_fn = FunctionDef {
-            name: synthetic_name.clone(),
+            // Closures are synthetic top-level functions with globally-unique
+            // `__closure_N` names — rendered bare (no module prefix) via the
+            // synthetic file.
+            id: FuncId::free(DefId::synthetic(&synthetic_name), Vec::new()),
             parameters: typed_params.clone(),
             return_type: fn_return_type.clone(),
             body: lowered_body,
@@ -6633,7 +6695,7 @@ impl<'a> Lowerer<'a> {
     /// Returns `None` for every other type (primitives, arrays, functions, and
     /// notably `Never`, which coerces to anything) — callers must treat `None`
     /// as "could match any overload".
-    fn type_base_key(ty: &Type) -> Option<&str> {
+    fn type_base_key(ty: &Type) -> Option<DefId> {
         match ty {
             Type::Ref(inner)
             | Type::RefUnsized(inner)
@@ -6641,7 +6703,9 @@ impl<'a> Lowerer<'a> {
             | Type::NullableRefUnsized(inner)
             | Type::Unique(inner)
             | Type::UniqueUnsized(inner) => Self::type_base_key(inner),
-            Type::Struct(name) | Type::Enum(name) => Some(name),
+            // Method dispatch keys on the receiver's base type (its provenance),
+            // ignoring generic args — a method is defined on the generic.
+            Type::Struct(id) | Type::Enum(id) => Some(id.def.clone()),
             _ => None,
         }
     }
@@ -6665,7 +6729,7 @@ impl<'a> Lowerer<'a> {
                 .first()
                 .and_then(|p| self.resolve_ast_type(&p.ty).ok());
             match resolved.as_ref().and_then(Self::type_base_key) {
-                Some(key) => index.by_base.entry(key.to_string()).or_default().push(i),
+                Some(key) => index.by_base.entry(key).or_default().push(i),
                 None => index.wildcard.push(i),
             }
         }
@@ -6691,9 +6755,9 @@ impl<'a> Lowerer<'a> {
             return Vec::new();
         };
         let index = &self.method_index[name];
-        match recv.and_then(|t| Self::type_base_key(t)) {
+        match recv.and_then(Self::type_base_key) {
             Some(key) => {
-                let bucket = index.by_base.get(key).map_or(&[][..], Vec::as_slice);
+                let bucket = index.by_base.get(&key).map_or(&[][..], Vec::as_slice);
                 let mut merged: Vec<usize> = bucket
                     .iter()
                     .chain(index.wildcard.iter())
@@ -7065,7 +7129,12 @@ impl<'a> Lowerer<'a> {
 
             match best_candidate {
                 Candidate::Concrete(param_types, ast_def, lowered_args) => {
-                    let mangled = format!("{mangle_prefix}{}", mangle_name(name, &param_types));
+                    let mangled = FuncId {
+                        def: def_id_of_def(&ast_def.name, ast_def.span),
+                        args: param_types.clone(),
+                        overload: None,
+                        method: mangle_prefix == "__method_",
+                    };
                     self.ensure_concrete_lowered(&mangled, &ast_def)?;
                     let ret_ty = self.resolve_return_type(&mangled)?;
                     let coerced_args: Vec<Expr> = lowered_args
@@ -7267,7 +7336,12 @@ impl<'a> Lowerer<'a> {
                     continue;
                 }
 
-                let mangled = format!("{mangle_prefix}{}", mangle_name(name, &param_types));
+                let mangled = FuncId {
+                    def: def_id_of_def(&entry.ast_def.name, entry.ast_def.span),
+                    args: param_types.clone(),
+                    overload: None,
+                    method: mangle_prefix == "__method_",
+                };
                 self.ensure_concrete_lowered(&mangled, &entry.ast_def)?;
                 let ret_ty = self.resolve_return_type(&mangled)?;
                 return Ok(Expr {
@@ -7385,8 +7459,8 @@ impl<'a> Lowerer<'a> {
                 name,
                 fields,
             } => {
-                let struct_name = match base_ty {
-                    Type::Struct(sname) => sname.clone(),
+                let struct_id = match base_ty {
+                    Type::Struct(sid) => sid.clone(),
                     other => {
                         return Err(CompileError::new(
                             format!("struct destructure on non-struct type {other}"),
@@ -7394,27 +7468,22 @@ impl<'a> Lowerer<'a> {
                         ));
                     }
                 };
-                // Validate struct name — check against known struct names and reverse_mono
-                let expected_name =
-                    if let Some((base_name, _)) = self.reverse_mono.get(&struct_name) {
-                        base_name.clone()
-                    } else {
-                        struct_name.clone()
-                    };
-                if *name != expected_name {
+                // Validate that the pattern names this struct's base (the generic
+                // args, if any, are implied by `base_ty`).
+                if *name != struct_id.def {
                     return Err(CompileError::new(
                         format!(
-                            "struct destructure: expected struct `{expected_name}`, got pattern `{name}`"
+                            "struct destructure: expected struct `{struct_id}`, got pattern `{name}`"
                         ),
                         ast::SourceSpan::default(),
                     ));
                 }
                 let sdef = self
                     .lowered_structs
-                    .get(&struct_name)
+                    .get(&struct_id)
                     .ok_or_else(|| {
                         CompileError::new(
-                            format!("undefined struct: {struct_name}"),
+                            format!("undefined struct: {struct_id}"),
                             ast::SourceSpan::default(),
                         )
                     })?
@@ -7426,7 +7495,7 @@ impl<'a> Lowerer<'a> {
                         .find(|f| f.name == df.field_name)
                         .ok_or_else(|| {
                             CompileError::new(
-                                format!("struct {struct_name} has no field `{}`", df.field_name),
+                                format!("struct {struct_id} has no field `{}`", df.field_name),
                                 ast::SourceSpan::default(),
                             )
                         })?;
@@ -8006,14 +8075,14 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
 /// Returns true if a type is atomic-compatible:
 /// no enums, no unique references, and structs only if all fields pass too.
 /// Additionally requires the total size to be 1, 2, 4, 8, or 16 bytes.
-fn is_atomic_compatible(ty: &Type, structs: &HashMap<String, StructDef>) -> bool {
+fn is_atomic_compatible(ty: &Type, structs: &HashMap<TypeId, StructDef>) -> bool {
     if !is_atomic_shape_ok(ty, structs) {
         return false;
     }
     matches!(atomic_type_size(ty, structs), Some(1 | 2 | 4 | 8 | 16))
 }
 
-fn is_atomic_shape_ok(ty: &Type, structs: &HashMap<String, StructDef>) -> bool {
+fn is_atomic_shape_ok(ty: &Type, structs: &HashMap<TypeId, StructDef>) -> bool {
     match ty {
         Type::Bool
         | Type::Int8
@@ -8055,7 +8124,7 @@ fn is_atomic_shape_ok(ty: &Type, structs: &HashMap<String, StructDef>) -> bool {
     }
 }
 
-fn atomic_type_size(ty: &Type, structs: &HashMap<String, StructDef>) -> Option<usize> {
+fn atomic_type_size(ty: &Type, structs: &HashMap<TypeId, StructDef>) -> Option<usize> {
     match ty {
         Type::Bool | Type::Int8 | Type::Uint8 => Some(1),
         Type::Int16 | Type::Uint16 => Some(2),
@@ -8090,7 +8159,7 @@ fn atomic_type_size(ty: &Type, structs: &HashMap<String, StructDef>) -> Option<u
     }
 }
 
-fn atomic_type_align(ty: &Type, structs: &HashMap<String, StructDef>) -> Option<usize> {
+fn atomic_type_align(ty: &Type, structs: &HashMap<TypeId, StructDef>) -> Option<usize> {
     match ty {
         Type::Bool | Type::Int8 | Type::Uint8 => Some(1),
         Type::Int16 | Type::Uint16 => Some(2),

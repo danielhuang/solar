@@ -1,7 +1,7 @@
 use crate::ast::Intrinsic;
 use crate::ast_interp::Unwind::Thrown;
+use crate::mangled_ast::*;
 use crate::scope::ScopeStack;
-use crate::typed_ast::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -352,7 +352,7 @@ struct Interpreter<'a, 'io> {
     /// Top-level `static` slots, by name. Initialized from their literal init
     /// expressions in `run` before `main`'s body executes.
     globals: HashMap<String, Slot>,
-    statics: &'a [crate::typed_ast::StaticItem],
+    statics: &'a [StaticItem],
 }
 
 impl<'a, 'io> Interpreter<'a, 'io> {
@@ -700,7 +700,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                                     *op,
                                     *a as u64,
                                     *b as u64,
-                                    left.ty == crate::typed_ast::Type::Float32,
+                                    left.ty == crate::mangled_ast::Type::Float32,
                                 ) as i64)
                             }
                             (Value::Int(a), Value::Int(b)) if unsigned => {
@@ -1365,7 +1365,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     Value::Int(n) => n as u64,
                     _ => unreachable!(),
                 };
-                let is_f32 = arguments[0].ty == crate::typed_ast::Type::Float32;
+                let is_f32 = arguments[0].ty == crate::mangled_ast::Type::Float32;
                 Value::Int(crate::ir_interp::float_unary(intrinsic, raw, is_f32) as i64)
             }
             Intrinsic::Atan2 | Intrinsic::Pow => {
@@ -1377,7 +1377,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     Value::Int(n) => n as u64,
                     _ => unreachable!(),
                 };
-                let is_f32 = arguments[0].ty == crate::typed_ast::Type::Float32;
+                let is_f32 = arguments[0].ty == crate::mangled_ast::Type::Float32;
                 Value::Int(crate::ir_interp::float_binary(intrinsic, a, b, is_f32) as i64)
             }
             Intrinsic::Exit => {
