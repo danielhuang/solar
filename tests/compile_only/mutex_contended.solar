@@ -1,0 +1,36 @@
+// Exercises the three-state Mutex's contended slow path: many threads hammer a
+// shared counter under the lock. A correct lock yields exactly threads*iters;
+// any lost update (broken mutual exclusion or a dropped wakeup) shows up as a
+// smaller number. Also checks that `try_lock` succeeds once the lock is free.
+fn main() {
+    let m = sync::Mutex();
+    let counter = 0;
+    let threads = 8u;
+    let iters = 20000;
+
+    let handles = ([]#[thread::Thread])^;
+    let t = 0u;
+    while t < threads {
+        let h = thread::spawn(\ {
+            let i = 0;
+            while i < iters {
+                m&.lock();
+                counter = counter + 1;
+                m&.unlock();
+                i = i + 1;
+            }
+        });
+        handles = (handles@ + [h])^;
+        t = t + 1u;
+    }
+
+    let j = 0u;
+    while j < threads {
+        handles@[j].join();
+        j = j + 1u;
+    }
+
+    let got = m&.try_lock();
+    println(counter);                  // 160000
+    println(if got { 1 } else { 0 });  // 1
+}

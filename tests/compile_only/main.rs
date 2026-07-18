@@ -26,6 +26,15 @@ fn mutex() {
 }
 
 #[test]
+fn mutex_contended() {
+    let output = run_codegen_file(
+        &fixture("mutex_contended.solar"),
+        "compile_only_mutex_contended",
+    );
+    assert_eq!(output, "160000\n1\n");
+}
+
+#[test]
 fn thread_join() {
     let output = run_codegen_file(&fixture("thread_join.solar"), "compile_only_thread_join");
     assert_eq!(output, "42\n");
