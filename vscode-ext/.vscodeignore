@@ -5,3 +5,5 @@ package-lock.json
 node_modules/web-tree-sitter/debug/**
 node_modules/web-tree-sitter/src/**
 node_modules/.package-lock.json
+queries/
+syntaxes/

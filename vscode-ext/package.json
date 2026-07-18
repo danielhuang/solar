@@ -1,7 +1,7 @@
 {
   "name": "solar-lang",
   "displayName": "Solar Language",
-  "description": "Tree-sitter based syntax highlighting for the Solar programming language.",
+  "description": "Semantic syntax highlighting for the Solar programming language.",
   "version": "0.1.0",
   "publisher": "solar",
   "license": "MIT",
@@ -13,7 +13,7 @@
   ],
   "main": "./src/extension.js",
   "scripts": {
-    "build:grammar": "tree-sitter build --wasm ../tree-sitter-solar -o syntaxes/tree-sitter-solar.wasm && cp ../tree-sitter-solar/queries/highlights.scm queries/highlights.scm"
+    "build:lsp": "cargo build --manifest-path ../Cargo.toml --release --bin lsp && mkdir -p server && cp ../target/release/lsp server/lsp"
   },
   "activationEvents": [
     "onLanguage:solar"
@@ -39,6 +39,6 @@
     }
   },
   "dependencies": {
-    "web-tree-sitter": "^0.25.0"
+    "vscode-languageclient": "^9.0.1"
   }
 }

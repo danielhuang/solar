@@ -64,6 +64,22 @@ impl Resolver {
             )]
         })?;
 
+        self.parse_source(path, canonical, source)
+    }
+
+    /// Add a source buffer as a file. This lets editor integrations resolve an
+    /// unsaved root document without writing it to disk; imported files still
+    /// use `parse_file` and are read normally.
+    fn parse_source(
+        &mut self,
+        path: &Path,
+        canonical: PathBuf,
+        source: String,
+    ) -> Result<FileId, Vec<CompileError>> {
+        if let Some(&id) = self.path_to_id.get(&canonical) {
+            return Ok(id);
+        }
+
         let file_id = self.files.len() as FileId;
         self.path_to_id.insert(canonical.clone(), file_id);
 
@@ -1232,11 +1248,28 @@ fn rewrite_pattern(
 pub fn resolve(
     file_path: &Path,
 ) -> Result<(SourceFile, SourceMap), (Vec<CompileError>, SourceMap)> {
+    resolve_with_root_source(file_path, None)
+}
+
+/// Resolve a program with an in-memory root source. This is used by the LSP so
+/// semantic analysis follows the document buffer rather than its last saved
+/// version. Imports remain relative to `file_path` and are read from disk.
+pub fn resolve_source(
+    file_path: &Path,
+    source: String,
+) -> Result<(SourceFile, SourceMap), (Vec<CompileError>, SourceMap)> {
+    resolve_with_root_source(file_path, Some(source))
+}
+
+fn resolve_with_root_source(
+    file_path: &Path,
+    root_source: Option<String>,
+) -> Result<(SourceFile, SourceMap), (Vec<CompileError>, SourceMap)> {
     let mut resolver = Resolver::new();
     // Run resolution to completion, then hand back the source map regardless of
     // outcome so errors (including those whose spans point into stdlib files)
     // can be rendered against the correct file via the SourceMap.
-    let result = resolve_impl(&mut resolver, file_path);
+    let result = resolve_impl(&mut resolver, file_path, root_source);
     let source_map = resolver.source_map;
     match result {
         Ok(all_items) => Ok((SourceFile { items: all_items }, source_map)),
@@ -1247,6 +1280,7 @@ pub fn resolve(
 fn resolve_impl(
     resolver: &mut Resolver,
     file_path: &Path,
+    root_source: Option<String>,
 ) -> Result<Vec<TopLevelItem>, Vec<CompileError>> {
     // Parse stdlib first (all files get implicit `import * from "@std"`)
     let std_lib = Path::new(STDLIB_DIR).join("lib.solar");
@@ -1256,7 +1290,14 @@ fn resolve_impl(
     let std_file_count = resolver.files.len();
 
     // Parse root file
-    let root_id = resolver.parse_file(file_path)?;
+    let root_id = if let Some(source) = root_source {
+        let canonical = file_path
+            .canonicalize()
+            .unwrap_or_else(|_| file_path.to_path_buf());
+        resolver.parse_source(file_path, canonical, source)?
+    } else {
+        resolver.parse_file(file_path)?
+    };
     // Record the root: its definitions render to bare (un-module-mangled) names
     // in `mangled_ast` (so `main` stays `main`).
     resolver.source_map.set_root_file_id(root_id);

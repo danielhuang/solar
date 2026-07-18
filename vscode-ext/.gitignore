@@ -5,3 +5,4 @@ node_modules/
 *.wasm
 syntaxes/tree-sitter-solar.wasm
 queries/highlights.scm
+server/
