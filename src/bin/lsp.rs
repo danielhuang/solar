@@ -5,7 +5,11 @@
 //! still highlighted while they are being edited.
 
 use serde_json::{Value, json};
-use solar::{ast::SourceSpan, resolve, typed_ast};
+use solar::{
+    ast::{self, SourceSpan},
+    error::SourceMap,
+    resolve, typed_ast,
+};
 use std::{
     collections::{HashMap, HashSet},
     io::{self, BufRead, Write},
@@ -37,6 +41,10 @@ fn main() {
     let stdout = io::stdout();
     let mut output = stdout.lock();
     let mut documents = HashMap::<String, String>::new();
+    // Per-document resolve results, invalidated whenever the buffer changes.
+    // Resolving reparses the stdlib, so both hover and semantic tokens share
+    // one cached resolve per edit rather than paying for it on every request.
+    let mut cache = HashMap::<String, Document>::new();
 
     while let Some(message) = read_message(&mut input) {
         let method = message.get("method").and_then(Value::as_str);
@@ -64,6 +72,7 @@ fn main() {
             Some("exit") => break,
             Some("textDocument/didOpen") => {
                 if let Some((uri, text)) = document_and_text(&params) {
+                    cache.remove(&uri);
                     documents.insert(uri, text);
                 }
             }
@@ -73,20 +82,25 @@ fn main() {
                     .pointer("/contentChanges/0/text")
                     .and_then(Value::as_str);
                 if let (Some(uri), Some(text)) = (uri, text) {
+                    cache.remove(uri);
                     documents.insert(uri.to_owned(), text.to_owned());
                 }
             }
             Some("textDocument/didClose") => {
                 if let Some(uri) = params.pointer("/textDocument/uri").and_then(Value::as_str) {
                     documents.remove(uri);
+                    cache.remove(uri);
                 }
             }
             Some("textDocument/semanticTokens/full") => {
                 let uri = params.pointer("/textDocument/uri").and_then(Value::as_str);
-                let data = uri
-                    .and_then(|uri| documents.get(uri))
-                    .map(|text| semantic_tokens(uri.unwrap_or_default(), text))
-                    .unwrap_or_default();
+                let data = match uri.and_then(|uri| documents.get(uri).map(|text| (uri, text))) {
+                    Some((uri, text)) => {
+                        let document = cached(&mut cache, uri, text);
+                        semantic_tokens(text, document.analysis.as_ref())
+                    }
+                    None => Vec::new(),
+                };
                 respond(&mut output, id, json!({ "data": data }));
             }
             Some("textDocument/hover") => {
@@ -95,9 +109,11 @@ fn main() {
                 let character = params
                     .pointer("/position/character")
                     .and_then(Value::as_u64);
-                let result = match (uri.and_then(|uri| documents.get(uri)), line, character) {
-                    (Some(text), Some(line), Some(character)) => {
-                        hover(text, line as u32, character as u32)
+                let target = uri.and_then(|uri| documents.get(uri).map(|text| (uri, text)));
+                let result = match (target, line, character) {
+                    (Some((uri, text)), Some(line), Some(character)) => {
+                        let document = cached(&mut cache, uri, text);
+                        hover(text, line as u32, character as u32, &document.docs)
                     }
                     _ => None,
                 };
@@ -169,7 +185,7 @@ struct Token {
     kind: u32,
 }
 
-fn semantic_tokens(uri: &str, source: &str) -> Vec<u32> {
+fn semantic_tokens(source: &str, analysis: Option<&Analysis>) -> Vec<u32> {
     let mut parser = Parser::new();
     parser
         .set_language(&tree_sitter_solar::LANGUAGE.into())
@@ -178,12 +194,11 @@ fn semantic_tokens(uri: &str, source: &str) -> Vec<u32> {
         return vec![];
     };
 
-    // A single resolve+typecheck feeds both passes below: the name tables (so
-    // every reference to a global type/variant is coloured the same, wherever
-    // it appears) and the per-expression overlays (so a call is a function, a
-    // field read a property, etc.). Any parse/resolve/type error simply leaves
-    // the CST's error-tolerant classification in place.
-    let analysis = analyze(uri, source);
+    // The cached resolve feeds the name tables (so every reference to a global
+    // type/variant is coloured the same, wherever it appears) and the
+    // per-expression overlays (so a call is a function, a field read a property,
+    // etc.). Any parse/resolve/type error simply leaves the CST's
+    // error-tolerant classification in place.
 
     // Type-parameter names are gathered straight from the syntax tree (they
     // survive no further than monomorphization, so type checking can't report
@@ -192,13 +207,13 @@ fn semantic_tokens(uri: &str, source: &str) -> Vec<u32> {
     collect_type_params(tree.root_node(), source, &mut type_params);
 
     let context = Context {
-        names: analysis.as_ref().map(|analysis| &analysis.names),
+        names: analysis.map(|analysis| &analysis.names),
         type_params: &type_params,
     };
 
     let mut tokens = Vec::new();
     collect_tokens(tree.root_node(), source, &context, &mut tokens);
-    if let Some(analysis) = &analysis {
+    if let Some(analysis) = analysis {
         apply_typed_overlays(&analysis.typed, analysis.file_id, source, &mut tokens);
     }
     tokens.sort_by_key(|token| (token.line, token.start));
@@ -220,11 +235,10 @@ fn semantic_tokens(uri: &str, source: &str) -> Vec<u32> {
 }
 
 /// A `textDocument/hover` response for the identifier under the cursor: the
-/// `///` doc comment of the top-level item (or method) it names, if any. The
-/// lookup is by name against the current file's own declarations, so it works
-/// on the definition and on every use site, even while the buffer has type
-/// errors elsewhere.
-fn hover(source: &str, line: u32, character: u32) -> Option<Value> {
+/// `///` doc comment of the item (from anywhere in the resolved program) it
+/// names, if any. The lookup is by name, so it works on the definition and on
+/// every use site — including symbols imported from other files.
+fn hover(source: &str, line: u32, character: u32, docs: &HashMap<String, String>) -> Option<Value> {
     let mut parser = Parser::new();
     parser
         .set_language(&tree_sitter_solar::LANGUAGE.into())
@@ -236,7 +250,7 @@ fn hover(source: &str, line: u32, character: u32) -> Option<Value> {
         return None;
     }
     let name = &source[node.byte_range()];
-    let doc = collect_docs(source).remove(name)?;
+    let doc = docs.get(name)?;
     Some(json!({
         "contents": {
             "kind": "markdown",
@@ -245,16 +259,13 @@ fn hover(source: &str, line: u32, character: u32) -> Option<Value> {
     }))
 }
 
-/// Map every top-level declaration (and method) that carries a `///` doc
-/// comment to its documentation, keyed by the name a hover would see. Built
-/// from the current file alone — no resolve, so it is cheap and tolerant of a
-/// partially-broken buffer. The first declaration of a name wins.
-fn collect_docs(source: &str) -> HashMap<String, String> {
+/// Map every declaration (and method) that carries a `///` doc comment to its
+/// documentation, keyed by the name a hover would see. Built from the resolved
+/// program, so it spans every file (a symbol imported from another module still
+/// gets its doc). The first declaration of a name wins.
+fn collect_docs(ast: &ast::SourceFile) -> HashMap<String, String> {
     use solar::ast::TopLevelItem;
     let mut docs = HashMap::new();
-    let Ok(ast) = solar::parser::parse(source) else {
-        return docs;
-    };
     for item in &ast.items {
         let (name, doc) = match item {
             TopLevelItem::Function(function) | TopLevelItem::Method(function) => {
@@ -314,7 +325,19 @@ struct Context<'a> {
     type_params: &'a HashSet<String>,
 }
 
-/// The result of resolving and type-checking the current buffer, shared by the
+/// Everything derived from a single resolve of one open document. Resolving
+/// reparses the whole stdlib, so it is the expensive step; caching this lets
+/// hover and semantic tokens share one resolve per edit.
+#[derive(Default)]
+struct Document {
+    /// Name → `///` doc across the whole resolved program, for hover.
+    docs: HashMap<String, String>,
+    /// Type-check-derived facts for semantic highlighting. `None` when the
+    /// buffer resolves but does not type-check — hover's docs survive either way.
+    analysis: Option<Analysis>,
+}
+
+/// Facts type checking supplies that syntax alone cannot, shared by the
 /// name-table and per-expression classification passes.
 struct Analysis {
     typed: typed_ast::SourceFile,
@@ -322,14 +345,40 @@ struct Analysis {
     names: Names,
 }
 
-/// Resolve and type-check the in-editor buffer. Returns `None` on any
-/// parse/resolve/type error, in which case the CST classification stands alone.
-/// The resolver accepts the current buffer, so this works before the editor
-/// writes the document to disk.
-fn analyze(uri: &str, source: &str) -> Option<Analysis> {
-    let path = file_uri_to_path(uri)?;
-    let (ast, source_map) = resolve::resolve_source(&path, source.to_owned()).ok()?;
-    let typed = typed_ast::lower(&ast).ok()?;
+/// Return the cached [`Document`] for `uri`, computing (and storing) it on a
+/// miss. The cache is cleared whenever the buffer changes, so a hit always
+/// reflects the current `source`.
+fn cached<'a>(cache: &'a mut HashMap<String, Document>, uri: &str, source: &str) -> &'a Document {
+    if !cache.contains_key(uri) {
+        let document = compute(uri, source);
+        cache.insert(uri.to_owned(), document);
+    }
+    &cache[uri]
+}
+
+/// Resolve the in-editor buffer once and derive both the hover docs and the
+/// semantic-token analysis. The resolver accepts the current buffer, so this
+/// works before the editor writes the document to disk. A resolve failure
+/// yields an empty [`Document`]; a resolve that type-checks additionally
+/// populates `analysis`.
+fn compute(uri: &str, source: &str) -> Document {
+    let Some(path) = file_uri_to_path(uri) else {
+        return Document::default();
+    };
+    let Ok((ast, source_map)) = resolve::resolve_source(&path, source.to_owned()) else {
+        return Document::default();
+    };
+    Document {
+        docs: collect_docs(&ast),
+        analysis: analyze(&ast, &source_map),
+    }
+}
+
+/// Type-check the resolved program and build the semantic-token name tables.
+/// Returns `None` if type checking fails, in which case the CST classification
+/// stands alone.
+fn analyze(ast: &ast::SourceFile, source_map: &SourceMap) -> Option<Analysis> {
+    let typed = typed_ast::lower(ast).ok()?;
     let file_id = source_map.root_file_id()?;
 
     // Collect every struct/enum name and every enum variant name across the
@@ -637,7 +686,7 @@ fn token_kind(node: Node<'_>, source: &str, context: &Context) -> Option<u32> {
     let text = &source[node.byte_range()];
 
     match kind {
-        "comment" => Some(token_index("comment")),
+        "comment" | "doc_comment" => Some(token_index("comment")),
         "string_literal" | "char_literal" => Some(token_index("string")),
         "integer_literal" | "float_literal" => Some(token_index("number")),
         "boolean_literal" => Some(token_index("keyword")),

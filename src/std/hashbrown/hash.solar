@@ -6,8 +6,8 @@
 
 import fh from "foldhash.solar";
 
-// Generic reflective hash. Only instantiated for types without a concrete
-// `hash` overload (structs / enums); primitives dispatch to the overloads below.
+/// Generic reflective hash. Only instantiated for types without a concrete
+/// `hash` overload (structs / enums); primitives dispatch to the overloads below.
 pub method hash#[T](self: &T, hasher: &fh::Hasher) {
   match.reflect T {
     "struct" => {
@@ -60,7 +60,7 @@ pub method hash(self: &Uint64, hasher: &fh::Hasher) {
 pub method hash(self: &Bool, hasher: &fh::Hasher) {
   if self@ { hasher.write_u8(1u8); } else { hasher.write_u8(0u8); }
 }
-// Byte slices (strings) hash their contents.
+/// Byte slices (strings) hash their contents.
 pub method hash(self: &[Uint8], hasher: &fh::Hasher) {
   hasher.write(self);
 }

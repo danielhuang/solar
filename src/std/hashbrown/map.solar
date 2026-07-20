@@ -26,7 +26,7 @@ pub method is_empty#[K, V](self: &HashMap#[K, V]) -> Bool {
   self@.table.items == 0u
 }
 
-// Insert `key -> val`, returning the previous value if the key was present.
+/// Insert `key -> val`, returning the previous value if the key was present.
 pub method insert#[K, V](self: &HashMap#[K, V], key: K, val: V) -> Option#[V] {
   let t = self@.table&;
   let h = raw::key_hash(key&);
@@ -52,7 +52,7 @@ pub method insert#[K, V](self: &HashMap#[K, V], key: K, val: V) -> Option#[V] {
   result
 }
 
-// A reference to the value for `key`, or None.
+/// A reference to the value for `key`, or None.
 pub method get#[K, V](self: &HashMap#[K, V], key: &K) -> Option#[&V] {
   let t = self@.table&;
   let h = raw::key_hash(key);
@@ -78,13 +78,13 @@ pub method contains_key#[K, V](self: &HashMap#[K, V], key: &K) -> Bool {
   result
 }
 
-// References in Solar are always mutable, so `get` already yields a mutable
-// value reference; `get_mut` is provided for parity with hashbrown.
+/// References in Solar are always mutable, so `get` already yields a mutable
+/// value reference; `get_mut` is provided for parity with hashbrown.
 pub method get_mut#[K, V](self: &HashMap#[K, V], key: &K) -> Option#[&V] {
   self.get(key)
 }
 
-// Remove `key`, returning its value if present.
+/// Remove `key`, returning its value if present.
 pub method remove#[K, V](self: &HashMap#[K, V], key: &K) -> Option#[V] {
   let t = self@.table&;
   let h = raw::key_hash(key);
@@ -101,13 +101,13 @@ pub method remove#[K, V](self: &HashMap#[K, V], key: &K) -> Option#[V] {
   result
 }
 
-// Remove all entries (keeps the allocated capacity).
+/// Remove all entries (keeps the allocated capacity).
 pub method clear#[K, V](self: &HashMap#[K, V]) {
   let t = self@.table&;
   t.clear();
 }
 
-// Call `f(key, val)` for every live entry, in unspecified order.
+/// Call `f(key, val)` for every live entry, in unspecified order.
 pub method for_each#[K, V](self: &HashMap#[K, V], f: fn(&K, &V)) {
   let t = self@.table&;
   if t@.bucket_mask != 0u {

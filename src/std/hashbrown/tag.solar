@@ -7,23 +7,23 @@
 pub const EMPTY: Uint8 = 0b11111111u8;
 pub const DELETED: Uint8 = 0b10000000u8;
 
-// The tag for a full bucket carrying the top 7 bits of `hash`.
+/// The tag for a full bucket carrying the top 7 bits of `hash`.
 pub fn full(hash: Uint64) -> Uint8 {
   // Top 7 bits of the 64-bit hash: `hash >> (64 - 7)`, masked to 7 bits.
   Uint8((hash >> 57u64) & 0x7Fu64)
 }
 
-// A full bucket has its top bit clear.
+/// A full bucket has its top bit clear.
 pub fn is_full(t: Uint8) -> Bool {
   (t & 0x80u8) == 0u8
 }
 
-// A special (EMPTY or DELETED) bucket has its top bit set.
+/// A special (EMPTY or DELETED) bucket has its top bit set.
 pub fn is_special(t: Uint8) -> Bool {
   (t & 0x80u8) != 0u8
 }
 
-// Among special tags, EMPTY has its low bit set (DELETED does not).
+/// Among special tags, EMPTY has its low bit set (DELETED does not).
 pub fn special_is_empty(t: Uint8) -> Bool {
   (t & 0x01u8) != 0u8
 }

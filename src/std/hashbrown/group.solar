@@ -14,30 +14,30 @@ import bitmask from "bitmask.solar";
 
 pub const WIDTH: Uint = 16u;
 
-// Load the 16 control bytes starting at byte offset `pos`. The caller guarantees
-// `pos + 16 <= ctrl.len()` (the control array has a trailing mirror group), and
-// the slice + fixed-array coercion bounds-checks it regardless.
+/// Load the 16 control bytes starting at byte offset `pos`. The caller guarantees
+/// `pos + 16 <= ctrl.len()` (the control array has a trailing mirror group), and
+/// the slice + fixed-array coercion bounds-checks it regardless.
 pub fn load(ctrl: &[Uint8], pos: Uint) -> simd::SimdUint8x16 {
   simd::u8x16_load(ctrl, pos)
 }
 
-// Lanes that hold exactly the given tag (full buckets only — EMPTY/DELETED have
-// the high bit set and a full tag never does, so they can't match).
+/// Lanes that hold exactly the given tag (full buckets only — EMPTY/DELETED have
+/// the high bit set and a full tag never does, so they can't match).
 pub method match_tag(self: simd::SimdUint8x16, t: Uint8) -> bitmask::BitMask {
   bitmask::BitMask { mask: self.eq_mask(t) }
 }
 
-// Lanes that are EMPTY (all bits set).
+/// Lanes that are EMPTY (all bits set).
 pub method match_empty(self: simd::SimdUint8x16) -> bitmask::BitMask {
   bitmask::BitMask { mask: self.eq_mask(tag::EMPTY) }
 }
 
-// Lanes that are EMPTY or DELETED (high bit set) — a bare move-mask.
+/// Lanes that are EMPTY or DELETED (high bit set) — a bare move-mask.
 pub method match_empty_or_deleted(self: simd::SimdUint8x16) -> bitmask::BitMask {
   bitmask::BitMask { mask: self.high_bit_mask() }
 }
 
-// Lanes that are full (high bit clear) — the complement within the group width.
+/// Lanes that are full (high bit clear) — the complement within the group width.
 pub method match_full(self: simd::SimdUint8x16) -> bitmask::BitMask {
   let eod = self.high_bit_mask();
   let all = (1u << WIDTH) -- 1u;

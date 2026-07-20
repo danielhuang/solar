@@ -10,17 +10,17 @@ pub import iter from "iter.solar";
 pub import simd from "simd.solar";
 pub import hashbrown from "hashbrown/map.solar";
 
-// The optional type: `Some(value)` or `None`. Available everywhere via the
-// implicit `import * from "@std"`.
+/// The optional type: `Some(value)` or `None`. Available everywhere via the
+/// implicit `import * from "@std"`.
 pub enum Option#[T] {
   Some(T),
   None,
 }
 
-// Decimal representation of x as a byte slice (no trailing newline). The buffer
-// is GC-allocated, so the returned reference keeps it alive. Digits are
-// extracted in the negative domain so Int's minimum value (which has no positive
-// counterpart) needs no special case.
+/// Decimal representation of x as a byte slice (no trailing newline). The buffer
+/// is GC-allocated, so the returned reference keeps it alive. Digits are
+/// extracted in the negative domain so Int's minimum value (which has no positive
+/// counterpart) needs no special case.
 pub method to_string(self: Int) -> &[Uint8] {
   // longest output: -9223372036854775808 = 20 bytes
   let buf: [Uint8] = [0u8; 20u];
@@ -57,15 +57,15 @@ pub method to_string(self: Uint) -> &[Uint8] {
   buf[i..20u]&
 }
 
-// Number of elements in an array.
+/// Number of elements in an array.
 pub method len#[T](self: &[T]) -> Uint {
   intrinsics::array_len(self@)
 }
 
-// Bit-counting methods on integers (any integer type `T`). The count is taken
-// over `T`'s bit width: `count_trailing_zeros`/`count_leading_zeros` return the
-// full width for a zero input, and `count_ones` is the population count. These
-// lower to single machine instructions (tzcnt/lzcnt/popcnt) in compiled code.
+/// Bit-counting methods on integers (any integer type `T`). The count is taken
+/// over `T`'s bit width: `count_trailing_zeros`/`count_leading_zeros` return the
+/// full width for a zero input, and `count_ones` is the population count. These
+/// lower to single machine instructions (tzcnt/lzcnt/popcnt) in compiled code.
 pub method count_trailing_zeros#[T](self: T) -> Uint {
   intrinsics::count_trailing_zeros(self)
 }
@@ -78,11 +78,11 @@ pub method count_ones#[T](self: T) -> Uint {
   intrinsics::count_ones(self)
 }
 
-// Full-width multiply-add on Uint64: computes the 128-bit value
-// `self * rhs + carry + add` (which never overflows 128 bits) and returns it as
-// `(low, high)` 64-bit halves. Wraps the `carrying_mul_add` intrinsic, which
-// writes the halves through `&Uint64` out-params (lowering to the runtime's
-// `sol_carrying_mul_add`).
+/// Full-width multiply-add on Uint64: computes the 128-bit value
+/// `self * rhs + carry + add` (which never overflows 128 bits) and returns it as
+/// `(low, high)` 64-bit halves. Wraps the `carrying_mul_add` intrinsic, which
+/// writes the halves through `&Uint64` out-params (lowering to the runtime's
+/// `sol_carrying_mul_add`).
 pub method carrying_mul_add(self: Uint64, rhs: Uint64, carry: Uint64, add: Uint64) -> (Uint64, Uint64) {
   let lo = 0u64;
   let hi = 0u64;
@@ -90,16 +90,16 @@ pub method carrying_mul_add(self: Uint64, rhs: Uint64, carry: Uint64, add: Uint6
   (lo, hi)
 }
 
-// Structural equality by compile-time reflection — the default `==` for any
-// struct or enum (so `a == b` works without a hand-written `operator_eq`). It
-// mirrors the reflective `hash`: two structs are equal iff every field is equal;
-// two enums iff they hold the same variant with equal payloads. Fields are
-// compared with `==`, so a primitive field uses the built-in comparison, a
-// struct/enum field recurses through this method, and a byte-slice field uses
-// the overload below. A concrete `operator_eq` (e.g. on a specific struct) is
-// more specific and overrides this generic. Any other type (e.g. comparing two
-// `&[Uint8]` refs directly — compare contents with `a@ == b@` instead) throws
-// a catchable exception rather than silently answering.
+/// Structural equality by compile-time reflection — the default `==` for any
+/// struct or enum (so `a == b` works without a hand-written `operator_eq`). It
+/// mirrors the reflective `hash`: two structs are equal iff every field is equal;
+/// two enums iff they hold the same variant with equal payloads. Fields are
+/// compared with `==`, so a primitive field uses the built-in comparison, a
+/// struct/enum field recurses through this method, and a byte-slice field uses
+/// the overload below. A concrete `operator_eq` (e.g. on a specific struct) is
+/// more specific and overrides this generic. Any other type (e.g. comparing two
+/// `&[Uint8]` refs directly — compare contents with `a@ == b@` instead) throws
+/// a catchable exception rather than silently answering.
 pub method operator_eq#[T](self: &T, other: &T) -> Bool {
   let eq = true;
   match.reflect T {
@@ -132,8 +132,8 @@ pub method operator_eq#[T](self: &T, other: &T) -> Bool {
   eq
 }
 
-// Content equality for byte slices (e.g. `String` fields). Distinct from the
-// reference identity `==` on `&[Uint8]`.
+/// Content equality for byte slices (e.g. `String` fields). Distinct from the
+/// reference identity `==` on `&[Uint8]`.
 pub method operator_eq(self: &[Uint8], other: &[Uint8]) -> Bool {
   let n = self.len();
   let eq = n == other.len();
@@ -149,8 +149,8 @@ pub method operator_eq(self: &[Uint8], other: &[Uint8]) -> Bool {
   eq
 }
 
-// `!=` for any struct/enum (and byte slices) — the negation of `==`, so it
-// respects a concrete `operator_eq` override too.
+/// `!=` for any struct/enum (and byte slices) — the negation of `==`, so it
+/// respects a concrete `operator_eq` override too.
 pub method operator_ne#[T](self: &T, other: &T) -> Bool {
   let e = self.operator_eq(other);
   !e
@@ -164,9 +164,9 @@ pub fn println(s: &[Uint8]) {
     write_stdout((s@ + ['\n'])&);
 }
 
-// Prints any value's `to_string()` representation followed by a newline. The
-// concrete `println(&[Uint8])` overload above is more specific and is chosen for
-// byte slices; this generic handles everything else (e.g. Int, Uint).
+/// Prints any value's `to_string()` representation followed by a newline. The
+/// concrete `println(&[Uint8])` overload above is more specific and is chosen for
+/// byte slices; this generic handles everything else (e.g. Int, Uint).
 pub fn println#[T](x: T) {
     println(x.to_string());
 }
@@ -175,9 +175,9 @@ pub fn panic(s: &[Uint8]) {
     intrinsics::panic(s);
 }
 
-// Throw a recoverable exception carrying `s` as its message; it unwinds to the
-// nearest enclosing `try { … } catch (e) { … }` (where `e` binds `s`). Unlike
-// `panic`, a `throw` can be caught.
+/// Throw a recoverable exception carrying `s` as its message; it unwinds to the
+/// nearest enclosing `try { … } catch (e) { … }` (where `e` binds `s`). Unlike
+/// `panic`, a `throw` can be caught.
 pub fn throw(s: &[Uint8]) {
     intrinsics::throw(s);
 }

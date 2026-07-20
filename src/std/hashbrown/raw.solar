@@ -15,7 +15,7 @@ import group from "group.solar";
 import fh from "foldhash.solar";
 import hash from "hash.solar";
 
-// Hash a key with a fresh fixed-seed foldhash hasher.
+/// Hash a key with a fresh fixed-seed foldhash hasher.
 pub fn key_hash#[K](key: &K) -> Uint64 {
   let h = fh::Hasher();
   key.hash(h&);
@@ -37,8 +37,8 @@ pub struct RawTable#[K, V] {
   pub growth_left: Uint,
 }
 
-// An empty table: one all-EMPTY control group, no slots. Probes immediately see
-// EMPTY (so lookups miss), and growth_left 0 forces a resize on first insert.
+/// An empty table: one all-EMPTY control group, no slots. Probes immediately see
+/// EMPTY (so lookups miss), and growth_left 0 forces a resize on first insert.
 pub fn RawTable#[K, V]() -> RawTable#[K, V] {
   let empty_ctrl: [Uint8] = [tag::EMPTY; GROUP_WIDTH];
   RawTable#[K, V] {
@@ -93,15 +93,15 @@ fn bucket_mask_to_capacity(bucket_mask: Uint) -> Uint {
   out
 }
 
-// The low bits of the hash, used to pick the starting probe bucket.
+/// The low bits of the hash, used to pick the starting probe bucket.
 fn h1(hash: Uint64) -> Uint {
   Uint(hash)
 }
 
 // ── Control bytes ──────────────────────────────────────────────────────────
 
-// Write a control byte, mirroring the first GROUP_WIDTH bytes into the trailing
-// group so unaligned group loads near the end stay consistent.
+/// Write a control byte, mirroring the first GROUP_WIDTH bytes into the trailing
+/// group so unaligned group loads near the end stay consistent.
 method set_ctrl#[K, V](self: &RawTable#[K, V], index: Uint, t: Uint8) {
   let dec = index -- GROUP_WIDTH;
   let masked = dec & self@.bucket_mask;
@@ -112,7 +112,7 @@ method set_ctrl#[K, V](self: &RawTable#[K, V], index: Uint, t: Uint8) {
 
 // ── Probing ────────────────────────────────────────────────────────────────
 
-// Find the slot holding `key`, or None. `key` is compared with `==`.
+/// Find the slot holding `key`, or None. `key` is compared with `==`.
 pub method find#[K, V](self: &RawTable#[K, V], hash: Uint64, key: &K) -> Option#[Uint] {
   let found = Option#[Uint]::None;
   if self@.bucket_mask != 0u {
@@ -149,8 +149,8 @@ pub method find#[K, V](self: &RawTable#[K, V], hash: Uint64, key: &K) -> Option#
   found
 }
 
-// First EMPTY-or-DELETED slot in the probe sequence. Terminates because the
-// load factor keeps at least one empty bucket.
+/// First EMPTY-or-DELETED slot in the probe sequence. Terminates because the
+/// load factor keeps at least one empty bucket.
 method find_insert_slot#[K, V](self: &RawTable#[K, V], hash: Uint64) -> Uint {
   let pos = h1(hash) & self@.bucket_mask;
   let stride = 0u;
@@ -171,7 +171,7 @@ method find_insert_slot#[K, V](self: &RawTable#[K, V], hash: Uint64) -> Uint {
   result
 }
 
-// Place an entry known to be absent into its insert slot (no growth check).
+/// Place an entry known to be absent into its insert slot (no growth check).
 pub method insert_in_slot#[K, V](self: &RawTable#[K, V], hash: Uint64, e: Entry#[K, V]) {
   let slot = self.find_insert_slot(hash);
   let old_ctrl = self@.ctrl@[slot];
@@ -185,9 +185,9 @@ pub method insert_in_slot#[K, V](self: &RawTable#[K, V], hash: Uint64, e: Entry#
   }
 }
 
-// Erase the entry at `index`. Sets the control byte to EMPTY when the slot sits
-// in a short probe run (its group plus the preceding group together contain an
-// empty bucket), otherwise DELETED — keeping probe chains intact.
+/// Erase the entry at `index`. Sets the control byte to EMPTY when the slot sits
+/// in a short probe run (its group plus the preceding group together contain an
+/// empty bucket), otherwise DELETED — keeping probe chains intact.
 pub method erase#[K, V](self: &RawTable#[K, V], index: Uint) {
   let dec = index -- GROUP_WIDTH;
   let i_before = dec & self@.bucket_mask;
@@ -208,7 +208,7 @@ pub method erase#[K, V](self: &RawTable#[K, V], index: Uint) {
   }
 }
 
-// Reset every bucket to EMPTY, keeping the allocation.
+/// Reset every bucket to EMPTY, keeping the allocation.
 pub method clear#[K, V](self: &RawTable#[K, V]) {
   if self@.bucket_mask != 0u {
     let len = self@.bucket_mask + 1u + GROUP_WIDTH;
@@ -224,8 +224,8 @@ pub method clear#[K, V](self: &RawTable#[K, V]) {
 
 // ── Resize ─────────────────────────────────────────────────────────────────
 
-// Grow (or first-allocate) to hold at least `min_cap` items, filling the new
-// slot array with copies of `sample`, then reinsert all live entries.
+/// Grow (or first-allocate) to hold at least `min_cap` items, filling the new
+/// slot array with copies of `sample`, then reinsert all live entries.
 pub method resize#[K, V](self: &RawTable#[K, V], min_cap: Uint, sample: &Entry#[K, V]) {
   let new_buckets = capacity_to_buckets(min_cap);
   let new_ctrl_len = new_buckets + GROUP_WIDTH;

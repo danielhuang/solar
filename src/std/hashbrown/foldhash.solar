@@ -9,7 +9,7 @@
 
 import { u64_from_le, u32_from_le } from "@intrinsics";
 
-// Arbitrary high-entropy constants (hex digits of pi), from foldhash.
+/// Arbitrary high-entropy constants (hex digits of pi), from foldhash.
 const ARBITRARY1: Uint64 = 0x13198a2e03707344u64;
 const ARBITRARY3: Uint64 = 0x082efa98ec4e6c89u64;
 const ARBITRARY6: Uint64 = 0xc0ac29b7c97c50ddu64;
@@ -27,7 +27,7 @@ pub struct Hasher {
   seeds: [Uint64; 6],
 }
 
-// A fresh hasher seeded with foldhash's fixed global seed.
+/// A fresh hasher seeded with foldhash's fixed global seed.
 pub fn Hasher() -> Hasher {
   Hasher {
     accumulator: ARBITRARY3,
@@ -38,13 +38,13 @@ pub fn Hasher() -> Hasher {
   }
 }
 
-// Full 64x64->128 multiply, folding the two halves together.
+/// Full 64x64->128 multiply, folding the two halves together.
 fn folded_multiply(x: Uint64, y: Uint64) -> Uint64 {
   let (lo, hi) = x.carrying_mul_add(y, 0u64, 0u64);
   lo ^ hi
 }
 
-// Rotate `x` right by `r` bits (r taken mod 64).
+/// Rotate `x` right by `r` bits (r taken mod 64).
 fn rotate_right(x: Uint64, r: Uint64) -> Uint64 {
   let n = r & 63u64;
   let right = x >> n;
@@ -53,9 +53,9 @@ fn rotate_right(x: Uint64, r: Uint64) -> Uint64 {
   right | left
 }
 
-// Accumulate a `bits`-wide value into the 128-bit sponge, folding when full.
-// `(inline)`: its cost sits just over the default inliner threshold, so without
-// the hint the per-lookup `Hasher` it mutates can't be promoted off the heap.
+/// Accumulate a `bits`-wide value into the 128-bit sponge, folding when full.
+/// `(inline)`: its cost sits just over the default inliner threshold, so without
+/// the hint the per-lookup `Hasher` it mutates can't be promoted off the heap.
 method(inline) write_num(self: &Hasher, x: Uint64, bits: Uint) {
   let new_len = self@.sponge_len + bits;
   if new_len > 128u {
@@ -100,13 +100,13 @@ pub method write_u64(self: &Hasher, x: Uint64) {
   self.write_num(x, 64u);
 }
 
-// Load 8 bytes at `off` as a little-endian word.
+/// Load 8 bytes at `off` as a little-endian word.
 fn load8(bytes: &[Uint8], off: Uint) -> Uint64 {
   let hi = off + 8u;
   u64_from_le(bytes@[off..hi])
 }
 
-// Hash <= 16 bytes (overlapping reads).
+/// Hash <= 16 bytes (overlapping reads).
 fn hash_bytes_short(bytes: &[Uint8], acc: Uint64, seeds: &[Uint64; 6]) -> Uint64 {
   let len = bytes.len();
   let s0 = acc;
@@ -137,7 +137,7 @@ fn hash_bytes_short(bytes: &[Uint8], acc: Uint64, seeds: &[Uint64; 6]) -> Uint64
   folded_multiply(s0, s1)
 }
 
-// Hash > 16 bytes. `base` tracks the current offset (Rust reslices `v`).
+/// Hash > 16 bytes. `base` tracks the current offset (Rust reslices `v`).
 fn hash_bytes_long(bytes: &[Uint8], acc: Uint64, seeds: &[Uint64; 6]) -> Uint64 {
   let seed0 = seeds@[0u];
   let s0 = acc;

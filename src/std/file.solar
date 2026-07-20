@@ -1,11 +1,11 @@
 import intrinsics from "@intrinsics";
 
-// Opens `path` and returns an opaque FileDesc. The garbage collector closes the
-// file once no live FileDesc refers to it. The boolean keyword arguments select
-// the open mode: `read`/`write` set the access mode, `append` opens at the end,
-// `truncate` empties an existing file, `create` creates it if absent, and `new`
-// (O_EXCL, combine with `create`) fails if it already exists. `mode` is the
-// permission bits applied when a file is created.
+/// Opens `path` and returns an opaque FileDesc. The garbage collector closes the
+/// file once no live FileDesc refers to it. The boolean keyword arguments select
+/// the open mode: `read`/`write` set the access mode, `append` opens at the end,
+/// `truncate` empties an existing file, `create` creates it if absent, and `new`
+/// (O_EXCL, combine with `create`) fails if it already exists. `mode` is the
+/// permission bits applied when a file is created.
 pub fn open(
     path: &[Uint8],
     read = true,
@@ -38,62 +38,62 @@ pub fn open(
     intrinsics::file_open(path, flags, mode)
 }
 
-// Returns a FileDesc for the process's standard input. It refers to a stream
-// owned by the process for its whole lifetime, so the collector never
-// auto-closes it.
+/// Returns a FileDesc for the process's standard input. It refers to a stream
+/// owned by the process for its whole lifetime, so the collector never
+/// auto-closes it.
 pub fn stdin() -> FileDesc {
     intrinsics::file_stdin()
 }
 
-// Returns a FileDesc for the process's standard output. Like stdin, the stream
-// is process-owned and is never auto-closed by the collector.
+/// Returns a FileDesc for the process's standard output. Like stdin, the stream
+/// is process-owned and is never auto-closed by the collector.
 pub fn stdout() -> FileDesc {
     intrinsics::file_stdout()
 }
 
-// Returns a FileDesc for the process's standard error. Like stdin/stdout, the
-// stream is process-owned and is never auto-closed by the collector.
+/// Returns a FileDesc for the process's standard error. Like stdin/stdout, the
+/// stream is process-owned and is never auto-closed by the collector.
 pub fn stderr() -> FileDesc {
     intrinsics::file_stderr()
 }
 
-// Opens the directory at `path` for listing with `read_entries`.
+/// Opens the directory at `path` for listing with `read_entries`.
 pub fn open_dir(path: &[Uint8]) -> FileDesc {
     const O_RDONLY = 0;
     const O_DIRECTORY = 0o200000;
     intrinsics::file_open(path, O_RDONLY + O_DIRECTORY, 0u)
 }
 
-// "Closes" `f`: the underlying file is released now, but the fd number stays
-// occupied (it points at a dead pipe), so any other live FileDesc holding the
-// same fd cannot silently alias a different file later opened on that number.
+/// "Closes" `f`: the underlying file is released now, but the fd number stays
+/// occupied (it points at a dead pipe), so any other live FileDesc holding the
+/// same fd cannot silently alias a different file later opened on that number.
 pub method close(self: FileDesc) {
     intrinsics::file_close(self)
 }
 
-// Reads up to `buf`'s length bytes into `buf`, returning the number of bytes
-// read (0 at end of file). A single read; may return fewer bytes than requested.
+/// Reads up to `buf`'s length bytes into `buf`, returning the number of bytes
+/// read (0 at end of file). A single read; may return fewer bytes than requested.
 pub method read(self: FileDesc, buf: &[Uint8]) -> Uint {
     intrinsics::file_read(self, buf)
 }
 
-// Reads up to `max_size` bytes into a freshly allocated buffer and returns the
-// bytes read (the result's length is the number of bytes actually read). The
-// buffer is GC-allocated, so the returned reference keeps it alive.
+/// Reads up to `max_size` bytes into a freshly allocated buffer and returns the
+/// bytes read (the result's length is the number of bytes actually read). The
+/// buffer is GC-allocated, so the returned reference keeps it alive.
 pub method read(self: FileDesc, max_size: Uint) -> &[Uint8] {
     let buf: [Uint8] = [0u8; max_size];
     let n = self.read(buf&);
     buf[0u..n]&
 }
 
-// Writes up to `src`'s length bytes, returning the number actually written. A
-// single write; may write fewer bytes than requested.
+/// Writes up to `src`'s length bytes, returning the number actually written. A
+/// single write; may write fewer bytes than requested.
 pub method write_partial(self: FileDesc, src: &[Uint8]) -> Uint {
     intrinsics::file_write_partial(self, src)
 }
 
-// Writes the entire `src` buffer, looping over partial writes until done (like
-// Rust's `write_all`).
+/// Writes the entire `src` buffer, looping over partial writes until done (like
+/// Rust's `write_all`).
 pub method write(self: FileDesc, src: &[Uint8]) {
     let len = src.len();
     let written = 0u;
@@ -102,20 +102,20 @@ pub method write(self: FileDesc, src: &[Uint8]) {
     }
 }
 
-// Reads up to `buf`'s length bytes at absolute byte `offset` (pread: the file
-// cursor does not move). A single read; may return fewer bytes than requested.
+/// Reads up to `buf`'s length bytes at absolute byte `offset` (pread: the file
+/// cursor does not move). A single read; may return fewer bytes than requested.
 pub method read_at(self: FileDesc, buf: &[Uint8], offset: Uint) -> Uint {
     intrinsics::file_read_at(self, buf, offset)
 }
 
-// Writes up to `src`'s length bytes at absolute byte `offset` (pwrite: the file
-// cursor does not move), returning the number actually written. A single write.
+/// Writes up to `src`'s length bytes at absolute byte `offset` (pwrite: the file
+/// cursor does not move), returning the number actually written. A single write.
 pub method write_at_partial(self: FileDesc, src: &[Uint8], offset: Uint) -> Uint {
     intrinsics::file_write_at(self, src, offset)
 }
 
-// Writes the entire `src` buffer at absolute byte `offset`, looping over
-// partial writes until done.
+/// Writes the entire `src` buffer at absolute byte `offset`, looping over
+/// partial writes until done.
 pub method write_at(self: FileDesc, src: &[Uint8], offset: Uint) {
     let len = src.len();
     let written = 0u;
@@ -124,15 +124,15 @@ pub method write_at(self: FileDesc, src: &[Uint8], offset: Uint) {
     }
 }
 
-// Flushes the file's data and metadata to stable storage (fsync).
+/// Flushes the file's data and metadata to stable storage (fsync).
 pub method sync(self: FileDesc) {
     intrinsics::file_sync(self)
 }
 
-// Acquires an advisory lock on the whole file (flock). `exclusive` selects a
-// writer lock over a shared reader lock; with `block = false` the call returns
-// false instead of waiting when the lock is held elsewhere. Locks are released
-// with `unlock`, on `close`, or when the collector reclaims the FileDesc.
+/// Acquires an advisory lock on the whole file (flock). `exclusive` selects a
+/// writer lock over a shared reader lock; with `block = false` the call returns
+/// false instead of waiting when the lock is held elsewhere. Locks are released
+/// with `unlock`, on `close`, or when the collector reclaims the FileDesc.
 pub method lock(self: FileDesc, exclusive = true, block = true) -> Bool {
     const LOCK_SH = 1;
     const LOCK_EX = 2;
@@ -142,35 +142,35 @@ pub method lock(self: FileDesc, exclusive = true, block = true) -> Bool {
     intrinsics::file_lock(self, op)
 }
 
-// Releases the advisory lock held on the file.
+/// Releases the advisory lock held on the file.
 pub method unlock(self: FileDesc) {
     const LOCK_UN = 8;
     intrinsics::file_lock(self, LOCK_UN);
 }
 
-// Deletes the file at `path`.
+/// Deletes the file at `path`.
 pub fn remove(path: &[Uint8]) {
     intrinsics::file_remove(path)
 }
 
-// Deletes the empty directory at `path`.
+/// Deletes the empty directory at `path`.
 pub fn remove_dir(path: &[Uint8]) {
     intrinsics::dir_remove(path)
 }
 
-// Atomically renames `old` to `new`, replacing `new` if it exists.
+/// Atomically renames `old` to `new`, replacing `new` if it exists.
 pub fn rename(old: &[Uint8], new: &[Uint8]) {
     intrinsics::file_rename(old, new)
 }
 
-// Creates the directory at `path` (fails if it already exists). `mode` is the
-// permission bits, filtered by the process umask.
+/// Creates the directory at `path` (fails if it already exists). `mode` is the
+/// permission bits, filtered by the process umask.
 pub fn create_dir(path: &[Uint8], mode = 0o777u) {
     intrinsics::dir_create(path, mode)
 }
 
-// In FileInfo and DirEntry, a `kind` of 0 is a regular file, 1 a directory,
-// and 2 anything else (symlink, socket, device, unknown).
+/// In FileInfo and DirEntry, a `kind` of 0 is a regular file, 1 a directory,
+/// and 2 anything else (symlink, socket, device, unknown).
 pub struct FileInfo {
     pub found: Bool,
     pub size: Uint,
@@ -178,9 +178,9 @@ pub struct FileInfo {
     pub kind: Uint,
 }
 
-// Stats the file at `path`. When nothing exists there, `found` is false and
-// the remaining fields are zero. `mtime_nanos` is nanoseconds since the Unix
-// epoch.
+/// Stats the file at `path`. When nothing exists there, `found` is false and
+/// the remaining fields are zero. `mtime_nanos` is nanoseconds since the Unix
+/// epoch.
 pub fn stat(path: &[Uint8]) -> FileInfo {
     let size = 0u64;
     let mtime = 0u64;
@@ -194,7 +194,7 @@ pub fn stat(path: &[Uint8]) -> FileInfo {
     }
 }
 
-// Does anything exist at `path`?
+/// Does anything exist at `path`?
 pub fn exists(path: &[Uint8]) -> Bool {
     stat(path).found
 }
@@ -204,10 +204,10 @@ pub struct DirEntry {
     pub name: &[Uint8],
 }
 
-// Reads all entries of a directory opened with `open_dir`, excluding "." and
-// "..". Loops the batched dir_read intrinsic (one getdents64 per call) until
-// the directory is exhausted; each raw entry is a kind byte followed by the
-// name bytes.
+/// Reads all entries of a directory opened with `open_dir`, excluding "." and
+/// "..". Loops the batched dir_read intrinsic (one getdents64 per call) until
+/// the directory is exhausted; each raw entry is a kind byte followed by the
+/// name bytes.
 pub method read_entries(self: FileDesc) -> &[DirEntry] {
     // Grown behind a unique pointer (like Vec) — a plain unsized local can't
     // be reassigned to a different length.

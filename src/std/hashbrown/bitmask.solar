@@ -5,34 +5,34 @@
 //
 // `BitMask` is a tiny value type, so methods take `self` by value.
 
-// Lanes per group — the mask occupies the low `WIDTH` bits of `mask`.
+/// Lanes per group — the mask occupies the low `WIDTH` bits of `mask`.
 const WIDTH: Uint = 16u;
 
 pub struct BitMask {
   pub mask: Uint,
 }
 
-// Whether any lane matched.
+/// Whether any lane matched.
 pub method any_bit_set(self: BitMask) -> Bool {
   self.mask != 0u
 }
 
-// The lane index (0..WIDTH) of the lowest matched lane. Only meaningful when
-// `any_bit_set()` is true.
+/// The lane index (0..WIDTH) of the lowest matched lane. Only meaningful when
+/// `any_bit_set()` is true.
 pub method lowest_set_bit_index(self: BitMask) -> Uint {
   self.mask.count_trailing_zeros()
 }
 
-// The mask with its lowest set bit cleared (`x & (x - 1)`). The RHS is bound to
-// a temp because `&` directly before `(` parses as a postfix-reference call.
+/// The mask with its lowest set bit cleared (`x & (x - 1)`). The RHS is bound to
+/// a temp because `&` directly before `(` parses as a postfix-reference call.
 pub method remove_lowest_bit(self: BitMask) -> BitMask {
   let dec = self.mask -- 1u;
   BitMask { mask: self.mask & dec }
 }
 
-// Leading / trailing zero lanes within the group (used by `erase` to decide
-// EMPTY vs DELETED). `count_*_zeros` count over the full 64-bit word, so adjust
-// to the `WIDTH` low bits the mask actually uses: a zero mask yields `WIDTH`.
+/// Leading / trailing zero lanes within the group (used by `erase` to decide
+/// EMPTY vs DELETED). `count_*_zeros` count over the full 64-bit word, so adjust
+/// to the `WIDTH` low bits the mask actually uses: a zero mask yields `WIDTH`.
 pub method leading_zeros(self: BitMask) -> Uint {
   self.mask.count_leading_zeros() - (64u - WIDTH)
 }

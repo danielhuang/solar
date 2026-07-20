@@ -7,13 +7,13 @@ import intrinsics from "@intrinsics";
 // interpreters use the same system libm, so all three backends agree
 // bit-for-bit.
 
-// The circle constant.
+/// The circle constant.
 pub const PI: Float64 = 3.141592653589793f;
 
-// Euler's number.
+/// Euler's number.
 pub const E: Float64 = 2.718281828459045f;
 
-// PI / 180: multiply degrees by this to get radians.
+/// PI / 180: multiply degrees by this to get radians.
 pub const DEG_TO_RAD: Float64 = 0.017453292519943295f;
 
 pub fn sqrt(x: Float64) -> Float64 { intrinsics::sqrt(x) }
@@ -37,18 +37,18 @@ pub fn acos(x: Float32) -> Float32 { intrinsics::acos(x) }
 pub fn atan(x: Float64) -> Float64 { intrinsics::atan(x) }
 pub fn atan(x: Float32) -> Float32 { intrinsics::atan(x) }
 
-// The angle of the vector (x, y): atan(y/x) adjusted for quadrant.
+/// The angle of the vector (x, y): atan(y/x) adjusted for quadrant.
 pub fn atan2(y: Float64, x: Float64) -> Float64 { intrinsics::atan2(y, x) }
 pub fn atan2(y: Float32, x: Float32) -> Float32 { intrinsics::atan2(y, x) }
 
 pub fn pow(base: Float64, exponent: Float64) -> Float64 { intrinsics::pow(base, exponent) }
 pub fn pow(base: Float32, exponent: Float32) -> Float32 { intrinsics::pow(base, exponent) }
 
-// e raised to the power x.
+/// e raised to the power x.
 pub fn exp(x: Float64) -> Float64 { intrinsics::exp(x) }
 pub fn exp(x: Float32) -> Float32 { intrinsics::exp(x) }
 
-// The natural (base-e) logarithm.
+/// The natural (base-e) logarithm.
 pub fn log(x: Float64) -> Float64 { intrinsics::log(x) }
 pub fn log(x: Float32) -> Float32 { intrinsics::log(x) }
 
@@ -58,11 +58,11 @@ pub fn floor(x: Float32) -> Float32 { intrinsics::floor(x) }
 pub fn ceil(x: Float64) -> Float64 { intrinsics::ceil(x) }
 pub fn ceil(x: Float32) -> Float32 { intrinsics::ceil(x) }
 
-// Rounds half away from zero (round(2.5) = 3, round(-2.5) = -3).
+/// Rounds half away from zero (round(2.5) = 3, round(-2.5) = -3).
 pub fn round(x: Float64) -> Float64 { intrinsics::round(x) }
 pub fn round(x: Float32) -> Float32 { intrinsics::round(x) }
 
-// Rounds toward zero (trunc(-3.5) = -3).
+/// Rounds toward zero (trunc(-3.5) = -3).
 pub fn trunc(x: Float64) -> Float64 { intrinsics::trunc(x) }
 pub fn trunc(x: Float32) -> Float32 { intrinsics::trunc(x) }
 

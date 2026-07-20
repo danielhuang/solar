@@ -16,7 +16,7 @@ pub struct TcpStream {
     pub fd: FileDesc,
 }
 
-// Linux socket constants (an implementation detail of this module).
+/// Linux socket constants (an implementation detail of this module).
 const AF_INET = 2;
 const AF_INET6 = 10;
 const SOCK_STREAM = 1;
@@ -26,10 +26,10 @@ const IPPROTO_TCP = 6;
 const TCP_NODELAY = 1;
 const SHUT_RD = 0;
 const SHUT_WR = 1;
-// sockaddr_in is 16 bytes; sockaddr_in6 is 28.
+/// sockaddr_in is 16 bytes; sockaddr_in6 is 28.
 const SOCKADDR_MAX = 28u;
 
-// Is `addr` an IPv6 literal? (Any ':' marks IPv6 — dotted quads have none.)
+/// Is `addr` an IPv6 literal? (Any ':' marks IPv6 — dotted quads have none.)
 fn is_ipv6(addr: &[Uint8]) -> Bool {
     let found = false;
     let i = 0u;
@@ -41,7 +41,7 @@ fn is_ipv6(addr: &[Uint8]) -> Bool {
     found
 }
 
-// Parses a dotted-quad from addr[from..to) into 4 bytes at out[at..at+4).
+/// Parses a dotted-quad from addr[from..to) into 4 bytes at out[at..at+4).
 fn parse_ipv4_range(addr: &[Uint8], from: Uint, to: Uint, out: &[Uint8], at: Uint) {
     let octet = 0u;
     let idx = at;
@@ -60,7 +60,7 @@ fn parse_ipv4_range(addr: &[Uint8], from: Uint, to: Uint, out: &[Uint8], at: Uin
     out@[idx] = Uint8(octet);
 }
 
-// Parses an IPv4 dotted-quad ("a.b.c.d") into the 4 bytes at out[0..4).
+/// Parses an IPv4 dotted-quad ("a.b.c.d") into the 4 bytes at out[0..4).
 pub fn parse_ipv4(addr: &[Uint8], out: &[Uint8]) {
     parse_ipv4_range(addr, 0u, addr.len(), out, 0u);
 }
@@ -73,10 +73,10 @@ fn hex_digit(c: Uint8) -> Uint {
     }
 }
 
-// Parses the colon-separated IPv6 groups in addr[from..to) — hex groups (2
-// bytes each, big-endian) or one trailing dotted-quad (4 bytes) — writing at
-// byte offset `at` in `out`. Empty groups (adjacent to a `::`) are skipped.
-// Returns the offset after the last byte written.
+/// Parses the colon-separated IPv6 groups in addr[from..to) — hex groups (2
+/// bytes each, big-endian) or one trailing dotted-quad (4 bytes) — writing at
+/// byte offset `at` in `out`. Empty groups (adjacent to a `::`) are skipped.
+/// Returns the offset after the last byte written.
 fn parse_groups(addr: &[Uint8], from: Uint, to: Uint, out: &[Uint8], at: Uint) -> Uint {
     let w = at;
     let group_start = from;
@@ -107,9 +107,9 @@ fn parse_groups(addr: &[Uint8], from: Uint, to: Uint, out: &[Uint8], at: Uint) -
     w
 }
 
-// Parses an IPv6 literal into the 16 bytes at out[0..16) (which must be
-// zeroed). Supports the full 8-group form, `::` compression, and an embedded
-// trailing dotted-quad ("::ffff:192.168.1.10"). No zone IDs.
+/// Parses an IPv6 literal into the 16 bytes at out[0..16) (which must be
+/// zeroed). Supports the full 8-group form, `::` compression, and an embedded
+/// trailing dotted-quad ("::ffff:192.168.1.10"). No zone IDs.
 pub fn parse_ipv6(addr: &[Uint8], out: &[Uint8]) {
     let n = addr.len();
     // Locate the `::` gap, if any.
@@ -138,10 +138,10 @@ pub fn parse_ipv6(addr: &[Uint8], out: &[Uint8]) {
     }
 }
 
-// Builds a sockaddr into `sa` (which must be SOCKADDR_MAX bytes, zeroed) and
-// returns its size: a 16-byte sockaddr_in for dotted-quad `addr`, a 28-byte
-// sockaddr_in6 for an IPv6 literal. Port lands at bytes 2..4 (big-endian) in
-// both layouts.
+/// Builds a sockaddr into `sa` (which must be SOCKADDR_MAX bytes, zeroed) and
+/// returns its size: a 16-byte sockaddr_in for dotted-quad `addr`, a 28-byte
+/// sockaddr_in6 for an IPv6 literal. Port lands at bytes 2..4 (big-endian) in
+/// both layouts.
 fn build_sockaddr(sa: &[Uint8], addr: &[Uint8], port: Uint) -> Uint {
     sa@[2u] = Uint8(port >> 8u);
     sa@[3u] = Uint8(port & 255u);
@@ -161,9 +161,9 @@ fn family_of(addr: &[Uint8]) -> Int {
     if is_ipv6(addr) { AF_INET6 } else { AF_INET }
 }
 
-// Creates a TCP socket bound to `addr:port` (port 0 asks the OS for an
-// ephemeral port — read it back with `local_port`) and starts listening.
-// SO_REUSEADDR is set so restarts don't trip over TIME_WAIT.
+/// Creates a TCP socket bound to `addr:port` (port 0 asks the OS for an
+/// ephemeral port — read it back with `local_port`) and starts listening.
+/// SO_REUSEADDR is set so restarts don't trip over TIME_WAIT.
 pub fn listen(addr: &[Uint8], port: Uint, backlog = 128) -> TcpListener {
     let fd = intrinsics::socket_create(family_of(addr), SOCK_STREAM, 0);
     intrinsics::socket_set_option(fd, SOL_SOCKET, SO_REUSEADDR, 1);
@@ -174,12 +174,12 @@ pub fn listen(addr: &[Uint8], port: Uint, backlog = 128) -> TcpListener {
     TcpListener { fd: fd }
 }
 
-// Blocks until a client connects and returns the connection.
+/// Blocks until a client connects and returns the connection.
 pub method accept(self: TcpListener) -> TcpStream {
     TcpStream { fd: intrinsics::socket_accept(self.fd) }
 }
 
-// The port this listener is actually bound to (useful after binding port 0).
+/// The port this listener is actually bound to (useful after binding port 0).
 pub method local_port(self: TcpListener) -> Uint {
     let sa = [0u8; SOCKADDR_MAX];
     intrinsics::socket_local_addr(self.fd, sa&);
@@ -187,12 +187,12 @@ pub method local_port(self: TcpListener) -> Uint {
     Uint(sa[2u]) * 256u + Uint(sa[3u])
 }
 
-// Stops accepting now instead of when the collector reclaims the listener.
+/// Stops accepting now instead of when the collector reclaims the listener.
 pub method close(self: TcpListener) {
     self.fd.close();
 }
 
-// Connects to `addr:port` (IPv4 or IPv6 literal) and returns the stream.
+/// Connects to `addr:port` (IPv4 or IPv6 literal) and returns the stream.
 pub fn connect(addr: &[Uint8], port: Uint) -> TcpStream {
     let fd = intrinsics::socket_create(family_of(addr), SOCK_STREAM, 0);
     let sa = [0u8; SOCKADDR_MAX];
@@ -201,47 +201,47 @@ pub fn connect(addr: &[Uint8], port: Uint) -> TcpStream {
     TcpStream { fd: fd }
 }
 
-// Reads up to `buf`'s length bytes, returning the count read (0 once the peer
-// has closed its write side). A single read; may return fewer than requested.
+/// Reads up to `buf`'s length bytes, returning the count read (0 once the peer
+/// has closed its write side). A single read; may return fewer than requested.
 pub method read(self: TcpStream, buf: &[Uint8]) -> Uint {
     self.fd.read(buf)
 }
 
-// Reads up to `max_size` bytes into a fresh GC buffer and returns the bytes
-// read. A single read.
+/// Reads up to `max_size` bytes into a fresh GC buffer and returns the bytes
+/// read. A single read.
 pub method read(self: TcpStream, max_size: Uint) -> &[Uint8] {
     self.fd.read(max_size)
 }
 
-// Writes up to `src`'s length bytes, returning the count actually written. A
-// single write; may write fewer than requested.
+/// Writes up to `src`'s length bytes, returning the count actually written. A
+/// single write; may write fewer than requested.
 pub method write_partial(self: TcpStream, src: &[Uint8]) -> Uint {
     self.fd.write_partial(src)
 }
 
-// Writes the entire `src` buffer, looping over partial writes until done.
+/// Writes the entire `src` buffer, looping over partial writes until done.
 pub method write(self: TcpStream, src: &[Uint8]) {
     self.fd.write(src);
 }
 
-// Disables (on = true) Nagle's algorithm: small writes go out immediately
-// instead of coalescing while an ack is outstanding.
+/// Disables (on = true) Nagle's algorithm: small writes go out immediately
+/// instead of coalescing while an ack is outstanding.
 pub method set_nodelay(self: TcpStream, on: Bool) {
     intrinsics::socket_set_option(self.fd, IPPROTO_TCP, TCP_NODELAY, if on { 1 } else { 0 });
 }
 
-// Half-closes the write side: the peer's next read returns 0 (EOF), while this
-// side can keep reading the peer's remaining data.
+/// Half-closes the write side: the peer's next read returns 0 (EOF), while this
+/// side can keep reading the peer's remaining data.
 pub method shutdown_write(self: TcpStream) {
     intrinsics::socket_shutdown(self.fd, SHUT_WR);
 }
 
-// Half-closes the read side.
+/// Half-closes the read side.
 pub method shutdown_read(self: TcpStream) {
     intrinsics::socket_shutdown(self.fd, SHUT_RD);
 }
 
-// Closes the connection now instead of when the collector reclaims the stream.
+/// Closes the connection now instead of when the collector reclaims the stream.
 pub method close(self: TcpStream) {
     self.fd.close();
 }

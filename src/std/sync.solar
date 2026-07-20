@@ -16,10 +16,10 @@ pub method atomic_compare_exchange#[T](self: &T, expected: T, new: T) -> T {
     atomic_compare_exchange(self, expected, new)
 }
 
-// Block until the pointee's value differs from `expected`, a wake arrives, or
-// `timeout` nanoseconds pass (the default is effectively forever). May return
-// early spuriously (e.g. interrupted by a GC signal); callers must recheck
-// their condition and re-wait.
+/// Block until the pointee's value differs from `expected`, a wake arrives, or
+/// `timeout` nanoseconds pass (the default is effectively forever). May return
+/// early spuriously (e.g. interrupted by a GC signal); callers must recheck
+/// their condition and re-wait.
 pub method futex_wait(self: &Uint32, expected: Uint32, timeout: Uint64 = 18446744073709551615u64) {
     futex_wait(self, expected, timeout);
 }
@@ -32,14 +32,14 @@ pub method futex_wake(self: &Uint32) {
     futex_wake(self, 2147483647u32);
 }
 
-// A three-state futex mutex (ported from rust-lang/rust#95035).
-//
-//   0: unlocked
-//   1: locked, no other threads waiting
-//   2: locked, and one or more threads waiting (contended)
-//
-// The contended state lets `unlock` skip the `futex_wake` syscall entirely in
-// the uncontended common case: a wake is issued only when the state was 2.
+/// A three-state futex mutex (ported from rust-lang/rust#95035).
+///
+///   0: unlocked
+///   1: locked, no other threads waiting
+///   2: locked, and one or more threads waiting (contended)
+///
+/// The contended state lets `unlock` skip the `futex_wake` syscall entirely in
+/// the uncontended common case: a wake is issued only when the state was 2.
 pub struct Mutex {
     pub futex: Uint32,
 }
@@ -59,9 +59,9 @@ pub method lock(self: &Mutex) {
     }
 }
 
-// Spin a bounded number of times waiting for the lock to look free, returning
-// the last observed state. Backs off to the futex wait once the budget runs
-// out or another waiter is already registered (state 2).
+/// Spin a bounded number of times waiting for the lock to look free, returning
+/// the last observed state. Backs off to the futex wait once the budget runs
+/// out or another waiter is already registered (state 2).
 method spin(self: &Mutex) -> Uint32 {
     let spin = 100u32;
     loop {
