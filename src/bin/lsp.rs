@@ -7,7 +7,7 @@
 use serde_json::{Value, json};
 use solar::{ast::SourceSpan, resolve, typed_ast};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{self, BufRead, Write},
     path::PathBuf,
 };
@@ -162,9 +162,30 @@ fn semantic_tokens(uri: &str, source: &str) -> Vec<u32> {
     let Some(tree) = parser.parse(source, None) else {
         return vec![];
     };
+
+    // A single resolve+typecheck feeds both passes below: the name tables (so
+    // every reference to a global type/variant is coloured the same, wherever
+    // it appears) and the per-expression overlays (so a call is a function, a
+    // field read a property, etc.). Any parse/resolve/type error simply leaves
+    // the CST's error-tolerant classification in place.
+    let analysis = analyze(uri, source);
+
+    // Type-parameter names are gathered straight from the syntax tree (they
+    // survive no further than monomorphization, so type checking can't report
+    // them) and colour a `T` the same at its `#[T]` declaration and every use.
+    let mut type_params = HashSet::new();
+    collect_type_params(tree.root_node(), source, &mut type_params);
+
+    let context = Context {
+        names: analysis.as_ref().map(|analysis| &analysis.names),
+        type_params: &type_params,
+    };
+
     let mut tokens = Vec::new();
-    collect_tokens(tree.root_node(), source, &mut tokens);
-    apply_typed_overlays(uri, source, &mut tokens);
+    collect_tokens(tree.root_node(), source, &context, &mut tokens);
+    if let Some(analysis) = &analysis {
+        apply_typed_overlays(&analysis.typed, analysis.file_id, source, &mut tokens);
+    }
     tokens.sort_by_key(|token| (token.line, token.start));
 
     let mut data = Vec::with_capacity(tokens.len() * 5);
@@ -183,25 +204,74 @@ fn semantic_tokens(uri: &str, source: &str) -> Vec<u32> {
     data
 }
 
-/// Type checking supplies facts which syntax alone cannot know (for example,
-/// whether a direct call is a free function or a method). The resolver accepts
-/// the current buffer, so this works before the editor writes the document.
-/// Any parse/resolve/type error simply leaves the CST's error-tolerant tokens
-/// in place.
-fn apply_typed_overlays(uri: &str, source: &str, tokens: &mut [Token]) {
-    let Some(path) = file_uri_to_path(uri) else {
-        return;
-    };
-    let Ok((ast, source_map)) = resolve::resolve_source(&path, source.to_owned()) else {
-        return;
-    };
-    let Ok(typed) = typed_ast::lower(&ast) else {
-        return;
-    };
-    let Some(file_id) = source_map.root_file_id() else {
-        return;
-    };
+/// Names that must be coloured the same wherever they appear, extracted from
+/// the resolved program. Because these are global entities (unlike locals,
+/// whose role is inherent to their binding site), one occurrence in a type
+/// annotation and another in a struct literal or path should look identical.
+#[derive(Default)]
+struct Names {
+    /// Struct and enum names → `type`.
+    types: HashSet<String>,
+    /// Enum variant names → `enumMember`.
+    variants: HashSet<String>,
+}
 
+/// Everything the CST classifier consults to give an identifier its canonical
+/// colour: the type-checker's name tables (absent on a broken buffer) and the
+/// syntactically-collected type-parameter names.
+struct Context<'a> {
+    names: Option<&'a Names>,
+    type_params: &'a HashSet<String>,
+}
+
+/// The result of resolving and type-checking the current buffer, shared by the
+/// name-table and per-expression classification passes.
+struct Analysis {
+    typed: typed_ast::SourceFile,
+    file_id: u32,
+    names: Names,
+}
+
+/// Resolve and type-check the in-editor buffer. Returns `None` on any
+/// parse/resolve/type error, in which case the CST classification stands alone.
+/// The resolver accepts the current buffer, so this works before the editor
+/// writes the document to disk.
+fn analyze(uri: &str, source: &str) -> Option<Analysis> {
+    let path = file_uri_to_path(uri)?;
+    let (ast, source_map) = resolve::resolve_source(&path, source.to_owned()).ok()?;
+    let typed = typed_ast::lower(&ast).ok()?;
+    let file_id = source_map.root_file_id()?;
+
+    // Collect every struct/enum name and every enum variant name across the
+    // whole program (types are distinctively named, so a global table poses
+    // little collision risk with locals and keeps imported types coloured
+    // consistently too).
+    let mut names = Names::default();
+    for struct_def in typed.structs.values() {
+        names.types.insert(struct_def.id.def.name.clone());
+    }
+    for enum_def in typed.enums.values() {
+        names.types.insert(enum_def.id.def.name.clone());
+        for variant in &enum_def.variants {
+            names.variants.insert(variant.name.clone());
+        }
+    }
+
+    Some(Analysis {
+        typed,
+        file_id,
+        names,
+    })
+}
+
+/// Type checking supplies facts which syntax alone cannot know — for example,
+/// whether a direct call is a free function or a method.
+fn apply_typed_overlays(
+    typed: &typed_ast::SourceFile,
+    file_id: u32,
+    source: &str,
+    tokens: &mut [Token],
+) {
     let mut overlays = Vec::new();
     for function in typed.functions.values() {
         for statement in &function.body {
@@ -420,9 +490,25 @@ fn collect_sequence_overlays(
     }
 }
 
-fn collect_tokens(node: Node<'_>, source: &str, tokens: &mut Vec<Token>) {
+/// Record the names declared in every `#[T, …]` type-parameter list.
+fn collect_type_params(node: Node<'_>, source: &str, names: &mut HashSet<String>) {
+    if node.kind() == "type_params" {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "identifier" {
+                names.insert(source[child.byte_range()].to_owned());
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_type_params(child, source, names);
+    }
+}
+
+fn collect_tokens(node: Node<'_>, source: &str, context: &Context, tokens: &mut Vec<Token>) {
     if node.child_count() == 0 {
-        if let Some(kind) = token_kind(node, source) {
+        if let Some(kind) = token_kind(node, source, context) {
             let start = node.start_position();
             let end = node.end_position();
             if start.row == end.row {
@@ -443,7 +529,7 @@ fn collect_tokens(node: Node<'_>, source: &str, tokens: &mut Vec<Token>) {
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_tokens(child, source, tokens);
+        collect_tokens(child, source, context, tokens);
     }
 }
 
@@ -454,7 +540,7 @@ fn utf16_column(line: &str, byte_column: usize) -> u32 {
         .count() as u32
 }
 
-fn token_kind(node: Node<'_>, source: &str) -> Option<u32> {
+fn token_kind(node: Node<'_>, source: &str, context: &Context) -> Option<u32> {
     let kind = node.kind();
     let parent = node.parent();
     let parent_kind = parent.map_or("", |node| node.kind());
@@ -465,11 +551,39 @@ fn token_kind(node: Node<'_>, source: &str) -> Option<u32> {
         "string_literal" | "char_literal" => Some(token_index("string")),
         "integer_literal" | "float_literal" => Some(token_index("number")),
         "boolean_literal" => Some(token_index("keyword")),
-        "identifier" => Some(identifier_kind(node, parent_kind, text)),
+        "identifier" => Some(refine(
+            identifier_kind(node, parent_kind, text),
+            text,
+            context,
+        )),
         _ if is_keyword(text) => Some(token_index("keyword")),
         _ if is_operator(text) => Some(token_index("operator")),
         _ => None,
     }
+}
+
+/// Force a reference to a known global entity to its canonical colour, so it
+/// looks the same wherever it appears — a type in an annotation, a struct
+/// literal, a pattern, or a path; a type parameter at its declaration and every
+/// use. Binding-position tokens (`parameter`, `property`) keep their local
+/// role, so a local named like a type is not recoloured.
+fn refine(base: u32, text: &str, context: &Context) -> u32 {
+    if base == token_index("parameter") || base == token_index("property") {
+        return base;
+    }
+    // A declared type parameter always outranks a same-named concrete type.
+    if context.type_params.contains(text) {
+        return token_index("typeParameter");
+    }
+    if let Some(names) = context.names {
+        if names.types.contains(text) {
+            return token_index("type");
+        }
+        if names.variants.contains(text) {
+            return token_index("enumMember");
+        }
+    }
+    base
 }
 
 fn token_index(name: &str) -> u32 {
@@ -502,21 +616,47 @@ fn identifier_kind(node: Node<'_>, parent: &str, text: &str) -> u32 {
             Some("pattern" | "name"),
         ) => token_index("parameter"),
         ("call_expr" | "generic_call_expr", Some("function")) => token_index("function"),
-        ("generic_method_call", Some("method")) | ("field_access", Some("field")) => {
-            token_index("method")
+        ("generic_method_call", Some("method")) => token_index("method"),
+        // `x.foo()` is a method call (the field access is a call's callee);
+        // a bare `x.foo` reads a field, so it is a property.
+        ("field_access", Some("field")) => {
+            if field_access_is_callee(node) {
+                token_index("method")
+            } else {
+                token_index("property")
+            }
         }
-        ("named_type" | "qualified_type", Some("name")) => token_index("type"),
+        // A `named_type`'s only identifier child is the type name (its
+        // `type_args` are nested type nodes), so it needs no field guard —
+        // this is what colours primitives like `Int` as a type, consistently
+        // with user structs and enums.
+        ("named_type", _) | ("qualified_type", Some("name")) => token_index("type"),
         ("qualified_type", Some("module")) | ("import_statement", Some("module_name")) => {
             token_index("namespace")
         }
         ("type_params", _) => token_index("typeParameter"),
-        ("struct_literal" | "struct_pattern", Some("name")) => token_index("enumMember"),
+        // A struct literal / pattern names a type, so colour it as one (a
+        // known type is confirmed by the name table; this is the fallback for
+        // types the type-checker never saw).
+        ("struct_literal" | "struct_pattern", Some("name")) => token_index("type"),
         ("struct_literal" | "struct_pattern", Some("module")) | ("import_path", _) => {
             token_index("namespace")
         }
         ("path_segment", Some("name")) => path_identifier_kind(node, text),
         _ => token_index("variable"),
     }
+}
+
+/// True when `node` is the `field` of a `field_access` that is itself the
+/// callee of a `call_expr` — i.e. `x.foo()`, a method call — rather than a
+/// bare field read `x.foo`.
+fn field_access_is_callee(node: Node<'_>) -> bool {
+    let Some(field_access) = node.parent() else {
+        return false;
+    };
+    field_access.parent().is_some_and(|call| {
+        call.kind() == "call_expr" && call.child_by_field_name("function") == Some(field_access)
+    })
 }
 
 fn path_identifier_kind(node: Node<'_>, text: &str) -> u32 {
