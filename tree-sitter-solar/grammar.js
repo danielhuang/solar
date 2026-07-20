@@ -3,7 +3,7 @@
 module.exports = grammar({
   name: "solar",
 
-  extras: ($) => [/\s/, $.comment],
+  extras: ($) => [/\s/, $.doc_comment, $.comment],
 
   word: ($) => $.identifier,
 
@@ -55,6 +55,13 @@ module.exports = grammar({
         field("value", $._expression),
         ";",
       ),
+
+    // A `///` doc comment. It stays an `extra` (so it can never break a parse)
+    // but is a distinct node so the CST-to-AST converter can attach it to the
+    // item that follows. Its `prec` beats `comment` when both match `///…`
+    // (equal length, so precedence decides). `////…` is a doc comment too — no
+    // special separator-line carve-out.
+    doc_comment: (_) => token(prec(1, seq("///", /.*/))),
 
     comment: (_) => token(seq("//", /.*/)),
 

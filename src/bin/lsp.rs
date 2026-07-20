@@ -50,6 +50,7 @@ fn main() {
                 json!({
                     "capabilities": {
                         "textDocumentSync": 1,
+                        "hoverProvider": true,
                         "semanticTokensProvider": {
                             "legend": { "tokenTypes": TOKEN_TYPES, "tokenModifiers": [] },
                             "full": true,
@@ -87,6 +88,20 @@ fn main() {
                     .map(|text| semantic_tokens(uri.unwrap_or_default(), text))
                     .unwrap_or_default();
                 respond(&mut output, id, json!({ "data": data }));
+            }
+            Some("textDocument/hover") => {
+                let uri = params.pointer("/textDocument/uri").and_then(Value::as_str);
+                let line = params.pointer("/position/line").and_then(Value::as_u64);
+                let character = params
+                    .pointer("/position/character")
+                    .and_then(Value::as_u64);
+                let result = match (uri.and_then(|uri| documents.get(uri)), line, character) {
+                    (Some(text), Some(line), Some(character)) => {
+                        hover(text, line as u32, character as u32)
+                    }
+                    _ => None,
+                };
+                respond(&mut output, id, result.unwrap_or(Value::Null));
             }
             _ => {
                 // Notifications and methods outside this server's deliberately
@@ -202,6 +217,81 @@ fn semantic_tokens(uri: &str, source: &str) -> Vec<u32> {
         previous_start = token.start;
     }
     data
+}
+
+/// A `textDocument/hover` response for the identifier under the cursor: the
+/// `///` doc comment of the top-level item (or method) it names, if any. The
+/// lookup is by name against the current file's own declarations, so it works
+/// on the definition and on every use site, even while the buffer has type
+/// errors elsewhere.
+fn hover(source: &str, line: u32, character: u32) -> Option<Value> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_solar::LANGUAGE.into())
+        .expect("Solar grammar must load");
+    let tree = parser.parse(source, None)?;
+    let byte = position_to_byte(source, line, character)?;
+    let node = tree.root_node().descendant_for_byte_range(byte, byte)?;
+    if node.kind() != "identifier" {
+        return None;
+    }
+    let name = &source[node.byte_range()];
+    let doc = collect_docs(source).remove(name)?;
+    Some(json!({
+        "contents": {
+            "kind": "markdown",
+            "value": format!("```solar\n{name}\n```\n\n{doc}"),
+        }
+    }))
+}
+
+/// Map every top-level declaration (and method) that carries a `///` doc
+/// comment to its documentation, keyed by the name a hover would see. Built
+/// from the current file alone — no resolve, so it is cheap and tolerant of a
+/// partially-broken buffer. The first declaration of a name wins.
+fn collect_docs(source: &str) -> HashMap<String, String> {
+    use solar::ast::TopLevelItem;
+    let mut docs = HashMap::new();
+    let Ok(ast) = solar::parser::parse(source) else {
+        return docs;
+    };
+    for item in &ast.items {
+        let (name, doc) = match item {
+            TopLevelItem::Function(function) | TopLevelItem::Method(function) => {
+                (&function.display_name, &function.doc)
+            }
+            TopLevelItem::Struct(def) => (&def.name, &def.doc),
+            TopLevelItem::Enum(def) => (&def.name, &def.doc),
+            TopLevelItem::Const(def) => (&def.name, &def.doc),
+            TopLevelItem::Static(def) => (&def.name, &def.doc),
+            TopLevelItem::TypeAlias(def) => (&def.name, &def.doc),
+            TopLevelItem::Import(_) => continue,
+        };
+        if let Some(doc) = doc {
+            docs.entry(name.clone()).or_insert_with(|| doc.clone());
+        }
+    }
+    docs
+}
+
+/// Convert an LSP `(line, character)` position — `character` in UTF-16 code
+/// units — to a byte offset into `source`.
+fn position_to_byte(source: &str, line: u32, character: u32) -> Option<usize> {
+    let mut offset = 0;
+    for (index, text) in source.split_inclusive('\n').enumerate() {
+        if index as u32 == line {
+            let mut utf16 = 0;
+            for (byte, ch) in text.char_indices() {
+                if utf16 >= character {
+                    return Some(offset + byte);
+                }
+                utf16 += ch.len_utf16() as u32;
+            }
+            return Some(offset + text.len());
+        }
+        offset += text.len();
+    }
+    None
 }
 
 /// Names that must be coloured the same wherever they appear, extracted from

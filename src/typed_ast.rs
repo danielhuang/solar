@@ -661,6 +661,7 @@ fn apply_subst_to_ast_statement(
             ty: c.ty.as_ref().map(|t| apply_subst_to_ast_type(t, subst)),
             value: Box::new(apply_subst_to_ast_expr(&c.value, subst)),
             is_pub: c.is_pub,
+            doc: c.doc.clone(),
             span: c.span,
         }),
         ast::StatementKind::Assignment { target, value } => ast::StatementKind::Assignment {
@@ -783,6 +784,7 @@ fn apply_subst_to_ast_statement(
                     .collect(),
                 is_pub: fdef.is_pub,
                 inline_hint: fdef.inline_hint,
+                doc: fdef.doc.clone(),
                 span: fdef.span,
             })
         }

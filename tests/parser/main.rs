@@ -498,3 +498,59 @@ fn fixture_file_spans() {
     let print_stmt = &main_fn.body[1];
     check(print_stmt.span, 7, 4, 7, 13);
 }
+
+// ---------- Doc comments (`///`) ----------
+
+#[test]
+fn doc_comment_on_function() {
+    let ast = parse("/// Returns x.\nfn f(x: Int) -> Int { x }");
+    let func = match &ast.items[0] {
+        TopLevelItem::Function(f) => f,
+        _ => panic!("expected function"),
+    };
+    assert_eq!(func.doc.as_deref(), Some("Returns x."));
+}
+
+#[test]
+fn multi_line_doc_comment_joins() {
+    let ast = parse("/// First line.\n/// Second line.\nstruct S { x: Int, }");
+    let s = match &ast.items[0] {
+        TopLevelItem::Struct(s) => s,
+        _ => panic!("expected struct"),
+    };
+    assert_eq!(s.doc.as_deref(), Some("First line.\nSecond line."));
+}
+
+#[test]
+fn plain_comment_is_not_a_doc() {
+    let ast = parse("// not a doc\nfn f() {}");
+    let func = match &ast.items[0] {
+        TopLevelItem::Function(f) => f,
+        _ => panic!("expected function"),
+    };
+    assert_eq!(func.doc, None);
+}
+
+#[test]
+fn doc_comment_on_enum_and_const() {
+    let ast = parse("/// An enum.\nenum E { A, }\n/// A const.\nconst K: Int = 1;");
+    match &ast.items[0] {
+        TopLevelItem::Enum(e) => assert_eq!(e.doc.as_deref(), Some("An enum.")),
+        _ => panic!("expected enum"),
+    }
+    match &ast.items[1] {
+        TopLevelItem::Const(c) => assert_eq!(c.doc.as_deref(), Some("A const.")),
+        _ => panic!("expected const"),
+    }
+}
+
+#[test]
+fn doc_comment_empty_body() {
+    // `///` with nothing after it is a valid, empty doc line.
+    let ast = parse("///\nfn f() {}");
+    let func = match &ast.items[0] {
+        TopLevelItem::Function(f) => f,
+        _ => panic!("expected function"),
+    };
+    assert_eq!(func.doc.as_deref(), Some(""));
+}

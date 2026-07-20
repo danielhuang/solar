@@ -54,6 +54,7 @@ pub fn generate_numeric_constructors(items: &mut Vec<TopLevelItem>) {
                 }],
                 is_pub: false,
                 inline_hint: false,
+                doc: None,
                 span,
             }));
         }
@@ -130,6 +131,31 @@ fn has_pub_keyword(node: tree_sitter::Node, source: &str) -> bool {
 
 fn node_text<'a>(node: tree_sitter::Node, source: &'a str) -> &'a str {
     &source[node.byte_range()]
+}
+
+/// Gather the `///` doc comment attached to `node`: the run of consecutive
+/// `doc_comment` siblings immediately preceding it (doc comments are `extra`
+/// nodes, so they appear as siblings, with only whitespace — which produces no
+/// node — between them and the item). Each line drops its `///` and one
+/// optional leading space; multiple lines join with `\n`. Returns `None` when
+/// there is no doc comment.
+fn leading_doc(node: tree_sitter::Node, source: &str) -> Option<String> {
+    let mut lines = Vec::new();
+    let mut sibling = node.prev_sibling();
+    while let Some(current) = sibling {
+        if current.kind() != "doc_comment" {
+            break;
+        }
+        let text = node_text(current, source);
+        let body = text.strip_prefix("///").unwrap_or(text);
+        lines.push(body.strip_prefix(' ').unwrap_or(body).trim_end());
+        sibling = current.prev_sibling();
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    lines.reverse();
+    Some(lines.join("\n"))
 }
 
 fn source_span(node: tree_sitter::Node) -> SourceSpan {
@@ -291,6 +317,7 @@ fn convert_struct_def(node: tree_sitter::Node, source: &str) -> StructDef {
         fields,
         is_tuple: named_child_by_kind(node, "tuple_struct_body").is_some(),
         is_pub,
+        doc: leading_doc(node, source),
         span: source_span(node),
     }
 }
@@ -310,6 +337,7 @@ fn convert_const_def(node: tree_sitter::Node, source: &str) -> ConstDef {
         ty,
         value,
         is_pub,
+        doc: leading_doc(node, source),
         span: source_span(node),
     }
 }
@@ -329,6 +357,7 @@ fn convert_static_def(node: tree_sitter::Node, source: &str) -> StaticDef {
         ty,
         value,
         is_pub,
+        doc: leading_doc(node, source),
         span: source_span(node),
     }
 }
@@ -346,6 +375,7 @@ fn convert_type_alias_def(node: tree_sitter::Node, source: &str) -> TypeAliasDef
         type_params,
         target_type,
         is_pub,
+        doc: leading_doc(node, source),
         span: source_span(node),
     }
 }
@@ -381,6 +411,7 @@ fn convert_enum_def(node: tree_sitter::Node, source: &str) -> EnumDef {
         type_params,
         variants,
         is_pub,
+        doc: leading_doc(node, source),
         span: source_span(node),
     }
 }
@@ -435,6 +466,7 @@ fn convert_function_def(node: tree_sitter::Node, source: &str) -> FunctionDef {
         body,
         is_pub,
         inline_hint,
+        doc: leading_doc(node, source),
         span: source_span(node),
     }
 }

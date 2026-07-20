@@ -46,7 +46,7 @@ pub fn(inline) add(a: Int, b: Int) {
   a + b
 }
 
-// or via explicit return type annotation
+/// Returns the absolute value of `x`.
 fn abs(x: Int) -> Int {
   if x < 0 {
     return 0 - x;
@@ -73,6 +73,8 @@ fn ramp(start: Int, step: Int = 1, times = 3u) -> Int {
   total
 }
 
+/// A colour, either one of the three primaries or a `Custom` packed integer.
+/// The second line of this doc comment demonstrates multi-line docstrings.
 enum Color {
   Red,
   Green,
@@ -80,7 +82,7 @@ enum Color {
   Custom(Int),
 }
 
-// generic struct
+/// A generic box holding a single value of type `T`.
 struct Box#[T] {
   value: T,
 }

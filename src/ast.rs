@@ -75,6 +75,8 @@ pub struct ConstDef {
     /// during type-check/lowering.
     pub value: Box<Expr>,
     pub is_pub: bool,
+    /// `///` doc comment attached to this item (lines joined by `\n`), if any.
+    pub doc: Option<String>,
     pub span: SourceSpan,
 }
 
@@ -90,6 +92,8 @@ pub struct StaticDef {
     /// The initial value — must be a literal, stored before `main` runs.
     pub value: Box<Expr>,
     pub is_pub: bool,
+    /// `///` doc comment attached to this item (lines joined by `\n`), if any.
+    pub doc: Option<String>,
     pub span: SourceSpan,
 }
 
@@ -136,6 +140,8 @@ pub struct TypeAliasDef {
     pub type_params: Vec<String>,
     pub target_type: Type,
     pub is_pub: bool,
+    /// `///` doc comment attached to this item (lines joined by `\n`), if any.
+    pub doc: Option<String>,
     pub span: SourceSpan,
 }
 
@@ -151,6 +157,8 @@ pub struct StructDef {
     /// still the ordinary `_0`, `_1`, ... fields used throughout the pipeline.
     pub is_tuple: bool,
     pub is_pub: bool,
+    /// `///` doc comment attached to this item (lines joined by `\n`), if any.
+    pub doc: Option<String>,
     pub span: SourceSpan,
 }
 
@@ -170,6 +178,8 @@ pub struct EnumDef {
     pub type_params: Vec<String>,
     pub variants: Vec<VariantDef>,
     pub is_pub: bool,
+    /// `///` doc comment attached to this item (lines joined by `\n`), if any.
+    pub doc: Option<String>,
     pub span: SourceSpan,
 }
 
@@ -197,6 +207,8 @@ pub struct FunctionDef {
     /// `fn(inline)` / `method(inline)`: a hint that codegen should mark this
     /// function for inlining. Ignored by the interpreters.
     pub inline_hint: bool,
+    /// `///` doc comment attached to this item (lines joined by `\n`), if any.
+    pub doc: Option<String>,
     pub span: SourceSpan,
 }
 
