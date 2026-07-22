@@ -995,6 +995,10 @@ pub struct FunctionDef {
     pub body: Vec<Statement>,
     /// `fn(inline)` hint, carried through to codegen. Interpreters ignore it.
     pub inline_hint: bool,
+    /// Span of the source definition (the whole `fn`/`method` declaration). All
+    /// monomorphizations of one generic share the generic's span; each overload
+    /// keeps its own. Used by the LSP for go-to-definition; codegen ignores it.
+    pub def_span: ast::SourceSpan,
 }
 
 #[derive(Debug, Clone)]
@@ -2957,6 +2961,7 @@ impl<'a> Lowerer<'a> {
                     return_type: stub_return,
                     body: Vec::new(),
                     inline_hint: ast_def.inline_hint,
+                    def_span: ast_def.span,
                 },
             );
         }
@@ -3460,6 +3465,7 @@ impl<'a> Lowerer<'a> {
             return_type,
             body,
             inline_hint: func.inline_hint,
+            def_span: func.span,
         })
     }
 
@@ -6705,6 +6711,7 @@ impl<'a> Lowerer<'a> {
             return_type: fn_return_type.clone(),
             body: lowered_body,
             inline_hint: false,
+            def_span: span,
         };
         self.pending_closures.push(synthetic_fn);
 

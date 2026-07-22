@@ -59,6 +59,7 @@ fn main() {
                     "capabilities": {
                         "textDocumentSync": 1,
                         "hoverProvider": true,
+                        "definitionProvider": true,
                         "semanticTokensProvider": {
                             "legend": { "tokenTypes": TOKEN_TYPES, "tokenModifiers": [] },
                             "full": true,
@@ -114,6 +115,22 @@ fn main() {
                     (Some((uri, text)), Some(line), Some(character)) => {
                         let document = cached(&mut cache, uri, text);
                         hover(text, line as u32, character as u32, &document.docs)
+                    }
+                    _ => None,
+                };
+                respond(&mut output, id, result.unwrap_or(Value::Null));
+            }
+            Some("textDocument/definition") => {
+                let uri = params.pointer("/textDocument/uri").and_then(Value::as_str);
+                let line = params.pointer("/position/line").and_then(Value::as_u64);
+                let character = params
+                    .pointer("/position/character")
+                    .and_then(Value::as_u64);
+                let target = uri.and_then(|uri| documents.get(uri).map(|text| (uri, text)));
+                let result = match (target, line, character) {
+                    (Some((uri, text)), Some(line), Some(character)) => {
+                        let document = cached(&mut cache, uri, text);
+                        definition(text, line as u32, character as u32, document)
                     }
                     _ => None,
                 };
@@ -305,6 +322,306 @@ fn position_to_byte(source: &str, line: u32, character: u32) -> Option<usize> {
     None
 }
 
+/// A `textDocument/definition` response for the identifier under the cursor.
+///
+/// A call is resolved through the typed AST to the *exact* overload it binds
+/// to. Because the typed program contains one body per monomorphization, a call
+/// inside a generic can resolve to different overloads in different
+/// instantiations — every distinct candidate is returned. Anything the typed
+/// pass can't pin to one call (a type name, a definition, a module-qualified or
+/// never-instantiated generic call) falls back to every declaration sharing the
+/// name — again, all candidates.
+fn definition(source: &str, line: u32, character: u32, document: &Document) -> Option<Value> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_solar::LANGUAGE.into())
+        .expect("Solar grammar must load");
+    let tree = parser.parse(source, None)?;
+    let byte = position_to_byte(source, line, character)?;
+    let node = tree.root_node().descendant_for_byte_range(byte, byte)?;
+    if node.kind() != "identifier" {
+        return None;
+    }
+    let name = &source[node.byte_range()];
+    let start = node.start_position();
+    let cursor = (start.row as u32, start.column as u32);
+
+    // Precise pass: resolve the specific overload(s) via the typed AST. Only
+    // calls in functions defined in this file can sit at the cursor, so the walk
+    // is restricted to them (which also prunes the entire stdlib).
+    let mut targets: Vec<SourceSpan> = Vec::new();
+    if let Some(analysis) = &document.analysis {
+        let mut finder = DefFinder {
+            typed: &analysis.typed,
+            root_file: analysis.file_id,
+            cursor,
+            name,
+            receiver: method_call_receiver(node),
+            out: &mut targets,
+        };
+        for function in analysis.typed.functions.values() {
+            if function.def_span.file_id == analysis.file_id {
+                for statement in &function.body {
+                    finder.walk_statement(statement);
+                }
+            }
+        }
+        for static_item in &analysis.typed.statics {
+            finder.walk_expr(&static_item.init);
+        }
+    }
+
+    // Fallback: nothing precise sat at the cursor → every declaration with this
+    // name (a type, a definition itself, a method whose receiver could not be
+    // pinned, or a generic that was never instantiated).
+    if targets.is_empty()
+        && let Some(spans) = document.defs.get(name)
+    {
+        targets.extend(spans.iter().copied());
+    }
+
+    let mut locations = Vec::new();
+    let mut seen = HashSet::new();
+    for span in targets {
+        if seen.insert((span.file_id, span.start.line, span.start.col))
+            && let Some(location) = span_to_location(span, &document.source_map)
+        {
+            locations.push(location);
+        }
+    }
+    match locations.len() {
+        0 => None,
+        1 => locations.pop(),
+        _ => Some(Value::Array(locations)),
+    }
+}
+
+/// Walks typed function bodies looking for the call/reference at the cursor,
+/// recording each target function's definition span. Free calls and function
+/// references begin at their callee, so they match the cursor position
+/// directly; method calls begin at their receiver, so they are pinned by the
+/// receiver's position (`receiver`) and disambiguated by the method name.
+struct DefFinder<'a> {
+    typed: &'a typed_ast::SourceFile,
+    root_file: u32,
+    cursor: (u32, u32),
+    name: &'a str,
+    receiver: Option<(u32, u32)>,
+    out: &'a mut Vec<SourceSpan>,
+}
+
+impl DefFinder<'_> {
+    fn record(&mut self, function: &typed_ast::FuncId) {
+        if let Some(def) = self.typed.functions.get(function) {
+            self.out.push(def.def_span);
+        }
+    }
+
+    fn at(&self, span: SourceSpan, position: (u32, u32)) -> bool {
+        span.file_id == self.root_file && (span.start.line, span.start.col) == position
+    }
+
+    fn walk_statement(&mut self, statement: &typed_ast::Statement) {
+        use typed_ast::StatementKind;
+        match &statement.kind {
+            StatementKind::Let { value, .. }
+            | StatementKind::Expression(value)
+            | StatementKind::Return(value) => self.walk_expr(value),
+            StatementKind::Assignment { target, value } => {
+                self.walk_expr(target);
+                self.walk_expr(value);
+            }
+            StatementKind::If {
+                condition,
+                body,
+                else_body,
+            } => {
+                self.walk_expr(condition);
+                for statement in body.iter().chain(else_body) {
+                    self.walk_statement(statement);
+                }
+            }
+            StatementKind::While { condition, body } => {
+                self.walk_expr(condition);
+                for statement in body {
+                    self.walk_statement(statement);
+                }
+            }
+            StatementKind::Break(value) => {
+                if let Some(value) = value {
+                    self.walk_expr(value);
+                }
+            }
+            StatementKind::Continue => {}
+        }
+    }
+
+    fn walk_expr(&mut self, expr: &typed_ast::Expr) {
+        use typed_ast::ExprKind;
+        match &expr.kind {
+            ExprKind::FunctionRef(function) => {
+                if self.at(expr.span, self.cursor) {
+                    self.record(function);
+                }
+            }
+            ExprKind::Call {
+                function,
+                arguments,
+            } => {
+                if function.method {
+                    if let Some(receiver) = self.receiver
+                        && self.at(expr.span, receiver)
+                        && function.def.name == self.name
+                    {
+                        self.record(function);
+                    }
+                } else if self.at(expr.span, self.cursor) {
+                    self.record(function);
+                }
+                for argument in arguments {
+                    self.walk_expr(argument);
+                }
+            }
+            ExprKind::CallIndirect { callee, arguments } => {
+                self.walk_expr(callee);
+                for argument in arguments {
+                    self.walk_expr(argument);
+                }
+            }
+            ExprKind::FieldAccess { object, .. }
+            | ExprKind::Deref(object)
+            | ExprKind::Reference(object)
+            | ExprKind::Unique(object)
+            | ExprKind::Not(object)
+            | ExprKind::ArraySizeCoerce { expr: object, .. } => self.walk_expr(object),
+            ExprKind::Index { object, index } => {
+                self.walk_expr(object);
+                self.walk_expr(index);
+            }
+            ExprKind::Slice { object, start, end } => {
+                self.walk_expr(object);
+                self.walk_expr(start);
+                self.walk_expr(end);
+            }
+            ExprKind::StructLiteral { fields, .. } => {
+                for field in fields {
+                    self.walk_expr(&field.value);
+                }
+            }
+            ExprKind::ArrayLiteral(values) => {
+                for value in values {
+                    self.walk_expr(value);
+                }
+            }
+            ExprKind::Block(statements) | ExprKind::Loop(statements) => {
+                for statement in statements {
+                    self.walk_statement(statement);
+                }
+            }
+            ExprKind::ArrayRepeat { element, count }
+            | ExprKind::ArrayInit {
+                init: element,
+                count,
+            } => {
+                self.walk_expr(element);
+                self.walk_expr(count);
+            }
+            ExprKind::BinaryOp { left, right, .. } => {
+                self.walk_expr(left);
+                self.walk_expr(right);
+            }
+            ExprKind::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                self.walk_expr(condition);
+                for statement in then_body.iter().chain(else_body) {
+                    self.walk_statement(statement);
+                }
+            }
+            ExprKind::EnumVariant { value, .. } => {
+                if let Some(value) = value {
+                    self.walk_expr(value);
+                }
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                self.walk_expr(scrutinee);
+                for arm in arms {
+                    for statement in &arm.body {
+                        self.walk_statement(statement);
+                    }
+                }
+            }
+            ExprKind::IntrinsicCall { arguments, .. } => {
+                for argument in arguments {
+                    self.walk_expr(argument);
+                }
+            }
+            ExprKind::Identifier(_)
+            | ExprKind::Global(_)
+            | ExprKind::FloatLiteral(_)
+            | ExprKind::IntegerLiteral(_)
+            | ExprKind::BooleanLiteral(_)
+            | ExprKind::NullLiteral
+            | ExprKind::Closure { .. } => {}
+        }
+    }
+}
+
+/// If the identifier `node` is a method-call's method name (`recv.method(…)` or
+/// `recv.method#[T](…)`), the start position of its receiver — which is where
+/// the typed method call's span begins. `None` otherwise.
+fn method_call_receiver(node: Node<'_>) -> Option<(u32, u32)> {
+    let parent = node.parent()?;
+    let receiver = match parent.kind() {
+        "field_access"
+            if parent.child_by_field_name("field") == Some(node)
+                && field_access_is_callee(node) =>
+        {
+            parent.child_by_field_name("object")?
+        }
+        "generic_method_call" if parent.child_by_field_name("method") == Some(node) => {
+            parent.child_by_field_name("receiver")?
+        }
+        _ => return None,
+    };
+    let start = receiver.start_position();
+    Some((start.row as u32, start.column as u32))
+}
+
+/// Turn a definition's span into an LSP `Location` (file URI + UTF-16 range),
+/// resolving its file through the source map. The range is collapsed to the
+/// definition's start so the editor jumps there without selecting the whole
+/// declaration.
+fn span_to_location(span: SourceSpan, source_map: &SourceMap) -> Option<Value> {
+    let (filename, file_source) = source_map.get(span.file_id)?;
+    let line_text = file_source
+        .lines()
+        .nth(span.start.line as usize)
+        .unwrap_or("");
+    let character = utf16_column(line_text, span.start.col as usize);
+    let position = json!({ "line": span.start.line, "character": character });
+    Some(json!({
+        "uri": path_to_file_uri(filename),
+        "range": { "start": position, "end": position },
+    }))
+}
+
+/// Percent-encode a filesystem path into a `file://` URI.
+fn path_to_file_uri(path: &str) -> String {
+    let mut uri = String::from("file://");
+    for &byte in path.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                uri.push(byte as char)
+            }
+            _ => uri.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    uri
+}
+
 /// Names that must be coloured the same wherever they appear, extracted from
 /// the resolved program. Because these are global entities (unlike locals,
 /// whose role is inherent to their binding site), one occurrence in a type
@@ -332,6 +649,12 @@ struct Context<'a> {
 struct Document {
     /// Name → `///` doc across the whole resolved program, for hover.
     docs: HashMap<String, String>,
+    /// Base name → every declaration with that name (all overloads, across all
+    /// files), for go-to-definition's name-based fallback and type lookups.
+    defs: HashMap<String, Vec<SourceSpan>>,
+    /// `file_id` → path + source, to turn a definition's span into an LSP
+    /// `Location` (URI + UTF-16 range) in whatever file it lives in.
+    source_map: SourceMap,
     /// Type-check-derived facts for semantic highlighting. `None` when the
     /// buffer resolves but does not type-check — hover's docs survive either way.
     analysis: Option<Analysis>,
@@ -370,8 +693,34 @@ fn compute(uri: &str, source: &str) -> Document {
     };
     Document {
         docs: collect_docs(&ast),
+        defs: collect_defs(&ast),
         analysis: analyze(&ast, &source_map),
+        source_map,
     }
+}
+
+/// Index every declaration (functions/methods — all overloads — structs, enums,
+/// consts, statics, type aliases) by its base name, mapping to the span of each
+/// definition (which carries its file). Feeds go-to-definition's name-based
+/// fallback (unresolved generics, method names) and type lookups.
+fn collect_defs(ast: &ast::SourceFile) -> HashMap<String, Vec<SourceSpan>> {
+    use solar::ast::TopLevelItem;
+    let mut defs: HashMap<String, Vec<SourceSpan>> = HashMap::new();
+    for item in &ast.items {
+        let (name, span) = match item {
+            TopLevelItem::Function(function) | TopLevelItem::Method(function) => {
+                (&function.display_name, function.span)
+            }
+            TopLevelItem::Struct(def) => (&def.name, def.span),
+            TopLevelItem::Enum(def) => (&def.name, def.span),
+            TopLevelItem::Const(def) => (&def.name, def.span),
+            TopLevelItem::Static(def) => (&def.name, def.span),
+            TopLevelItem::TypeAlias(def) => (&def.name, def.span),
+            TopLevelItem::Import(_) => continue,
+        };
+        defs.entry(name.clone()).or_default().push(span);
+    }
+    defs
 }
 
 /// Type-check the resolved program and build the semantic-token name tables.
