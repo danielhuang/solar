@@ -2089,35 +2089,11 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// The operand form used by the `operator_*` desugar of a binary operator.
-    ///
-    /// A plain value is referenced (`x` → `x&`) so it can bind to an
-    /// `operator_*(self: &T, other: &T)` declaration. An operand that is
-    /// **already a reference to a struct or enum** is passed through unchanged:
-    /// referencing it again yields `&&T`, a type no `operator_*` declaration
-    /// can name, so `structRef == structRef` could only ever reach the stdlib's
-    /// blanket reflective `operator_eq` and throw `type is not a struct or
-    /// enum` at runtime — even when the pointee type declares a perfectly good
-    /// concrete `operator_eq(self: &T, other: &T)`.
-    ///
-    /// References to non-struct/enum pointees (notably `&[Uint8]`) keep the
-    /// old behaviour and are still wrapped, so the documented rule "compare
-    /// byte-slice *contents* with `a@ == b@`; `==` on two byte-slice
-    /// references throws" is unchanged (`tests/runtime/blanket_eq_throw.solar`).
-    fn auto_reference(expr: &ast::Expr, ty: &Type) -> ast::Expr {
-        let already_referenced = match ty {
-            Type::Ref(inner) | Type::RefUnsized(inner) => {
-                matches!(**inner, Type::Struct(_) | Type::Enum(_))
-            }
-            _ => false,
-        };
-        if already_referenced {
-            expr.clone()
-        } else {
-            ast::Expr {
-                kind: ast::ExprKind::Reference(Box::new(expr.clone())),
-                span: expr.span,
-            }
+    /// Reference an operand for the `operator_*` desugar (`x` → `x&`).
+    fn auto_reference(expr: &ast::Expr) -> ast::Expr {
+        ast::Expr {
+            kind: ast::ExprKind::Reference(Box::new(expr.clone())),
+            span: expr.span,
         }
     }
 
@@ -5453,16 +5429,8 @@ impl<'a> Lowerer<'a> {
                 if !Self::binop_primitive_applies(*op, &lhs.ty) {
                     let method = Self::binop_method_name(*op);
                     if self.method_defs.contains_key(method) {
-                        // An operand that is ALREADY a reference is passed
-                        // through unchanged. Wrapping it would produce a `&&T`
-                        // receiver, which no `operator_*` declaration can name,
-                        // so every such comparison fell through to the blanket
-                        // reflective `operator_eq` and threw at runtime — both
-                        // for `refA == refB` and for a struct field whose type
-                        // is itself a reference (the reflective body compares
-                        // `a@ == b@`, and `a@` is that reference).
-                        let recv = Self::auto_reference(left, &lhs.ty);
-                        let arg = Self::auto_reference(right, &rhs.ty);
+                        let recv = Self::auto_reference(left);
+                        let arg = Self::auto_reference(right);
                         return self.lower_method_call(
                             expr.span,
                             &recv,
@@ -8038,6 +8006,7 @@ impl<'a> Lowerer<'a> {
 
         let mut lowered_args = Vec::with_capacity(arguments.len());
         let mut ref_inner: Option<Type> = None;
+        let mut ref_ty: Option<Type> = None;
         let mut float_ty: Option<Type> = None;
         for (i, (ast_arg, param)) in arguments.iter().zip(&spec.params).enumerate() {
             // Mark the `try` intrinsic's closure arguments (the `try` body and
@@ -8133,6 +8102,28 @@ impl<'a> Lowerer<'a> {
                     }
                     ref_inner = Some(inner_ty);
                 }
+                ParamRequirement::IsRef => {
+                    if !matches!(arg.ty, Type::Ref(_) | Type::RefUnsized(_)) {
+                        return Err(CompileError::new(
+                            format!("{name}: expected &T, got {}", arg.ty),
+                            span,
+                        ));
+                    }
+                    ref_ty = Some(arg.ty.clone());
+                }
+                ParamRequirement::MatchesRef => {
+                    let expected = ref_ty.as_ref().unwrap();
+                    if arg.ty != *expected {
+                        return Err(CompileError::new(
+                            format!(
+                                "{name}: argument {} must be {expected}, got {}",
+                                i + 1,
+                                arg.ty
+                            ),
+                            span,
+                        ));
+                    }
+                }
                 ParamRequirement::MatchesRefInner => {
                     let expected = ref_inner.as_ref().unwrap();
                     if arg.ty != *expected {
@@ -8178,6 +8169,8 @@ enum ParamRequirement {
     MatchesFloat,
     RefToAtomic,
     MatchesRefInner,
+    IsRef,
+    MatchesRef,
 }
 
 enum ReturnSpec {
@@ -8231,6 +8224,10 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
         ast::Intrinsic::Panic => IntrinsicSpec {
             params: vec![byte_slice()],
             ret: Fixed(Type::Never),
+        },
+        ast::Intrinsic::RefEq => IntrinsicSpec {
+            params: vec![IsRef, MatchesRef],
+            ret: Fixed(Type::Bool),
         },
         // throw(msg: &[Uint8]): unwind with a string payload; diverges.
         ast::Intrinsic::Throw => IntrinsicSpec {

@@ -1430,6 +1430,13 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let msg = String::from_utf8_lossy(&bytes);
                 panic!("{msg}");
             }
+            Intrinsic::RefEq => {
+                let (a_place, _) = self.eval_place(nodes, args[0])?;
+                let (b_place, _) = self.eval_place(nodes, args[1])?;
+                let a = self.mem.load(a_place, 8);
+                let b = self.mem.load(b_place, 8);
+                self.scalar_store(dst, (a == b) as u64, result_ty);
+            }
             Intrinsic::FileOpen => {
                 let (ref_addr, _) = self.eval_place(nodes, args[0])?;
                 let data_ptr = self.mem.load(ref_addr, 8) as usize;

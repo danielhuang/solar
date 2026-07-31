@@ -492,6 +492,7 @@ impl NumericType {
 #[derive(Debug, Clone)]
 pub enum Intrinsic {
     Panic,
+    RefEq,
     Throw,
     Try,
     ArrayLen,
@@ -563,6 +564,7 @@ pub enum Intrinsic {
 
 const INTRINSIC_NAMES: &[(&str, Intrinsic)] = &[
     ("panic", Intrinsic::Panic),
+    ("ref_eq", Intrinsic::RefEq),
     ("throw", Intrinsic::Throw),
     ("try", Intrinsic::Try),
     ("array_len", Intrinsic::ArrayLen),

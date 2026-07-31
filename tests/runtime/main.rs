@@ -737,7 +737,7 @@ fn blanket_eq_throw() {
     let output = run(&fixture("blanket_eq_throw.solar"), "blanket_eq_throw");
     assert_eq!(
         output,
-        "operator_eq: type is not a struct or enum\ncontents equal\nstructs equal\n"
+        "contents equal through refs\nsame ref\ndistinct refs\ncontents equal\nstructs equal\n"
     );
 }
 

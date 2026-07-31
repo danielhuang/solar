@@ -1105,6 +1105,14 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     _ => unreachable!(),
                 }
             }
+            Intrinsic::RefEq => {
+                let a = self.eval_expr(&arguments[0])?;
+                let b = self.eval_expr(&arguments[1])?;
+                match (a, b) {
+                    (Value::Ref(a), Value::Ref(b)) => Value::Int(Rc::ptr_eq(&a, &b) as i64),
+                    _ => unreachable!("ref_eq arguments must be references"),
+                }
+            }
             Intrinsic::FileOpen => {
                 let val = self.eval_expr(&arguments[0])?;
                 let bytes: Vec<u8> = match &val {

@@ -2723,6 +2723,13 @@ impl<'a> Codegen<'a> {
                 ));
                 self.linef(format!("sol_panic({data_ptr}, {data_len});"));
             }
+            Intrinsic::RefEq => {
+                let (a, _) = self.emit_place(nodes, args[0]);
+                let (b, _) = self.emit_place(nodes, args[1]);
+                self.linef(format!(
+                    "*(uint8_t*){dst} = (*(uint8_t**){a} == *(uint8_t**){b});"
+                ));
+            }
             Intrinsic::Throw => {
                 // arg[0] is a &[Uint8] fat pointer (ptr + len). Unwind with it.
                 let (ref_place, _) = self.emit_place(nodes, args[0]);
