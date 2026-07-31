@@ -646,6 +646,9 @@ fn symbol_targets(source: &str, line: u32, character: u32, document: &Document) 
         let target = node_span(binding, file_id);
         return vec![target];
     }
+    if let Some(target) = type_definition(node, name, source, document) {
+        return vec![target];
+    }
     if let Some(target) = path_definition(node, name, source, document) {
         return vec![target];
     }
@@ -689,17 +692,6 @@ fn symbol_targets(source: &str, line: u32, character: u32, document: &Document) 
         for static_item in &analysis.typed.statics {
             finder.walk_expr(&static_item.init);
         }
-    }
-
-    // Conservative syntax fallback for declarations/type annotations that do
-    // not survive into typed expressions. A unique spelling is safe; ambiguous
-    // same-name declarations return no result instead of the old behavior of
-    // navigating to unrelated symbols.
-    if targets.is_empty()
-        && let Some(spans) = document.defs.get(name)
-        && spans.len() == 1
-    {
-        targets.extend(spans.iter().copied());
     }
 
     let mut seen = HashSet::new();
@@ -827,7 +819,12 @@ fn path_definition(
         .parent()
         .filter(|parent| parent.kind() == "path_segment")?
         .parent()
-        .filter(|parent| parent.kind() == "path_expr")?;
+        .filter(|parent| {
+            matches!(
+                parent.kind(),
+                "path_expr" | "variant_pattern" | "unit_variant_pattern"
+            )
+        })?;
     let mut cursor = path.walk();
     let segments: Vec<Node<'_>> = path
         .named_children(&mut cursor)
@@ -840,10 +837,16 @@ fn path_definition(
     // first so common names such as `None` do not jump to another enum.
     if index + 1 == segments.len() && index > 0 {
         let owner_name = &source[segments[index - 1].byte_range()];
+        let owner_file = if index > 1 {
+            let module = &source[segments[index - 2].byte_range()];
+            document.module_files.get(module).copied()
+        } else {
+            document.source_map.root_file_id()
+        };
         let owners: Vec<&ast::DefId> = document
             .type_defs
             .keys()
-            .filter(|id| id.name == owner_name)
+            .filter(|id| id.name == owner_name && Some(id.file) == owner_file)
             .collect();
         if owners.len() == 1
             && let Some(span) = document
@@ -854,16 +857,40 @@ fn path_definition(
         }
     }
 
-    let types: Vec<SourceSpan> = document
+    let expected_file = if index > 0 {
+        let module = &source[segments[index - 1].byte_range()];
+        document.module_files.get(module).copied()
+    } else {
+        document.source_map.root_file_id()
+    };
+    document
         .type_defs
         .iter()
-        .filter_map(|(id, span)| (id.name == name).then_some(*span))
-        .collect();
-    if types.len() == 1 {
-        types.into_iter().next()
-    } else {
-        None
-    }
+        .find_map(|(id, span)| (id.name == name && Some(id.file) == expected_file).then_some(*span))
+}
+
+fn type_definition(
+    node: Node<'_>,
+    name: &str,
+    source: &str,
+    document: &Document,
+) -> Option<SourceSpan> {
+    let parent = node.parent()?;
+    let file = match parent.kind() {
+        "named_type" => document.source_map.root_file_id(),
+        "qualified_type" if parent.child_by_field_name("name") == Some(node) => {
+            let module = parent.child_by_field_name("module")?;
+            document
+                .module_files
+                .get(&source[module.byte_range()])
+                .copied()
+        }
+        _ => return None,
+    };
+    document
+        .type_defs
+        .iter()
+        .find_map(|(id, span)| (id.name == name && Some(id.file) == file).then_some(*span))
 }
 
 fn statement_binding<'a>(statement: Node<'a>, name: &str, source: &str) -> Option<Node<'a>> {
@@ -1317,9 +1344,6 @@ struct Document {
     /// Exact declaration span → source-level signature/metadata shown by hover,
     /// including declarations without doc comments.
     signatures: HashMap<SpanKey, String>,
-    /// Base name → every declaration with that name (all overloads, across all
-    /// files), for go-to-definition's name-based fallback and type lookups.
-    defs: HashMap<String, Vec<SourceSpan>>,
     /// Free-function overload declarations keyed by resolved provenance.
     function_defs: HashMap<ast::DefId, Vec<SourceSpan>>,
     /// Method overload declarations keyed by their source name.
@@ -1334,6 +1358,9 @@ struct Document {
     global_defs: HashMap<ast::DefId, SourceSpan>,
     /// Source ranges of generic functions/methods in the root file.
     generic_bodies: Vec<SourceSpan>,
+    /// Module aliases declared by the root source, resolved to source-map file
+    /// identities for qualified type/path navigation.
+    module_files: HashMap<String, u32>,
     /// `file_id` → path + source, to turn a definition's span into an LSP
     /// `Location` (URI + UTF-16 range) in whatever file it lives in.
     source_map: SourceMap,
@@ -1374,11 +1401,11 @@ fn compute(uri: &str, source: &str) -> Document {
         return Document::default();
     };
     let definition_catalog = collect_definition_catalog(&ast, source_map.root_file_id());
+    let module_files = collect_module_files(&path, source, &source_map);
     let signatures = collect_signatures(&ast, &source_map);
     Document {
         docs: collect_docs(&ast),
         signatures,
-        defs: collect_defs(&ast),
         function_defs: definition_catalog.function_defs,
         method_defs: definition_catalog.method_defs,
         field_defs: definition_catalog.field_defs,
@@ -1386,6 +1413,7 @@ fn compute(uri: &str, source: &str) -> Document {
         type_defs: definition_catalog.type_defs,
         global_defs: definition_catalog.global_defs,
         generic_bodies: definition_catalog.generic_bodies,
+        module_files,
         analysis: analyze(&ast, &source_map),
         source_map,
     }
@@ -1455,40 +1483,34 @@ fn collect_definition_catalog(ast: &ast::SourceFile, root_file: Option<u32>) -> 
     out
 }
 
-/// Index every declaration (functions/methods — all overloads — structs, enums,
-/// consts, statics, type aliases) by its base name, mapping to the span of each
-/// definition (which carries its file). Feeds go-to-definition's name-based
-/// fallback (unresolved generics, method names) and type lookups.
-fn collect_defs(ast: &ast::SourceFile) -> HashMap<String, Vec<SourceSpan>> {
-    use solar::ast::TopLevelItem;
-    let mut defs: HashMap<String, Vec<SourceSpan>> = HashMap::new();
-    for item in &ast.items {
-        let (name, span) = match item {
-            TopLevelItem::Function(function) | TopLevelItem::Method(function) => {
-                (&function.display_name, function.span)
-            }
-            TopLevelItem::Struct(def) => {
-                for field in &def.fields {
-                    defs.entry(field.name.clone()).or_default().push(field.span);
-                }
-                (&def.name, def.span)
-            }
-            TopLevelItem::Enum(def) => {
-                for variant in &def.variants {
-                    defs.entry(variant.name.clone())
-                        .or_default()
-                        .push(variant.span);
-                }
-                (&def.name, def.span)
-            }
-            TopLevelItem::Const(def) => (&def.name, def.span),
-            TopLevelItem::Static(def) => (&def.name, def.span),
-            TopLevelItem::TypeAlias(def) => (&def.name, def.span),
-            TopLevelItem::Import(_) => continue,
+fn collect_module_files(
+    root_path: &std::path::Path,
+    source: &str,
+    source_map: &SourceMap,
+) -> HashMap<String, u32> {
+    use solar::ast::{ImportKind, TopLevelItem};
+    let Ok(parsed) = solar::parser::parse(source) else {
+        return HashMap::new();
+    };
+    let base = root_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let mut modules = HashMap::new();
+    for item in parsed.items {
+        let TopLevelItem::Import(import) = item else {
+            continue;
         };
-        defs.entry(name.clone()).or_default().push(span);
+        let ImportKind::Module(alias) = import.kind else {
+            continue;
+        };
+        if import.path.starts_with('@') {
+            continue;
+        }
+        if let Some(file_id) = source_map.file_id_for_path(&base.join(import.path)) {
+            modules.insert(alias, file_id);
+        }
     }
-    defs
+    modules
 }
 
 /// Type-check the resolved program and build the semantic-token name tables.
@@ -2056,7 +2078,7 @@ fn main() {
 
         assert!(document.analysis.is_none());
         assert!(document.docs.is_empty());
-        assert!(document.defs.is_empty());
+        assert!(document.signatures.is_empty());
     }
 
     #[test]
@@ -2313,5 +2335,14 @@ fn main() {
         assert!(contents.contains("fn choose(x: A) -> Int"), "{contents}");
         assert!(contents.contains("fn choose(x: B) -> Int"), "{contents}");
         assert!(contents.contains("\n\n---\n\n"), "{contents}");
+    }
+
+    #[test]
+    fn intrinsic_call_never_falls_back_to_same_named_wrapper() {
+        let (_, source, document) = fixture_document("src/std/lib.solar");
+        let (line, character) = occurrence_position(&source, "count_trailing_zeros", 2);
+
+        assert!(definition(&source, line, character, &document).is_none());
+        assert!(hover(&source, line, character, &document).is_none());
     }
 }

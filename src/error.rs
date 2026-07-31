@@ -36,6 +36,18 @@ impl SourceMap {
         self.root_file_id
     }
 
+    /// Find the source-map id for a filesystem path.
+    pub fn file_id_for_path(&self, path: &std::path::Path) -> Option<u32> {
+        let requested = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        self.files.iter().find_map(|(&id, (filename, _))| {
+            let candidate = std::path::Path::new(filename);
+            let candidate = candidate
+                .canonicalize()
+                .unwrap_or_else(|_| candidate.to_path_buf());
+            (candidate == requested).then_some(id)
+        })
+    }
+
     /// The module-mangling prefix for a file's definitions — the piece formerly
     /// produced by `resolve::module_prefix`, now applied here at the
     /// `mangled_ast` stage. Empty for the root file (bare names). Otherwise
