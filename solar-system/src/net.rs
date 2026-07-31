@@ -1,11 +1,4 @@
-//! Socket intrinsics. Each function is exactly one syscall (plus `EINTR`
-//! retry), mirroring `file.rs`'s conventions: sockets are `FileDesc`s in the
-//! same GC-traced fd arena (`register_new_fd`), so `sol_file_read`/
-//! `sol_file_write_partial` do socket I/O, `sol_file_close` neuters them, and
-//! the collector auto-closes unreachable ones via `fd_sweep`. Socket addresses
-//! cross the intrinsic boundary as raw `sockaddr` bytes (`&[Uint8]`) built and
-//! parsed by `@std`'s `net.solar`, keeping each intrinsic a thin syscall
-//! wrapper that works for any address family.
+//! Socket intrinsics using GC-traced file descriptors.
 
 use crate::file::{fd_from_ptr, register_new_fd};
 

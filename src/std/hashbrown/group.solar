@@ -1,22 +1,11 @@
-// The SwissTable control-byte group scan. A group is a `simd::SimdUint8x16` (16
-// control bytes); the tag-specific matches below are methods on it that LLVM
-// auto-vectorizes (release) into the same SSE2 `vpbroadcastb`/`vpcmpeqb`/
-// `vpmovmskb` scan hashbrown writes by hand. Ported from `src/control/group/sse2.rs`.
-//
-// The group is the bare `SimdUint8x16` (not a wrapper struct): an extra struct
-// layer here defeats SROA when the group is loaded once and matched twice, so
-// the scan falls back to scalar. The match results are *compact* bitmasks (one
-// bit per lane); see `bitmask`.
-
 import simd from "../simd.solar";
 import tag from "tag.solar";
 import bitmask from "bitmask.solar";
 
+/// Number of control bytes in a group.
 pub const WIDTH: Uint = 16u;
 
-/// Load the 16 control bytes starting at byte offset `pos`. The caller guarantees
-/// `pos + 16 <= ctrl.len()` (the control array has a trailing mirror group), and
-/// the slice + fixed-array coercion bounds-checks it regardless.
+/// Loads a control-byte group.
 pub fn load(ctrl: &[Uint8], pos: Uint) -> simd::SimdUint8x16 {
   simd::u8x16_load(ctrl, pos)
 }

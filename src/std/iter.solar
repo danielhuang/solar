@@ -1,11 +1,12 @@
 import { Option } from "lib.solar";
 
+/// A pull-based iterator.
 pub struct Iterator#[T] {
+  /// Closure that advances the iterator.
   pub next: fn() -> Option#[&T],
 }
 
-/// Advances the iterator, returning the next element or `None`. Wraps the `next`
-/// field closure so call sites can write `it.next()` instead of `(it.next)()`.
+/// Advances the iterator.
 pub method next#[T](self: Iterator#[T]) -> Option#[&T] {
   (self.next)()
 }

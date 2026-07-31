@@ -6,20 +6,20 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
 
+/// Source-level definition identity.
 pub use crate::ast::DefId;
 
-/// Identity of a struct/enum type *instance*: the defining generic's provenance
-/// (`DefId`) plus concrete monomorphization arguments (empty for a non-generic
-/// type). Replaces the old pre-mangled identity string — the unique C symbol is
-/// rendered later, in `mangled_ast`.
+/// Identity of a concrete struct or enum instance.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TypeId {
+    /// Generic definition.
     pub def: DefId,
+    /// Concrete type arguments.
     pub args: Vec<Type>,
 }
 
 impl TypeId {
-    /// A non-generic type identity (no monomorphization args).
+    /// Creates a non-generic type identity.
     pub fn plain(def: DefId) -> Self {
         TypeId {
             def,
@@ -45,18 +45,16 @@ impl fmt::Display for TypeId {
     }
 }
 
-/// Identity of a function/method *instance*: its provenance (`def` — file + base
-/// name), the concrete arguments that disambiguate it (parameter types for a
-/// concrete overload, type arguments for a generic instantiation; for a method,
-/// the receiver type is the first arg), an optional overload-disambiguation
-/// index, and whether it is a method. `mangled_ast` renders this to the final C
-/// symbol (`__method_`-prefixed and base-name-bare for methods; module-prefixed
-/// otherwise; `_ov{n}` suffix when `overload` is set).
+/// Identity of a concrete function or method instance.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FuncId {
+    /// Source definition.
     pub def: DefId,
+    /// Types that identify this instance.
     pub args: Vec<Type>,
+    /// Overload index when the base identity is insufficient.
     pub overload: Option<usize>,
+    /// Whether this identifies a method.
     pub method: bool,
 }
 
@@ -78,6 +76,7 @@ impl fmt::Display for FuncId {
     }
 }
 
+/// A type-checked Solar type.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     Int8,
@@ -137,6 +136,7 @@ impl From<&ast::NumericType> for Type {
 }
 
 impl Type {
+    /// Returns whether this is an integer type.
     pub fn is_integer(&self) -> bool {
         matches!(
             self,
@@ -153,14 +153,17 @@ impl Type {
         )
     }
 
+    /// Returns whether this is a floating-point type.
     pub fn is_float(&self) -> bool {
         matches!(self, Type::Float32 | Type::Float64)
     }
 
+    /// Returns whether this is numeric.
     pub fn is_numeric(&self) -> bool {
         self.is_integer() || matches!(self, Type::Float32 | Type::Float64)
     }
 
+    /// Returns whether this is an unsigned integer type.
     pub fn is_unsigned(&self) -> bool {
         matches!(
             self,
@@ -180,10 +183,12 @@ impl Type {
         }
     }
 
+    /// Returns whether this is a nullable reference type.
     pub fn is_nullable_ref(&self) -> bool {
         matches!(self, Type::NullableRef(_) | Type::NullableRefUnsized(_))
     }
 
+    /// Returns whether values of this type have a compile-time size.
     pub fn is_sized(&self, structs: &HashMap<TypeId, StructDef>) -> bool {
         match self {
             Type::Array(_) => false,
@@ -191,12 +196,6 @@ impl Type {
             Type::Enum(_) => true,
             Type::Struct(name) => {
                 let def = structs.get(name).unwrap_or_else(|| {
-                    // Almost always a *name* problem rather than a layout one:
-                    // a module-qualified type the module does not export (a typo
-                    // in `alias::Name`, which `resolve_type_ref` mints a `DefId`
-                    // for without checking), or a generic instantiation nothing
-                    // monomorphized. Say so — this message is the only clue the
-                    // author gets, and bisecting it by hand is expensive.
                     panic!(
                         "is_sized: missing struct `{name}` — the name resolved to no \
                          definition. Check for a module-qualified type whose module does \
@@ -966,65 +965,86 @@ fn pattern_name(pat: &ast::DestructurePattern) -> &str {
     }
 }
 
-// --- Typed AST nodes ---
-
+/// A type-checked, monomorphized program.
 #[derive(Debug)]
 pub struct SourceFile {
+    /// Struct instances keyed by identity.
     pub structs: HashMap<TypeId, StructDef>,
+    /// Enum instances keyed by identity.
     pub enums: HashMap<TypeId, EnumDef>,
+    /// Function instances keyed by identity.
     pub functions: HashMap<FuncId, FunctionDef>,
-    /// Top-level `static` declarations, in source order. Each init is the
-    /// lowered literal expression; downstream layers store it into the global
-    /// before `main`'s body runs.
+    /// Mutable globals in source order.
     pub statics: Vec<StaticItem>,
 }
 
+/// A mutable global.
 #[derive(Debug, Clone)]
 pub struct StaticItem {
+    /// Definition identity.
     pub id: DefId,
+    /// Stored type.
     pub ty: Type,
+    /// Initial value.
     pub init: Expr,
 }
 
+/// A concrete struct definition.
 #[derive(Debug, Clone)]
 pub struct StructDef {
+    /// Struct identity.
     pub id: TypeId,
+    /// Fields in layout order.
     pub fields: Vec<FieldDef>,
 }
 
+/// A struct field.
 #[derive(Debug, Clone)]
 pub struct FieldDef {
+    /// Field name.
     pub name: String,
+    /// Field type.
     pub ty: Type,
 }
 
+/// A concrete function definition.
 #[derive(Debug, Clone)]
 pub struct FunctionDef {
+    /// Function identity.
     pub id: FuncId,
+    /// Function parameters.
     pub parameters: Vec<Parameter>,
+    /// Return type.
     pub return_type: Type,
+    /// Function body.
     pub body: Vec<Statement>,
-    /// `fn(inline)` hint, carried through to codegen. Interpreters ignore it.
+    /// Whether code generation should request inlining.
     pub inline_hint: bool,
-    /// Span of the source definition (the whole `fn`/`method` declaration). All
-    /// monomorphizations of one generic share the generic's span; each overload
-    /// keeps its own. Used by the LSP for go-to-definition; codegen ignores it.
+    /// Source declaration span.
     pub def_span: ast::SourceSpan,
 }
 
+/// A function parameter.
 #[derive(Debug, Clone)]
 pub struct Parameter {
+    /// Parameter name.
     pub name: String,
+    /// Parameter type.
     pub ty: Type,
+    /// Declaration span.
     pub span: ast::SourceSpan,
 }
 
+/// A statement and its source span.
 #[derive(Debug, Clone)]
 pub struct Statement {
+    /// Statement contents.
     pub kind: StatementKind,
+    /// Statement span.
     pub span: ast::SourceSpan,
 }
 
+/// A typed statement.
 #[derive(Debug, Clone)]
 pub enum StatementKind {
     Let {
@@ -1051,13 +1071,18 @@ pub enum StatementKind {
     Continue,
 }
 
+/// An expression with its type and source span.
 #[derive(Debug, Clone)]
 pub struct Expr {
+    /// Expression type.
     pub ty: Type,
+    /// Expression contents.
     pub kind: ExprKind,
+    /// Expression span.
     pub span: ast::SourceSpan,
 }
 
+/// A typed expression.
 #[derive(Debug, Clone)]
 pub enum ExprKind {
     Identifier(String),
@@ -1147,37 +1172,54 @@ pub enum ExprKind {
     },
 }
 
+/// A struct field initializer.
 #[derive(Debug, Clone)]
 pub struct FieldInit {
+    /// Field name.
     pub name: String,
+    /// Initializer value.
     pub value: Expr,
 }
 
+/// A variable captured by a closure.
 #[derive(Debug, Clone)]
 pub struct CapturedVar {
+    /// Variable name.
     pub name: String,
+    /// Captured type.
     pub ty: Type,
 }
 
+/// A concrete enum definition.
 #[derive(Debug, Clone)]
 pub struct EnumDef {
+    /// Enum identity.
     pub id: TypeId,
+    /// Variants in discriminant order.
     pub variants: Vec<EnumVariantDef>,
 }
 
+/// An enum variant definition.
 #[derive(Debug, Clone)]
 pub struct EnumVariantDef {
+    /// Variant name.
     pub name: String,
+    /// Optional payload type.
     pub inner_type: Option<Type>,
+    /// Numeric discriminant.
     pub index: usize,
 }
 
+/// A typed match arm.
 #[derive(Debug, Clone)]
 pub struct TypedMatchArm {
+    /// Arm pattern.
     pub pattern: TypedPattern,
+    /// Arm body.
     pub body: Vec<Statement>,
 }
 
+/// A typed match pattern.
 #[derive(Debug, Clone)]
 pub enum TypedPattern {
     Variant {
@@ -1188,8 +1230,6 @@ pub enum TypedPattern {
     },
     Wildcard(String, Type),
 }
-
-// --- Lowering (ast -> typed_ast with type checking) ---
 
 struct CaptureContext {
     scope_depth_barrier: usize,
@@ -2477,15 +2517,9 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Expand type aliases inside an `ast::Type`, recursively.
+    /// Recursively expands type aliases inside a type.
     ///
-    /// A type *argument* used to go straight to `from_ast_type`, which is a
-    /// structural conversion that does not consult the alias table — so
-    /// `Holder#[Alias]` and `Holder#[Target]` monomorphized to two different
-    /// instantiations and a method resolved on one did not match the other
-    /// ("no matching overload for `put` with argument types (&Holder#[Alias], Target)").
-    /// Aliases may chain, so this recurses; the depth guard is a safety net for
-    /// a cyclic alias, which `resolve_type_alias` does not itself detect.
+    /// The depth limit handles alias cycles.
     fn expand_type_aliases(&self, ty: &ast::Type, depth: u32) -> ast::Type {
         if depth > 32 {
             return ty.clone();
@@ -3573,10 +3607,7 @@ impl<'a> Lowerer<'a> {
             inferred
         };
 
-        // With no explicit annotation, `return` statements were lowered
-        // unchecked (`current_return_type` was `None`); validate them against
-        // the inferred type now. A mismatch used to slip through to codegen
-        // as an undeclared `_ret` / wrong-size write.
+        // Validate explicit returns against the inferred body type.
         let recorded = std::mem::replace(&mut self.inference_returns, saved_inference_returns);
         for (ty, span) in recorded {
             if ty != Type::Never && ty != return_type {
@@ -7108,9 +7139,6 @@ impl<'a> Lowerer<'a> {
     ) -> Result<Expr, CompileError> {
         let has_infer_closures = arguments.iter().any(Self::has_infer_params);
 
-        // Generic entries are never receiver-filtered; concrete entries are
-        // fetched per-path below (for methods, filtered by the receiver's base
-        // type so a call only considers overloads it could actually match).
         let generic_entries: Vec<FunctionEntry> = match &source {
             CandidateSource::Entries(entries) => entries
                 .iter()
@@ -7121,19 +7149,7 @@ impl<'a> Lowerer<'a> {
         };
         let num_generic_overloads = generic_entries.len();
 
-        // If explicit type args provided, skip concrete entries entirely
         if !type_args.is_empty() {
-            // Find matching generic overload with explicit type args.
-            //
-            // Type-parameter count and arity alone do not identify an overload:
-            // `f#[T](owner: &Owner#[T], x: Int32)` and `f#[T](key: Key, x: Int32)`
-            // are both 1-type-param/2-argument. Taking the first match made an
-            // explicit-type-arg call always resolve to whichever was declared
-            // first, so `f#[V](key, x)` reported "expected &Owner#[V], got Key".
-            // When several candidates survive that filter, prefer one whose first
-            // parameter's base type matches the first argument's, leaving the
-            // original order (and its diagnostics) intact when the check is
-            // inconclusive — a bare type-parameter parameter matches anything.
             let mut viable: Vec<(FunctionEntry, Vec<ast::Expr>)> = Vec::new();
             for gdef in &generic_entries {
                 if gdef.type_params.len() != type_args.len() {
@@ -7146,17 +7162,7 @@ impl<'a> Lowerer<'a> {
             }
             let mut matched: Option<(FunctionEntry, Vec<ast::Expr>)> = None;
             if viable.len() > 1 && !arguments.is_empty() {
-                // Compare each positional argument's *shape* (named type,
-                // sequence, function, tuple) against the candidate's parameter
-                // in the same position. `Unknown` on either side means "no
-                // information", so a candidate is only rejected when some
-                // position definitely cannot match. Checking EVERY position,
-                // not just the first, is what separates overloads that agree on
-                // their leading parameters and differ later — e.g.
-                // `g#[T](Key, Int)` vs `g#[T](Key, &Own#[T])`, where comparing
-                // argument 0 alone is inconclusive and the first candidate wins
-                // by declaration order, producing a bogus
-                // "expected Int, got &Own#[Int]".
+                // Reject candidates only when an argument shape definitely differs.
                 let arg_shapes: Vec<ArgShape> = arguments
                     .iter()
                     .map(|a| {
@@ -7333,23 +7339,7 @@ impl<'a> Lowerer<'a> {
                     .iter()
                     .map(|p| p.ty.clone())
                     .collect();
-                // Cheap pre-filter: a parameter declared with a *concrete*
-                // named base (`self: &Box#[K]`) can never bind an argument
-                // whose base is a different definition, whatever the type
-                // arguments are. Rejecting here is not just a speed-up — the
-                // `params_match` loop below resolves the SUBSTITUTED parameter
-                // type, and resolving `&Box#[[Uint8]]` permanently registers
-                // that struct monomorphization even though this candidate is
-                // then discarded. `ir` later tries to lay the orphan out and
-                // panics ("type_size called on unsized type [T]") whenever the
-                // bogus type argument is unsized. Coercion never changes a
-                // value's base def (only `&T`->`&?T`, array-size and numeric
-                // widening, none of which have a differing base key), so this
-                // rejects nothing that could otherwise have matched.
-                // The declared name must be a struct/enum def for the comparison
-                // to mean anything: a TYPE ALIAS (`&LoadingErrors` for
-                // `hashbrown::HashMap#[…]`) has no def of its own, and its
-                // `DefId` never equals the resolved argument's base.
+                // Avoid monomorphizing candidates with incompatible concrete bases.
                 let mut head_mismatch = false;
                 for (arg, pat) in lowered_args.iter().zip(param_ast_types.iter()) {
                     let (Some(want), Some(got)) = (
@@ -8608,14 +8598,9 @@ fn atomic_type_align(ty: &Type, structs: &HashMap<TypeId, StructDef>) -> Option<
     }
 }
 
+/// Type-checks and monomorphizes a resolved AST.
 pub fn lower(source: &ast::SourceFile) -> Result<SourceFile, CompileError> {
-    // Lowering recursion depth is program-shaped: monomorphization of nested
-    // generic instantiations lowers callee bodies on the Rust call stack (one
-    // `lower_function` chain per nesting level, ~250 KB each), which can
-    // exhaust the default 8 MiB main-thread stack long before the
-    // MONO_DEPTH_LIMIT guard fires. Run the lowerer on a dedicated big-stack
-    // thread (reserved lazily by the OS, not committed) so the guard — not a
-    // stack overflow — is what stops runaway polymorphic recursion.
+    // A larger stack lets MONO_DEPTH_LIMIT report runaway polymorphic recursion.
     const LOWER_STACK_SIZE: usize = 512 << 20;
     std::thread::scope(|s| {
         std::thread::Builder::new()

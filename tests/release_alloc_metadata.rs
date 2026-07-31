@@ -1,9 +1,4 @@
-//! Regression for LLVM SimplifyCFG tail-merging GC allocation placeholders.
-//!
-//! Both arms of `report` build the same-shaped string concatenation. LLVM 22
-//! sinks the identical allocator calls out of the branches at `-O3`; those
-//! calls must retain enough provenance for the post-optimization GC pass to
-//! raise them back to `sol_alloc`.
+//! Ensures tail-merged allocations retain their GC metadata.
 
 use solar::pipeline::CompileMode;
 use std::process::Command;

@@ -169,12 +169,15 @@ pub fn create_dir(path: &[Uint8], mode = 0o777u) {
     intrinsics::dir_create(path, mode)
 }
 
-/// In FileInfo and DirEntry, a `kind` of 0 is a regular file, 1 a directory,
-/// and 2 anything else (symlink, socket, device, unknown).
+/// File metadata.
 pub struct FileInfo {
+    /// Whether the path exists.
     pub found: Bool,
+    /// File size in bytes.
     pub size: Uint,
+    /// Modification time in Unix-epoch nanoseconds.
     pub mtime_nanos: Uint,
+    /// Entry kind: file, directory, or other.
     pub kind: Uint,
 }
 
@@ -199,18 +202,16 @@ pub fn exists(path: &[Uint8]) -> Bool {
     stat(path).found
 }
 
+/// A directory entry.
 pub struct DirEntry {
+    /// Entry kind: file, directory, or other.
     pub kind: Uint,
+    /// Entry name.
     pub name: &[Uint8],
 }
 
-/// Reads all entries of a directory opened with `open_dir`, excluding "." and
-/// "..". Loops the batched dir_read intrinsic (one getdents64 per call) until
-/// the directory is exhausted; each raw entry is a kind byte followed by the
-/// name bytes.
+/// Reads all non-dot entries from an open directory.
 pub method read_entries(self: FileDesc) -> &[DirEntry] {
-    // Grown behind a unique pointer (like Vec) — a plain unsized local can't
-    // be reassigned to a different length.
     let out = [DirEntry { kind: 2u, name: "?"& }; 0u]^;
     loop {
         let batch = intrinsics::dir_read(self);

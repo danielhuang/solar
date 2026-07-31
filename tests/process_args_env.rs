@@ -1,15 +1,4 @@
-//! Compiled-only tests for the `args()` / `env()` intrinsics.
-//!
-//! These read the real process command line and environment, which the
-//! interpreters deliberately expose as empty (they have no process-args source
-//! and no collector), so they cannot go through the three-backend `run`
-//! harness. Instead we compile a program and run the native binary with a
-//! controlled argv and environment.
-//!
-//! The runtime builds the returned `&[&[Uint8]]` by copying each entry into a
-//! fresh GC allocation, so the second test puts the collector under load while
-//! holding those copies live to confirm they are traced (via the runtime mark
-//! functions) and never prematurely freed or corrupted.
+//! Native-runtime tests for process arguments and environment variables.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -91,10 +80,7 @@ fn args_and_env_are_exposed_to_compiled_programs() {
     );
 }
 
-// Retain every `args()`/`env()` copy in a growing, atomically-published chain
-// (>1 MiB of garbage per generation forces collection) and re-checksum a
-// retained copy each iteration. If the runtime's allocations were mistraced,
-// the retained bytes would be freed/recycled and the checksum would diverge.
+// Keep copied environment data reachable while forcing collections.
 const GC_SRC: &str = r#"
 enum Opt {
     Some(&Node),
@@ -148,8 +134,7 @@ fn main() {
 
 #[test]
 fn retained_env_copies_survive_collection() {
-    // Only the release pipeline runs the GC (debug skips the LLVM GC passes), so
-    // this is where mistracing of the runtime's allocations would show up.
+    // Only release codegen runs the collector.
     let bin = build(GC_SRC, "process_env_gc", CompileMode::Release);
     let out = Command::new(bin.canonicalize().unwrap())
         .env("SOLAR_TEST_VAR", "stress")

@@ -6,14 +6,7 @@
  * Original source:
  *   https://benchmarksgame-team.pages.debian.net/benchmarksgame/program/binarytrees-gpp-7.html
  *
- * ADAPTED for this benchmark: the original uses boost::counting_iterator and
- * TBB-backed parallel STL (std::execution::par), neither available in this
- * environment. The std::for_each(par, ...) over depths is replaced with one
- * std::thread per depth, each with its own pmr::monotonic_buffer_resource
- * arena -- structurally identical to the Solar port (examples/binarytrees.solar).
- * The arena allocation that defines this entry's performance is unchanged.
- *
- * Build: g++ -O3 -march=native -std=c++17 binarytrees_arena.cpp -o bt -lpthread
+ * Adapted to use one std::thread and arena per depth.
  */
 #include <algorithm>
 #include <iostream>

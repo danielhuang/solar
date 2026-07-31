@@ -749,10 +749,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 self.eval_into(nodes, id, tmp)?;
                 self.scalar_load(tmp, &ty)
             }
-            // An intrinsic call is loadable exactly like an ordinary call: it
-            // reached `eval_load` because its result is used as a value rather
-            // than assigned (e.g. `system_time() / 1000000u64`), which used to
-            // hit the `unreachable!` below.
+            // Calls used as values need temporary result storage.
             NodeKind::Call { .. }
             | NodeKind::CallIndirect { .. }
             | NodeKind::IntrinsicCall { .. }
@@ -2109,11 +2106,13 @@ impl<'a, 'io> Interpreter<'a, 'io> {
     }
 }
 
+/// Interprets an IR module using process standard input and output.
 pub fn interpret(module: &Module) {
     let mut interp = Interpreter::new(module, std::io::stdin(), std::io::stdout());
     interp.run();
 }
 
+/// Interprets an IR module with explicit input and output streams.
 pub fn interpret_to(module: &Module, stdin: impl Read, stdout: impl Write) {
     let mut interp = Interpreter::new(module, stdin, stdout);
     interp.run();

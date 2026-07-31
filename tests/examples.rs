@@ -31,11 +31,7 @@ fn all_examples_lower_to_ir() {
     }
 }
 
-/// Every example must compile all the way to a native binary (debug mode; the
-/// outputs are NOT run — some examples loop forever or need specific argv).
-/// The interpreter-based tests never reach codegen, so without this a
-/// codegen-only panic can hide for days (e.g. the unsized-struct copy panic
-/// introduced by the pointer-typed value representation rework).
+// Exercises native code generation without running the examples.
 #[test]
 fn all_examples_compile_debug() {
     test_utils::ensure_runtime_built();

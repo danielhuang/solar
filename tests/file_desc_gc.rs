@@ -1,21 +1,4 @@
-//! Compiled-only regression test for GC-managed `FileDesc` lifetimes.
-//!
-//! These behaviors are only observable in the native runtime (the interpreters
-//! have no fd arena and no collector), so they cannot go through the usual
-//! three-backend `run` harness. Instead we compile two programs and run each
-//! under a restricted `RLIMIT_NOFILE`.
-//!
-//! Both build an escaping, atomically-published garbage chain (~32 MiB per
-//! generation, so the run's ~3 GiB total churn crosses the collector's 1 GiB
-//! trigger floor (`MIN_SIZE_UNTIL_GC`) several times) and the collector
-//! actually runs.
-//!
-//! * `dropped` opens a file every iteration and immediately drops the handle.
-//!   The collector closes the unreachable fds, keeping the live count tiny, so
-//!   the program survives a small fd ceiling.
-//! * `retained` keeps every opened `FileDesc` reachable in a growing chain. The
-//!   collector must NOT close them, so the fds accumulate and the program hits
-//!   the ceiling (EMFILE) and aborts.
+//! Native-runtime tests for GC-managed file descriptor lifetimes.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -43,9 +26,7 @@ fn build(src: &str, name: &str, mode: CompileMode) -> PathBuf {
         .path
 }
 
-/// Run `bin` with `RLIMIT_NOFILE` lowered to `FD_LIMIT`. Returns whether it
-/// exited successfully. Leak detection is disabled: the test programs
-/// intentionally orphan GC-managed allocations.
+// Runs a binary with a low descriptor limit.
 fn run_with_fd_limit(bin: &Path) -> bool {
     Command::new("bash")
         .arg("-c")
@@ -60,11 +41,7 @@ fn run_with_fd_limit(bin: &Path) -> bool {
         .success()
 }
 
-// A spawned thread runs 100 iterations. Each builds a ~32 MiB escaping garbage
-// chain (1M nodes × 32-byte size class, published via an atomic root), so the
-// 1 GiB GC trigger floor is crossed around every ~32nd iteration — the first
-// cycle runs well before the `dropped` case can accumulate 64 open fds.
-// `OPEN_STMT` is spliced in per test: drop the handle, or retain it in `kept`.
+// `OPEN_STMT` selects whether each descriptor is dropped or retained.
 const TEMPLATE: &str = r#"
 enum GOpt {
     Some(&GNode),
@@ -108,11 +85,8 @@ fn main() {
 
 #[test]
 fn dropped_file_descriptors_are_closed_by_gc() {
-    // The handle is dropped each iteration; the GC closes the unreachable fds,
-    // so the live count stays tiny and the program survives the fd ceiling.
+    // Unreachable descriptors must be collected before exhausting the limit.
     let src = TEMPLATE.replace("OPEN_STMT", r#"let f = file::open("Cargo.toml"&);"#);
-    // The collector only runs in the release pipeline (debug skips the GC LLVM
-    // passes), and this test depends on it actually closing the dropped fds.
     let bin = build(&src, "fd_gc_dropped", CompileMode::Release);
     assert!(
         run_with_fd_limit(&bin),
@@ -123,12 +97,7 @@ fn dropped_file_descriptors_are_closed_by_gc() {
 
 #[test]
 fn closed_file_descriptors_keep_their_fd_number() {
-    // Each handle is `close`d but still retained in the reachable `kept` chain.
-    // `close` neuters the file via `dup2(dead_fd, fd)` WITHOUT freeing the fd
-    // number — a stale FileDesc must never be able to alias a fd reused by a
-    // later open. So the numbers stay occupied and the program exhausts the
-    // ceiling exactly as the retain-without-close case does. (A plain `close`
-    // would free the numbers, and the program would survive.)
+    // Closing neuters a descriptor but reserves its number until collection.
     let src = TEMPLATE.replace(
         "OPEN_STMT",
         r#"let f = file::open("Cargo.toml"&);
@@ -147,8 +116,7 @@ fn closed_file_descriptors_keep_their_fd_number() {
 
 #[test]
 fn retained_file_descriptors_are_not_closed() {
-    // Every handle is retained in the reachable `kept` chain; the GC must keep
-    // them open, so the fds accumulate and the program exhausts the ceiling.
+    // Reachable descriptors must remain open and exhaust the limit.
     let src = TEMPLATE.replace(
         "OPEN_STMT",
         r#"kept = (FdNode { fd: file::open("Cargo.toml"&), next: FdOpt::Some(kept) })&;

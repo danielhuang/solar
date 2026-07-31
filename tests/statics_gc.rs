@@ -1,7 +1,4 @@
-//! GC-rooting test for `static` declarations: a heap object whose *only*
-//! reference lives in a static must survive collections. Only the release
-//! pipeline runs the collector (debug skips the LLVM GC passes), so this is a
-//! compiled release test, mirroring `process_args_env.rs`'s GC variant.
+//! Ensures statics retain heap objects across collections.
 
 use solar::pipeline::CompileMode;
 use std::path::PathBuf;
@@ -26,10 +23,7 @@ fn build(src: &str, name: &str, mode: CompileMode) -> PathBuf {
         .path
 }
 
-// `setup` populates the statics with heap data and returns, so no stack frame
-// keeps the buffers alive; heavy churn then forces collection cycles. If the
-// statics table weren't scanned as roots, the buffers would be swept and their
-// slots recycled by the churn, corrupting the final checksums.
+// `setup` returns before collection, leaving the statics as the only roots.
 const GC_SRC: &str = r#"
 static KEEP: &?[Uint8] = null#[[Uint8]];
 static CHAIN: &?Node = null#[Node];
@@ -55,11 +49,7 @@ fn setup() {
 }
 
 fn churn() {
-    // >3 GiB of garbage — well past the collector's 1 GiB trigger floor,
-    // forcing multiple cycles. Each buffer is stored into a static so the
-    // allocation genuinely escapes (a plain local would be elided entirely
-    // by the allocation-promotion passes); every store also exercises the
-    // static as a mutating root during concurrent marking.
+    // Store through a static so churn escapes optimization and triggers GC.
     for i in 0..800000 {
         SCRATCH = [Uint8(i & 255); 4096u]&;
     }

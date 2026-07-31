@@ -1,14 +1,3 @@
-// The core SwissTable: a control-byte array scanned with SWAR groups plus a
-// parallel slot array. Ported (with simplifications) from hashbrown `src/raw.rs`.
-//
-// Solar deviations (all memory-safety driven):
-//   - Two GC allocations: `ctrl: &[Uint8]` (bytes, always present) and
-//     `slots: &?[Entry]` (lazily allocated on first insert — Solar can't make a
-//     generic array without a sample value, so the empty table has null slots).
-//   - bucket `i` lives at `slots[i]` (no reverse-pointer math).
-//   - resize reallocates and reinserts (no in-place rehash).
-//   - no `unsafe`; the SWAR group load is the bounds-checked `u64_from_le`.
-
 import { Option } from "../lib.solar";
 import tag from "tag.solar";
 import group from "group.solar";
@@ -24,21 +13,29 @@ pub fn key_hash#[K](key: &K) -> Uint64 {
 
 const GROUP_WIDTH: Uint = 16u;
 
+/// A key-value table entry.
 pub struct Entry#[K, V] {
+  /// Entry key.
   pub key: K,
+  /// Entry value.
   pub val: V,
 }
 
+/// SwissTable storage.
 pub struct RawTable#[K, V] {
-  pub bucket_mask: Uint,        // buckets - 1; 0 with null slots = empty table
-  pub ctrl: &[Uint8],           // length buckets + GROUP_WIDTH (mirror tail)
-  pub slots: &?[Entry#[K, V]],  // length buckets; null until first insert
+  /// Bucket count minus one.
+  pub bucket_mask: Uint,
+  /// Control bytes and trailing mirror group.
+  pub ctrl: &[Uint8],
+  /// Entry slots, absent before the first allocation.
+  pub slots: &?[Entry#[K, V]],
+  /// Number of occupied buckets.
   pub items: Uint,
+  /// Inserts available before resizing.
   pub growth_left: Uint,
 }
 
-/// An empty table: one all-EMPTY control group, no slots. Probes immediately see
-/// EMPTY (so lookups miss), and growth_left 0 forces a resize on first insert.
+/// Creates an empty table.
 pub fn RawTable#[K, V]() -> RawTable#[K, V] {
   let empty_ctrl: [Uint8] = [tag::EMPTY; GROUP_WIDTH];
   RawTable#[K, V] {
@@ -49,8 +46,6 @@ pub fn RawTable#[K, V]() -> RawTable#[K, V] {
     growth_left: 0u,
   }
 }
-
-// ── Capacity math ──────────────────────────────────────────────────────────
 
 fn next_power_of_two(x: Uint) -> Uint {
   let out = if x <= 1u {

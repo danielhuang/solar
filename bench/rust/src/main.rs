@@ -1,14 +1,4 @@
-//! Reference HashMap benchmark mirroring `examples/hashmap.solar`.
-//!
-//! Uses std's `HashMap` with the foldhash hasher (fixed seed) and the language's
-//! default hashing: `#[derive(Hash)]` for struct keys, the built-in `Hash` impls
-//! for primitives. The workload (splitmix64 key stream, insert/hit/miss loops,
-//! checksum) is identical to the Solar version, so the per-phase checksums match
-//! across the two implementations — a cross-implementation correctness check.
-//!
-//!   cargo run --release            # run every phase (stdin is EOF)
-//!   echo 2 | cargo run --release   # run only phase 2
-//! A phase index on stdin selects a single phase; EOF runs all.
+//! Rust reference implementation of `examples/hashmap.solar`.
 
 use foldhash::fast::FixedState;
 use std::collections::HashMap;
@@ -23,7 +13,7 @@ fn new_map<K: Eq + Hash>() -> Map<K> {
     HashMap::with_hasher(FixedState::default())
 }
 
-/// splitmix64 — identical constants to the Solar version.
+// Uses the same splitmix64 constants as the Solar benchmark.
 #[inline(always)]
 fn rng_next(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9E3779B97F4A7C15);
@@ -48,10 +38,7 @@ struct Mixed {
     c: bool,
 }
 
-/// Run insert / hit / miss loops and return the hasher-independent checksum.
-/// `build` draws from the RNG state and returns `(key, value)`; it draws exactly
-/// as many values per call as the matching Solar phase (one for the primitive
-/// phases, two for the struct phases), keeping the RNG streams in lockstep.
+// Runs the same insert, hit, and miss workload as the Solar benchmark.
 fn run<K: Eq + Hash>(n: u64, mut build: impl FnMut(&mut u64) -> (K, u64)) -> u64 {
     let mut m: Map<K> = new_map();
 
@@ -123,8 +110,7 @@ fn bench_mixed(n: u64) -> u64 {
     })
 }
 
-/// Read an optional phase index from stdin. Returns -1 (run all) on EOF / no
-/// leading digit.
+// A phase index on stdin selects one phase; EOF selects all phases.
 fn read_phase() -> i64 {
     let mut buf = [0u8; 16];
     let n = std::io::stdin().read(&mut buf).unwrap_or(0);

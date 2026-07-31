@@ -1,18 +1,14 @@
 import intrinsics from "@intrinsics";
 
-// TCP networking over the socket intrinsics. Sockets are FileDescs in the same
-// GC-traced fd arena as files: the collector auto-closes unreachable ones, and
-// the generic file read/write intrinsics do the byte transfer. Addresses are
-// IPv4 dotted-quad ("127.0.0.1") or IPv6 ("::1", "2001:db8::1",
-// "::ffff:10.0.0.1") byte strings — an address containing ':' is IPv6 — and
-// the sockaddr_in/sockaddr_in6 layout the kernel expects is built here and
-// passed to the intrinsics as raw bytes.
-
+/// A listening TCP socket.
 pub struct TcpListener {
+    /// Underlying socket descriptor.
     pub fd: FileDesc,
 }
 
+/// A connected TCP socket.
 pub struct TcpStream {
+    /// Underlying socket descriptor.
     pub fd: FileDesc,
 }
 

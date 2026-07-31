@@ -12,6 +12,7 @@ const STACK_ALLOC_MAX: usize = 4096;
 /// A by-value C typedef spec: (size, align, pointer-word runs).
 type ValTypeSpec = (usize, usize, Vec<(usize, usize)>);
 
+/// Generates a C translation unit for an IR module.
 pub fn generate(module: &Module, source_file: &str, source_map: &SourceMap) -> String {
     let mut cg = Codegen {
         module,
@@ -597,12 +598,7 @@ impl<'a> Codegen<'a> {
     fn emit_module(&mut self) {
         self.emit_prelude();
 
-        // Emit value-type typedefs. Pointer-free types stay opaque byte blobs;
-        // a type with GC pointers gets real `uint8_t*` members at its pointer
-        // words (with `char` filler between) so that LLVM sees genuinely
-        // pointer-typed values flow through params/returns/copies — the write
-        // barrier instruments `store ptr` precisely, instead of conservatively
-        // shading every 8-byte store.
+        // Preserve pointer typing so the write-barrier pass can identify stores.
         let val_types = self.collect_val_types();
         for (size, align, runs) in &val_types {
             let name = Self::val_type_name(*size, *align, runs);
@@ -635,21 +631,9 @@ impl<'a> Codegen<'a> {
             self.line("");
         }
 
-        // Emit GC mark functions
         self.emit_mark_functions();
 
-        // Emit the `static` globals as raw aligned byte slots (zero-initialized;
-        // their literal initial values are stored by the assignments IR lowering
-        // prepended to `main`). Copies in/out go through the same `emit_copy`
-        // machinery as any place, so 16-byte pointer-carrying values (fat
-        // pointers, function values) use `sol_copy_128_unordered` — reads and
-        // writes of a wide static cannot tear (the slot's `_Alignas` satisfies
-        // the i128 atomics' 16-byte alignment requirement, matching the type's
-        // Solar alignment). The GC-relevant slots are collected into a root
-        // table handed to `sol_start`: the collector runs each entry's mark_fn
-        // over the slot at both stop-the-world root scans (statics need no
-        // write barrier for the same reason stacks don't — roots are re-scanned
-        // at pause 2).
+        // Static slots are aligned for tear-free wide copies and registered as roots.
         let statics_meta: Vec<(usize, String)> = self
             .module
             .statics
@@ -2563,15 +2547,7 @@ impl<'a> Codegen<'a> {
                 let args: Vec<NodeId> = args.clone();
                 let result_ty = nodes[id.0].ty.clone();
 
-                // Whether the emitted C function returns anything is decided by
-                // the CALLEE's declared return type, not by the type of the node
-                // being filled: a `Never`-returning callee (`throw`, or any fn
-                // whose body ends in one) is emitted `void`, yet the node it
-                // fills can be typed as a real value — `fn f() -> &T { throw(m&) }`
-                // or `let x = if c { v } else { throw(m&) }`. Reading the node's
-                // type there produced `T tmp = void_call(...);`, which clang
-                // rejects. The call never returns, so leaving `dst` untouched is
-                // sound.
+                // Never-returning calls may inhabit a value-typed expression.
                 let callee_returns_nothing = self
                     .module
                     .functions

@@ -1,19 +1,4 @@
-//! Virtual file table shared by both interpreters.
-//!
-//! The compiled runtime represents a `FileDesc` as an opaque pointer into a
-//! GC-traced fd arena and talks to the OS via `libc`. The interpreters have no
-//! arena and no collector, so they model a `FileDesc` as a plain integer index
-//! into this table. Index 0 is stdin, index 1 is stdout, and index 2 is stderr
-//! (matching `file::stdin()` / `file::stdout()` / `file::stderr()`);
-//! `file_open` pushes an entry and returns its index.
-//!
-//! Entries come in three kinds: the standard `Stream`s (in-memory in tests), a
-//! real `File` (supports positioned I/O, sync, and locks), and a `Dir` — a
-//! directory opened with `O_DIRECTORY`, whose entries are read eagerly at open
-//! and drained by `dir_read` (the compiled runtime reads batches lazily with
-//! `getdents64(2)`; small directories behave identically). Unsupported
-//! combinations return the same `errno`-based errors the compiled runtime's
-//! raw syscalls would produce, keeping thrown messages byte-identical.
+//! Virtual file-descriptor table shared by the interpreters.
 
 use std::fs::OpenOptions;
 use std::io::{Read, Write};

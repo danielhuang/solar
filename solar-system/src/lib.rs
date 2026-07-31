@@ -1,3 +1,5 @@
+//! Native runtime for compiled Solar programs.
+
 #![allow(clippy::missing_safety_doc)]
 
 use std::env;
@@ -7,18 +9,31 @@ use std::sync::LazyLock;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
+/// Checked arithmetic intrinsics.
 pub mod arith;
+/// File and directory intrinsics.
 pub mod file;
+/// Futex intrinsics.
 pub mod futex;
+/// Garbage collector.
 pub mod gc;
+/// Size-class heap.
 pub mod heap;
+/// Startup-initialized global cells.
 pub mod init_cell;
+/// Allocation and memory intrinsics.
 pub mod mem;
+/// Socket intrinsics.
 pub mod net;
+/// Panic and exception support.
 pub mod panic;
+/// Process arguments and environment.
 pub mod process;
+/// Thread lifecycle support.
 pub mod thread;
+/// Runtime worker pool.
 pub mod thread_pool;
+/// Clock intrinsics.
 pub mod time;
 
 pub(crate) fn read_env_bool(name: &str) -> bool {
@@ -31,25 +46,21 @@ pub(crate) fn read_env_bool(name: &str) -> bool {
     }
 }
 
-/// Force-disable the GC (bump-allocator mode: allocate, never collect). Emitted
-/// by codegen into `main` *before* `sol_start` in the **debug** build only — that
-/// pipeline's simplified single-clang compile does not run the write-barrier
-/// pass, so a real collection could free live objects whose stored pointers were
-/// never shaded. `sol_start` OR-folds this into the `SOLAR_DISABLE_GC` env flag
-/// (rather than overwriting it) so a call here always sticks.
+/// Enables bump-allocation mode before runtime startup.
 #[unsafe(no_mangle)]
 pub extern "C" fn sol_disable_gc() {
     // SAFETY: called before `sol_start`, single-threaded.
     unsafe { gc::DISABLE_GC.set(true) };
 }
 
-/// A `static` slot registered as a GC root. Codegen emits one entry per
-/// pointer-carrying `static` global; the collector runs `mark_fn` over the
-/// slot (`addr`, `size`) at both stop-the-world root scans.
+/// A mutable global registered as a GC root.
 #[repr(C)]
 pub struct StaticEntry {
+    /// Address of the global slot.
     pub addr: *mut u8,
+    /// Slot size in bytes.
     pub size: u64,
+    /// Function that traces pointers stored in the slot.
     pub mark_fn: mem::MarkFn,
 }
 // SAFETY: entries live in the program's immutable static data and point at
@@ -58,6 +69,7 @@ pub struct StaticEntry {
 unsafe impl Send for StaticEntry {}
 unsafe impl Sync for StaticEntry {}
 
+/// Initializes the runtime, runs the Solar entry point, and shuts down.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_start(
     solar_main: unsafe extern "C" fn(*mut c_void),
@@ -67,46 +79,32 @@ pub unsafe extern "C" fn sol_start(
     let start = Instant::now();
     panic::install_panic_hook();
 
-    // SAFETY: no threads exist yet; these `InitCell` writes all happen before
-    // the thread pool / GC thread / main mutator thread are spawned below.
     unsafe {
         gc::ENABLE_STAT_PRINTS.set(read_env_bool("SOLAR_PRINT_GC_STATS"));
         gc::ENABLE_ALLOC_PRINTS.set(read_env_bool("SOLAR_PRINT_ALLOCS"));
-        // OR-fold so a prior `sol_disable_gc()` call (debug builds) is preserved
-        // rather than overwritten by the env flag.
         gc::DISABLE_GC.set(gc::DISABLE_GC.get() | read_env_bool("SOLAR_DISABLE_GC"));
     }
 
     gc::install_signal_handler();
     heap::init();
     file::init();
-    // Cache available_parallelism while single-threaded: it allocates (cgroup
-    // probing), which is only safe before the GC thread / mutators exist.
     process::init_num_cpus();
     LazyLock::force(&thread_pool::THREAD_POOL);
 
-    // The generated statics root table lives in the program's immutable data
-    // for the process lifetime.
     let statics: &'static [StaticEntry] = if statics.is_null() {
         &[]
     } else {
         unsafe { std::slice::from_raw_parts(statics, statics_len) }
     };
 
-    // Dedicated collector thread. Mutators only ever wake it (via request_gc);
-    // collection runs concurrently on this thread.
     let gc_handle = gc::spawn_gc_thread(statics);
 
-    // Run main via sol_thread_start (registers thread, calls entry, unregisters)
     unsafe {
         thread::sol_thread_start(solar_main, null_mut(), None);
     }
 
-    // Main has unregistered; stop the collector before touching the heap for
-    // stats so no cycle races with the reads below.
     gc::shutdown_gc_thread(gc_handle);
 
-    // Stats printing (after the main thread unregistered, outside STW).
     let enable_stat_prints = gc::ENABLE_STAT_PRINTS.get();
     if enable_stat_prints {
         let total_allocations = gc::ORPHANED_TOTAL_ALLOCATIONS.load(Ordering::Relaxed);

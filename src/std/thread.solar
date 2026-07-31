@@ -1,9 +1,11 @@
 import intrinsics from "@intrinsics";
 
+/// A spawned thread.
 pub struct Thread {
     done: &Uint32,
 }
 
+/// Spawns a thread that runs `f`.
 pub fn spawn(f: fn()) -> Thread {
     let done = 0u32;
     intrinsics::thread_spawn(\ {
@@ -14,6 +16,7 @@ pub fn spawn(f: fn()) -> Thread {
     Thread { done: done& }
 }
 
+/// Blocks until the thread exits.
 pub method join(self: Thread) {
     while self.done.atomic_load() == 0u32 {
         self.done.futex_wait(0u32);
@@ -25,9 +28,7 @@ pub fn num_cpus() -> Uint {
     intrinsics::num_cpus()
 }
 
-/// Sleep for at least `nanoseconds`. A futex wait on a never-woken word
-/// supplies the timed block; the loop re-waits on the monotonic clock, since a
-/// wait may return early spuriously (e.g. interrupted by a GC signal).
+/// Sleeps for at least `nanoseconds`.
 pub fn sleep(nanoseconds: Uint64) {
     let word = 0u32;
     let start = intrinsics::monotonic_time();

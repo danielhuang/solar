@@ -1,12 +1,3 @@
-// A port of foldhash's "fast" hasher (https://github.com/orlp/foldhash),
-// hardcoded to the deterministic FixedState seed. Bit-exact with upstream's
-// default 128-bit path: `folded_multiply` uses `Uint64::carrying_mul_add` for
-// the full 64x64->128 product, and the 128-bit `sponge` is represented as two
-// `Uint64` halves (lo, hi).
-//
-// NOTE: `&`/`^` directly before `(` parse as a postfix-reference call, so
-// sub-results are bound to temps. `|` has no such issue.
-
 import { u64_from_le, u32_from_le } from "@intrinsics";
 
 /// Arbitrary high-entropy constants (hex digits of pi), from foldhash.
@@ -19,6 +10,7 @@ const ARBITRARY9: Uint64 = 0xd1310ba698dfb5acu64;
 const ARBITRARY10: Uint64 = 0x2ffd72dbd01adfb7u64;
 const ARBITRARY11: Uint64 = 0xb8e1afed6a267e96u64;
 
+/// A deterministic foldhash hasher.
 pub struct Hasher {
   accumulator: Uint64,
   sponge_lo: Uint64,
@@ -87,15 +79,19 @@ method(inline) write_num(self: &Hasher, x: Uint64, bits: Uint) {
   }
 }
 
+/// Adds an 8-bit integer.
 pub method write_u8(self: &Hasher, x: Uint8) {
   self.write_num(Uint64(x), 8u);
 }
+/// Adds a 16-bit integer.
 pub method write_u16(self: &Hasher, x: Uint16) {
   self.write_num(Uint64(x), 16u);
 }
+/// Adds a 32-bit integer.
 pub method write_u32(self: &Hasher, x: Uint32) {
   self.write_num(Uint64(x), 32u);
 }
+/// Adds a 64-bit integer.
 pub method write_u64(self: &Hasher, x: Uint64) {
   self.write_num(x, 64u);
 }
@@ -222,9 +218,9 @@ fn hash_bytes_long(bytes: &[Uint8], acc: Uint64, seeds: &[Uint64; 6]) -> Uint64 
   s0 ^ s1
 }
 
+/// Adds a byte slice.
 pub method write(self: &Hasher, bytes: &[Uint8]) {
   let len = bytes.len();
-  // Length-dependent rotation defeats trivial length-extension.
   let rotated = rotate_right(self@.accumulator, Uint64(len));
   self@.accumulator = rotated;
   let seeds_ref = self@.seeds&;
@@ -235,6 +231,7 @@ pub method write(self: &Hasher, bytes: &[Uint8]) {
   }
 }
 
+/// Finishes the hash.
 pub method finish(self: &Hasher) -> Uint64 {
   let out = if self@.sponge_len > 0u {
     let acc = self@.accumulator;

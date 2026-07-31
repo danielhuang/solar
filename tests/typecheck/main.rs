@@ -429,16 +429,14 @@ fn loop_break_type_mismatch() {
     compile(&fixture("loop_break_type_mismatch.solar"));
 }
 
-// A recursive generic with an inferred return type can't be resolved while its
-// body is being lowered (formerly a compiler stack overflow).
+// Recursive generics require an explicit return type.
 #[test]
 #[should_panic(expected = "cannot infer return type of recursive generic function `h`")]
 fn generic_recursion_inferred_return() {
     compile_with_pipeline(&fixture("generic_recursion_inferred_return.solar"));
 }
 
-// Polymorphic recursion instantiates a new type every level — an infinite
-// family, stopped by the depth limit (formerly a compiler stack overflow).
+// Polymorphic recursion must stop at the monomorphization depth limit.
 #[test]
 #[should_panic(expected = "monomorphization depth limit")]
 fn polymorphic_recursion() {

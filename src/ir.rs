@@ -5,100 +5,124 @@ use crate::mangled_ast;
 use crate::scope::ScopeStack;
 use std::collections::HashMap;
 
+/// Type representation used by the IR.
 pub use crate::mangled_ast::Type;
 
-// --- Memory layout ---
-
+/// Memory layout of a struct or enum.
 #[derive(Debug)]
 pub struct DataType {
+    /// Type symbol.
     pub name: String,
+    /// Size in bytes for sized values.
     pub size: usize,
+    /// Required alignment in bytes.
     pub align: usize,
+    /// Whether the type has a compile-time size.
     pub is_sized: bool,
+    /// Fields in layout order.
     pub fields: Vec<FieldLayout>,
-    /// For enums: maps discriminant index → Some(field_name) for data variants, None for unit variants.
+    /// Enum payload field names by discriminant.
     pub variant_map: Option<Vec<Option<String>>>,
 }
 
+/// Memory layout of one field.
 #[derive(Debug)]
 pub struct FieldLayout {
+    /// Field name.
     pub name: String,
+    /// Field type.
     pub ty: Type,
+    /// Byte offset from the value's base.
     pub offset: usize,
+    /// Field size in bytes.
     pub size: usize,
 }
 
-// --- Flat-tree IR ---
-
+/// Function-local variable identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VarId(pub u32);
 
+/// Index into a function's node arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NodeId(pub usize);
 
+/// A lowered Solar program.
 #[derive(Debug)]
 pub struct Module {
+    /// Type layouts keyed by symbol.
     pub datatypes: HashMap<String, DataType>,
+    /// Lowered functions.
     pub functions: Vec<Function>,
-    /// Top-level `static` declarations (global mutable slots), in source
-    /// order. `NodeKind::Global(i)` indexes into this. Their literal initial
-    /// values are stored by assignments prepended to `main`'s body.
+    /// Mutable globals in source order.
     pub statics: Vec<IrStatic>,
 }
 
+/// A mutable global slot.
 #[derive(Debug)]
 pub struct IrStatic {
+    /// Global symbol.
     pub name: String,
+    /// Stored type.
     pub ty: Type,
 }
 
+/// A closure environment entry.
 #[derive(Debug)]
 pub struct EnvCapture {
+    /// Captured variable.
     pub var: VarId,
-    /// Ordinal of this capture; its env slot is at byte offset `index * 16`.
-    /// Each slot is 16 bytes: a thin pointer (sized capture) or a fat pointer
-    /// `(ptr, meta)` (unsized capture, e.g. a captured `[Uint8]`).
+    /// Capture slot index.
     pub index: usize,
-    /// True if the captured variable is unsized (its slot carries `meta` too).
+    /// Whether the slot includes unsized metadata.
     pub is_unsized: bool,
 }
 
+/// A lowered function.
 #[derive(Debug)]
 pub struct Function {
+    /// Function symbol.
     pub name: String,
+    /// Parameters.
     pub params: Vec<Param>,
+    /// Return type.
     pub return_type: Type,
+    /// Arena containing all function nodes.
     pub nodes: Vec<Node>,
+    /// Top-level body nodes.
     pub body: Vec<NodeId>,
+    /// Variables loaded from a closure environment.
     pub env_captures: Vec<EnvCapture>,
-    /// `fn(inline)` hint, consumed by codegen (emits an inline marker).
+    /// Whether code generation should request inlining.
     pub inline_hint: bool,
-    /// Per-parameter escape info, aligned with `params` (same length/order):
-    /// `param_noescape[i] == true` means parameter `i` is *proven* not to escape
-    /// the function — no pointer to its storage can outlive the call. The default
-    /// (set at lowering) is **all `false`** — i.e. conservatively assume every
-    /// parameter may escape. `ir_opt::analyze_param_escapes` refines this; it only ever
-    /// sets `true` when it can prove non-escape, so a `false` never lies.
+    /// Per-parameter proof that no reference escapes the call.
     pub param_noescape: Vec<bool>,
 }
 
+/// A function parameter.
 #[derive(Debug)]
 pub struct Param {
+    /// Local variable receiving the argument.
     pub var: VarId,
+    /// Source name.
     pub name: String,
+    /// Parameter type.
     pub ty: Type,
 }
 
+/// An IR node with its type and source span.
 #[derive(Debug)]
 pub struct Node {
+    /// Node result type.
     pub ty: Type,
+    /// Node contents.
     pub kind: NodeKind,
+    /// Source span.
     pub span: SourceSpan,
 }
 
+/// A flat-tree IR operation.
 #[derive(Debug)]
 pub enum NodeKind {
-    // Expressions
     IntegerLiteral(i64),
     /// Raw IEEE-754 bit pattern; the node's `ty` selects the width (f32 bits
     /// live in the low 32).
@@ -179,7 +203,6 @@ pub enum NodeKind {
         args: Vec<NodeId>,
     },
 
-    // Statements
     Let {
         var: VarId,
         value: NodeId,
@@ -216,12 +239,16 @@ pub enum NodeKind {
     Return(NodeId),
 }
 
+/// A lowered match arm.
 #[derive(Debug, Clone)]
 pub struct MatchArm {
+    /// Arm pattern.
     pub pattern: MatchPattern,
+    /// Arm body.
     pub body: Vec<NodeId>,
 }
 
+/// A lowered match pattern.
 #[derive(Debug, Clone)]
 pub enum MatchPattern {
     Variant {
@@ -233,8 +260,7 @@ pub enum MatchPattern {
     Wildcard(VarId, Type),
 }
 
-// --- Lowering ---
-
+/// Lowers a mangled AST to IR.
 pub fn lower(source: &mangled_ast::SourceFile) -> Module {
     let datatypes = build_datatypes(source);
     let mut next_var = 0..;
@@ -458,6 +484,7 @@ fn collect_closure_captures_expr(
     }
 }
 
+/// Returns the byte size of a sized type.
 pub fn type_size(ty: &Type, datatypes: &HashMap<String, DataType>) -> usize {
     match ty {
         Type::Int8 | Type::Uint8 | Type::Bool => 1,
@@ -480,6 +507,7 @@ pub fn type_size(ty: &Type, datatypes: &HashMap<String, DataType>) -> usize {
     }
 }
 
+/// Returns a type's required byte alignment.
 pub fn type_align(ty: &Type, datatypes: &HashMap<String, DataType>) -> usize {
     match ty {
         Type::Int8 | Type::Uint8 | Type::Bool => 1,
@@ -497,10 +525,12 @@ pub fn type_align(ty: &Type, datatypes: &HashMap<String, DataType>) -> usize {
     }
 }
 
+/// Rounds an offset up to an alignment boundary.
 pub fn align_up(offset: usize, align: usize) -> usize {
     (offset + align - 1) & !(align - 1)
 }
 
+/// Returns whether values of a type have a compile-time size.
 pub fn is_sized(ty: &Type, dt: &HashMap<String, DataType>) -> bool {
     match ty {
         Type::Array(_) => false,
@@ -531,6 +561,7 @@ pub fn full_size(ty: &Type, dt: &HashMap<String, DataType>, meta: usize) -> usiz
     }
 }
 
+/// Returns whether a type owns unique storage.
 pub fn type_contains_unique(ty: &Type, dt: &HashMap<String, DataType>) -> bool {
     match ty {
         Type::Unique(_) | Type::UniqueUnsized(_) => true,
@@ -546,6 +577,7 @@ pub fn type_contains_unique(ty: &Type, dt: &HashMap<String, DataType>) -> bool {
     }
 }
 
+/// Returns whether a type contains a traced pointer.
 pub fn type_contains_gc_ptr(ty: &Type, dt: &HashMap<String, DataType>) -> bool {
     match ty {
         Type::Ref(_)
@@ -569,6 +601,7 @@ pub fn type_contains_gc_ptr(ty: &Type, dt: &HashMap<String, DataType>) -> bool {
     }
 }
 
+/// Returns whether a type contains an enum value.
 pub fn type_contains_enum(ty: &Type, dt: &HashMap<String, DataType>) -> bool {
     match ty {
         Type::Enum(_) => true,
@@ -584,6 +617,7 @@ pub fn type_contains_enum(ty: &Type, dt: &HashMap<String, DataType>) -> bool {
     }
 }
 
+/// Returns whether a node denotes writable storage.
 pub fn is_place(nodes: &[Node], id: NodeId) -> bool {
     match &nodes[id.0].kind {
         NodeKind::Local(_)

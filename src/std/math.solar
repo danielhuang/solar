@@ -1,12 +1,5 @@
 import intrinsics from "@intrinsics";
 
-// Float math over the float-math intrinsics. Each function has a Float64 and
-// a Float32 overload returning the operand's type; Float32 math runs in f32
-// precision. Compiled code lowers to the clang builtins (sqrt/floor/ceil/
-// trunc/abs become single instructions, the rest libm calls); the
-// interpreters use the same system libm, so all three backends agree
-// bit-for-bit.
-
 /// The circle constant.
 pub const PI: Float64 = 3.141592653589793f;
 
@@ -16,55 +9,82 @@ pub const E: Float64 = 2.718281828459045f;
 /// PI / 180: multiply degrees by this to get radians.
 pub const DEG_TO_RAD: Float64 = 0.017453292519943295f;
 
+/// Returns the square root.
 pub fn sqrt(x: Float64) -> Float64 { intrinsics::sqrt(x) }
+/// Returns the square root.
 pub fn sqrt(x: Float32) -> Float32 { intrinsics::sqrt(x) }
 
+/// Returns the sine in radians.
 pub fn sin(x: Float64) -> Float64 { intrinsics::sin(x) }
+/// Returns the sine in radians.
 pub fn sin(x: Float32) -> Float32 { intrinsics::sin(x) }
 
+/// Returns the cosine in radians.
 pub fn cos(x: Float64) -> Float64 { intrinsics::cos(x) }
+/// Returns the cosine in radians.
 pub fn cos(x: Float32) -> Float32 { intrinsics::cos(x) }
 
+/// Returns the tangent in radians.
 pub fn tan(x: Float64) -> Float64 { intrinsics::tan(x) }
+/// Returns the tangent in radians.
 pub fn tan(x: Float32) -> Float32 { intrinsics::tan(x) }
 
+/// Returns the inverse sine.
 pub fn asin(x: Float64) -> Float64 { intrinsics::asin(x) }
+/// Returns the inverse sine.
 pub fn asin(x: Float32) -> Float32 { intrinsics::asin(x) }
 
+/// Returns the inverse cosine.
 pub fn acos(x: Float64) -> Float64 { intrinsics::acos(x) }
+/// Returns the inverse cosine.
 pub fn acos(x: Float32) -> Float32 { intrinsics::acos(x) }
 
+/// Returns the inverse tangent.
 pub fn atan(x: Float64) -> Float64 { intrinsics::atan(x) }
+/// Returns the inverse tangent.
 pub fn atan(x: Float32) -> Float32 { intrinsics::atan(x) }
 
 /// The angle of the vector (x, y): atan(y/x) adjusted for quadrant.
 pub fn atan2(y: Float64, x: Float64) -> Float64 { intrinsics::atan2(y, x) }
+/// Returns the angle of `(x, y)`.
 pub fn atan2(y: Float32, x: Float32) -> Float32 { intrinsics::atan2(y, x) }
 
+/// Raises `base` to `exponent`.
 pub fn pow(base: Float64, exponent: Float64) -> Float64 { intrinsics::pow(base, exponent) }
+/// Raises `base` to `exponent`.
 pub fn pow(base: Float32, exponent: Float32) -> Float32 { intrinsics::pow(base, exponent) }
 
 /// e raised to the power x.
 pub fn exp(x: Float64) -> Float64 { intrinsics::exp(x) }
+/// Returns `e` raised to `x`.
 pub fn exp(x: Float32) -> Float32 { intrinsics::exp(x) }
 
 /// The natural (base-e) logarithm.
 pub fn log(x: Float64) -> Float64 { intrinsics::log(x) }
+/// Returns the natural logarithm.
 pub fn log(x: Float32) -> Float32 { intrinsics::log(x) }
 
+/// Rounds down.
 pub fn floor(x: Float64) -> Float64 { intrinsics::floor(x) }
+/// Rounds down.
 pub fn floor(x: Float32) -> Float32 { intrinsics::floor(x) }
 
+/// Rounds up.
 pub fn ceil(x: Float64) -> Float64 { intrinsics::ceil(x) }
+/// Rounds up.
 pub fn ceil(x: Float32) -> Float32 { intrinsics::ceil(x) }
 
 /// Rounds half away from zero (round(2.5) = 3, round(-2.5) = -3).
 pub fn round(x: Float64) -> Float64 { intrinsics::round(x) }
+/// Rounds to the nearest integer, away from zero on ties.
 pub fn round(x: Float32) -> Float32 { intrinsics::round(x) }
 
 /// Rounds toward zero (trunc(-3.5) = -3).
 pub fn trunc(x: Float64) -> Float64 { intrinsics::trunc(x) }
+/// Rounds toward zero.
 pub fn trunc(x: Float32) -> Float32 { intrinsics::trunc(x) }
 
+/// Returns the absolute value.
 pub fn abs(x: Float64) -> Float64 { intrinsics::float_abs(x) }
+/// Returns the absolute value.
 pub fn abs(x: Float32) -> Float32 { intrinsics::float_abs(x) }

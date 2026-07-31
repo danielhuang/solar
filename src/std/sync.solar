@@ -1,73 +1,67 @@
 import { atomic_load, atomic_store, atomic_exchange, atomic_compare_exchange, futex_wait, futex_wake, panic } from "@intrinsics";
 
+/// Atomically loads a value.
 pub method atomic_load#[T](self: &T) -> T {
     atomic_load(self)
 }
 
+/// Atomically stores a value.
 pub method atomic_store#[T](self: &T, val: T) {
     atomic_store(self, val);
 }
 
+/// Atomically replaces a value and returns the old value.
 pub method atomic_exchange#[T](self: &T, val: T) -> T {
     atomic_exchange(self, val)
 }
 
+/// Atomically replaces `expected` with `new` and returns the old value.
 pub method atomic_compare_exchange#[T](self: &T, expected: T, new: T) -> T {
     atomic_compare_exchange(self, expected, new)
 }
 
-/// Block until the pointee's value differs from `expected`, a wake arrives, or
-/// `timeout` nanoseconds pass (the default is effectively forever). May return
-/// early spuriously (e.g. interrupted by a GC signal); callers must recheck
-/// their condition and re-wait.
+/// Waits while the value equals `expected`; spurious wakes are allowed.
 pub method futex_wait(self: &Uint32, expected: Uint32, timeout: Uint64 = 18446744073709551615u64) {
     futex_wait(self, expected, timeout);
 }
 
+/// Wakes at most `count` waiters.
 pub method futex_wake(self: &Uint32, count: Uint32) {
     futex_wake(self, count);
 }
 
+/// Wakes all waiters.
 pub method futex_wake(self: &Uint32) {
     futex_wake(self, 2147483647u32);
 }
 
-/// A three-state futex mutex (ported from rust-lang/rust#95035).
-///
-///   0: unlocked
-///   1: locked, no other threads waiting
-///   2: locked, and one or more threads waiting (contended)
-///
-/// The contended state lets `unlock` skip the `futex_wake` syscall entirely in
-/// the uncontended common case: a wake is issued only when the state was 2.
+/// A futex-backed mutual exclusion lock.
 pub struct Mutex {
+    /// Internal lock state.
     pub futex: Uint32,
 }
 
+/// Creates an unlocked mutex.
 pub fn Mutex() -> Mutex {
     Mutex { futex: 0u32 }
 }
 
+/// Attempts to acquire the mutex without blocking.
 pub method try_lock(self: &Mutex) -> Bool {
     self@.futex&.atomic_compare_exchange(0u32, 1u32) == 0u32
 }
 
+/// Acquires the mutex.
 pub method lock(self: &Mutex) {
-    // Fast path: 0 -> 1. On contention fall back to the cold slow path.
     if self@.futex&.atomic_compare_exchange(0u32, 1u32) != 0u32 {
         self.lock_contended();
     }
 }
 
-/// Spin a bounded number of times waiting for the lock to look free, returning
-/// the last observed state. Backs off to the futex wait once the budget runs
-/// out or another waiter is already registered (state 2).
 method spin(self: &Mutex) -> Uint32 {
     let spin = 100u32;
     loop {
         let state = self@.futex&.atomic_load();
-        // Stop spinning if the lock is free (0) or already contended (2), or if
-        // we've spun long enough. Only keep spinning while it's plainly locked.
         if state != 1u32 || spin == 0u32 {
             break state;
         }
@@ -76,37 +70,26 @@ method spin(self: &Mutex) -> Uint32 {
 }
 
 method lock_contended(self: &Mutex) {
-    // Spin first, in case the lock is released quickly.
     let state = self.spin();
 
-    // If it looks free, try to grab it without announcing contention. The
-    // compare-exchange returns the previous value: 0 means we just acquired it
-    // (the lock is now 1), so we're done and skip the wait loop below.
     if state == 0u32 {
         state = self@.futex&.atomic_compare_exchange(0u32, 1u32);
     }
 
     if state != 0u32 {
         loop {
-            // Mark the lock contended (2). If it was actually free, the swap
-            // returns 0 and we've acquired it. Acquisition happens ONLY here (or
-            // via the compare-exchange above) — merely observing a free-looking
-            // state is not enough, another thread may grab it first.
             if state != 2u32 && self@.futex&.atomic_exchange(2u32) == 0u32 {
                 break;
             }
 
-            // Wait until the lock is no longer held (i.e. no longer 2), then
-            // spin again and retry the swap.
             self@.futex&.futex_wait(2u32);
             state = self.spin();
         }
     }
 }
 
+/// Releases the mutex.
 pub method unlock(self: &Mutex) {
-    // Release the lock. Only wake a waiter if the state was contended (2);
-    // in the common uncontended case (state was 1) no syscall is needed.
     if self@.futex&.atomic_exchange(0u32) == 2u32 {
         self@.futex&.futex_wake(1u32);
     }
@@ -117,6 +100,7 @@ enum ChannelSlot#[T] {
     Full(T),
 }
 
+/// A synchronous multi-producer, multi-consumer channel.
 pub struct Channel#[T] {
     send_lock: Mutex,
     recv_lock: Mutex,
@@ -124,6 +108,7 @@ pub struct Channel#[T] {
     data: ChannelSlot#[T],
 }
 
+/// Creates an empty channel.
 pub fn Channel#[T]() -> Channel#[T] {
     Channel#[T] {
         send_lock: Mutex(),
@@ -133,6 +118,7 @@ pub fn Channel#[T]() -> Channel#[T] {
     }
 }
 
+/// Sends a value, blocking until it is received.
 pub method send#[T](self: &Channel#[T], value: T) {
     self@.send_lock&.lock();
     self@.data = ChannelSlot#[T]::Full(value);
@@ -144,6 +130,7 @@ pub method send#[T](self: &Channel#[T], value: T) {
     self@.send_lock&.unlock();
 }
 
+/// Receives a value, blocking until one is available.
 pub method recv#[T](self: &Channel#[T]) -> T {
     self@.recv_lock&.lock();
     while self@.state&.atomic_load() == 0u32 {

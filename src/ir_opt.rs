@@ -1,9 +1,4 @@
-//! In-place optimization passes over the lowered IR (`ir::Module`).
-//!
-//! These run after `ir::lower` and before codegen / the interpreters, mutating
-//! the module in place. Each pass is a transformation/analysis that preserves
-//! the program's observable behavior while making the IR cheaper to execute or
-//! easier for the downstream LLVM pipeline to optimize.
+//! In-place optimization passes over lowered IR.
 
 use std::collections::{HashMap, HashSet};
 
@@ -155,13 +150,7 @@ fn collect_fn_facts(nodes: &[Node]) -> FnFacts {
                 f.bad.extend(s);
             }
             NodeKind::MakeClosure { captures, .. } => {
-                // Solar closures capture **by reference**: codegen stores the
-                // *address* of each captured variable's storage into a heap env
-                // that outlives this frame (the closure value can be returned or
-                // stored). That is an address-taking escape which is NOT spelled
-                // as a `Ref` node, so it has to be recorded here — otherwise a
-                // captured local looks address-never-taken and gets stack-placed,
-                // and the escaping closure ends up pointing into a dead frame.
+                // Closure environments hold addresses of captured variables.
                 let mut s = HashSet::new();
                 for c in captures {
                     collect_locals(nodes, *c, &mut s);
@@ -172,21 +161,7 @@ fn collect_fn_facts(nodes: &[Node]) -> FnFacts {
             _ => {}
         }
     }
-    // Second pass: a `match` **binding** is a place ALIAS into the scrutinee, not
-    // a copy — codegen materialises it as `scrutinee_storage + payload_offset`.
-    // So when the scrutinee is a place rooted at `p@`, an escaping binding
-    // address is an interior pointer into `p`'s pointee, exactly like `p@.b&`
-    // (see `FnFacts::ref_base_deref`). `mark_ref_base_deref` is driven off `Ref`
-    // nodes and never sees this, so it is applied here for any match whose
-    // binding's address is taken (which, after the `MakeClosure` arm above,
-    // includes a binding captured by a closure).
-    //
-    // Found by the levelgen-router wave: `CubicSpline.as_sampler` does
-    // `match self@ { Multipoint(m) => \c multipoint_sample(m, c) }`, so
-    // `DensityFunctions.spline`'s value parameter was judged non-escaping and
-    // stack-placed while the returned sampler closure held a pointer into it —
-    // a release-only segfault in worldgen, invisible in debug (which heap-boxes
-    // every local).
+    // Match bindings alias the scrutinee and may expose its storage.
     for node in nodes.iter() {
         if let NodeKind::Match { scrutinee, arms } = &node.kind {
             let binding_escapes = arms.iter().any(|arm| match &arm.pattern {
@@ -197,20 +172,6 @@ fn collect_fn_facts(nodes: &[Node]) -> FnFacts {
             });
             if binding_escapes {
                 mark_ref_base_deref(nodes, *scrutinee, &mut f.ref_base_deref);
-                // The binding aliases the SCRUTINEE'S OWN STORAGE, so an
-                // escaping binding address makes the scrutinee's root local
-                // address-taken too. Marking only `ref_base_deref` above covers
-                // a scrutinee like `p@` (an interior pointer into p's pointee),
-                // but NOT a scrutinee that is a plain local or by-value
-                // parameter — there is no deref in its base chain, so nothing
-                // was marked and the local still looked address-never-taken.
-                //
-                // Concretely: `fn as_sampler(s: Shape) -> fn(Int) -> Int {
-                // match s { Multipoint(m) => \c sample(m, c) } }` returned a
-                // closure pointing into `s`'s stack slot, so a second call
-                // reused the frame and the FIRST closure started reading the
-                // second call's payload — silent wrong answers, not a crash.
-                // Regression: tests/runtime/closure_captures_match_binding.solar
                 let mut roots = HashSet::new();
                 collect_locals(nodes, *scrutinee, &mut roots);
                 f.addr_taken.extend(&roots);

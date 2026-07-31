@@ -1,43 +1,8 @@
-//===- SolarWriteBarriers.cpp - GC barrier + alloc lowering passes -------===//
+// LLVM passes for Solar GC allocation lowering and write barriers.
 //
-// New-pass-manager module passes for Solar's GC, run via
-// `opt -load-pass-plugin=...so -passes=<name>`. They replace the previous
-// textual `llvm-dis | sed | llvm-as` rewrites (src/write_barriers.rs).
-//
-// Two passes, registered by this plugin:
-//
-//   solar-lower-gc-alloc  (release only, BEFORE opt -O3)
-//     Rewrites every `sol_alloc(size, align, mark_fn)` call in generated code
-//     into `calloc(1, size)` carrying the (align, mark_fn) pair in `!solar.alloc`
-//     instruction metadata. `calloc` is a recognized allocator (TargetLibraryInfo),
-//     so opt -O3 can promote non-escaping allocations to the stack / SROA them
-//     away and delete dead ones — which it will NOT do for our custom `sol_alloc`,
-//     even when stamped with the full malloc attribute set, because the
-//     allocation-elimination transforms key on recognized libcalls, not just
-//     attributes. `calloc` (not `malloc`) preserves sol_alloc's zeroing semantics
-//     so the optimizer never observes uninitialized reads in the interim. The
-//     referenced `_mark_*` functions lose their IR uses once lowered, so they are
-//     anchored in `llvm.compiler.used` to survive globaldce until raising.
-//
-//   solar-write-barriers  (debug + release, AFTER opt -O3)
-//     First RAISES surviving `calloc(1, size) !solar.alloc` calls back to
-//     `sol_alloc(size, align, mark_fn)` (reading the pair from metadata). Then
-//     inserts the GC write barriers below. In debug builds nothing was lowered,
-//     so the raise step is a no-op.
-//
-// Doing barriers as a real pass (vs. text) buys robust getUnderlyingObject()
-// provenance, correct DebugLocs (so the verifier never strips module DWARF —
-// the bug that lost solar-system debug info for samply), and type safety.
-//
-// What the barrier step instruments (only in generated code: @solar_* / @main):
-//   * `store <ptr> %v, ptr %dst`            -> sol_write_barrier(%dst, %v)
-//   * `store <N x ptr> %v, ptr %dst`        -> sol_gc_memcpy_barrier(%dst, size)
-//   * llvm.memcpy / llvm.memmove to %dst    -> sol_gc_memcpy_barrier(%dst, len)
-// Destinations whose underlying object is an alloca (stack) or a global are
-// skipped — those roots are rescanned during the STW remark. Stored values that
-// are constants (null/undef/globals) are never heap pointers, so skipped.
-//
-//===----------------------------------------------------------------------===//
+// `solar-lower-gc-alloc` exposes allocations and pointer-free copies to LLVM
+// while retaining the metadata needed to restore surviving allocations.
+// `solar-write-barriers` restores them and instruments heap pointer writes.
 
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/Constants.h"
@@ -58,13 +23,7 @@ using namespace llvm;
 
 namespace {
 
-// The debug location to stamp on a barrier call inserted next to `Src`. Uses
-// `Src`'s own location when it has one; otherwise — when `Src` was synthesized
-// by the optimizer with no `!dbg` (e.g. a MemCpyOpt/loop-idiom memcpy) — falls
-// back to a line-0 location at the enclosing function's subprogram scope.
-// LLVM's verifier requires every inlinable call in a function that carries
-// debug info to have a `!dbg`, so an empty location on the barrier call would
-// break the module in `-g` (release) builds.
+// LLVM requires inserted calls in debug functions to carry a location.
 static DebugLoc barrierDebugLoc(Instruction *Src) {
   if (DebugLoc DL = Src->getDebugLoc())
     return DL;
@@ -75,8 +34,7 @@ static DebugLoc barrierDebugLoc(Instruction *Src) {
   return DebugLoc();
 }
 
-// Generated Solar code lives in @solar_* functions and @main; the runtime
-// (solar-system) lives elsewhere and must never be touched by these passes.
+// Runtime functions are outside the generated `solar_*` and `main` functions.
 bool isGeneratedFunc(const Function &F) {
   StringRef N = F.getName();
   return N.starts_with("solar_") || N == "main";
@@ -87,7 +45,7 @@ bool isStackOrGlobalDest(Value *Dst) {
   return isa<AllocaInst>(Base) || isa<GlobalValue>(Base);
 }
 
-// solar-lower-gc-alloc: sol_alloc(size,align,mark) -> calloc(1,size) + metadata.
+// Exposes GC allocations to LLVM without losing their collector metadata.
 struct SolarLowerGcAlloc : PassInfoMixin<SolarLowerGcAlloc> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
     Function *SolAlloc = M.getFunction("sol_alloc");
@@ -97,33 +55,13 @@ struct SolarLowerGcAlloc : PassInfoMixin<SolarLowerGcAlloc> {
     LLVMContext &Ctx = M.getContext();
     Type *I64 = Type::getInt64Ty(Ctx);
     PointerType *PtrTy = PointerType::getUnqual(Ctx);
-    // Model as `aligned_alloc(align, size)` (non-zeroing): codegen emits an
-    // explicit `memset` after every sol_alloc, so the zeroing is a separate
-    // DSE-able store rather than baked into the allocator. aligned_alloc is a
-    // TLI-recognized allocator (so non-escaping allocations still SROA/elide),
-    // but — unlike `malloc` — LLVM has no `aligned_alloc + memset -> calloc`
-    // fold, so the `!solar.alloc` metadata survives opt and `raiseGcAlloc` can
-    // always recover it. (A `malloc` placeholder gets refolded to `calloc` with
-    // the metadata dropped, which would silently bypass the GC.)
+    // `aligned_alloc` is recognized by LLVM, while its separate zeroing memset
+    // remains removable and its call metadata survives allocation folding.
     FunctionCallee AlignedAlloc = M.getOrInsertFunction(
         "aligned_alloc", FunctionType::get(PtrTy, {I64, I64}, false));
 
-    // sol_memcpy is a plain copy with no GC side effects; rewrite it to the
-    // recognized llvm.memmove intrinsic so the optimizer can DSE copies into
-    // dead/elided objects (and treat the args as nocapture/argmem, which a
-    // custom call would not be). It must be memMOVE, not memcpy: Solar copy
-    // semantics allow the operands to alias (`x = x;`, overlapping slice-range
-    // assignment), and sol_memcpy is ptr::copy (memmove) in the runtime —
-    // llvm.memcpy's non-overlap requirement would be instant UB. This does not
-    // cost elision: MemCpyOpt turns a memmove whose operands provably don't
-    // alias (the common fresh-allocation fill) back into memcpy early in the
-    // -O3 pipeline, and InstCombine's dead-alloc removal accepts either
-    // intrinsic writing into the allocation. Codegen emits sol_memcpy ONLY for
-    // pointer-free bytes (GC-pointer words are copied with typed `store ptr`
-    // member assignments), so the lowered memmove is tagged `!solar.nobarrier`
-    // and solar-write-barriers skips it — a plain-data copy (e.g. `[Uint8]`
-    // contents) costs no barrier. Optimizer-synthesized transfers (loop idiom,
-    // MemCpyOpt rewrites) carry no tag and stay conservatively instrumented.
+    // Generated `sol_memcpy` calls are overlap-safe and pointer-free. Lower
+    // them to tagged memmoves so LLVM can optimize them without adding barriers.
     Function *SolMemcpy = M.getFunction("sol_memcpy");
 
     SmallVector<GlobalValue *, 8> MarkFns;
@@ -148,21 +86,14 @@ struct SolarLowerGcAlloc : PassInfoMixin<SolarLowerGcAlloc> {
         Value *Size = CI->getArgOperand(0);
         auto *AlignC = dyn_cast<ConstantInt>(CI->getArgOperand(1));
         auto *MarkC = dyn_cast<Constant>(CI->getArgOperand(2));
-        // align and mark_fn are always compile-time constants in generated
-        // code; if some call ever isn't, leave it as sol_alloc (still correct,
-        // just not elidable).
+        // Calls with dynamic collector metadata remain valid but non-elidable.
         if (!AlignC || !MarkC) {
           ++Skipped;
           continue;
         }
         IRBuilder<> B(CI);
         CallInst *NC = B.CreateCall(AlignedAlloc, {AlignC, Size});
-        // The allocation's GC marker is semantic, not merely optimization
-        // metadata.  SimplifyCFG may otherwise tail-merge identical allocator
-        // calls from sibling branches and drop unknown instruction metadata,
-        // even when both calls carry the same !solar.alloc node.  `nomerge`
-        // prevents only that call-merging transformation; allocation
-        // promotion/SROA and dead-allocation removal remain available.
+        // Tail merging may discard the collector metadata.
         NC->addFnAttr(Attribute::NoMerge);
         NC->setDebugLoc(CI->getDebugLoc());
         Metadata *Ops[] = {ConstantAsMetadata::get(AlignC),
@@ -181,8 +112,7 @@ struct SolarLowerGcAlloc : PassInfoMixin<SolarLowerGcAlloc> {
         Value *Src = CI->getArgOperand(1);
         Value *Size = CI->getArgOperand(2);
         IRBuilder<> B(CI);
-        // non-volatile; sol_memcpy is ptr::copy (memmove), and Solar copies may
-        // alias, so memmove is the only sound lowering (see comment above).
+        // Solar copies may alias, so this must remain a memmove.
         CallInst *MC =
             B.CreateMemMove(Dst, MaybeAlign(), Src, MaybeAlign(), Size);
         MC->setDebugLoc(CI->getDebugLoc());
@@ -207,12 +137,7 @@ struct SolarLowerGcAlloc : PassInfoMixin<SolarLowerGcAlloc> {
   static bool isRequired() { return true; }
 };
 
-// Raise surviving malloc+!solar.alloc placeholders back to sol_alloc. Returns
-// count raised. The placeholder is `malloc(size)`; the explicit zeroing memset
-// (emitted by codegen) lives separately in the IR and is DSE'd or kept by opt.
-// If InstCombine folded `malloc + memset` into `calloc` (i.e. the zeroing was
-// NOT dead), the explicit memset is gone, so we re-materialize it after the
-// raised sol_alloc (which does not zero).
+// Restores tagged allocator calls to `sol_alloc`, including folded zeroing.
 unsigned raiseGcAlloc(Module &M) {
   LLVMContext &Ctx = M.getContext();
   Type *I8 = Type::getInt8Ty(Ctx);
@@ -244,8 +169,7 @@ unsigned raiseGcAlloc(Module &M) {
       CallInst *NA = B.CreateCall(SolAlloc, {Size, Align, Mark});
       NA->setDebugLoc(CI->getDebugLoc());
       if (IsCalloc) {
-        // The fold consumed the zeroing into calloc; sol_alloc won't zero, so
-        // re-add the memset (which was demonstrably not dead, hence the fold).
+        // Restore zeroing consumed by a calloc fold.
         B.CreateMemSet(NA, ConstantInt::get(I8, 0), Size, MaybeAlign());
       }
       CI->replaceAllUsesWith(NA);
@@ -254,9 +178,7 @@ unsigned raiseGcAlloc(Module &M) {
     }
   }
 
-  // Safety net: a recognized allocator call must never survive in generated
-  // code — if a malloc/calloc lost its !solar.alloc metadata under some fold it
-  // would link to libc and silently bypass the GC. Fail the build instead.
+  // A surviving libc allocator would silently bypass the collector.
   for (Function &F : M) {
     if (F.isDeclaration() || !isGeneratedFunc(F))
       continue;
@@ -284,16 +206,14 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
     PointerType *PtrTy = PointerType::getUnqual(Ctx);
     const DataLayout &DL = M.getDataLayout();
 
-    // getOrInsertFunction creates a declaration if the runtime definition is
-    // not present in this module (e.g. the debug single-module build).
+    // These calls may be declarations when the runtime is linked separately.
     FunctionCallee WB = M.getOrInsertFunction(
         "sol_write_barrier", FunctionType::get(VoidTy, {PtrTy, PtrTy}, false));
     FunctionCallee MemB = M.getOrInsertFunction(
         "sol_gc_memcpy_barrier",
         FunctionType::get(VoidTy, {PtrTy, I64}, false));
 
-    // Raise any calloc placeholders left by solar-lower-gc-alloc back to
-    // sol_alloc before instrumenting their stores (no-op in debug builds).
+    // Restore surviving allocations before instrumenting stores.
     unsigned NRaised = raiseGcAlloc(M);
 
     unsigned NStore = 0, NVec = 0, NMem = 0, NSkipStack = 0, NSkipPlain = 0;
@@ -305,34 +225,18 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
       if (!(Name.starts_with("solar_") || Name == "main"))
         continue;
 
-      // Collect first; we insert new calls, so don't mutate while iterating.
-      // Residual `sol_memcpy` calls (unlowered builds) need no handling at
-      // all: codegen emits sol_memcpy ONLY for pointer-free bytes, so it can
-      // never carry a GC pointer.
+      // Collect first because instrumentation mutates the instruction list.
       SmallVector<StoreInst *, 32> Stores;
       SmallVector<AnyMemTransferInst *, 8> Mems;
       for (Instruction &I : instructions(F)) {
         if (auto *SI = dyn_cast<StoreInst>(&I)) {
           Type *VTy = SI->getValueOperand()->getType();
-          // Pointer-typed stores (scalar and vector): codegen emits every
-          // GC-pointer copy through a `uint8_t*`-typed member/cast (value
-          // typedefs carry real pointer members at their pointer words), so
-          // pointer stores reach us as `store ptr` and are instrumented
-          // precisely. Stores WIDER than a pointer (i128, <2 x i64>, …) are
-          // kept as a conservative safety net: optimizer passes that widen or
-          // vectorize adjacent stores (SLP, memcpy lowering of 16-byte fat
-          // values through the inlined 128-bit atomics) are type-agnostic and
-          // may fold pointer words into them. Plain 8-byte integer/float
-          // stores are NOT instrumented — with typed codegen they are data,
-          // and shading them would put a barrier on every scalar store.
+          // Pointer stores are precise; wider stores cover optimizer-created
+          // aggregates that may contain pointer words.
           if (VTy->isPtrOrPtrVectorTy() || DL.getTypeStoreSize(VTy) > 8)
             Stores.push_back(SI);
         } else if (auto *MT = dyn_cast<AnyMemTransferInst>(&I)) {
-          // A memmove lowered from codegen's `sol_memcpy` copies pointer-free
-          // bytes by construction (`!solar.nobarrier`) — plain-data copies
-          // like `[Uint8]` contents get no barrier. Unmarked transfers
-          // (optimizer-synthesized: loop idiom, MemCpyOpt rewrites — which
-          // may fuse typed pointer stores) stay conservatively instrumented.
+          // Tagged transfers are pointer-free; synthesized transfers are not.
           if (MT->getMetadata("solar.nobarrier"))
             ++NSkipPlain;
           else
@@ -347,8 +251,7 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
           ++NSkipStack;
           continue;
         }
-        // A constant value (null/undef/global/integer literal) is never a live
-        // heap pointer — nothing to shade.
+        // Constants cannot name live GC allocations.
         if (isa<Constant>(Val))
           continue;
         IRBuilder<> B(SI->getNextNode());
@@ -358,9 +261,7 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
           C->setDebugLoc(barrierDebugLoc(SI));
           ++NStore;
         } else {
-          // Vector-of-pointers / wider-than-pointer store (i128, <N x i64>, …):
-          // conservatively shade every pointer-sized word of the stored region
-          // (can't name the individual lanes cheaply).
+          // Conservatively shade every word in a wide store.
           uint64_t Sz = DL.getTypeStoreSize(Val->getType());
           CallInst *C = B.CreateCall(MemB, {Dst, ConstantInt::get(I64, Sz)});
           C->setDebugLoc(barrierDebugLoc(SI));
@@ -388,8 +289,7 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
                                                : PreservedAnalyses::all();
   }
 
-  // Run even on optnone functions (generated code shouldn't be optnone, but be
-  // safe — barriers are mandatory for correctness).
+  // Barriers remain mandatory for `optnone` functions.
   static bool isRequired() { return true; }
 };
 

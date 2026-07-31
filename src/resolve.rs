@@ -50,8 +50,7 @@ impl Resolver {
         }
     }
 
-    /// Parse a file and assign it a FileId. Returns the FileId.
-    /// If already parsed (by canonical path), returns the existing FileId.
+    /// Parses a file, reusing its file identifier if already loaded.
     fn parse_file(&mut self, path: &Path) -> Result<FileId, Vec<CompileError>> {
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         if let Some(&id) = self.path_to_id.get(&canonical) {
@@ -68,9 +67,7 @@ impl Resolver {
         self.parse_source(path, canonical, source)
     }
 
-    /// Add a source buffer as a file. This lets editor integrations resolve an
-    /// unsaved root document without writing it to disk; imported files still
-    /// use `parse_file` and are read normally.
+    /// Adds an in-memory source buffer.
     fn parse_source(
         &mut self,
         path: &Path,
@@ -118,9 +115,8 @@ impl Resolver {
         Ok(file_id)
     }
 
-    /// Recursively parse all imported files starting from root.
+    /// Recursively parses imported files.
     fn parse_imports(&mut self, file_id: FileId) -> Result<(), Vec<CompileError>> {
-        // Collect import paths from this file
         let imports: Vec<(String, SourceSpan)> = self.files[file_id as usize]
             .ast
             .items
@@ -246,7 +242,7 @@ impl Resolver {
         aliases
     }
 
-    /// Build rename map for a file and rewrite its AST.
+    /// Resolves names within one file.
     fn resolve_file(
         &self,
         file_id: FileId,
@@ -255,19 +251,10 @@ impl Resolver {
     ) -> Result<Vec<TopLevelItem>, Vec<CompileError>> {
         let file = &self.files[file_id as usize];
 
-        // Build rename map: original source name -> resolved provenance `DefId`.
-        // References (types, struct/enum construction, function/const/static
-        // identifiers) are resolved to these `DefId`s directly — the final
-        // module-mangling is deferred to `mangled_ast`.
         let mut rename_map: HashMap<String, DefId> = HashMap::new();
-        // Module aliases: alias -> defining file id.
         let mut module_aliases: ModuleAliasMap = HashMap::new();
 
-        // Collect this file's own definitions
         let mut local_defs: HashSet<String> = HashSet::new();
-        // Methods are resolved globally by bare name as overload sets (their
-        // definitions are never renamed), so a method import sharing a name with
-        // a local method is not a real clash — the two simply overload.
         let mut local_method_defs: HashSet<String> = HashSet::new();
         for item in &file.ast.items {
             match item {
@@ -286,8 +273,6 @@ impl Resolver {
                 TopLevelItem::Method(m) => {
                     local_defs.insert(m.name.clone());
                     local_method_defs.insert(m.name.clone());
-                    // Methods get renamed via self-type mangling in typed_ast,
-                    // but the name itself needs prefixing for the resolve stage
                     rename_map.insert(m.name.clone(), DefId::new(file_id, m.name.clone()));
                 }
                 TopLevelItem::TypeAlias(ta) => {
@@ -306,7 +291,6 @@ impl Resolver {
             }
         }
 
-        // Process imports
         let base_dir = file.path.parent().unwrap_or(Path::new(".")).to_path_buf();
         let mut intrinsic_names: HashSet<String> = HashSet::new();
         let mut intrinsic_modules: HashSet<String> = HashSet::new();
@@ -314,7 +298,6 @@ impl Resolver {
         for item in &file.ast.items {
             if let TopLevelItem::Import(imp) = item {
                 if imp.path == "@intrinsics" {
-                    // Handle intrinsic imports
                     match &imp.kind {
                         ImportKind::Named(names) => {
                             for name in names {
@@ -445,22 +428,13 @@ impl Resolver {
                     }
                     ImportKind::Wildcard => {
                         for (name, kinds) in &exports {
-                            // A method name shared with a local method just adds
-                            // overloads (methods resolve globally), so it is not a
-                            // conflict and needs no rename entry.
+                            // Methods with the same name form one overload set.
                             if local_method_defs.contains(name)
                                 && kinds.iter().any(is_method_export)
                             {
                                 continue;
                             }
-                            // Likewise, a wildcard-imported *method* must not
-                            // displace a name already bound to a non-method
-                            // definition: methods are resolved globally by bare
-                            // name as overload sets, so the rename entry belongs
-                            // to the function/type/const. Without this, two
-                            // wildcard imports where one file exports `foo` as a
-                            // function and another exports `foo` as a method made
-                            // the function unreachable ("undefined reference").
+                            // Method imports do not shadow non-method definitions.
                             if kinds.iter().all(is_method_export) && rename_map.contains_key(name) {
                                 continue;
                             }
@@ -493,7 +467,6 @@ impl Resolver {
             }
         }
 
-        // Rewrite AST items
         let mut rewritten = Vec::new();
         let rewrite_errors = RefCell::new(Vec::new());
         let rewrite_ctx = RewriteCtx {
@@ -510,11 +483,7 @@ impl Resolver {
             match item {
                 TopLevelItem::Struct(s) => {
                     let mut s = s.clone();
-                    // Record provenance (defining file + original name) before the
-                    // name is rewritten to its module-mangled form. The mangling
-                    // itself is deferred to `mangled_ast`.
                     s.def_id = DefId::new(file_id, s.name.clone());
-                    // Rewrite field types and set file_id on field spans
                     for field in &mut s.fields {
                         field.ty =
                             rewrite_type(&field.ty, &rename_map, &module_aliases, &s.type_params);
@@ -526,7 +495,6 @@ impl Resolver {
                 TopLevelItem::Enum(e) => {
                     let mut e = e.clone();
                     e.def_id = DefId::new(file_id, e.name.clone());
-                    // Rewrite variant inner types
                     for variant in &mut e.variants {
                         if let Some(ty) = &mut variant.inner_type {
                             *ty = rewrite_type(ty, &rename_map, &module_aliases, &e.type_params);
@@ -544,8 +512,6 @@ impl Resolver {
                 }
                 TopLevelItem::Method(m) => {
                     let mut m = m.clone();
-                    // Don't rename method name — it stays as-is for typed_ast method mangling
-                    // But DO rewrite types in parameters and body
                     rewrite_function_body(&mut m, &rewrite_ctx);
                     set_file_id_span(&mut m.span, file_id);
                     rewritten.push(TopLevelItem::Method(m));
@@ -573,7 +539,6 @@ impl Resolver {
                 }
                 TopLevelItem::Static(st) => {
                     let mut st = st.clone();
-                    // An explicit type may reference a renamed/imported type.
                     if let Some(ty) = &mut st.ty {
                         *ty = rewrite_type(ty, &rename_map, &module_aliases, &[]);
                     }
@@ -594,9 +559,7 @@ impl Resolver {
                     set_file_id_span(&mut st.span, file_id);
                     rewritten.push(TopLevelItem::Static(st));
                 }
-                TopLevelItem::Import(_) => {
-                    // Strip imports from output
-                }
+                TopLevelItem::Import(_) => {}
             }
         }
 
@@ -613,11 +576,7 @@ fn set_file_id_span(span: &mut SourceSpan, file_id: FileId) {
     span.file_id = file_id;
 }
 
-/// Resolve a `Type::Named`/`Generic` reference `DefId` to its real provenance
-/// `DefId` (defining file + name). Builtins and type parameters are left with
-/// file `0` — `typed_ast` dispatches on the name for those. This is what lets a
-/// **struct/enum type reference carry the real `DefId`** instead of a stringified
-/// `__def{file}_…` name that a later stage would parse back.
+/// Resolves a type name to its defining file.
 fn resolve_type_ref(
     name: &DefId,
     rename_map: &HashMap<String, DefId>,
@@ -640,9 +599,7 @@ fn resolve_type_ref(
         .unwrap_or_else(|| name.clone())
 }
 
-/// Resolve a struct/enum reference (`name`) with an optional single-segment
-/// `module` qualifier (struct literals, struct destructure patterns) to its real
-/// provenance `DefId` in place.
+/// Resolves an optionally-qualified struct or enum name.
 fn resolve_qualified_def(
     name: &mut DefId,
     module: Option<String>,
@@ -663,7 +620,7 @@ fn resolve_qualified_def(
     }
 }
 
-/// Rewrite a type, replacing names via the rename map and resolving module-qualified types.
+/// Resolves names within a type.
 fn rewrite_type(
     ty: &Type,
     rename_map: &HashMap<String, DefId>,
@@ -742,7 +699,7 @@ fn rewrite_type(
     }
 }
 
-/// Context for rewriting AST names during module resolution.
+/// Name-resolution context.
 struct RewriteCtx<'a> {
     rename_map: &'a HashMap<String, DefId>,
     module_aliases: &'a ModuleAliasMap,
@@ -754,7 +711,7 @@ struct RewriteCtx<'a> {
     file_id: FileId,
 }
 
-/// Rewrite all names in a function's parameters, return type, and body.
+/// Resolves names within a function.
 fn rewrite_function_body(f: &mut FunctionDef, parent_ctx: &RewriteCtx<'_>) {
     let type_params = &f.type_params;
 
@@ -1265,17 +1222,14 @@ fn rewrite_pattern(
     }
 }
 
-/// Resolve a Solar program starting from the given file path.
-/// Returns a unified AST (with stdlib and numeric constructors) and a SourceMap.
+/// Resolves a Solar program and its imports.
 pub fn resolve(
     file_path: &Path,
 ) -> Result<(SourceFile, SourceMap), (Vec<CompileError>, SourceMap)> {
     resolve_with_root_source(file_path, None)
 }
 
-/// Resolve a program with an in-memory root source. This is used by the LSP so
-/// semantic analysis follows the document buffer rather than its last saved
-/// version. Imports remain relative to `file_path` and are read from disk.
+/// Resolves a program whose root source is supplied in memory.
 pub fn resolve_source(
     file_path: &Path,
     source: String,
@@ -1288,9 +1242,6 @@ fn resolve_with_root_source(
     root_source: Option<String>,
 ) -> Result<(SourceFile, SourceMap), (Vec<CompileError>, SourceMap)> {
     let mut resolver = Resolver::new();
-    // Run resolution to completion, then hand back the source map regardless of
-    // outcome so errors (including those whose spans point into stdlib files)
-    // can be rendered against the correct file via the SourceMap.
     let result = resolve_impl(&mut resolver, file_path, root_source);
     let source_map = resolver.source_map;
     match result {
@@ -1304,14 +1255,12 @@ fn resolve_impl(
     file_path: &Path,
     root_source: Option<String>,
 ) -> Result<Vec<TopLevelItem>, Vec<CompileError>> {
-    // Parse stdlib first (all files get implicit `import * from "@std"`)
     let std_lib = Path::new(STDLIB_DIR).join("lib.solar");
     let std_root_id = resolver.parse_file(&std_lib)?;
     resolver.parse_imports(std_root_id)?;
     resolver.std_root_id = Some(std_root_id);
     let std_file_count = resolver.files.len();
 
-    // Parse root file
     let root_id = if let Some(source) = root_source {
         let canonical = file_path
             .canonicalize()
@@ -1320,14 +1269,10 @@ fn resolve_impl(
     } else {
         resolver.parse_file(file_path)?
     };
-    // Record the root: its definitions render to bare (un-module-mangled) names
-    // in `mangled_ast` (so `main` stays `main`).
     resolver.source_map.set_root_file_id(root_id);
 
-    // Recursively parse imported files
     resolver.parse_imports(root_id)?;
 
-    // Inject synthetic `import * from "@std"` into all non-stdlib files
     for i in std_file_count..resolver.files.len() {
         resolver.files[i].ast.items.insert(
             0,
@@ -1340,10 +1285,8 @@ fn resolve_impl(
         );
     }
 
-    // Check for circular pub import re-export chains
     check_circular_reexports(resolver)?;
 
-    // Build global module alias map (needed for multi-segment module paths)
     let file_count = resolver.files.len();
     let all_module_aliases: AllModuleAliases = (0..file_count)
         .map(|i| {
@@ -1352,10 +1295,8 @@ fn resolve_impl(
         })
         .collect();
 
-    // Resolve and rewrite each file
     let mut all_items = Vec::new();
 
-    // Process each file (root first, then imported files in order)
     let mut processed: HashSet<FileId> = HashSet::new();
 
     for i in 0..file_count {
@@ -1368,7 +1309,6 @@ fn resolve_impl(
         all_items.extend(items);
     }
 
-    // Generate numeric constructors
     parser::generate_numeric_constructors(&mut all_items);
 
     Ok(all_items)
@@ -1376,7 +1316,6 @@ fn resolve_impl(
 
 /// Check for circular pub import re-export chains.
 fn check_circular_reexports(resolver: &Resolver) -> Result<(), Vec<CompileError>> {
-    // Build a directed graph of pub import edges
     let mut pub_import_edges: HashMap<FileId, Vec<(FileId, SourceSpan)>> = HashMap::new();
 
     for file in &resolver.files {

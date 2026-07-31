@@ -1,32 +1,28 @@
-// HashMap — a SwissTable hash map. Ported from hashbrown `src/map.rs` (a subset:
-// new/insert/get/get_mut/contains_key/remove/len/is_empty/clear). The default
-// hasher is foldhash with a fixed seed; keys are compared with `==` and hashed
-// via the reflective `hash`. Both come for free from the stdlib's blanket
-// `operator_eq`/`hash` for any struct/enum with `pub` fields — a struct key
-// needs no hand-written impl (though a concrete `operator_eq` overrides the
-// blanket if provided).
-
 import { Option } from "../lib.solar";
 import raw from "raw.solar";
 import tag from "tag.solar";
 
+/// A hash map using deterministic foldhash.
 pub struct HashMap#[K, V] {
   table: raw::RawTable#[K, V],
 }
 
+/// Creates an empty hash map.
 pub fn HashMap#[K, V]() -> HashMap#[K, V] {
   HashMap#[K, V] { table: raw::RawTable#[K, V](), }
 }
 
+/// Returns the number of entries.
 pub method len#[K, V](self: &HashMap#[K, V]) -> Uint {
   self@.table.items
 }
 
+/// Returns whether the map contains no entries.
 pub method is_empty#[K, V](self: &HashMap#[K, V]) -> Bool {
   self@.table.items == 0u
 }
 
-/// Insert `key -> val`, returning the previous value if the key was present.
+/// Inserts a key and returns its previous value.
 pub method insert#[K, V](self: &HashMap#[K, V], key: K, val: V) -> Option#[V] {
   let t = self@.table&;
   let h = raw::key_hash(key&);
@@ -52,7 +48,7 @@ pub method insert#[K, V](self: &HashMap#[K, V], key: K, val: V) -> Option#[V] {
   result
 }
 
-/// A reference to the value for `key`, or None.
+/// Returns the value for a key.
 pub method get#[K, V](self: &HashMap#[K, V], key: &K) -> Option#[&V] {
   let t = self@.table&;
   let h = raw::key_hash(key);
@@ -67,6 +63,7 @@ pub method get#[K, V](self: &HashMap#[K, V], key: &K) -> Option#[&V] {
   result
 }
 
+/// Returns whether a key is present.
 pub method contains_key#[K, V](self: &HashMap#[K, V], key: &K) -> Bool {
   let t = self@.table&;
   let h = raw::key_hash(key);
@@ -78,13 +75,12 @@ pub method contains_key#[K, V](self: &HashMap#[K, V], key: &K) -> Bool {
   result
 }
 
-/// References in Solar are always mutable, so `get` already yields a mutable
-/// value reference; `get_mut` is provided for parity with hashbrown.
+/// Returns the value for a key.
 pub method get_mut#[K, V](self: &HashMap#[K, V], key: &K) -> Option#[&V] {
   self.get(key)
 }
 
-/// Remove `key`, returning its value if present.
+/// Removes a key and returns its value.
 pub method remove#[K, V](self: &HashMap#[K, V], key: &K) -> Option#[V] {
   let t = self@.table&;
   let h = raw::key_hash(key);
@@ -101,13 +97,13 @@ pub method remove#[K, V](self: &HashMap#[K, V], key: &K) -> Option#[V] {
   result
 }
 
-/// Remove all entries (keeps the allocated capacity).
+/// Removes all entries while retaining capacity.
 pub method clear#[K, V](self: &HashMap#[K, V]) {
   let t = self@.table&;
   t.clear();
 }
 
-/// Call `f(key, val)` for every live entry, in unspecified order.
+/// Calls `f` for each entry in unspecified order.
 pub method for_each#[K, V](self: &HashMap#[K, V], f: fn(&K, &V)) {
   let t = self@.table&;
   if t@.bucket_mask != 0u {

@@ -1,9 +1,4 @@
-//! Release-pipeline test for interior references escaping a function: the
-//! escape analysis must keep the aggregate heap-boxed (see
-//! `tests/runtime/interior_ref_escape.solar` for the ASAN/debug variant), and
-//! the collector must keep the aggregate alive through interior pointers under
-//! churn. Only the release pipeline runs the GC LLVM passes, mirroring
-//! `tests/statics_gc.rs`.
+//! Ensures interior references retain their containing allocation across GC.
 
 use solar::pipeline::CompileMode;
 use std::path::PathBuf;
@@ -47,8 +42,7 @@ fn main() {
     for i in 0..64 {
         keep[Uint(i)] = make_leaf(i);
     }
-    // >1 GiB of escaping garbage to force collection cycles; the Leafs must
-    // stay live through the interior pointers alone.
+    // Force collections while only interior references retain the leaves.
     for i in 0..300000 {
         SCRATCH = [Uint8(i & 255); 4096u]&;
     }

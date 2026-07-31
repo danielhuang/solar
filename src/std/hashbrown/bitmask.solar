@@ -1,14 +1,9 @@
-// A bit mask: the result of a `Group` match. With real SIMD move-mask the mask
-// is *compact* — one bit per lane (bit `i` <-> lane `i`), unlike the old SWAR
-// path which set a whole high byte per lane and iterated with a stride of 8.
-// Ported from hashbrown `src/control/bitmask.rs` (the SIMD path, stride 1).
-//
-// `BitMask` is a tiny value type, so methods take `self` by value.
-
-/// Lanes per group — the mask occupies the low `WIDTH` bits of `mask`.
+/// Lanes per group.
 const WIDTH: Uint = 16u;
 
+/// A compact mask with one bit per group lane.
 pub struct BitMask {
+  /// Mask bits.
   pub mask: Uint,
 }
 
@@ -17,25 +12,22 @@ pub method any_bit_set(self: BitMask) -> Bool {
   self.mask != 0u
 }
 
-/// The lane index (0..WIDTH) of the lowest matched lane. Only meaningful when
-/// `any_bit_set()` is true.
+/// Returns the lowest matching lane.
 pub method lowest_set_bit_index(self: BitMask) -> Uint {
   self.mask.count_trailing_zeros()
 }
 
-/// The mask with its lowest set bit cleared (`x & (x - 1)`). The RHS is bound to
-/// a temp because `&` directly before `(` parses as a postfix-reference call.
+/// Returns the mask with its lowest bit cleared.
 pub method remove_lowest_bit(self: BitMask) -> BitMask {
   let dec = self.mask -- 1u;
   BitMask { mask: self.mask & dec }
 }
 
-/// Leading / trailing zero lanes within the group (used by `erase` to decide
-/// EMPTY vs DELETED). `count_*_zeros` count over the full 64-bit word, so adjust
-/// to the `WIDTH` low bits the mask actually uses: a zero mask yields `WIDTH`.
+/// Counts leading zero lanes.
 pub method leading_zeros(self: BitMask) -> Uint {
   self.mask.count_leading_zeros() - (64u - WIDTH)
 }
+/// Counts trailing zero lanes.
 pub method trailing_zeros(self: BitMask) -> Uint {
   let tz = self.mask.count_trailing_zeros();
   let out = if tz > WIDTH { WIDTH } else { tz };

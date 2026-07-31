@@ -4,6 +4,7 @@ use std::thread;
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
+/// Fixed-size worker pool used by the collector.
 pub struct ThreadPool {
     sender: flume::Sender<Job>,
     /// Number of worker threads. The parallel marker submits exactly this many
@@ -18,12 +19,6 @@ pub struct ThreadPool {
 
 impl ThreadPool {
     fn new(size: usize) -> Self {
-        // flume is MPMC: each worker holds its own cloned `Receiver` and calls
-        // `recv()` concurrently, so workers never serialize on a shared receiver
-        // lock. The std `mpsc` version wrapped one `Receiver` in an
-        // `Arc<Mutex<…>>` and funneled all N workers through it — a thundering
-        // herd that dominated the parallel-mark fan-out cost (~30 µs × N per
-        // call, superlinear at high N from that lock's contention).
         let (sender, receiver) = flume::unbounded::<Job>();
         let unfinished = Arc::new(AtomicU32::new(0));
         for i in 0..size {
@@ -35,8 +30,6 @@ impl ThreadPool {
                 .spawn(move || {
                     crate::gc::block_gc_signal();
                     loop {
-                        // flume parks internally when the queue is empty; no
-                        // external lock is held across recv.
                         let job = match receiver.recv() {
                             Ok(j) => j,
                             Err(_) => return, // all senders dropped; pool shutting down
@@ -68,15 +61,14 @@ impl ThreadPool {
         self.size
     }
 
+    /// Submits a job for asynchronous execution.
     pub fn submit(&self, f: impl FnOnce() + Send + 'static) {
-        // Increment BEFORE send. Otherwise a worker can finish a previously
-        // submitted job and observe `unfinished == 0` between this call's
-        // send and increment, making `wait_for_all` see a stale 1 if the
-        // job runs to completion before we increment.
+        // Publish the unfinished count before making the job visible.
         self.unfinished.fetch_add(1, Ordering::AcqRel);
         self.sender.send(Box::new(f)).unwrap();
     }
 
+    /// Blocks until all submitted jobs finish.
     pub fn wait_for_all(&self) {
         loop {
             let cur = self.unfinished.load(Ordering::Acquire);
@@ -96,6 +88,7 @@ impl ThreadPool {
     }
 }
 
+/// Global collector worker pool.
 pub static THREAD_POOL: LazyLock<ThreadPool> = LazyLock::new(|| {
     // `SOLAR_THREAD_POOL_SIZE` overrides the worker count (must be > 0);
     // otherwise default to the available parallelism.

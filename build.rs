@@ -1,13 +1,4 @@
-//! Builds the GC write-barrier LLVM pass plugin (`llvm-pass/SolarWriteBarriers.cpp`)
-//! into a shared library that the release/debug pipelines load into `opt` via
-//! `-load-pass-plugin`. Replaces the old textual `llvm-dis | edit | llvm-as`
-//! barrier rewrite.
-//!
-//! The plugin must be built against the same LLVM `opt` loads it into; we use
-//! `llvm-config`'s `--cxxflags` (include path, `-std`, `-fno-rtti`, etc.) so it
-//! matches the system toolchain. If `llvm-config`/`clang++` aren't present the
-//! plugin is skipped — interpreter-only builds still work, and native codegen
-//! fails with a clear message (see `pipeline::wb_plugin`).
+//! Builds the LLVM pass plugin used by native code generation.
 
 use std::path::PathBuf;
 use std::process::Command;

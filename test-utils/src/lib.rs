@@ -1,3 +1,5 @@
+//! Helpers for exercising Solar compiler backends in tests.
+
 use std::path::Path;
 use std::process::Command;
 use std::sync::Once;
@@ -6,12 +8,7 @@ use solar::pipeline::{CompileMode, Ir, Mangled};
 
 static BUILD_RUNTIME: Once = Once::new();
 
-/// Ensure the solar-system runtime is built once per test process (for test use
-/// only). Built **natively**, dropping the workspace's global
-/// `-Clinker-plugin-lto`: that flag emits LLVM bitcode archive members, which the
-/// debug link (`CompileMode::Debug`) would otherwise have to LTO-compile on every
-/// test — slow. A native `.a` links in milliseconds. (The release runtime, built
-/// separately, keeps linker-plugin-lto for cross-language LTO.)
+/// Builds the debug Solar runtime once per test process.
 pub fn ensure_runtime_built() {
     BUILD_RUNTIME.call_once(|| {
         let status = Command::new("cargo")
@@ -25,10 +22,7 @@ pub fn ensure_runtime_built() {
 
 static BUILD_RELEASE_RUNTIME: Once = Once::new();
 
-/// Ensure the **release** solar-system runtime (`target/release/libsolar_system.a`)
-/// is built — required by `CompileMode::Release` builds, which (unlike debug)
-/// apply the GC LLVM passes, so it's the only pipeline where the collector
-/// actually runs. Keeps the workspace's default flags (cross-language LTO).
+/// Builds the release Solar runtime once per test process.
 pub fn ensure_release_runtime_built() {
     BUILD_RELEASE_RUNTIME.call_once(|| {
         let status = Command::new("cargo")
@@ -39,12 +33,14 @@ pub fn ensure_release_runtime_built() {
     });
 }
 
+/// Runs a mangled program with the AST interpreter.
 pub fn run_ast(mangled: &Mangled) -> String {
     let mut buf = Vec::new();
     solar::ast_interp::interpret_to(&mangled.mangled, std::io::empty(), &mut buf);
     String::from_utf8(buf).unwrap()
 }
 
+/// Runs an IR program with the IR interpreter.
 pub fn run_ir(ir: &Ir) -> String {
     let mut buf = Vec::new();
     solar::ir_interp::interpret_to(&ir.ir, std::io::empty(), &mut buf);
@@ -81,9 +77,7 @@ pub fn run(file_path: &Path, test_name: &str) -> String {
     ensure_runtime_built();
     let mangled = solar::pipeline::compile(file_path).unwrap().to_mangled();
     let ast_out = run_ast(&mangled);
-    // `optimized()` runs `ir_opt`, so the debug-codegen build below exercises the
-    // escape analysis / stack placement under ASAN — a wrongly-stacked escaping
-    // value then surfaces as a use-after-scope/return (or a wrong result).
+    // Exercise optimized stack placement under ASAN.
     let ir = mangled.to_ir().optimized();
     let ir_out = run_ir(&ir);
     assert_eq!(

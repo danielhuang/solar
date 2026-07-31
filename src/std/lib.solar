@@ -1,28 +1,33 @@
 import intrinsics from "@intrinsics";
+/// Growable vectors.
 pub import vec from "vec.solar";
+/// Synchronization primitives.
 pub import sync from "sync.solar";
+/// Thread creation and joining.
 pub import thread from "thread.solar";
+/// Filesystem and stream I/O.
 pub import file from "file.solar";
+/// TCP networking.
 pub import net from "net.solar";
+/// Floating-point mathematics.
 pub import math from "math.solar";
+/// Process arguments and environment.
 pub import process from "process.solar";
+/// Iterator support.
 pub import iter from "iter.solar";
+/// SIMD helpers.
 pub import simd from "simd.solar";
+/// Hash maps.
 pub import hashbrown from "hashbrown/map.solar";
 
-/// The optional type: `Some(value)` or `None`. Available everywhere via the
-/// implicit `import * from "@std"`.
+/// A value that may be absent.
 pub enum Option#[T] {
   Some(T),
   None,
 }
 
-/// Decimal representation of x as a byte slice (no trailing newline). The buffer
-/// is GC-allocated, so the returned reference keeps it alive. Digits are
-/// extracted in the negative domain so Int's minimum value (which has no positive
-/// counterpart) needs no special case.
+/// Returns the decimal representation of an integer.
 pub method to_string(self: Int) -> &[Uint8] {
-  // longest output: -9223372036854775808 = 20 bytes
   let buf: [Uint8] = [0u8; 20u];
   let i = 20u;
   let n = if self > 0 { 0 - self } else { self };
@@ -41,8 +46,8 @@ pub method to_string(self: Int) -> &[Uint8] {
   buf[i..20u]&
 }
 
+/// Returns the decimal representation of an unsigned integer.
 pub method to_string(self: Uint) -> &[Uint8] {
-  // longest output: 18446744073709551615 = 20 bytes
   let buf: [Uint8] = [0u8; 20u];
   let i = 20u;
   let n = self;
@@ -62,27 +67,22 @@ pub method len#[T](self: &[T]) -> Uint {
   intrinsics::array_len(self@)
 }
 
-/// Bit-counting methods on integers (any integer type `T`). The count is taken
-/// over `T`'s bit width: `count_trailing_zeros`/`count_leading_zeros` return the
-/// full width for a zero input, and `count_ones` is the population count. These
-/// lower to single machine instructions (tzcnt/lzcnt/popcnt) in compiled code.
+/// Counts trailing zero bits.
 pub method count_trailing_zeros#[T](self: T) -> Uint {
   intrinsics::count_trailing_zeros(self)
 }
 
+/// Counts leading zero bits.
 pub method count_leading_zeros#[T](self: T) -> Uint {
   intrinsics::count_leading_zeros(self)
 }
 
+/// Counts set bits.
 pub method count_ones#[T](self: T) -> Uint {
   intrinsics::count_ones(self)
 }
 
-/// Full-width multiply-add on Uint64: computes the 128-bit value
-/// `self * rhs + carry + add` (which never overflows 128 bits) and returns it as
-/// `(low, high)` 64-bit halves. Wraps the `carrying_mul_add` intrinsic, which
-/// writes the halves through `&Uint64` out-params (lowering to the runtime's
-/// `sol_carrying_mul_add`).
+/// Returns the low and high halves of `self * rhs + carry + add`.
 pub method carrying_mul_add(self: Uint64, rhs: Uint64, carry: Uint64, add: Uint64) -> (Uint64, Uint64) {
   let lo = 0u64;
   let hi = 0u64;
@@ -95,22 +95,12 @@ pub fn ref_eq#[T](a: &T, b: &T) -> Bool {
   intrinsics::ref_eq(a, b)
 }
 
-/// Reference content equality. Reference operands are auto-referenced by the
-/// operator desugaring, so this overload receives `&&T`, dereferences both
-/// layers, and compares the pointed-to values.
+/// Compares the values behind two references.
 pub method operator_eq#[T](self: &&T, other: &&T) -> Bool {
   self@@ == other@@
 }
 
-/// Structural equality by compile-time reflection — the default `==` for any
-/// struct or enum (so `a == b` works without a hand-written `operator_eq`). It
-/// mirrors the reflective `hash`: two structs are equal iff every field is equal;
-/// two enums iff they hold the same variant with equal payloads. Fields are
-/// compared with `==`, so a primitive field uses the built-in comparison, a
-/// struct/enum field recurses through this method, and a reference field uses
-/// the reference-content overload above. A concrete `operator_eq` (e.g. on a
-/// specific struct) is more specific and overrides this generic. Any other type
-/// throws a catchable exception rather than silently answering.
+/// Compares structs and enums by value.
 pub method operator_eq#[T](self: &T, other: &T) -> Bool {
   let eq = true;
   match.reflect T {
@@ -121,8 +111,6 @@ pub method operator_eq#[T](self: &T, other: &T) -> Bool {
       }
     },
     "enum" => {
-      // Discriminants first; only equal variants compare payloads (the paired
-      // reflection's body is a no-op when the variants differ).
       let si = 0u;
       let oi = 0u;
       match.reflect_variant (n, idx, v) in self { si = idx; }
@@ -159,35 +147,33 @@ pub method operator_eq(self: &[Uint8], other: &[Uint8]) -> Bool {
   eq
 }
 
-/// `!=` for any struct/enum (and byte slices) — the negation of `==`, so it
-/// respects a concrete `operator_eq` override too.
+/// Returns the negation of structural equality.
 pub method operator_ne#[T](self: &T, other: &T) -> Bool {
   let e = self.operator_eq(other);
   !e
 }
 
+/// Writes bytes to standard output.
 pub fn write_stdout(s: &[Uint8]) {
   file::stdout().write(s);
 }
 
+/// Writes bytes followed by a newline.
 pub fn println(s: &[Uint8]) {
     write_stdout((s@ + ['\n'])&);
 }
 
-/// Prints any value's `to_string()` representation followed by a newline. The
-/// concrete `println(&[Uint8])` overload above is more specific and is chosen for
-/// byte slices; this generic handles everything else (e.g. Int, Uint).
+/// Writes a value's string representation followed by a newline.
 pub fn println#[T](x: T) {
     println(x.to_string());
 }
 
+/// Terminates the program with a panic message.
 pub fn panic(s: &[Uint8]) {
     intrinsics::panic(s);
 }
 
-/// Throw a recoverable exception carrying `s` as its message; it unwinds to the
-/// nearest enclosing `try { … } catch (e) { … }` (where `e` binds `s`). Unlike
-/// `panic`, a `throw` can be caught.
+/// Throws a recoverable exception.
 pub fn throw(s: &[Uint8]) {
     intrinsics::throw(s);
 }

@@ -1,19 +1,4 @@
-//! File-descriptor "arena": an address-space-only region whose pointers encode
-//! open file descriptors as `addr - FD_BASE`.
-//!
-//! A Solar `FileDesc` value has the byte representation of `&Int32` and points
-//! at `FD_BASE + fd`. The region itself is mapped `PROT_NONE` and is **never
-//! read or written** — it exists purely to carve out a unique, GC-recognizable
-//! address range so the collector can trace `FileDesc` references like any
-//! other pointer. There is no per-fd storage in the region; the fd number is
-//! recovered arithmetically.
-//!
-//! Allocated/marked state lives in two side bitmaps indexed by fd number
-//! (`MAP_NORESERVE`, demand-paged, so the real cost is proportional to the
-//! highest fd ever opened, not to the 4 GiB of reserved address space). After a
-//! GC marks every reachable `FileDesc`, [`fd_sweep`] `close()`s each fd whose
-//! slot went unmarked — GC-driven resource cleanup. This mirrors the heap's
-//! alloc/mark-bitmap sweep (`heap::sweep_word_range`).
+//! GC-traced file descriptors encoded as addresses in a reserved region.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -180,13 +165,7 @@ pub(crate) unsafe fn register_new_fd(fd: usize) -> *mut u8 {
     (FD_BASE.get() + fd) as *mut u8
 }
 
-/// Return a `FileDesc` for one of the process's standard streams (`fd`).
-///
-/// Standard streams are owned by the process for its whole lifetime, so the
-/// returned handle is deliberately **not** registered in the alloc bitmap: the
-/// collector traces it harmlessly (the arena address is recognized and its mark
-/// bit may be set), but [`fd_sweep`] only closes fds whose *alloc* bit is set,
-/// so stdin/stdout are never auto-closed regardless of reachability.
+/// Returns a standard stream without registering it for automatic closure.
 #[inline]
 unsafe fn std_stream(fd: libc::c_int) -> *mut u8 {
     let base = FD_BASE.get();
@@ -568,19 +547,7 @@ pub unsafe extern "C-unwind" fn sol_dir_read(fd_ptr: *mut u8, out: *mut u8) {
     }
 }
 
-/// "Close" the file behind a `FileDesc` without freeing its fd number.
-///
-/// A plain `close(fd)` would return the fd number to the kernel, which could
-/// then hand it back out from a later `open` — and any escaped `FileDesc` still
-/// holding that number would silently alias the new file. Instead we `dup2` the
-/// process-wide [`DEAD_FD`] over it: the underlying file is closed atomically by
-/// `dup2`, but the fd number stays occupied (now referring to the dead pipe), so
-/// stale `FileDesc`s see only harmless EOF. The fd keeps its allocated bit, so
-/// the collector still traces it and eventually `close`s the dead-pipe dup when
-/// no live `FileDesc` remains.
-///
-/// Needs no GC critical section: it neither allocates nor touches the alloc/mark
-/// bitmaps, and `fd_sweep` (the only other toucher of this fd) runs under STW.
+/// Replaces a file descriptor with the dead pipe without releasing its number.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_file_close(fd_ptr: *mut u8) {
     let base = FD_BASE.get();

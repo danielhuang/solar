@@ -1,8 +1,4 @@
 //! Language Server Protocol support for Solar.
-//!
-//! Semantic tokens are derived from the compiler's tree-sitter grammar, so
-//! incomplete documents remain highlighted. Each open document is also checked
-//! as a program root and compiler errors are pushed as diagnostics.
 
 use serde_json::{Value, json};
 use solar::{
@@ -387,10 +383,7 @@ fn semantic_tokens(source: &str, analysis: Option<&Analysis>) -> Vec<u32> {
     data
 }
 
-/// A `textDocument/hover` response for the identifier under the cursor: the
-/// `///` doc comment of the item (from anywhere in the resolved program) it
-/// names, if any. The lookup is by name, so it works on the definition and on
-/// every use site — including symbols imported from other files.
+/// Returns hover information for the symbol under the cursor.
 fn hover(source: &str, line: u32, character: u32, document: &Document) -> Option<Value> {
     let mut entries = Vec::new();
     let mut seen = HashSet::new();
@@ -426,10 +419,7 @@ fn hover(source: &str, line: u32, character: u32, document: &Document) -> Option
     }))
 }
 
-/// Map every declaration (and method) that carries a `///` doc comment to its
-/// documentation, keyed by its exact resolved declaration span. The shared
-/// symbol resolver selects this key, so same-named overloads and symbols from
-/// different files cannot borrow one another's documentation.
+/// Indexes documentation by declaration span.
 type SpanKey = (u32, u32, u32, u32, u32);
 
 fn span_key(span: SourceSpan) -> SpanKey {
@@ -568,8 +558,7 @@ fn source_line_offsets(source: &str) -> Vec<usize> {
     offsets
 }
 
-/// Convert an LSP `(line, character)` position — `character` in UTF-16 code
-/// units — to a byte offset into `source`.
+/// Converts an LSP UTF-16 position to a byte offset.
 fn position_to_byte(source: &str, line: u32, character: u32) -> Option<usize> {
     let mut offset = 0;
     for (index, text) in source.split_inclusive('\n').enumerate() {
@@ -588,15 +577,7 @@ fn position_to_byte(source: &str, line: u32, character: u32) -> Option<usize> {
     None
 }
 
-/// A `textDocument/definition` response for the identifier under the cursor.
-///
-/// Lexical bindings are resolved from the syntax scopes; globals, types,
-/// fields, variants, functions, and methods use their resolved/typed identity.
-/// A concrete call navigates to its selected overload. A call in a generic
-/// source body returns every resolver-visible overload that its
-/// monomorphizations may select. The final name-only fallback is used only when
-/// exactly one declaration has that spelling, so ambiguity never produces a
-/// confidently wrong location.
+/// Returns definitions for the symbol under the cursor.
 fn definition(source: &str, line: u32, character: u32, document: &Document) -> Option<Value> {
     let targets = symbol_targets(source, line, character, document);
     let mut locations = Vec::new();
@@ -612,8 +593,7 @@ fn definition(source: &str, line: u32, character: u32, document: &Document) -> O
     }
 }
 
-/// Resolve the identifier at an LSP position to its declaration span(s). This
-/// is the single symbol-resolution path shared by go-to-definition and hover.
+/// Resolves a cursor position to declaration spans.
 fn symbol_targets(source: &str, line: u32, character: u32, document: &Document) -> Vec<SourceSpan> {
     let mut parser = Parser::new();
     parser
@@ -717,10 +697,7 @@ fn declaration_parent(node: Node<'_>) -> Option<Node<'_>> {
     .map(|_| parent)
 }
 
-/// Resolve a lexical identifier to the nearest visible source binding. This is
-/// intentionally syntax-based: typed AST identifiers retain only their name,
-/// while tree-sitter preserves the scopes and exact declaration token spans
-/// needed by go-to-definition.
+/// Resolves a lexical identifier to its nearest visible binding.
 fn local_definition<'a>(node: Node<'a>, name: &str, source: &str) -> Option<Node<'a>> {
     if is_binding_identifier(node) {
         return Some(node);
@@ -972,11 +949,7 @@ fn node_span(node: Node<'_>, file_id: u32) -> SourceSpan {
     }
 }
 
-/// Walks typed function bodies looking for the call/reference at the cursor,
-/// recording each target function's definition span. Free calls and function
-/// references begin at their callee, so they match the cursor position
-/// directly; method calls begin at their receiver, so they are pinned by the
-/// receiver's position (`receiver`) and disambiguated by the method name.
+/// Finds call targets at a source position.
 struct DefFinder<'a> {
     typed: &'a typed_ast::SourceFile,
     root_file: u32,
@@ -1208,10 +1181,7 @@ impl DefFinder<'_> {
     }
 }
 
-/// The source start used by the typed expression containing an identifier.
-/// Typed calls span the whole call (and methods therefore begin at the
-/// receiver), while fields/struct literals/path expressions begin at their
-/// respective syntax node.
+/// Returns the identifier position represented by a typed expression.
 fn definition_anchor(node: Node<'_>) -> Option<(u32, u32)> {
     let mut current = node;
     while let Some(parent) = current.parent() {
@@ -1281,10 +1251,7 @@ fn struct_owner(ty: &typed_ast::Type) -> Option<ast::DefId> {
     }
 }
 
-/// Turn a definition's span into an LSP `Location` (file URI + UTF-16 range),
-/// resolving its file through the source map. The range is collapsed to the
-/// definition's start so the editor jumps there without selecting the whole
-/// declaration.
+/// Converts a declaration span to an LSP location.
 fn span_to_location(span: SourceSpan, source_map: &SourceMap) -> Option<Value> {
     let (filename, file_source) = source_map.get(span.file_id)?;
     let line_text = file_source
@@ -1313,10 +1280,7 @@ fn path_to_file_uri(path: &str) -> String {
     uri
 }
 
-/// Names that must be coloured the same wherever they appear, extracted from
-/// the resolved program. Because these are global entities (unlike locals,
-/// whose role is inherent to their binding site), one occurrence in a type
-/// annotation and another in a struct literal or path should look identical.
+/// Global names used by semantic highlighting.
 #[derive(Default)]
 struct Names {
     /// Struct and enum names → `type`.
@@ -1325,17 +1289,13 @@ struct Names {
     variants: HashSet<String>,
 }
 
-/// Everything the CST classifier consults to give an identifier its canonical
-/// colour: the type-checker's name tables (absent on a broken buffer) and the
-/// syntactically-collected type-parameter names.
+/// Context for classifying syntax tokens.
 struct Context<'a> {
     names: Option<&'a Names>,
     type_params: &'a HashSet<String>,
 }
 
-/// Everything derived from a single resolve of one open document. Resolving
-/// reparses the whole stdlib, so it is the expensive step; caching this lets
-/// hover and semantic tokens share one resolve per edit.
+/// Cached compiler analysis for one document revision.
 #[derive(Default)]
 struct Document {
     /// Exact declaration span → `///` doc across the resolved program. Hover
@@ -1369,17 +1329,14 @@ struct Document {
     analysis: Option<Analysis>,
 }
 
-/// Facts type checking supplies that syntax alone cannot, shared by the
-/// name-table and per-expression classification passes.
+/// Type-checker facts used by semantic highlighting.
 struct Analysis {
     typed: typed_ast::SourceFile,
     file_id: u32,
     names: Names,
 }
 
-/// Return the cached [`Document`] for `uri`, computing (and storing) it on a
-/// miss. The cache is cleared whenever the buffer changes, so a hit always
-/// reflects the current `source`.
+/// Returns cached analysis for a document.
 fn cached<'a>(cache: &'a mut HashMap<String, Document>, uri: &str, source: &str) -> &'a Document {
     if !cache.contains_key(uri) {
         let document = compute(uri, source);
@@ -1388,11 +1345,7 @@ fn cached<'a>(cache: &'a mut HashMap<String, Document>, uri: &str, source: &str)
     &cache[uri]
 }
 
-/// Resolve the in-editor buffer once and derive both the hover docs and the
-/// semantic-token analysis. The resolver accepts the current buffer, so this
-/// works before the editor writes the document to disk. A resolve failure
-/// yields an empty [`Document`]; a resolve that type-checks additionally
-/// populates `analysis`.
+/// Analyzes an in-memory document.
 fn compute(uri: &str, source: &str) -> Document {
     let Some(path) = file_uri_to_path(uri) else {
         return Document::default();
@@ -1513,9 +1466,7 @@ fn collect_module_files(
     modules
 }
 
-/// Type-check the resolved program and build the semantic-token name tables.
-/// Returns `None` if type checking fails, in which case the CST classification
-/// stands alone.
+/// Builds semantic-token data from a resolved program.
 fn analyze(ast: &ast::SourceFile, source_map: &SourceMap) -> Option<Analysis> {
     let typed = typed_ast::lower(ast).ok()?;
     let file_id = source_map.root_file_id()?;
@@ -1542,8 +1493,7 @@ fn analyze(ast: &ast::SourceFile, source_map: &SourceMap) -> Option<Analysis> {
     })
 }
 
-/// Type checking supplies facts which syntax alone cannot know — for example,
-/// whether a direct call is a free function or a method.
+/// Collects typed expression classifications.
 fn apply_typed_overlays(
     typed: &typed_ast::SourceFile,
     file_id: u32,
@@ -1768,7 +1718,7 @@ fn collect_sequence_overlays(
     }
 }
 
-/// Record the names declared in every `#[T, …]` type-parameter list.
+/// Collects declared type-parameter names.
 fn collect_type_params(node: Node<'_>, source: &str, names: &mut HashSet<String>) {
     if node.kind() == "type_params" {
         let mut cursor = node.walk();
@@ -1840,11 +1790,7 @@ fn token_kind(node: Node<'_>, source: &str, context: &Context) -> Option<u32> {
     }
 }
 
-/// Force a reference to a known global entity to its canonical colour, so it
-/// looks the same wherever it appears — a type in an annotation, a struct
-/// literal, a pattern, or a path; a type parameter at its declaration and every
-/// use. Binding-position tokens (`parameter`, `property`) keep their local
-/// role, so a local named like a type is not recoloured.
+/// Applies canonical highlighting to known global names.
 fn refine(base: u32, text: &str, context: &Context) -> u32 {
     if base == token_index("parameter") || base == token_index("property") {
         return base;
@@ -2340,7 +2286,7 @@ fn main() {
     #[test]
     fn intrinsic_call_never_falls_back_to_same_named_wrapper() {
         let (_, source, document) = fixture_document("src/std/lib.solar");
-        let (line, character) = occurrence_position(&source, "count_trailing_zeros", 2);
+        let (line, character) = occurrence_position(&source, "count_trailing_zeros(self)", 0);
 
         assert!(definition(&source, line, character, &document).is_none());
         assert!(hover(&source, line, character, &document).is_none());

@@ -124,6 +124,7 @@ pub unsafe fn sol_thread_start(
     }
 }
 
+/// Spawns a registered Solar mutator thread.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_thread_spawn(
     fn_ptr: unsafe extern "C" fn(*mut c_void),

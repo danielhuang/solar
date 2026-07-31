@@ -4,21 +4,23 @@ use std::process::Command;
 use crate::error::{CompileError, SourceMap};
 use crate::{codegen, ir, ir_opt, mangled_ast, resolve, typed_ast};
 
-/// Entry point: file path -> resolved + type-checked program.
+/// Resolves and type-checks a Solar program.
 pub fn compile(file_path: &Path) -> Result<Typed, (Vec<CompileError>, SourceMap)> {
     let (ast, source_map) = resolve::resolve(file_path)?;
     let typed = typed_ast::lower(&ast).map_err(|e| (vec![e], source_map.clone()))?;
     Ok(Typed { typed, source_map })
 }
 
+/// A resolved and type-checked program.
 pub struct Typed {
+    /// Typed AST.
     pub typed: typed_ast::SourceFile,
+    /// Sources loaded during compilation.
     pub source_map: SourceMap,
 }
 
 impl Typed {
-    /// Lower the type-checked AST into the mangled AST. Currently a no-op
-    /// structural map (see `mangled_ast::lower`).
+    /// Assigns final symbols to definitions.
     pub fn to_mangled(self) -> Mangled {
         let mangled = mangled_ast::lower(&self.typed, &self.source_map);
         Mangled {
@@ -28,12 +30,16 @@ impl Typed {
     }
 }
 
+/// A program with final definition symbols.
 pub struct Mangled {
+    /// Mangled AST.
     pub mangled: mangled_ast::SourceFile,
+    /// Sources loaded during compilation.
     pub source_map: SourceMap,
 }
 
 impl Mangled {
+    /// Lowers the program to IR.
     pub fn to_ir(self) -> Ir {
         let ir = ir::lower(&self.mangled);
         Ir {
@@ -43,20 +49,22 @@ impl Mangled {
     }
 }
 
+/// A lowered IR module.
 pub struct Ir {
+    /// IR module.
     pub ir: ir::Module,
+    /// Sources loaded during compilation.
     pub source_map: SourceMap,
 }
 
 impl Ir {
-    /// Run the IR optimization passes (`ir_opt`) in place, returning self for
-    /// chaining. This is part of the **release** pipeline only — the interpreters
-    /// and debug codegen run the un-optimized IR straight from `to_ir`.
+    /// Runs the IR optimization passes.
     pub fn optimized(mut self) -> Ir {
         ir_opt::optimize(&mut self.ir);
         self
     }
 
+    /// Generates C source.
     pub fn to_c(&self, source_file: &str) -> CSource {
         let c_source = codegen::generate(&self.ir, source_file, &self.source_map);
         CSource {
@@ -66,21 +74,24 @@ impl Ir {
     }
 }
 
+/// Generated C source and its source map.
 pub struct CSource {
+    /// Generated translation unit.
     pub c_source: String,
+    /// Sources loaded during compilation.
     pub source_map: SourceMap,
 }
 
+/// Native compilation mode.
 pub enum CompileMode {
-    /// ASAN + simple clang, links target/debug/libsolar_system
+    /// Builds with Clang and AddressSanitizer.
     Debug,
-    /// LLVM LTO, cross-language optimization, allocator attribute stamping
+    /// Builds with LLVM optimization and LTO.
     Release,
 }
 
 impl CSource {
-    /// Compile to native binary. Intermediate files go in `target/solar/{name}_{random_hex}/`
-    /// and are kept for debugging.
+    /// Compiles the generated C to a native binary.
     pub fn to_binary(self, name: &str, mode: CompileMode) -> Binary {
         let unique: u64 = rand::random();
         let slug = format!("{name}_{unique:x}");
@@ -99,7 +110,9 @@ impl CSource {
     }
 }
 
+/// A compiled native program.
 pub struct Binary {
+    /// Executable path.
     pub path: PathBuf,
 }
 
@@ -122,10 +135,6 @@ impl Binary {
         stdout.into_owned()
     }
 }
-
-// ---------------------------------------------------------------------------
-// Debug compilation: clang + ASAN, links target/debug/libsolar_system
-// ---------------------------------------------------------------------------
 
 /// Path to the GC write-barrier LLVM pass plugin (built by `build.rs`).
 fn wb_plugin() -> &'static str {
@@ -170,15 +179,7 @@ fn lower_gc_alloc(in_bc: &Path, out_bc: &Path) {
 fn compile_debug(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
     let bin_path = dir.join(name);
 
-    // One clang invocation: compile the generated C with ASAN and link it
-    // directly against the once-built solar-system runtime. No LLVM barrier
-    // plugin and no per-test runtime rebuild, so the debug pipeline stays fast.
-    // The collector's correctness (write barriers, concurrent marking/sweeping)
-    // is exercised by the release pipeline through examples/, not by these
-    // output-equivalence tests — which allocate far too little to trigger a GC
-    // cycle, so the missing barriers don't affect their output. `sol_alloc`
-    // returns uninitialized memory; the explicit `memset` codegen emits after
-    // each allocation (un-elided at this -O0) provides the zeroing.
+    // Debug codegen has no write barriers, so it disables collection.
     let out = Command::new("clang")
         .args([
             "-fsanitize=address",
@@ -263,7 +264,6 @@ fn compile_release(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
         runtime_lib.display()
     );
 
-    // Extract bitcode from runtime archive
     eprintln!("=== Extracting bitcode from runtime archive ===");
     run_cmd(
         "ar",
@@ -275,16 +275,7 @@ fn compile_release(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
         ],
     );
 
-    // Find LLVM IR bitcode .o files. Only merge solar_system's OWN bitcode (its
-    // codegen units, plus the assembled atomic128 helper) into the module that
-    // gets re-optimized with the user's code. The runtime's dependency crates
-    // (backtrace, gimli, addr2line, object, rustix, …) make up ~11 MB of the
-    // ~15 MB of bitcode in the archive but are only the panic/backtrace path —
-    // never hot, never inlined into user code, and already fat-LTO-optimized
-    // when cargo built the archive. Re-running `opt -O3` over them on every
-    // compile was the dominant cost. They resolve natively from the `.a` at the
-    // final clang link below (which only pulls archive members for symbols not
-    // already defined in full.bc, so no duplicate-symbol conflict).
+    // Only runtime-owned bitcode participates in cross-language optimization.
     eprintln!("=== Merging Rust bitcode (solar_system only) ===");
     let bc_files: Vec<String> = std::fs::read_dir(dir)
         .unwrap()

@@ -1,23 +1,11 @@
-//! Mangled AST — a structural mirror of `typed_ast` that sits between type
-//! checking and IR lowering in the pipeline. Its node types are identical in
-//! shape to `typed_ast`'s EXCEPT that every definition identity is a final,
-//! unique C symbol **string** here, whereas in `typed_ast` it is a
-//! provenance-carrying **structural value**: `TypeId { def: DefId, args }` for a
-//! type, `FuncId { def, args, overload, method }` for a function/method, and
-//! `DefId { file, name }` for a static. [`lower`] is where the deferred
-//! **module-mangling into a single virtual file** happens — the ONLY place any
-//! `__mod…`/`enc_id` mangling exists: it renders each structural id to its final
-//! symbol (module-prefixed by the defining file, bare for the root and for
-//! synthetic defs), so downstream (`ir`, `codegen`, `panic`) sees the same
-//! symbols it always did. Nothing before this stage stringifies a `DefId`.
+//! Typed AST with definition identities replaced by final symbol names.
 
 use crate::ast;
 use crate::typed_ast as ta;
 use std::collections::HashMap;
 use std::fmt;
 
-// --- Types (mirror of `typed_ast::Type`) ---
-
+/// A fully resolved Solar type.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Int8,
@@ -77,6 +65,7 @@ impl From<&ast::NumericType> for Type {
 }
 
 impl Type {
+    /// Returns whether this is an integer type.
     pub fn is_integer(&self) -> bool {
         matches!(
             self,
@@ -93,14 +82,17 @@ impl Type {
         )
     }
 
+    /// Returns whether this is a floating-point type.
     pub fn is_float(&self) -> bool {
         matches!(self, Type::Float32 | Type::Float64)
     }
 
+    /// Returns whether this is numeric.
     pub fn is_numeric(&self) -> bool {
         self.is_integer() || matches!(self, Type::Float32 | Type::Float64)
     }
 
+    /// Returns whether this is an unsigned integer type.
     pub fn is_unsigned(&self) -> bool {
         matches!(
             self,
@@ -120,10 +112,12 @@ impl Type {
         }
     }
 
+    /// Returns whether this is a nullable reference type.
     pub fn is_nullable_ref(&self) -> bool {
         matches!(self, Type::NullableRef(_) | Type::NullableRefUnsized(_))
     }
 
+    /// Returns whether values of this type have a compile-time size.
     pub fn is_sized(&self, structs: &HashMap<String, StructDef>) -> bool {
         match self {
             Type::Array(_) => false,
@@ -190,61 +184,84 @@ impl fmt::Display for Type {
     }
 }
 
-// --- AST nodes (mirror of `typed_ast` nodes) ---
-
+/// A mangled, monomorphized program.
 #[derive(Debug)]
 pub struct SourceFile {
+    /// Struct definitions keyed by symbol.
     pub structs: HashMap<String, StructDef>,
+    /// Enum definitions keyed by symbol.
     pub enums: HashMap<String, EnumDef>,
+    /// Function definitions keyed by symbol.
     pub functions: HashMap<String, FunctionDef>,
-    /// Top-level `static` declarations, in source order. Each init is the
-    /// lowered literal expression; downstream layers store it into the global
-    /// before `main`'s body runs.
+    /// Mutable globals in source order.
     pub statics: Vec<StaticItem>,
 }
 
+/// A mutable global.
 #[derive(Debug, Clone)]
 pub struct StaticItem {
+    /// Global symbol.
     pub name: String,
+    /// Stored type.
     pub ty: Type,
+    /// Initial value.
     pub init: Expr,
 }
 
+/// A struct definition.
 #[derive(Debug, Clone)]
 pub struct StructDef {
+    /// Struct symbol.
     pub name: String,
+    /// Fields in layout order.
     pub fields: Vec<FieldDef>,
 }
 
+/// A struct field.
 #[derive(Debug, Clone)]
 pub struct FieldDef {
+    /// Field name.
     pub name: String,
+    /// Field type.
     pub ty: Type,
 }
 
+/// A function definition.
 #[derive(Debug, Clone)]
 pub struct FunctionDef {
+    /// Function symbol.
     pub name: String,
+    /// Function parameters.
     pub parameters: Vec<Parameter>,
+    /// Return type.
     pub return_type: Type,
+    /// Function body.
     pub body: Vec<Statement>,
-    /// `fn(inline)` hint, carried through to codegen. Interpreters ignore it.
+    /// Whether code generation should request inlining.
     pub inline_hint: bool,
 }
 
+/// A function parameter.
 #[derive(Debug, Clone)]
 pub struct Parameter {
+    /// Parameter name.
     pub name: String,
+    /// Parameter type.
     pub ty: Type,
+    /// Declaration span.
     pub span: ast::SourceSpan,
 }
 
+/// A statement and its source span.
 #[derive(Debug, Clone)]
 pub struct Statement {
+    /// Statement contents.
     pub kind: StatementKind,
+    /// Statement span.
     pub span: ast::SourceSpan,
 }
 
+/// A typed statement.
 #[derive(Debug, Clone)]
 pub enum StatementKind {
     Let {
@@ -271,13 +288,18 @@ pub enum StatementKind {
     Continue,
 }
 
+/// An expression with its type and source span.
 #[derive(Debug, Clone)]
 pub struct Expr {
+    /// Expression type.
     pub ty: Type,
+    /// Expression contents.
     pub kind: ExprKind,
+    /// Expression span.
     pub span: ast::SourceSpan,
 }
 
+/// A typed expression.
 #[derive(Debug, Clone)]
 pub enum ExprKind {
     Identifier(String),
@@ -367,37 +389,54 @@ pub enum ExprKind {
     },
 }
 
+/// A struct field initializer.
 #[derive(Debug, Clone)]
 pub struct FieldInit {
+    /// Field name.
     pub name: String,
+    /// Initializer value.
     pub value: Expr,
 }
 
+/// A variable captured by a closure.
 #[derive(Debug, Clone)]
 pub struct CapturedVar {
+    /// Variable name.
     pub name: String,
+    /// Captured type.
     pub ty: Type,
 }
 
+/// An enum definition.
 #[derive(Debug, Clone)]
 pub struct EnumDef {
+    /// Enum symbol.
     pub name: String,
+    /// Variants in discriminant order.
     pub variants: Vec<EnumVariantDef>,
 }
 
+/// An enum variant definition.
 #[derive(Debug, Clone)]
 pub struct EnumVariantDef {
+    /// Variant name.
     pub name: String,
+    /// Optional payload type.
     pub inner_type: Option<Type>,
+    /// Numeric discriminant.
     pub index: usize,
 }
 
+/// A typed match arm.
 #[derive(Debug, Clone)]
 pub struct TypedMatchArm {
+    /// Arm pattern.
     pub pattern: TypedPattern,
+    /// Arm body.
     pub body: Vec<Statement>,
 }
 
+/// A typed match pattern.
 #[derive(Debug, Clone)]
 pub enum TypedPattern {
     Variant {
@@ -409,19 +448,11 @@ pub enum TypedPattern {
     Wildcard(String, Type),
 }
 
-// --- Lowering: typed_ast -> mangled_ast (module-mangling happens here) ---
-
 use crate::error::SourceMap;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// Map a type-checked source file into the mangled AST. This is where the
-/// deferred **module-mangling into a single virtual file** happens: every
-/// provenance-carrying identity (`typed_ast::TypeId` for types, and the
-/// `__def{file}_…` provenance-token name strings that `resolve` baked into the
-/// AST) is rendered into its final, unique C symbol, applying each file's module
-/// prefix (bare for the root file). Downstream (`ir`, `codegen`, `panic`) is
-/// unchanged — it sees the same `__mod…` symbols it always did.
+/// Replaces structural definition identities with final symbol names.
 pub fn lower(source: &ta::SourceFile, source_map: &SourceMap) -> SourceFile {
     let r = Renderer {
         sm: source_map,

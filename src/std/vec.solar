@@ -2,11 +2,13 @@ import { panic } from "@intrinsics";
 import { Option } from "lib.solar";
 import iter from "iter.solar";
 
+/// A growable array.
 pub struct Vec#[T] {
     len: Uint,
     inner: ^[T],
 }
 
+/// Creates a vector containing a copy of `src`.
 pub fn Vec#[T](src: &[T]) -> Vec#[T] {
     Vec#[T] {
         len: src.len(),
@@ -14,20 +16,22 @@ pub fn Vec#[T](src: &[T]) -> Vec#[T] {
     }
 }
 
+/// Borrows the initialized elements.
 pub method as_slice#[T](self: &Vec#[T]) -> &[T] {
     self@.inner@[0u..self@.len]&
 }
 
+/// Appends a value.
 pub method push#[T](self: &Vec#[T], value: T) {
     let cap = self@.inner@&.len();
     if self@.len >= cap {
-        // Double capacity by concatenating inner with itself
         self@.inner = (self@.inner@ + self@.inner@)^;
     }
     self@.inner@[self@.len] = value;
     self@.len = self@.len + 1u;
 }
 
+/// Returns the element at `index`.
 pub method at#[T](self: &Vec#[T], index: Uint) -> &T {
     if index >= self@.len {
         panic("Vec.at: index out of bounds"&);
@@ -35,6 +39,7 @@ pub method at#[T](self: &Vec#[T], index: Uint) -> &T {
     self@.inner@[index]&
 }
 
+/// Iterates over the vector's elements.
 pub method iter#[T](self: &Vec#[T]) -> iter::Iterator#[T] {
     let slice = self.as_slice();
     iter::Iterator#[T] {

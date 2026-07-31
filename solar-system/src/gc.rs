@@ -8,37 +8,33 @@ use crate::heap::{self, MarkKind};
 use crate::init_cell::InitCell;
 use crate::mem::MarkFn;
 
-// ---------------------------------------------------------------------------
-// Per-thread allocation state.
-//
-// The size-class arena, bitmaps and metadata table are global (see `heap`);
-// the only per-thread allocator state is a claim cursor per size class plus a
-// list of big (>1 GiB) allocations not yet published to the global registry.
-// ---------------------------------------------------------------------------
-
-/// Cursor over the slots a thread has claimed from one size class. `[cur, end)`
-/// is the unconsumed part of the current claim; when `cur == end` the thread
-/// claims a fresh run via `heap::claim_run`.
+/// Cursor over slots claimed from one size class.
 pub struct ThreadClassState {
+    /// Next unconsumed slot.
     pub cur: u64,
+    /// Exclusive end of the claim.
     pub end: u64,
 }
 
-/// A big allocation made by this thread, not yet merged into `BIG_ALLOCS`.
+/// An unpublished large allocation.
 pub struct BigAllocLocal {
+    /// Allocation base address.
     pub base: usize,
+    /// Allocation size in bytes.
     pub size: usize,
+    /// Allocation alignment.
     pub align: usize,
+    /// Mark function address.
     pub mark_fn: usize,
 }
 
+/// Per-thread allocator state.
 pub struct ThreadAllocState {
+    /// Claim cursor for each size class.
     pub classes: [ThreadClassState; heap::NUM_CLASSES],
+    /// Large allocations awaiting publication.
     pub big_allocs: Vec<BigAllocLocal>,
-    /// Bytes allocated since this thread last flushed into `ALLOCATED_SINCE_GC`.
-    /// Batches the global counter update off the hot path (flush every
-    /// `ALLOC_FLUSH_CHUNK`) so back-pressure accounting costs ~nothing per
-    /// allocation.
+    /// Allocation count owned by this thread.
     pub total_allocations: usize,
 }
 
@@ -49,6 +45,7 @@ impl Default for ThreadAllocState {
 }
 
 impl ThreadAllocState {
+    /// Creates empty per-thread allocator state.
     pub fn new() -> Self {
         Self {
             classes: std::array::from_fn(|_| ThreadClassState { cur: 0, end: 0 }),
@@ -56,8 +53,7 @@ impl ThreadAllocState {
             total_allocations: 0,
         }
     }
-    /// Drop all claim cursors so the next allocation re-claims against the
-    /// post-sweep frontier. Called at end of GC.
+    /// Discards cached allocation claims.
     pub fn reset_claims(&mut self) {
         for c in &mut self.classes {
             c.cur = 0;
@@ -66,22 +62,9 @@ impl ThreadAllocState {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Global atomics.
-// ---------------------------------------------------------------------------
-
-/// Estimated *traced* live bytes found by the last cycle (live excluding that
-/// cycle's born-black float), published by the GC thread at STW pause 3. The
-/// claim-based trigger (`note_claimed`) paces against this, not the raw live
-/// total: pacing off the float-inflated total is a runaway feedback loop
-/// (float inflates live → inflates the trigger threshold → collections fire
-/// more rarely → even more float accumulates), which on a high-churn workload
-/// lets the heap balloon until a single cycle must mark a huge graph.
+/// Traced live bytes found by the last completed collection.
 pub(crate) static LIVE_SIZE_FROM_LAST_GC: AtomicUsize = AtomicUsize::new(0);
-/// Bytes claimed (arena runs + big allocations, across all threads) since the
-/// last completed cycle. Bumped by `note_claimed`, reset with the rest of the
-/// accounting at pause 3. A plain global atomic is fine here: it's touched
-/// once per `CLAIM_BYTES` run / big allocation, not once per allocation.
+/// Bytes claimed since the last completed collection.
 static CLAIMED_SINCE_GC: AtomicUsize = AtomicUsize::new(0);
 
 /// Floor on the trigger threshold so a tiny heap (traced live ≈ 0 at startup)
@@ -107,16 +90,6 @@ pub(crate) static ENABLE_STAT_PRINTS: InitCell<bool> = InitCell::new(false);
 pub(crate) static ENABLE_ALLOC_PRINTS: InitCell<bool> = InitCell::new(false);
 pub(crate) static DISABLE_GC: InitCell<bool> = InitCell::new(false);
 
-// ---------------------------------------------------------------------------
-// Tri-color gray frontier.
-//
-// Kept deliberately SEPARATE from the alloc/mark bitmaps in `heap`: the mark
-// bitmap is the "black / reached" set, this queue is the "gray" set of
-// reached-but-not-yet-scanned pointer values. It is fed by the STW root scans
-// and, during concurrent marking, by the write barrier and `sol_memcpy` (via
-// per-thread buffers); it is drained by the GC thread's marker.
-// ---------------------------------------------------------------------------
-
 /// Number of gray-queue shards. Sized ≥ typical core count so producers
 /// (mutators flushing) and consumers (mark workers) rarely hit the same shard.
 const GRAY_SHARDS: usize = 16;
@@ -134,14 +107,9 @@ static GRAY_LEN: AtomicUsize = AtomicUsize::new(0);
 /// observes global quiescence, so sleepers re-check and either grab work or
 /// exit `mark_worker`.
 static MARK_WAKE: AtomicU32 = AtomicU32::new(0);
-/// Number of mark workers currently parked on `MARK_WAKE`; lets producers skip
-/// the wake syscall when nobody is sleeping (the common case: all workers busy
-/// draining). SeqCst everywhere: either the producer's `MARK_WAITERS` load sees
-/// the waiter's registration (and wakes it), or the registration came later in
-/// the SC order — after the producer's `MARK_WAKE` bump — so the waiter's
-/// FUTEX_WAIT sees the bumped word and refuses to sleep. Anything weaker allows
-/// the classic missed-wake: producer reads waiters=0 while the waiter reads the
-/// pre-bump word, and the worker sleeps through its wake.
+/// Number of parked mark workers.
+///
+/// Sequential consistency prevents a missed wake during waiter registration.
 static MARK_WAITERS: AtomicU32 = AtomicU32::new(0);
 
 /// Wake every parked mark worker (new gray work, or quiescence reached).
@@ -538,16 +506,6 @@ unsafe extern "C" fn self_suspend_inner(slot: *const ThreadSlot, wait_epoch: u64
         notify_and_wait_for_gc(slot, wait_epoch);
     }
 }
-
-// ---------------------------------------------------------------------------
-// Dedicated GC thread + cycle trigger.
-//
-// A single dedicated thread owns every collection. Mutators never collect; on
-// the heap-growth heuristic they call `request_gc`, which just wakes the GC
-// thread and returns — the mutator keeps running while the cycle proceeds. This
-// removes the old asymmetry where the triggering thread became the collector
-// (snapshotting its own registers/stack and special-casing its own tid).
-// ---------------------------------------------------------------------------
 
 /// Bumped by `request_gc` to ask for a cycle; the GC thread FUTEX_WAITs on it.
 static GC_REQUEST: AtomicU64 = AtomicU64::new(0);
@@ -1226,18 +1184,12 @@ pub(crate) struct BigSnap {
 pub(crate) struct MarkContext {
     pub big_ptr: *const BigSnap,
     pub big_len: usize,
-    /// Pending pointers to scan. Owned by the job closure; marking runs until
-    /// it drains. Replaces the old unbounded recursion through `mark_atomic`.
+    /// Pending pointers owned and drained by this mark job.
     pub worklist: *mut Vec<usize>,
     /// Shard this worker overflows excess worklist into (rotated each overflow
     /// so donated work spreads across shards for idle workers to steal).
     pub shard: usize,
-    // --- Batched mark-bit accumulator ---
-    // Marking a slot only flips a bit in the mark bitmap. Consecutive marks of
-    // a physically-sequential structure (e.g. a linked list whose nodes were
-    // bump-allocated in order) hit the same 64-bit bitmap word, so we OR the
-    // bits into a local accumulator and flush once per word with a single
-    // atomic `fetch_or` — instead of one `fetch_or` per slot.
+    // Mark bits are batched by bitmap word.
     /// Class of the word currently in the accumulator; `u32::MAX` = none.
     pub accum_class: u32,
     /// Bitmap word index currently in the accumulator.
@@ -1252,10 +1204,9 @@ impl MarkContext {
     }
 }
 
+/// Enqueues a pointer from a generated mark function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_gc_mark(ctx: *mut u8, ptr: *mut u8) {
-    // Called by the generated C mark functions for each pointer field. Just
-    // enqueue it; the enclosing `drain` loop does the work — no recursion.
     let ctx = unsafe { &*(ctx as *const MarkContext) };
     unsafe { (*ctx.worklist).push(ptr as usize) };
 }
@@ -1268,17 +1219,7 @@ pub unsafe extern "C" fn sol_gc_mark(ctx: *mut u8, ptr: *mut u8) {
 #[unsafe(no_mangle)]
 pub static SOL_CONCURRENT_MARKING: AtomicBool = AtomicBool::new(false);
 
-/// Dijkstra-style insertion write barrier. The compiler's `write_barriers` pass
-/// inserts a call after every store of a potentially-heap pointer `val` to a
-/// non-stack destination `dst` (and after `llvm.memcpy`/`memmove` via the bulk
-/// barrier). Inserting after `opt -O3` keeps LLVM's allocation elision intact;
-/// the final `clang -O3` link inlines this fast path into the instrumented
-/// stores.
-///
-/// While marking is active it *shades* `val`: enqueues it onto the gray
-/// frontier so the marker scans it, preserving the tri-color invariant when a
-/// pointer is stored into an already-scanned (black) object. `val` may be null
-/// (e.g. vectorized stores with no single SSA value) — nothing to shade.
+/// Shades a pointer stored while concurrent marking is active.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_write_barrier(dst: *mut u8, val: *mut u8) {
     if SOL_CONCURRENT_MARKING.load(Ordering::Relaxed) {
@@ -1293,12 +1234,7 @@ unsafe fn write_barrier_slow(_dst: *mut u8, val: *mut u8) {
     if v == 0 {
         return;
     }
-    // White-only shading: an already-marked (black/gray) target is in the mark
-    // set already, so it needs no shading. Skipping it is the standard Dijkstra
-    // optimization and, crucially here, stops the barrier from flooding the gray
-    // queue with already-live pointers (e.g. freshly born-black objects, which
-    // dominate a fast allocator's stores). Big-alloc pointers (rare) skip the
-    // check and are enqueued for the marker to resolve.
+    // Avoid enqueueing already-marked targets.
     if v.wrapping_sub(heap::arena_base()) < heap::ARENA_SIZE {
         if unsafe { heap::is_marked_addr(v) } {
             return;

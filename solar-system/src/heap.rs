@@ -1,20 +1,4 @@
-//! Address-based size-class heap.
-//!
-//! Allocations up to 1 GiB are rounded up to a power-of-2 size class. Each
-//! size class owns a 1 TiB sub-region of one big `mmap` reservation, so the
-//! size class of a pointer is just `(p - ARENA_BASE) / 1TiB` — `O(1)`, no
-//! tree. Two side bitmaps (1 bit per slot per region) track which slots are
-//! allocated and which were marked in the current GC cycle; a side metadata
-//! table (16 B per slot, only for classes with slot size >= 128 B) stores the
-//! `mark_fn` and the user-requested size for precise marking. Slots in classes
-//! < 128 B carry no metadata and are conservatively scanned during marking.
-//!
-//! Allocations larger than 1 GiB bypass the arena entirely (see `mem::big_*`
-//! and `gc`'s `BIG_ALLOCS`).
-//!
-//! All the reservations are `MAP_NORESERVE` and demand-paged, so the resident
-//! footprint is proportional to the live heap, not to the ~28 TiB / ~290 GiB
-//! of virtual address space reserved.
+//! Address-partitioned size-class heap.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -26,12 +10,17 @@ use crate::mem::MarkFn;
 pub const MIN_LOG: u32 = 3;
 /// Largest arena size class: `1 << MAX_LOG` = 1 GiB.
 pub const MAX_LOG: u32 = 30;
+/// Number of arena size classes.
 pub const NUM_CLASSES: usize = (MAX_LOG - MIN_LOG + 1) as usize; // 28
 /// Each size class gets a `1 << REGION_LOG` = 1 TiB region.
 pub const REGION_LOG: u32 = 40;
+/// Virtual address-space size assigned to each class.
 pub const REGION_SIZE: usize = 1usize << REGION_LOG;
+/// Total virtual address-space reservation for the arena.
 pub const ARENA_SIZE: usize = NUM_CLASSES * REGION_SIZE; // ~28 TiB
+/// Base-two logarithm of the system page size.
 pub const PAGE_LOG: u32 = 12;
+/// System page size in bytes.
 pub const PAGE_SIZE: usize = 1usize << PAGE_LOG;
 
 /// Slots of this size or larger get a metadata-table entry (precise marking);
@@ -45,10 +34,12 @@ pub const META_MIN_CLASS: usize = (META_THRESHOLD.trailing_zeros() - MIN_LOG) as
 pub const MAX_ARENA_ALLOC: usize = 1usize << MAX_LOG;
 
 #[inline]
+/// Returns the base-two logarithm of a class's slot size.
 pub const fn slot_size_log(class: usize) -> u32 {
     class as u32 + MIN_LOG
 }
 #[inline]
+/// Returns a class's slot size in bytes.
 pub const fn slot_size(class: usize) -> usize {
     1usize << slot_size_log(class)
 }
@@ -87,12 +78,14 @@ pub const fn claim_slots(class: usize) -> usize {
 // = `1 << (REGION_LOG - MIN_LOG - 3 - c)`.
 const BITS_TOP: u32 = REGION_LOG - MIN_LOG - 3 + 1; // 35
 #[inline]
+/// Returns a class's byte offset within a bitmap.
 pub const fn bitmap_class_offset(class: usize) -> usize {
     (1usize << BITS_TOP) - (1usize << (BITS_TOP - class as u32))
 }
 /// Total bytes to reserve for one bitmap (a slight over-reserve).
 pub const BITMAP_TOTAL: usize = 1usize << BITS_TOP; // 32 GiB
 
+/// Metadata stored for a precisely traced slot.
 #[repr(C)]
 pub struct MetaEntry {
     /// `MarkFn` reinterpreted as `usize`. Valid whenever the slot's allocated
@@ -110,6 +103,7 @@ const _: () = assert!(1usize << META_ENTRY_LOG == size_of::<MetaEntry>());
 // = `1 << (META_ENTRY_LOG + REGION_LOG - MIN_LOG - c)` bytes.
 const META_TOP: u32 = META_ENTRY_LOG + REGION_LOG - MIN_LOG - META_MIN_CLASS as u32 + 1; // 38
 #[inline]
+/// Returns a class's byte offset within the metadata table.
 pub const fn meta_class_offset(class: usize) -> usize {
     debug_assert!(class >= META_MIN_CLASS);
     (1usize << META_TOP) - (1usize << (META_TOP + META_MIN_CLASS as u32 - class as u32))
@@ -173,6 +167,7 @@ pub fn init() {
 }
 
 #[inline]
+/// Returns the arena's base address.
 pub fn arena_base() -> usize {
     ARENA_BASE.get()
 }
@@ -204,14 +199,17 @@ pub fn classify(p: usize) -> Option<(usize, usize)> {
 }
 
 #[inline]
+/// Returns the base address of a size-class region.
 pub fn region_base(class: usize) -> usize {
     arena_base() + (class << REGION_LOG)
 }
 #[inline]
+/// Returns the slot containing an address.
 pub fn slot_index(p: usize, region_base: usize, class: usize) -> usize {
     (p - region_base) >> slot_size_log(class)
 }
 #[inline]
+/// Returns a slot's base address.
 pub fn slot_addr(region_base: usize, slot: usize, class: usize) -> usize {
     region_base + (slot << slot_size_log(class))
 }
@@ -234,6 +232,7 @@ fn mark_class_base(class: usize) -> *mut AtomicU64 {
 }
 
 #[inline]
+/// Returns whether a slot is allocated.
 pub unsafe fn is_allocated(class: usize, slot: usize) -> bool {
     let w = unsafe { &*alloc_class_base(class).add(slot >> 6) };
     w.load(Ordering::Relaxed) & bit_mask(slot) != 0
@@ -246,6 +245,7 @@ pub unsafe fn alloc_word_load(class: usize, word: usize) -> u64 {
     unsafe { &*alloc_class_base(class).add(word) }.load(Ordering::Relaxed)
 }
 #[inline]
+/// Marks a slot as allocated.
 pub unsafe fn set_allocated(class: usize, slot: usize) {
     // Non-atomic read-modify-write: the only thread that writes this word until
     // the next stop-the-world (sweep) is the one that claimed `slot`'s run, and
@@ -299,6 +299,7 @@ pub unsafe fn is_marked_addr(p: usize) -> bool {
 }
 
 #[inline]
+/// Returns a pointer to a slot's metadata entry.
 pub unsafe fn meta_entry(class: usize, slot: usize) -> *mut MetaEntry {
     let base = META_BASE.get() + meta_class_offset(class);
     unsafe { (base as *mut MetaEntry).add(slot) }
@@ -324,10 +325,12 @@ pub fn claim_run(class: usize) -> (u64, u64) {
     (s, e)
 }
 #[inline]
+/// Returns a class's high-water slot index.
 pub fn hwm(class: usize) -> u64 {
     HWM[class].load(Ordering::Relaxed)
 }
 #[inline]
+/// Resets a class's allocation frontier.
 pub fn reset_frontier(class: usize) {
     NEXT_SLOT[class].store(0, Ordering::Relaxed);
 }
@@ -346,13 +349,18 @@ pub fn freeze_frontier_to_hwm(class: usize) {
 // Lookup (used by the GC's conservative scan).
 // ---------------------------------------------------------------------------
 
+/// Describes how an allocated slot must be traced.
 pub enum MarkKind {
+    /// Uses a generated mark function.
     Precise {
+        /// Mark function.
         mark_fn: MarkFn,
+        /// User-requested allocation size.
         size: u64,
     },
     /// Conservatively scan `[base, base + slot_size)`.
     Conservative {
+        /// Allocated slot size.
         slot_size: usize,
     },
 }

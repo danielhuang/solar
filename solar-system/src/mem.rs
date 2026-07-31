@@ -7,11 +7,12 @@ use crate::gc::{
 };
 use crate::heap;
 
+/// Function used by the collector to trace an allocation.
 pub type MarkFn = unsafe extern "C" fn(*mut u8, *mut u8, u64);
 
+/// Allocates uninitialized GC-managed memory.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -> *mut u8 {
-    // Per-thread slot (stable across GC).
     let slot_ptr = MY_SLOT.get();
     assert!(
         !slot_ptr.is_null(),
@@ -19,19 +20,13 @@ pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -
     );
     let slot = unsafe { &*slot_ptr };
 
-    // Per-thread alloc state via raw pointer so that no &mut to it exists
-    // across a GC suspension (the GC thread mutates it at STW pauses). The GC
-    // trigger itself is not checked here: it lives in `heap::claim_run` /
-    // `big_allocate` (via `gc::note_claimed`), off the per-allocation path.
+    // Avoid holding a mutable reference across a GC suspension.
     let alloc_ptr = slot.alloc.get();
 
     if ENABLE_ALLOC_PRINTS.get() {
         eprintln!("allocating new object: {size} bytes (align={align})");
     }
 
-    // Update per-thread structures inside a GC critical section so the signal
-    // handler defers rather than interrupting mid-update; if a stop arrived
-    // meanwhile, `with_signal_deferred` self-suspends cleanly afterwards.
     let addr = unsafe {
         with_signal_deferred(slot, || match heap::size_class(size, align) {
             Some(class) => arena_allocate(&mut *alloc_ptr, class, size, mark_fn),
@@ -55,35 +50,22 @@ unsafe fn arena_allocate(
     size: usize,
     mark_fn: MarkFn,
 ) -> *mut u8 {
-    // Find a free slot in the current claim; claim a fresh run when exhausted.
-    // The scan works a bitmap word at a time: load the word covering `cur`
-    // once and test all its slots from that value, instead of reloading the
-    // same word for every slot. Claims are bitmap-word-aligned (see
-    // `claim_slots`), so `cur`'s word never extends past `end`.
+    // Scan one allocation-bitmap word per recycled run segment.
     let slot = 'find: loop {
         let cs = &mut state.classes[class];
         while cs.cur < cs.end {
             let cur = cs.cur;
             let w = unsafe { heap::alloc_word_load(class, (cur >> 6) as usize) };
-            // Fast path: `cur` itself is free. The slot index is `cur` — a
-            // value that does NOT depend on the loaded word — so the address
-            // math and the caller's stores don't wait on the load; it only
-            // feeds this (predictable) branch. Computing the slot from the
-            // word (tzcnt) here instead would chain every downstream access
-            // onto the load and cost ~10% on an allocation-bound workload.
             if w & (1 << (cur & 63)) == 0 {
                 cs.cur = cur + 1;
                 break 'find cur as usize;
             }
-            // `cur` is allocated (recycled run): skip the whole allocated
-            // stretch using the word already in hand.
             let free = !w & (u64::MAX << (cur & 63));
             if free != 0 {
                 let s = (cur & !63) + free.trailing_zeros() as u64;
                 cs.cur = s + 1;
                 break 'find s as usize;
             }
-            // Word exhausted: skip to the next word boundary.
             cs.cur = (cur | 63) + 1;
         }
         let (s, e) = heap::claim_run(class);
@@ -94,14 +76,7 @@ unsafe fn arena_allocate(
     let rbase = heap::region_base(class);
     let addr = heap::slot_addr(rbase, slot, class);
 
-    // No zeroing here: codegen emits an explicit `memset(p, 0, size)` after every
-    // `sol_alloc` call, which LLVM dead-store-eliminates wherever the caller fully
-    // overwrites the object before it escapes, and keeps for any field left
-    // unwritten (so the GC never traces an uninitialized pointer field). Recycled
-    // slots therefore arrive non-zero; the caller's memset zeroes them.
-
-    // Write metadata before publishing the allocated bit so any GC scan that
-    // sees the slot as allocated also sees valid metadata.
+    // Publish metadata before the allocation bit.
     if class >= heap::META_MIN_CLASS {
         let m = unsafe { &mut *heap::meta_entry(class, slot) };
         m.mark_fn = mark_fn as usize;
@@ -109,10 +84,6 @@ unsafe fn arena_allocate(
     }
     unsafe { heap::set_allocated(class, slot) };
 
-    // Allocate black: an object born during concurrent marking is marked live
-    // immediately, so the stop-the-world sweep at the end of the cycle never
-    // reclaims it. Its (zeroed) fields are filled by barriered stores, so its
-    // outgoing pointers are still shaded.
     if SOL_CONCURRENT_MARKING.load(Ordering::Relaxed) {
         unsafe { heap::set_marked(class, slot) };
     }
@@ -153,32 +124,13 @@ unsafe fn big_allocate(
     ptr
 }
 
+/// Copies possibly-overlapping pointer-free bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_memcpy(dst: *mut u8, src: *const u8, size: usize) {
-    // A plain copy with no GC side effects: keeping the body free of global
-    // reads/writes is what lets the optimizer prove sol_memcpy doesn't capture
-    // or escape its arguments, so freshly-allocated objects initialized through
-    // it can still be SROA'd / elided. Codegen emits sol_memcpy ONLY for
-    // pointer-free bytes (GC-pointer words are copied with typed `uint8_t*`
-    // member stores, which the write-barrier pass instruments precisely), so
-    // the `solar-lower-gc-alloc` pass tags its lowered `llvm.memmove` with
-    // `!solar.nobarrier` and plain-data copies (e.g. `[Uint8]` contents) carry
-    // no barrier at all.
-    //
-    // MUST be `ptr::copy` (memmove), not `copy_nonoverlapping`: Solar copies
-    // may alias — `x = x;`, `a[i] = a[i]`, `dst@.f = src@.f` with dst == src,
-    // and slice-range assignment (`s[0..3] = s[1..4]`) can partially overlap
-    // in either direction. The release pipeline lowers this call to
-    // `llvm.memmove` (see solar-lower-gc-alloc) with matching semantics.
     unsafe { std::ptr::copy(src, dst, size) };
 }
 
-// Bounds/null/length checks below are *user* errors detected before any memory
-// is touched — they throw a catchable Solar exception (`extern "C-unwind"` so
-// the unwind may pass back through the generated C frames). The offset-overflow
-// `expect`s stay Rust panics: they can only trip on a corrupted length/element
-// size, i.e. a broken runtime invariant.
-
+/// Checks a slice range and returns its starting address.
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn sol_slice_range(
     base: *const u8,
@@ -197,6 +149,7 @@ pub unsafe extern "C-unwind" fn sol_slice_range(
     unsafe { base.add(offset as usize) }
 }
 
+/// Checks a slice index and returns the element address.
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn sol_slice_index(
     base: *const u8,

@@ -1,38 +1,4 @@
-//! `args()` / `env()` intrinsics: expose the process command line and
-//! environment to Solar code as `&[&[Uint8]]` (a slice of byte-slices), each
-//! byte-slice freshly **copied** into GC memory so it outlives the OS-owned
-//! `argv`/`environ` storage and is owned by the collector.
-//!
-//! The bytes are copied **directly** from the OS-owned `argv` / `environ`
-//! arrays into GC allocations — there are no intermediate Rust heap
-//! allocations. `argv` is captured by an `.init_array` constructor (on Linux
-//! these run with the same `(argc, argv, envp)` as `main`, before any Solar
-//! code); `environ` is read live at the call. Both arrays, and the
-//! NUL-terminated strings they point at, are stable, non-GC memory for the
-//! process lifetime, so copying out of them across `sol_alloc` calls is sound.
-//!
-//! Building the nested structure means calling `sol_alloc` from Rust, which
-//! requires upholding by hand the invariants codegen normally provides:
-//!
-//! 1. **Zeroing.** Arena memory from `sol_alloc` is uninitialized. The outer
-//!    fat-pointer array is reachable (via this stack frame's conservative scan)
-//!    and born black the moment it exists, so a GC triggered by a later
-//!    per-item `sol_alloc` would run its mark function over not-yet-filled
-//!    slots. We `write_bytes(.., 0, ..)` it before filling so those slots hold
-//!    null data pointers (which the marker ignores). The byte buffers need no
-//!    zeroing: the copy overwrites every exposed byte and their mark fn is a
-//!    no-op, so the rounded-up tail is never traced.
-//! 2. **Mark functions.** Byte buffers contain no pointers (`mark_noop`); the
-//!    outer array is a vector of `&[Uint8]` fat pointers, marked word-by-word
-//!    (`mark_ptr_array`, matching codegen's `_mark_ptr_array` — the length word
-//!    is filtered out by the collector's plausibility check).
-//! 3. **Write barriers.** None needed. Every byte buffer is allocated
-//!    immediately before being stored into the outer array, so it is either
-//!    born black (marking already active) or reachable from `outer`/the `buf`
-//!    local as a root when marking begins — never a white pointer stored into a
-//!    black object, which is the only case the insertion barrier guards.
-//! 4. **Thread.** Both are called from compiled Solar code on a registered
-//!    mutator thread, so `sol_alloc`'s registration assert holds.
+//! Process arguments, environment, and CPU-count intrinsics.
 
 use std::ffi::{c_char, c_int};
 

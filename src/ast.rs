@@ -17,26 +17,24 @@ pub struct SourceSpan {
     pub start: SourcePos,
     /// Exclusive end position.
     pub end: SourcePos,
+    /// Source-map file identifier.
     pub file_id: u32,
 }
 
-/// Provenance identity of a top-level definition: the file it was defined in
-/// plus its original (un-mangled) source name. This is what the front-end
-/// (parser, resolve, typed_ast) carries INSTEAD of a pre-mangled unique string;
-/// the actual module-mangling into a single flat virtual file is deferred to
-/// the `mangled_ast` stage, which renders each `DefId` to a unique C-safe
-/// symbol. `file` is a `SourceMap` FileId (see `resolve`).
+/// The source-level identity of a definition.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct DefId {
+    /// Source-map identifier of the defining file.
     pub file: u32,
+    /// Unmangled source name.
     pub name: String,
 }
 
-/// Sentinel file id for compiler-synthesized types that have no source file
-/// (e.g. anonymous tuples). `mangled_ast` renders these specially.
+/// File identifier reserved for compiler-generated definitions.
 pub const SYNTHETIC_FILE: u32 = u32::MAX;
 
 impl DefId {
+    /// Creates a definition identity.
     pub fn new(file: u32, name: impl Into<String>) -> Self {
         DefId {
             file,
@@ -44,25 +42,26 @@ impl DefId {
         }
     }
 
-    /// A synthetic (source-file-less) def identity, e.g. a tuple shape, a
-    /// closure, or a numeric constructor — rendered bare (no module prefix).
+    /// Creates an identity for a compiler-generated definition.
     pub fn synthetic(name: impl Into<String>) -> Self {
         DefId::new(SYNTHETIC_FILE, name)
     }
 }
 
 impl std::fmt::Display for DefId {
-    /// Renders the (un-mangled) source name — for diagnostics.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name)
     }
 }
 
+/// A parsed Solar source file.
 #[derive(Debug)]
 pub struct SourceFile {
+    /// Top-level declarations in source order.
     pub items: Vec<TopLevelItem>,
 }
 
+/// A top-level Solar declaration.
 #[derive(Debug, Clone)]
 pub enum TopLevelItem {
     Struct(StructDef),
@@ -75,48 +74,59 @@ pub enum TopLevelItem {
     Static(StaticDef),
 }
 
+/// A compile-time constant declaration.
 #[derive(Debug, Clone)]
 pub struct ConstDef {
+    /// Declared name.
     pub name: String,
     /// Optional explicit type; inferred from the literal `value` when absent.
     pub ty: Option<Type>,
     /// The constant's value — must be a literal. Substituted at each use site
     /// during type-check/lowering.
     pub value: Box<Expr>,
+    /// Whether the declaration is exported.
     pub is_pub: bool,
-    /// `///` doc comment attached to this item (lines joined by `\n`), if any.
+    /// Attached documentation.
     pub doc: Option<String>,
+    /// Declaration span.
     pub span: SourceSpan,
 }
 
-/// `static NAME[: T] = <literal>;` — a global mutable variable (top-level
-/// only). Like keyword-parameter defaults, the initial value must be a
-/// literal; state needing init code is a nullable reference populated in
-/// `main`. The type must be sized.
+/// A mutable global declaration.
 #[derive(Debug, Clone)]
 pub struct StaticDef {
+    /// Declared name.
     pub name: String,
     /// Optional explicit type; inferred from the literal `value` when absent.
     pub ty: Option<Type>,
     /// The initial value — must be a literal, stored before `main` runs.
     pub value: Box<Expr>,
+    /// Whether the declaration is exported.
     pub is_pub: bool,
-    /// `///` doc comment attached to this item (lines joined by `\n`), if any.
+    /// Attached documentation.
     pub doc: Option<String>,
+    /// Declaration span.
     pub span: SourceSpan,
 }
 
+/// An import declaration.
 #[derive(Debug, Clone)]
 pub struct ImportDef {
+    /// Imported names or module.
     pub kind: ImportKind,
+    /// Imported file path.
     pub path: String,
+    /// Whether the import is re-exported.
     pub is_pub: bool,
+    /// Declaration span.
     pub span: SourceSpan,
 }
 
+/// A possibly-qualified name in a named import.
 #[derive(Debug, Clone)]
 pub struct ImportName {
-    pub segments: Vec<String>, // ["a", "b"] for a::b, ["Foo"] for plain Foo
+    /// Path segments, ending with the imported name.
+    pub segments: Vec<String>,
 }
 
 impl ImportName {
@@ -136,6 +146,7 @@ impl ImportName {
     }
 }
 
+/// The form of an import declaration.
 #[derive(Debug, Clone)]
 pub enum ImportKind {
     Named(Vec<ImportName>),
@@ -143,95 +154,130 @@ pub enum ImportKind {
     Wildcard,
 }
 
+/// A type alias declaration.
 #[derive(Debug, Clone)]
 pub struct TypeAliasDef {
+    /// Declared name.
     pub name: String,
+    /// Generic type parameters.
     pub type_params: Vec<String>,
+    /// Aliased type.
     pub target_type: Type,
+    /// Whether the declaration is exported.
     pub is_pub: bool,
-    /// `///` doc comment attached to this item (lines joined by `\n`), if any.
+    /// Attached documentation.
     pub doc: Option<String>,
+    /// Declaration span.
     pub span: SourceSpan,
 }
 
+/// A struct declaration.
 #[derive(Debug, Clone)]
 pub struct StructDef {
+    /// Declared name.
     pub name: String,
-    /// Provenance: original source name + defining file. Set by `resolve`;
-    /// `name` may later be rewritten to a mangled identity, but this is not.
+    /// Source-level definition identity.
     pub def_id: DefId,
+    /// Generic type parameters.
     pub type_params: Vec<String>,
+    /// Fields in declaration order.
     pub fields: Vec<FieldDef>,
-    /// Whether this was declared as `struct Name(T0, T1)`.  Its fields are
-    /// still the ordinary `_0`, `_1`, ... fields used throughout the pipeline.
+    /// Whether tuple syntax was used.
     pub is_tuple: bool,
+    /// Whether the declaration is exported.
     pub is_pub: bool,
-    /// `///` doc comment attached to this item (lines joined by `\n`), if any.
+    /// Attached documentation.
     pub doc: Option<String>,
+    /// Declaration span.
     pub span: SourceSpan,
 }
 
+/// A struct field declaration.
 #[derive(Debug, Clone)]
 pub struct FieldDef {
+    /// Field name.
     pub name: String,
+    /// Field type.
     pub ty: Type,
+    /// Whether the field is exported.
     pub is_pub: bool,
+    /// Declaration span.
     pub span: SourceSpan,
 }
 
+/// An enum declaration.
 #[derive(Debug, Clone)]
 pub struct EnumDef {
+    /// Declared name.
     pub name: String,
-    /// Provenance: original source name + defining file (see `StructDef::def_id`).
+    /// Source-level definition identity.
     pub def_id: DefId,
+    /// Generic type parameters.
     pub type_params: Vec<String>,
+    /// Variants in declaration order.
     pub variants: Vec<VariantDef>,
+    /// Whether the declaration is exported.
     pub is_pub: bool,
-    /// `///` doc comment attached to this item (lines joined by `\n`), if any.
+    /// Attached documentation.
     pub doc: Option<String>,
+    /// Declaration span.
     pub span: SourceSpan,
 }
 
+/// An enum variant declaration.
 #[derive(Debug, Clone)]
 pub struct VariantDef {
+    /// Variant name.
     pub name: String,
+    /// Optional payload type.
     pub inner_type: Option<Type>,
+    /// Declaration span.
     pub span: SourceSpan,
 }
 
+/// A function or method declaration.
 #[derive(Debug, Clone)]
 pub struct FunctionDef {
+    /// Resolved function name.
     pub name: String,
-    /// The original, human-readable name for diagnostics (e.g. `spawn`). `name`
-    /// gets rewritten to a mangled identity by `resolve` (module prefix) and
-    /// monomorphization, but this is left untouched so error messages can show
-    /// the un-mangled name without round-tripping through the demangler.
+    /// Original name used in diagnostics.
     pub display_name: String,
+    /// Generic type parameters.
     pub type_params: Vec<String>,
+    /// Function parameters.
     pub parameters: Vec<Parameter>,
+    /// Explicit return type, if present.
     pub return_type: Option<Type>,
+    /// Span of the explicit return type.
     pub return_type_span: Option<SourceSpan>,
+    /// Function body.
     pub body: Vec<Statement>,
+    /// Whether the declaration is exported.
     pub is_pub: bool,
-    /// `fn(inline)` / `method(inline)`: a hint that codegen should mark this
-    /// function for inlining. Ignored by the interpreters.
+    /// Whether the declaration requests inlining.
     pub inline_hint: bool,
-    /// `///` doc comment attached to this item (lines joined by `\n`), if any.
+    /// Attached documentation.
     pub doc: Option<String>,
+    /// Declaration span.
     pub span: SourceSpan,
 }
 
+/// A function parameter.
 #[derive(Debug, Clone)]
 pub struct Parameter {
+    /// Binding pattern.
     pub pattern: DestructurePattern,
+    /// Declared or inferred type.
     pub ty: Type,
     /// Default value for an optional keyword parameter (a literal). `None` for a
     /// normal required parameter. When `ty` is `Type::Infer`, the type is
     /// inferred from this default.
     pub default: Option<Box<Expr>>,
+    /// Parameter span.
     pub span: SourceSpan,
 }
 
+/// A binding pattern used by parameters and local declarations.
 #[derive(Debug, Clone)]
 pub enum DestructurePattern {
     Name(String),
@@ -244,18 +290,25 @@ pub enum DestructurePattern {
     Array(Vec<DestructurePattern>),
 }
 
+/// A named field within a struct destructuring pattern.
 #[derive(Debug, Clone)]
 pub struct DestructureField {
+    /// Struct field name.
     pub field_name: String,
+    /// Pattern bound to the field.
     pub pattern: DestructurePattern,
 }
 
+/// A statement and its source span.
 #[derive(Debug, Clone)]
 pub struct Statement {
+    /// Statement contents.
     pub kind: StatementKind,
+    /// Statement span.
     pub span: SourceSpan,
 }
 
+/// An untyped statement.
 #[derive(Debug, Clone)]
 pub enum StatementKind {
     Let {
@@ -312,12 +365,14 @@ pub enum StatementKind {
     Const(ConstDef),
 }
 
+/// A floating-point literal width.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FloatType {
     Float32,
     Float64,
 }
 
+/// A binary operator.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BinOp {
     Add,
@@ -345,20 +400,21 @@ pub enum BinOp {
     WrapMul,
 }
 
+/// An expression and its source span.
 #[derive(Debug, Clone)]
 pub struct Expr {
+    /// Expression contents.
     pub kind: ExprKind,
+    /// Expression span.
     pub span: SourceSpan,
 }
 
+/// An untyped expression.
 #[derive(Debug, Clone)]
 pub enum ExprKind {
-    /// A bare name — a local variable, or (pre-resolve) an as-yet-unresolved
-    /// reference. `resolve` rewrites references to top-level functions / consts
-    /// / statics into [`ExprKind::GlobalRef`], leaving only locals here.
+    /// A local or unresolved name.
     Identifier(String),
-    /// A resolved reference to a top-level definition (function, const, or
-    /// static), carrying its provenance `DefId`. Produced by `resolve`.
+    /// A resolved top-level name.
     GlobalRef(DefId),
     IntegerLiteral(i128, IntegerType),
     /// `1f` / `1.0f32` / `2.5f64` — the suffix is mandatory (a bare `1.0` is
@@ -458,6 +514,7 @@ pub enum ExprKind {
     },
 }
 
+/// A numeric primitive type.
 #[derive(Debug, Clone, PartialEq)]
 pub enum NumericType {
     Int8,
@@ -475,6 +532,7 @@ pub enum NumericType {
 }
 
 impl NumericType {
+    /// Parses a numeric type name.
     pub fn from_name(name: &str) -> Option<NumericType> {
         match name {
             "Int8" => Some(NumericType::Int8),
@@ -493,11 +551,13 @@ impl NumericType {
         }
     }
 
+    /// Returns whether this is a floating-point type.
     pub fn is_float(&self) -> bool {
         matches!(self, NumericType::Float32 | NumericType::Float64)
     }
 }
 
+/// A compiler intrinsic.
 #[derive(Debug, Clone)]
 pub enum Intrinsic {
     Panic,
@@ -643,6 +703,7 @@ const INTRINSIC_NAMES: &[(&str, Intrinsic)] = &[
 ];
 
 impl Intrinsic {
+    /// Returns the intrinsic's source name.
     pub fn name(&self) -> &'static str {
         match self {
             Intrinsic::Cast(..) => "cast",
@@ -656,6 +717,7 @@ impl Intrinsic {
         }
     }
 
+    /// Looks up an intrinsic by source name.
     pub fn from_name(name: &str) -> Option<Intrinsic> {
         for (n, v) in INTRINSIC_NAMES {
             if *n == name {
@@ -682,24 +744,32 @@ fn parse_cast_type_names(suffix: &str) -> Option<Intrinsic> {
     None
 }
 
+/// A match expression arm.
 #[derive(Debug, Clone)]
 pub struct MatchArm {
+    /// Arm pattern.
     pub pattern: Pattern,
+    /// Arm body.
     pub body: Expr,
 }
 
+/// A reflection match arm.
 #[derive(Debug, Clone)]
 pub struct ReflectArm {
+    /// Reflected kind pattern.
     pub pattern: ReflectPattern,
+    /// Arm body.
     pub body: Expr,
 }
 
+/// A reflection kind pattern.
 #[derive(Debug, Clone)]
 pub enum ReflectPattern {
     Kind(String),
     Wildcard,
 }
 
+/// A match pattern.
 #[derive(Debug, Clone)]
 pub enum Pattern {
     Variant {
@@ -712,12 +782,16 @@ pub enum Pattern {
     Wildcard(String),
 }
 
+/// A field initializer in a struct literal.
 #[derive(Debug, Clone)]
 pub struct FieldInit {
+    /// Field name.
     pub name: String,
+    /// Initializer value.
     pub value: Expr,
 }
 
+/// An integer literal type.
 #[derive(Debug, Clone, Copy)]
 pub enum IntegerType {
     Int8,
@@ -748,12 +822,10 @@ impl IntegerType {
     }
 }
 
+/// A source-level type expression.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
-    /// A named type reference. After `resolve`, `def.file` is the resolved
-    /// defining file (a real `DefId` for a struct/enum, or file `0` for a
-    /// builtin/type-parameter name, which `typed_ast` dispatches on `def.name`).
-    /// The parser stamps `file: 0`; `resolve` fills the real file.
+    /// A named type.
     Named(DefId),
     Generic {
         name: DefId,

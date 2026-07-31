@@ -1842,11 +1842,13 @@ impl<'a, 'io> Interpreter<'a, 'io> {
     }
 }
 
+/// Interprets a program using process standard input and output.
 pub fn interpret(source: &SourceFile) {
     let mut interp = Interpreter::new(source, std::io::stdin(), std::io::stdout());
     interp.run();
 }
 
+/// Interprets a program with explicit input and output streams.
 pub fn interpret_to(source: &SourceFile, stdin: impl Read, stdout: impl Write) {
     let mut interp = Interpreter::new(source, stdin, stdout);
     interp.run();

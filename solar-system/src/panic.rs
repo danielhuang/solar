@@ -275,6 +275,7 @@ pub fn sol_panic_internal(msg: &str) -> ! {
     std::process::abort();
 }
 
+/// Aborts with a Solar panic message and stack trace.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_panic(msg: *const u8, len: usize) -> ! {
     let slice = unsafe { std::slice::from_raw_parts(msg, len) };
@@ -282,16 +283,9 @@ pub unsafe extern "C" fn sol_panic(msg: *const u8, len: usize) -> ! {
     sol_panic_internal(text)
 }
 
-/// Install a panic hook that uses `sol_panic_internal` for nice Solar stack traces.
-/// Called from `sol_start`.
+/// Installs the runtime panic hook.
 ///
-/// A Solar `throw` (a `SolarException` payload) is deliberately skipped: it is a
-/// recoverable unwind meant to be caught by `sol_try`, so the hook must let it
-/// propagate rather than print a trace and abort. Every other payload is a real
-/// panic — print the Solar backtrace and abort, as before. (A `SolarException`
-/// only ever unwinds while a `sol_try` is active on the thread — [`throw_raw`]
-/// turns a throw with no active `try` into an abort before unwinding — so a
-/// skipped payload is always caught.)
+/// Recoverable Solar exceptions are allowed to continue unwinding.
 pub fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         if info.payload().is::<SolarException>() {

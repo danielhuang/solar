@@ -28,6 +28,7 @@ pub unsafe extern "C" fn sol_futex_wait(ptr: *mut u32, expected: u32, timeout_ns
     }
 }
 
+/// Wakes at most `count` waiters blocked on `ptr`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_futex_wake(ptr: *mut u32, count: u32) {
     unsafe {

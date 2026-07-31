@@ -78,11 +78,7 @@ fn match_call() {
     assert_eq!(output, "150\n1\n0\n");
 }
 
-// Escaping references (returned, in a returned struct, captured by an escaping
-// closure, returned via an indirect binding, or assigned out of a loop body).
-// `run` applies `ir_opt` and builds with ASAN, so an unsound escape analysis
-// that stack-allocated any of these pointees would trip use-after-scope/return
-// (or return a wrong value); a sound one keeps them on the GC heap.
+// ASAN checks that values referenced beyond their frame remain heap allocated.
 #[test]
 fn escape_refs() {
     let output = run(&fixture("escape_refs.solar"), "escape_refs");
@@ -818,9 +814,7 @@ fn loop_break_nested() {
     assert_eq!(output, "300\n1005\n30\n28\n");
 }
 
-/// Closures capturing fn-typed values + the lazily-lowered-method-inside-
-/// return-type-inference shape. Run several times per process: the historical
-/// failure depended on HashMap lowering order and varied run to run.
+// Repeat to cover nondeterministic lowering order.
 #[test]
 fn closure_capture_fn() {
     for i in 0..5 {
@@ -832,17 +826,14 @@ fn closure_capture_fn() {
     }
 }
 
-/// Self- and mutually-recursive generic functions/methods (same type args each
-/// level) — formerly a monomorphizer stack overflow; a signature stub cached
-/// before body lowering now serves the recursive call.
+// Covers self- and mutually-recursive generic functions and methods.
 #[test]
 fn generic_recursion() {
     let output = run(&fixture("generic_recursion.solar"), "generic_recursion");
     assert_eq!(output, "4\n2\n110\neven\nodd7\n42\n");
 }
 
-/// A non-generic struct with `&?T` fields whose pointees are concrete generic
-/// instantiations (registry-design Q1) — formerly `is_sized: missing struct`.
+// Covers nullable fields whose pointees are generic instantiations.
 #[test]
 fn nullable_ref_generic_field() {
     let output = run(
@@ -858,26 +849,14 @@ fn tail_if_eof() {
     assert_eq!(output, "10\n20\n");
 }
 
-/// Interior reference escaping through a ref-of-deref (`let r = v&; r@.b&`
-/// returned) — escape analysis must keep `v` heap-boxed. The harness runs
-/// optimized IR under ASAN, so a wrong stack placement fails here.
+// Escape analysis must retain the owner of an escaping interior reference.
 #[test]
 fn interior_ref_escape() {
     let output = run(&fixture("interior_ref_escape.solar"), "interior_ref_escape");
     assert_eq!(output, "15\n35\n0\n3\n6\n9\n15\n33\n");
 }
 
-/// Overlapping aggregate copies are legal in Solar (references alias freely)
-/// and must behave like memmove in all three backends: exact self-assigns
-/// (`x = x;`, `a[i] = a[i]`, aliased `d@ = s@`) and partially overlapping
-/// slice-range assignments in both directions. The debug-codegen run is built
-/// with ASAN, whose interceptors flag overlapping memcpy — so a regression to
-/// A closure capturing a `match` BINDING, returned out of its creating frame.
-/// The binding aliases the scrutinee's storage and closures capture by
-/// reference, so the scrutinee must not be stack-placed. Release-only: debug
-/// heap-boxes every local. Fails as WRONG ANSWERS (the first closure reads a
-/// later call's payload), not a crash, so the interpreter and release backend
-/// are compared against each other.
+// A returned closure must retain the scrutinee aliased by its match binding.
 #[test]
 fn closure_captures_match_binding() {
     let output = run(
@@ -887,10 +866,7 @@ fn closure_captures_match_binding() {
     assert_eq!(output, "735\n124\n731\n");
 }
 
-/// A `[T; N]` coerced from a NON-place source — the tail of a `match`/`if` used
-/// as an expression, or a struct field read. The length is not recoverable from
-/// a place, so it must come from the IR statically; getting this wrong panicked
-/// the IR interpreter and codegen at *runtime*, after a clean type-check.
+// Fixed-array coercion from a value must use the type's static length.
 #[test]
 fn fixed_array_from_branch() {
     let output = run(
@@ -900,8 +876,7 @@ fn fixed_array_from_branch() {
     assert_eq!(output, "7\n8\n3\n3\n20\n30\n");
 }
 
-/// memcpy semantics on any copy path fails here even when the bytes happen to
-/// come out right.
+// Overlapping copies must use memmove semantics on every backend.
 #[test]
 fn overlap_copy() {
     let output = run(&fixture("overlap_copy.solar"), "overlap_copy");
@@ -938,10 +913,7 @@ fn call_result_place() {
     assert_eq!(output, "42\n30\nhello\n7\n13\n");
 }
 
-/// An intrinsic call used directly as a value — as a binop operand or a
-/// condition rather than assigned to a local — must be loadable. This used to
-/// hit `unreachable!("eval_load on non-scalar node: IntrinsicCall ...")` in the
-/// IR interpreter.
+// Intrinsic calls must be loadable when used directly as values.
 #[test]
 fn intrinsic_call_value() {
     let output = run(
@@ -951,9 +923,7 @@ fn intrinsic_call_value() {
     assert_eq!(output, "1\n1\n1\n");
 }
 
-/// A tail expression must accept the same coercions as an explicit `return`:
-/// `&T` -> `&?T` used to apply in `return x;` but not in tail position, so
-/// `fn f(p: &P) -> &?P { p }` was rejected while the `return` form compiled.
+// Tail expressions and explicit returns must apply the same coercions.
 #[test]
 fn tail_expr_coerce() {
     let output = run(&fixture("tail_expr_coerce.solar"), "tail_expr_coerce");

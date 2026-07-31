@@ -4,39 +4,43 @@ use crate::ast::SourceSpan;
 use std::collections::HashMap;
 use std::fmt;
 
-/// Maps file_id → (filename, source text) for multi-file error reporting.
+/// Source text and paths indexed by compiler file identifier.
 #[derive(Debug, Clone, Default)]
 pub struct SourceMap {
     files: HashMap<u32, (String, String)>,
-    /// The entry (root) file. Its definitions are NOT module-mangled — they keep
-    /// their bare source names (so `main` stays `main`). Set by `resolve`.
+    /// The entry file, whose definitions keep their bare names.
     root_file_id: Option<u32>,
 }
 
 impl SourceMap {
+    /// Creates an empty source map.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Adds or replaces a source file.
     pub fn add_file(&mut self, file_id: u32, filename: String, source: String) {
         self.files.insert(file_id, (filename, source));
     }
 
+    /// Returns a file's path and source text.
     pub fn get(&self, file_id: u32) -> Option<(&str, &str)> {
         self.files
             .get(&file_id)
             .map(|(f, s)| (f.as_str(), s.as_str()))
     }
 
+    /// Marks a file as the compilation root.
     pub fn set_root_file_id(&mut self, file_id: u32) {
         self.root_file_id = Some(file_id);
     }
 
+    /// Returns the compilation root's file identifier.
     pub fn root_file_id(&self) -> Option<u32> {
         self.root_file_id
     }
 
-    /// Find the source-map id for a filesystem path.
+    /// Finds the source-map identifier for a filesystem path.
     pub fn file_id_for_path(&self, path: &std::path::Path) -> Option<u32> {
         let requested = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         self.files.iter().find_map(|(&id, (filename, _))| {
@@ -48,21 +52,9 @@ impl SourceMap {
         })
     }
 
-    /// The module-mangling prefix for a file's definitions — the piece formerly
-    /// produced by `resolve::module_prefix`, now applied here at the
-    /// `mangled_ast` stage. Empty for the root file (bare names). Otherwise
-    /// `__mod{len}_{name}`, where `name` is normally the file's sanitized
-    /// basename.
+    /// Returns a unique symbol prefix for a non-root file.
     ///
-    /// The basename alone is NOT unique: a program can import two files with
-    /// the same name from different directories (`a/Thing.solar` and
-    /// `b/Thing.solar`, or the 315 `package-info.java` units of a Java port).
-    /// Those used to mangle to the same prefix, silently merging both files'
-    /// definitions into one module — a wrong-symbol miscompile, not an error.
-    /// So when a basename is shared, enough leading directory components are
-    /// folded into the name to disambiguate it (`a_Thing` vs `b_Thing`), and
-    /// the file id is the last-resort tiebreaker. Files with a unique basename
-    /// keep exactly the symbols they had before.
+    /// Colliding basenames are disambiguated with parent path components.
     pub fn module_prefix(&self, file_id: u32) -> String {
         if self.root_file_id == Some(file_id) {
             return String::new();
@@ -89,8 +81,6 @@ impl SourceMap {
                 return candidate;
             }
         }
-        // Two files with identical full paths cannot both be in the map, but a
-        // relative and an absolute spelling of one file could still tie here.
         format!("{}_{}", path_suffix_name(path, 1), file_id)
     }
 }
@@ -136,20 +126,28 @@ fn path_suffix_name(path: &str, take: usize) -> String {
         .collect()
 }
 
+/// A secondary diagnostic annotation.
 #[derive(Debug, Clone)]
 pub struct Label {
+    /// Annotation text.
     pub message: String,
+    /// Annotated source span.
     pub span: SourceSpan,
 }
 
+/// A compiler diagnostic with a primary span and optional annotations.
 #[derive(Debug, Clone)]
 pub struct CompileError {
+    /// Primary error text.
     pub message: String,
+    /// Primary source span.
     pub span: SourceSpan,
+    /// Secondary annotations.
     pub labels: Vec<Label>,
 }
 
 impl CompileError {
+    /// Creates a diagnostic without secondary annotations.
     pub fn new(message: String, span: SourceSpan) -> Self {
         Self {
             message,
@@ -158,6 +156,7 @@ impl CompileError {
         }
     }
 
+    /// Adds a secondary annotation.
     pub fn with_label(mut self, message: impl Into<String>, span: SourceSpan) -> Self {
         self.labels.push(Label {
             message: message.into(),
@@ -204,7 +203,6 @@ fn span_to_byte_range(span: &SourceSpan, offsets: &[usize]) -> std::ops::Range<u
     } else {
         offsets.last().copied().unwrap_or(0)
     };
-    // Ensure at least 1-char range so the annotation is visible
     if start >= end {
         start..start + 1
     } else {
@@ -219,7 +217,6 @@ pub fn render_error(err: &CompileError, source: &str, filename: &str) {
     let offsets = line_offsets(source);
     let range = span_to_byte_range(&err.span, &offsets);
 
-    // Clamp range to source length
     let range = range.start.min(source.len())..range.end.min(source.len());
 
     let mut snippet = Snippet::source(source)
@@ -230,7 +227,6 @@ pub fn render_error(err: &CompileError, source: &str, filename: &str) {
     for label in &err.labels {
         let label_range = span_to_byte_range(&label.span, &offsets);
         let label_range = label_range.start.min(source.len())..label_range.end.min(source.len());
-        // Only add labels with non-default spans (line > 0 or col > 0)
         if label.span.start.line > 0
             || label.span.start.col > 0
             || label.span.end.line > 0
@@ -256,7 +252,6 @@ pub fn render_error_with_source_map(err: &CompileError, source_map: &SourceMap) 
     if let Some((filename, source)) = source_map.get(err.span.file_id) {
         render_error(err, source, filename);
     } else {
-        // Fallback: just print the message
         eprintln!("error: {}", err.message);
     }
 }

@@ -61,10 +61,14 @@ pub fn generate_numeric_constructors(items: &mut Vec<TopLevelItem>) {
     }
 }
 
+/// A syntax error reported by the parser.
 #[derive(Debug)]
 pub struct ParseError {
+    /// Zero-indexed line.
     pub line: usize,
+    /// Zero-indexed byte column.
     pub column: usize,
+    /// Error description.
     pub message: String,
 }
 
@@ -74,6 +78,7 @@ impl fmt::Display for ParseError {
     }
 }
 
+/// Parses a Solar source file.
 pub fn parse(source: &str) -> Result<SourceFile, Vec<ParseError>> {
     let mut parser = tree_sitter::Parser::new();
     parser
