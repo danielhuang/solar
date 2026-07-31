@@ -496,6 +496,16 @@ impl Resolver {
         // Rewrite AST items
         let mut rewritten = Vec::new();
         let rewrite_errors = RefCell::new(Vec::new());
+        let rewrite_ctx = RewriteCtx {
+            rename_map: &rename_map,
+            module_aliases: &module_aliases,
+            all_module_aliases,
+            intrinsic_names: &intrinsic_names,
+            intrinsic_modules: &intrinsic_modules,
+            errors: &rewrite_errors,
+            type_params: &[],
+            file_id,
+        };
         for item in &file.ast.items {
             match item {
                 TopLevelItem::Struct(s) => {
@@ -528,16 +538,7 @@ impl Resolver {
                 }
                 TopLevelItem::Function(f) => {
                     let mut f = f.clone();
-                    rewrite_function_body(
-                        &mut f,
-                        &rename_map,
-                        &module_aliases,
-                        all_module_aliases,
-                        &intrinsic_names,
-                        &intrinsic_modules,
-                        &rewrite_errors,
-                        file_id,
-                    );
+                    rewrite_function_body(&mut f, &rewrite_ctx);
                     set_file_id_span(&mut f.span, file_id);
                     rewritten.push(TopLevelItem::Function(f));
                 }
@@ -545,16 +546,7 @@ impl Resolver {
                     let mut m = m.clone();
                     // Don't rename method name — it stays as-is for typed_ast method mangling
                     // But DO rewrite types in parameters and body
-                    rewrite_function_body(
-                        &mut m,
-                        &rename_map,
-                        &module_aliases,
-                        all_module_aliases,
-                        &intrinsic_names,
-                        &intrinsic_modules,
-                        &rewrite_errors,
-                        file_id,
-                    );
+                    rewrite_function_body(&mut m, &rewrite_ctx);
                     set_file_id_span(&mut m.span, file_id);
                     rewritten.push(TopLevelItem::Method(m));
                 }
@@ -763,16 +755,7 @@ struct RewriteCtx<'a> {
 }
 
 /// Rewrite all names in a function's parameters, return type, and body.
-fn rewrite_function_body(
-    f: &mut FunctionDef,
-    rename_map: &HashMap<String, DefId>,
-    module_aliases: &ModuleAliasMap,
-    all_module_aliases: &AllModuleAliases,
-    intrinsic_names: &HashSet<String>,
-    intrinsic_modules: &HashSet<String>,
-    errors: &RefCell<Vec<CompileError>>,
-    file_id: FileId,
-) {
+fn rewrite_function_body(f: &mut FunctionDef, parent_ctx: &RewriteCtx<'_>) {
     let type_params = &f.type_params;
 
     // Collect locally-bound names to avoid renaming them
@@ -783,24 +766,38 @@ fn rewrite_function_body(
 
     // Rewrite parameter types
     for p in &mut f.parameters {
-        p.ty = rewrite_type(&p.ty, rename_map, module_aliases, type_params);
-        rewrite_destructure_pattern(&mut p.pattern, rename_map, module_aliases);
+        p.ty = rewrite_type(
+            &p.ty,
+            parent_ctx.rename_map,
+            parent_ctx.module_aliases,
+            type_params,
+        );
+        rewrite_destructure_pattern(
+            &mut p.pattern,
+            parent_ctx.rename_map,
+            parent_ctx.module_aliases,
+        );
     }
 
     // Rewrite return type
     if let Some(rt) = &mut f.return_type {
-        *rt = rewrite_type(rt, rename_map, module_aliases, type_params);
+        *rt = rewrite_type(
+            rt,
+            parent_ctx.rename_map,
+            parent_ctx.module_aliases,
+            type_params,
+        );
     }
 
     let ctx = RewriteCtx {
-        rename_map,
-        module_aliases,
-        all_module_aliases,
-        intrinsic_names,
-        intrinsic_modules,
-        errors,
+        rename_map: parent_ctx.rename_map,
+        module_aliases: parent_ctx.module_aliases,
+        all_module_aliases: parent_ctx.all_module_aliases,
+        intrinsic_names: parent_ctx.intrinsic_names,
+        intrinsic_modules: parent_ctx.intrinsic_modules,
+        errors: parent_ctx.errors,
         type_params,
-        file_id,
+        file_id: parent_ctx.file_id,
     };
 
     // Rewrite body
@@ -939,16 +936,7 @@ fn rewrite_statement(stmt: &mut Statement, ctx: &RewriteCtx, locals: &mut HashSe
         }
         StatementKind::NestedFunction(fdef) => {
             locals.insert(fdef.name.clone());
-            rewrite_function_body(
-                fdef,
-                ctx.rename_map,
-                ctx.module_aliases,
-                ctx.all_module_aliases,
-                ctx.intrinsic_names,
-                ctx.intrinsic_modules,
-                ctx.errors,
-                ctx.file_id,
-            );
+            rewrite_function_body(fdef, ctx);
         }
         StatementKind::Const(c) => {
             // A local const is block-scoped; treat its name as a local so later
