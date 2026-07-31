@@ -18,6 +18,8 @@ fn false_with_effect() -> Bool {
   false
 }
 
+fn read_bool(value: &Bool) -> Bool { value@ }
+
 fn main() {
   print_bool(true && true);    // 1
   print_bool(true && false);   // 0
@@ -37,4 +39,10 @@ fn main() {
 
   // short-circuit: false || X SHOULD evaluate X
   print_bool(false || false_with_effect());  // 99 then 0
+
+  // RHS setup emitted by IR lowering (including this bounds check) must also
+  // stay inside the short-circuited branch.
+  let empty: [Bool] = []#[Bool];
+  print_bool(false && read_bool(empty[0u]&));
+  print_bool(true || read_bool(empty[0u]&));
 }

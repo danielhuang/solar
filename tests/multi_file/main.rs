@@ -153,3 +153,51 @@ fn static_module_type() {
     );
     assert_eq!(output, "7\n");
 }
+
+/// A wildcard-imported method must not displace a same-named free function
+/// imported from another file: methods resolve globally as overload sets, so
+/// the name binding belongs to the function. Both import orders must work.
+#[test]
+fn wildcard_method_fn_clash() {
+    let output = run(
+        &fixture("wildcard_method_fn_clash/main.solar"),
+        "wildcard_method_fn_clash",
+    );
+    assert_eq!(output, "2\n7\n");
+}
+
+#[test]
+fn wildcard_method_fn_clash_reversed() {
+    let output = run(
+        &fixture("wildcard_method_fn_clash/main_reversed.solar"),
+        "wildcard_method_fn_clash_reversed",
+    );
+    assert_eq!(output, "2\n7\n");
+}
+
+/// A call with explicit type arguments must still select the generic overload
+/// whose parameter types fit the arguments. Overloads were previously filtered
+/// only on type-parameter count and arity, so the first-declared one always
+/// won and `make#[Int](key, ...)` failed with "expected &Owner#[Int], got Key".
+#[test]
+fn generic_overload_type_args() {
+    let output = run(
+        &fixture("generic_overload_type_args/main.solar"),
+        "generic_overload_type_args",
+    );
+    assert_eq!(output, "7\n105\n2\n1\n");
+}
+
+/// A type alias used as a generic *argument* must name the same instantiation
+/// as its target. `ensure_struct_monomorphized` converted type args with the
+/// structural `from_ast_type`, which does not consult the alias table, so
+/// `Holder#[Alias]` and `Holder#[Boxed]` monomorphized separately and a method
+/// resolved on one did not match the other.
+#[test]
+fn type_alias_generic_arg() {
+    let output = run(
+        &fixture("type_alias_generic_arg/main.solar"),
+        "type_alias_generic_arg",
+    );
+    assert_eq!(output, "2\n4\n6\n");
+}

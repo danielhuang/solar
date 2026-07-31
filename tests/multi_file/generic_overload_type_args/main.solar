@@ -1,0 +1,24 @@
+// An explicit-type-argument call must still pick the overload whose parameter
+// types fit the arguments. This used to always take the first-declared generic
+// overload, so `make#[Int](key, ...)` reported "expected &Owner#[Int], got Key".
+import * from "lib.solar";
+
+fn always(x: &Owner#[Int]) -> Bool { true }
+
+fn main() {
+  let o = Owner#[Int] { v: 0i32 };
+  let by_owner = make#[Int](o&, 7i32);
+  println(Int(by_owner@.tag).to_string());
+
+  let k = Key { k: 1i32 };
+  let by_key = make#[Int](k, 5i32);
+  println(Int(by_key@.tag).to_string());
+
+  // (No inference case here: `T` appears only in the return type, so it cannot
+  // be inferred from the arguments — unrelated to overload selection.)
+
+  // Shape-distinguished overloads: slice vs scalar function.
+  let conds = [always];
+  println(Int(pick#[Owner#[Int]](conds&)).to_string());
+  println(Int(pick#[Owner#[Int]](always)).to_string());
+}

@@ -19,6 +19,20 @@ enum Outer {
   Y,
 }
 
+// Returning a fixed array of unit enums exercises discriminant copies into a
+// caller-owned aggregate. Those slots retain the enum's 8-byte alignment even
+// though generated C addresses them through byte pointers.
+enum Direction {
+  Down,
+  Up,
+  North,
+}
+
+fn all_directions() -> [Direction; 3] {
+  let result: [Direction; 3] = [Direction::Down, Direction::Up, Direction::North];
+  result
+}
+
 fn describe_shape(s: Shape) -> Int {
   match s {
     Shape::Circle(r) => r,
@@ -90,6 +104,15 @@ fn main() {
     Shape::Point => 0,
   };
   println(check2);                      // 99
+
+  let directions = all_directions();
+  for direction in directions {
+    println(match direction {
+      Direction::Down => 0,
+      Direction::Up => 1,
+      Direction::North => 2,
+    });
+  }
 
   // Enums inside structs
   let wrapped = Wrapper {

@@ -176,8 +176,7 @@ fn source_span(node: tree_sitter::Node) -> SourceSpan {
 
 fn convert_source_file(node: tree_sitter::Node, source: &str) -> SourceFile {
     let mut items = Vec::new();
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
+    for child in code_children(node) {
         match child.kind() {
             "struct_def" => items.push(TopLevelItem::Struct(convert_struct_def(child, source))),
             "function_def" => {
@@ -213,8 +212,7 @@ fn convert_import_statement(node: tree_sitter::Node, source: &str) -> ImportDef 
         ImportKind::Module(node_text(module_name, source).to_string())
     } else if let Some(name_list) = named_child_by_kind(node, "import_name_list") {
         let mut names = Vec::new();
-        let mut cursor = name_list.walk();
-        for child in name_list.named_children(&mut cursor) {
+        for child in code_children(name_list) {
             if child.kind() == "import_path" {
                 let mut segments = Vec::new();
                 let mut path_cursor = child.walk();
@@ -242,8 +240,7 @@ fn convert_import_statement(node: tree_sitter::Node, source: &str) -> ImportDef 
 
 fn convert_type_params(node: tree_sitter::Node, source: &str) -> Vec<String> {
     let mut params = Vec::new();
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
+    for child in code_children(node) {
         if child.kind() == "identifier" {
             params.push(node_text(child, source).to_string());
         }
@@ -253,8 +250,7 @@ fn convert_type_params(node: tree_sitter::Node, source: &str) -> Vec<String> {
 
 fn convert_type_args(node: tree_sitter::Node, source: &str) -> Vec<Type> {
     let mut args = Vec::new();
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
+    for child in code_children(node) {
         args.push(convert_type(child, source));
     }
     args
@@ -269,8 +265,7 @@ fn convert_struct_def(node: tree_sitter::Node, source: &str) -> StructDef {
         .unwrap_or_default();
     let mut fields = Vec::new();
     if let Some(field_list) = named_child_by_kind(node, "field_list") {
-        let mut cursor = field_list.walk();
-        for child in field_list.named_children(&mut cursor) {
+        for child in code_children(field_list) {
             if child.kind() == "field_def" {
                 if !is_pub && has_pub_keyword(child, source) {
                     let field_name = node_text(child.child_by_field_name("name").unwrap(), source);
@@ -286,10 +281,11 @@ fn convert_struct_def(node: tree_sitter::Node, source: &str) -> StructDef {
                 fields.push(convert_field_def(child, source));
             }
         }
-    } else if let Some(tuple_body) = named_child_by_kind(node, "tuple_struct_body") {
-        if let Some(field_list) = named_child_by_kind(tuple_body, "tuple_struct_field_list") {
-            let mut cursor = field_list.walk();
-            for (index, child) in field_list.named_children(&mut cursor).enumerate() {
+    } else if let Some(tuple_body) = named_child_by_kind(node, "tuple_struct_body")
+        && let Some(field_list) = named_child_by_kind(tuple_body, "tuple_struct_field_list")
+    {
+        {
+            for (index, child) in code_children(field_list).into_iter().enumerate() {
                 debug_assert_eq!(child.kind(), "tuple_struct_field");
                 let is_field_pub = has_pub_keyword(child, source);
                 if !is_pub && is_field_pub {
@@ -389,8 +385,7 @@ fn convert_enum_def(node: tree_sitter::Node, source: &str) -> EnumDef {
         .unwrap_or_default();
     let mut variants = Vec::new();
     if let Some(variant_list) = named_child_by_kind(node, "variant_list") {
-        let mut cursor = variant_list.walk();
-        for child in variant_list.named_children(&mut cursor) {
+        for child in code_children(variant_list) {
             if child.kind() == "variant_def" {
                 let vname =
                     node_text(child.child_by_field_name("name").unwrap(), source).to_string();
@@ -438,8 +433,7 @@ fn convert_function_def(node: tree_sitter::Node, source: &str) -> FunctionDef {
 
     let mut parameters = Vec::new();
     if let Some(param_list) = named_child_by_kind(node, "parameter_list") {
-        let mut cursor = param_list.walk();
-        for child in param_list.named_children(&mut cursor) {
+        for child in code_children(param_list) {
             if child.kind() == "parameter" {
                 parameters.push(convert_parameter(child, source));
             }
@@ -563,8 +557,7 @@ fn convert_arguments(node: tree_sitter::Node, source: &str) -> (Vec<Expr>, Vec<(
     let mut positional = Vec::new();
     let mut kwargs = Vec::new();
     if let Some(arg_list) = named_child_by_kind(node, "argument_list") {
-        let mut cursor = arg_list.walk();
-        for arg in arg_list.named_children(&mut cursor) {
+        for arg in code_children(arg_list) {
             if arg.kind() != "argument" {
                 continue;
             }
@@ -585,8 +578,7 @@ fn convert_destructure_pattern(node: tree_sitter::Node, source: &str) -> Destruc
         "identifier" => DestructurePattern::Name(node_text(node, source).to_string()),
         "tuple_pattern" => {
             let mut elements = Vec::new();
-            let mut cursor = node.walk();
-            for child in node.named_children(&mut cursor) {
+            for child in code_children(node) {
                 elements.push(convert_destructure_pattern(child, source));
             }
             DestructurePattern::Tuple(elements)
@@ -597,8 +589,7 @@ fn convert_destructure_pattern(node: tree_sitter::Node, source: &str) -> Destruc
                 .map(|n| node_text(n, source).to_string());
             let name = node_text(node.child_by_field_name("name").unwrap(), source).to_string();
             let mut fields = Vec::new();
-            let mut cursor = node.walk();
-            for child in node.named_children(&mut cursor) {
+            for child in code_children(node) {
                 if child.kind() == "struct_pattern_field" {
                     fields.push(convert_struct_pattern_field(child, source));
                 }
@@ -611,8 +602,7 @@ fn convert_destructure_pattern(node: tree_sitter::Node, source: &str) -> Destruc
         }
         "array_pattern" => {
             let mut elements = Vec::new();
-            let mut cursor = node.walk();
-            for child in node.named_children(&mut cursor) {
+            for child in code_children(node) {
                 elements.push(convert_destructure_pattern(child, source));
             }
             DestructurePattern::Array(elements)
@@ -637,8 +627,7 @@ fn convert_struct_pattern_field(node: tree_sitter::Node, source: &str) -> Destru
 
 fn convert_block(node: tree_sitter::Node, source: &str) -> Vec<Statement> {
     let mut stmts = Vec::new();
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
+    for child in code_children(node) {
         match child.kind() {
             "let_statement" => stmts.push(convert_let_statement(child, source)),
             "assignment_statement" => stmts.push(convert_assignment_statement(child, source)),
@@ -835,8 +824,7 @@ fn convert_reflect_variant_statement(
 
 fn convert_expression_statement(node: tree_sitter::Node, source: &str) -> Statement {
     let span = source_span(node);
-    let mut cursor = node.walk();
-    let expr_node = node.named_children(&mut cursor).next().unwrap();
+    let expr_node = code_children(node).into_iter().next().unwrap();
     Statement {
         kind: StatementKind::Expression(convert_expr(expr_node, source)),
         span,
@@ -992,8 +980,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             } else if func_node.kind() == "path_expr" {
                 // path_expr as call: sync::Channel#[Int]() — extract type_args from last segment
                 let mut segments: Vec<(String, Vec<Type>)> = Vec::new();
-                let mut cursor = func_node.walk();
-                for child in func_node.named_children(&mut cursor) {
+                for child in code_children(func_node) {
                     if child.kind() == "path_segment" {
                         let name = node_text(child.child_by_field_name("name").unwrap(), source)
                             .to_string();
@@ -1060,8 +1047,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                 .unwrap_or_default();
             let mut fields = Vec::new();
             if let Some(init_list) = named_child_by_kind(node, "field_init_list") {
-                let mut cursor = init_list.walk();
-                for child in init_list.named_children(&mut cursor) {
+                for child in code_children(init_list) {
                     if child.kind() == "field_init" {
                         let fname = node_text(child.child_by_field_name("name").unwrap(), source)
                             .to_string();
@@ -1099,8 +1085,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
         "array_literal" => {
             let mut elements = Vec::new();
             if let Some(elem_list) = named_child_by_kind(node, "element_list") {
-                let mut cursor = elem_list.walk();
-                for child in elem_list.named_children(&mut cursor) {
+                for child in code_children(elem_list) {
                     elements.push(convert_expr(child, source));
                 }
             }
@@ -1118,14 +1103,12 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             }
         }
         "parenthesized_expression" => {
-            let mut cursor = node.walk();
-            let inner = node.named_children(&mut cursor).next().unwrap();
+            let inner = code_children(node).into_iter().next().unwrap();
             return convert_expr(inner, source);
         }
         "tuple_literal" => {
             let mut elements = Vec::new();
-            let mut cursor = node.walk();
-            for child in node.named_children(&mut cursor) {
+            for child in code_children(node) {
                 elements.push(convert_expr(child, source));
             }
             ExprKind::TupleLiteral(elements)
@@ -1134,8 +1117,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
         "path_expr" => {
             // Collect all path_segment children
             let mut segments: Vec<(String, Vec<Type>)> = Vec::new();
-            let mut cursor = node.walk();
-            for child in node.named_children(&mut cursor) {
+            for child in code_children(node) {
                 if child.kind() == "path_segment" {
                     let name =
                         node_text(child.child_by_field_name("name").unwrap(), source).to_string();
@@ -1161,8 +1143,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             let scrutinee = convert_expr(node.child_by_field_name("scrutinee").unwrap(), source);
             let mut arms = Vec::new();
             if let Some(arm_list) = named_child_by_kind(node, "match_arm_list") {
-                let mut cursor = arm_list.walk();
-                for child in arm_list.named_children(&mut cursor) {
+                for child in code_children(arm_list) {
                     if child.kind() == "match_arm" {
                         arms.push(convert_match_arm(child, source));
                     }
@@ -1177,8 +1158,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             let ty = convert_type(node.child_by_field_name("type").unwrap(), source);
             let mut arms = Vec::new();
             if let Some(arm_list) = named_child_by_kind(node, "reflect_match_arm_list") {
-                let mut cursor = arm_list.walk();
-                for child in arm_list.named_children(&mut cursor) {
+                for child in code_children(arm_list) {
                     if child.kind() == "reflect_match_arm" {
                         arms.push(convert_reflect_arm(child, source));
                     }
@@ -1210,8 +1190,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
         "closure_expr" => {
             let mut parameters = Vec::new();
             if let Some(param_list) = named_child_by_kind(node, "closure_param_list") {
-                let mut cursor = param_list.walk();
-                for child in param_list.named_children(&mut cursor) {
+                for child in code_children(param_list) {
                     if child.kind() == "closure_param" {
                         parameters.push(convert_closure_parameter(child, source));
                     }
@@ -1303,15 +1282,13 @@ fn convert_pattern(node: tree_sitter::Node, source: &str) -> Pattern {
     match node.kind() {
         "match_pattern" => {
             // Wrapper node — unwrap to the actual pattern child
-            let mut cursor = node.walk();
-            let child = node.named_children(&mut cursor).next().unwrap();
+            let child = code_children(node).into_iter().next().unwrap();
             convert_pattern(child, source)
         }
         "variant_pattern" => {
             // Collect all path_segment children
             let mut segments: Vec<(String, Vec<Type>)> = Vec::new();
-            let mut cursor = node.walk();
-            for child in node.named_children(&mut cursor) {
+            for child in code_children(node) {
                 if child.kind() == "path_segment" {
                     let name =
                         node_text(child.child_by_field_name("name").unwrap(), source).to_string();
@@ -1337,8 +1314,7 @@ fn convert_pattern(node: tree_sitter::Node, source: &str) -> Pattern {
         }
         "unit_variant_pattern" => {
             let mut segments: Vec<(String, Vec<Type>)> = Vec::new();
-            let mut cursor = node.walk();
-            for child in node.named_children(&mut cursor) {
+            for child in code_children(node) {
                 if child.kind() == "path_segment" {
                     let name =
                         node_text(child.child_by_field_name("name").unwrap(), source).to_string();
@@ -1371,8 +1347,7 @@ fn convert_pattern(node: tree_sitter::Node, source: &str) -> Pattern {
 fn convert_type(node: tree_sitter::Node, source: &str) -> Type {
     match node.kind() {
         "named_type" => {
-            let mut cursor = node.walk();
-            let ident = node.named_children(&mut cursor).next().unwrap();
+            let ident = code_children(node).into_iter().next().unwrap();
             let name = node_text(ident, source).to_string();
             if let Some(ta_node) = node.child_by_field_name("type_args") {
                 let type_args = convert_type_args(ta_node, source);
@@ -1424,8 +1399,7 @@ fn convert_type(node: tree_sitter::Node, source: &str) -> Type {
         }
         "tuple_type" => {
             let mut types = Vec::new();
-            let mut cursor = node.walk();
-            for child in node.named_children(&mut cursor) {
+            for child in code_children(node) {
                 types.push(convert_type(child, source));
             }
             Type::Tuple(types)
@@ -1433,8 +1407,7 @@ fn convert_type(node: tree_sitter::Node, source: &str) -> Type {
         "function_type" => {
             let mut params = Vec::new();
             if let Some(param_list) = named_child_by_kind(node, "fn_type_param_list") {
-                let mut cursor = param_list.walk();
-                for child in param_list.named_children(&mut cursor) {
+                for child in code_children(param_list) {
                     if child.kind() == "fn_type_param" {
                         let name = child
                             .child_by_field_name("name")
@@ -1489,6 +1462,17 @@ fn parse_integer_suffix(text: &str) -> (&str, IntegerType) {
         }
     }
     (text, IntegerType::Int)
+}
+
+/// Named children of `node` with `extra` nodes (comments) filtered out.
+/// Comments are `extra` in the grammar, so tree-sitter may attach them as
+/// named children of ANY node — including expression/argument/field lists,
+/// whose converters would otherwise choke on them.
+fn code_children<'a>(node: tree_sitter::Node<'a>) -> Vec<tree_sitter::Node<'a>> {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .filter(|c| !matches!(c.kind(), "comment" | "doc_comment"))
+        .collect()
 }
 
 fn named_child_by_kind<'a>(

@@ -1,0 +1,11 @@
+pub struct Holder#[T] { pub v: T, }
+pub method put#[T](self: &Holder#[T], v: T) { self@.v = v; }
+pub method get#[T](self: &Holder#[T]) -> T { self@.v }
+
+pub struct Boxed { pub n: Int32, }
+
+// An alias used as a generic *argument* must name the same instantiation as
+// the target: `Holder#[Alias]` and `Holder#[Boxed]` are one type, so a method
+// resolved on either matches. Aliases may also chain.
+pub type Alias = Boxed;
+pub type AliasOfAlias = Alias;

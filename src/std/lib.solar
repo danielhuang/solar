@@ -95,8 +95,11 @@ pub method carrying_mul_add(self: Uint64, rhs: Uint64, carry: Uint64, add: Uint6
 /// mirrors the reflective `hash`: two structs are equal iff every field is equal;
 /// two enums iff they hold the same variant with equal payloads. Fields are
 /// compared with `==`, so a primitive field uses the built-in comparison, a
-/// struct/enum field recurses through this method, and a byte-slice field uses
-/// the overload below. A concrete `operator_eq` (e.g. on a specific struct) is
+/// struct/enum field recurses through this method. A field whose type is itself
+/// a *reference* (e.g. `&[Uint8]`) does NOT work: comparing two of them yields a
+/// `&&[Uint8]` receiver, which does not match the byte-slice overload below, so
+/// it lands back here and throws. Such a struct needs a hand-written
+/// `operator_eq`. A concrete `operator_eq` (e.g. on a specific struct) is
 /// more specific and overrides this generic. Any other type (e.g. comparing two
 /// `&[Uint8]` refs directly — compare contents with `a@ == b@` instead) throws
 /// a catchable exception rather than silently answering.
@@ -132,8 +135,10 @@ pub method operator_eq#[T](self: &T, other: &T) -> Bool {
   eq
 }
 
-/// Content equality for byte slices (e.g. `String` fields). Distinct from the
-/// reference identity `==` on `&[Uint8]`.
+/// Content equality for byte slices. Note this is only selected when the
+/// receiver is a `&[Uint8]` *value* — it is NOT reached for a `&[Uint8]`-typed
+/// struct field compared through the reflective method above (see the caveat
+/// there). Distinct from the reference identity `==` on `&[Uint8]`.
 pub method operator_eq(self: &[Uint8], other: &[Uint8]) -> Bool {
   let n = self.len();
   let eq = n == other.len();

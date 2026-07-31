@@ -3,3 +3,4 @@ profile.json.gz
 
 # Compiled Java class files (java-bench ports)
 *.class
+logs/

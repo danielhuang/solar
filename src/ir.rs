@@ -699,6 +699,14 @@ fn layout_struct(s: &mangled_ast::StructDef, resolved: &HashMap<String, DataType
             });
             struct_is_sized = false;
         } else {
+            // Only the LAST field may be unsized; anything else has no layout.
+            // Report which struct and field rather than panicking inside
+            // `type_size` with just the type.
+            assert!(
+                field_is_sized,
+                "struct `{}`: field `{}` is unsized ({:?}), but only the last field may be",
+                s.name, f.name, f.ty
+            );
             let size = type_size(&f.ty, resolved);
             fields.push(FieldLayout {
                 name: f.name.clone(),
@@ -800,6 +808,34 @@ impl<'a> FunctionLowerer<'a> {
         VarId(self.next_var.next().unwrap())
     }
 
+    /// Bind `id` to a temporary `Let` when it is not already a place, and
+    /// return a `Local` node for it. Used by every projection that needs a
+    /// place base — field access (`f(x).field`), deref (`f(x)@`), indexing and
+    /// slicing (`f(x)[i]`, `f(x)[a..b]`) — so a call/literal base behaves like
+    /// `let t = f(x); t@`.
+    fn spill_to_place(&mut self, id: NodeId, span: SourceSpan) -> NodeId {
+        if is_place(&self.nodes, id) {
+            return id;
+        }
+        let ty = self.nodes[id.0].ty.clone();
+        let var = self.fresh_var();
+        let let_node = self.push(Node {
+            ty: ty.clone(),
+            kind: NodeKind::Let {
+                var,
+                value: id,
+                noescape: false,
+            },
+            span,
+        });
+        self.pending_stmts.push(let_node);
+        self.push(Node {
+            ty,
+            kind: NodeKind::Local(var),
+            span,
+        })
+    }
+
     fn push_scope(&mut self) {
         self.scopes.push();
     }
@@ -883,29 +919,11 @@ impl<'a> FunctionLowerer<'a> {
                 span: expr.span,
             }),
             mangled_ast::ExprKind::FieldAccess { object, field } => {
-                let mut obj = self.lower_expr(object);
+                let obj = self.lower_expr(object);
                 // Field access projects into a place: bind a non-place base
                 // (e.g. a call result — `f(x).field`) to a temp `Let` first,
                 // like the non-place `match` scrutinee and `Reference` spills.
-                if !is_place(&self.nodes, obj) {
-                    let obj_ty = self.nodes[obj.0].ty.clone();
-                    let var = self.fresh_var();
-                    let let_node = self.push(Node {
-                        ty: obj_ty.clone(),
-                        kind: NodeKind::Let {
-                            var,
-                            value: obj,
-                            noescape: false,
-                        },
-                        span: expr.span,
-                    });
-                    self.pending_stmts.push(let_node);
-                    obj = self.push(Node {
-                        ty: obj_ty,
-                        kind: NodeKind::Local(var),
-                        span: expr.span,
-                    });
-                }
+                let obj = self.spill_to_place(obj, expr.span);
                 self.push(Node {
                     ty: expr.ty.clone(),
                     kind: NodeKind::FieldAccess {
@@ -917,6 +935,9 @@ impl<'a> FunctionLowerer<'a> {
             }
             mangled_ast::ExprKind::Deref(inner) => {
                 let id = self.lower_expr(inner);
+                // Same spill as FieldAccess: `f(x)@` derefs a call result, and
+                // the pointee is only a place if the pointer itself is one.
+                let id = self.spill_to_place(id, expr.span);
                 self.push(Node {
                     ty: expr.ty.clone(),
                     kind: NodeKind::Deref(id),
@@ -1087,6 +1108,7 @@ impl<'a> FunctionLowerer<'a> {
             }
             mangled_ast::ExprKind::Index { object, index } => {
                 let obj = self.lower_expr(object);
+                let obj = self.spill_to_place(obj, expr.span);
                 let idx = self.lower_expr(index);
                 self.push(Node {
                     ty: expr.ty.clone(),
@@ -1099,6 +1121,7 @@ impl<'a> FunctionLowerer<'a> {
             }
             mangled_ast::ExprKind::Slice { object, start, end } => {
                 let obj = self.lower_expr(object);
+                let obj = self.spill_to_place(obj, expr.span);
                 let s = self.lower_expr(start);
                 let e = self.lower_expr(end);
                 self.push(Node {
@@ -1156,16 +1179,58 @@ impl<'a> FunctionLowerer<'a> {
             }
             mangled_ast::ExprKind::BinaryOp { op, left, right } => {
                 let l = self.lower_expr(left);
-                let r = self.lower_expr(right);
-                self.push(Node {
-                    ty: expr.ty.clone(),
-                    kind: NodeKind::BinaryOp {
-                        op: *op,
-                        left: l,
-                        right: r,
-                    },
-                    span: expr.span,
-                })
+                if matches!(op, BinOp::And | BinOp::Or) {
+                    // Lowering an expression can emit setup statements (for
+                    // example, materializing an index and its bounds check).
+                    // Those belonging to the RHS must remain inside the
+                    // short-circuited branch rather than being drained into
+                    // the enclosing statement and executed eagerly.
+                    let left_pending = self.drain_pending();
+                    let r = self.lower_expr(right);
+                    let mut right_body = self.drain_pending();
+                    let right_expr = self.push(Node {
+                        ty: expr.ty.clone(),
+                        kind: NodeKind::Expr(r),
+                        span: expr.span,
+                    });
+                    right_body.push(right_expr);
+                    let constant = self.push(Node {
+                        ty: Type::Bool,
+                        kind: NodeKind::BooleanLiteral(matches!(op, BinOp::Or)),
+                        span: expr.span,
+                    });
+                    let constant_expr = self.push(Node {
+                        ty: Type::Bool,
+                        kind: NodeKind::Expr(constant),
+                        span: expr.span,
+                    });
+                    self.pending_stmts.extend(left_pending);
+                    let (then_body, else_body) = if matches!(op, BinOp::And) {
+                        (right_body, vec![constant_expr])
+                    } else {
+                        (vec![constant_expr], right_body)
+                    };
+                    self.push(Node {
+                        ty: expr.ty.clone(),
+                        kind: NodeKind::IfExpr {
+                            condition: l,
+                            then_body,
+                            else_body,
+                        },
+                        span: expr.span,
+                    })
+                } else {
+                    let r = self.lower_expr(right);
+                    self.push(Node {
+                        ty: expr.ty.clone(),
+                        kind: NodeKind::BinaryOp {
+                            op: *op,
+                            left: l,
+                            right: r,
+                        },
+                        span: expr.span,
+                    })
+                }
             }
             mangled_ast::ExprKind::If {
                 condition,

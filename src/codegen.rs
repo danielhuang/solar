@@ -24,6 +24,7 @@ pub fn generate(module: &Module, source_file: &str, source_map: &SourceMap) -> S
         static_root_count: 0,
         loop_dst: Vec::new(),
         cur_loc: None,
+        cur_fn_returns_nothing: false,
     };
     cg.emit_module();
     cg.out
@@ -54,6 +55,10 @@ struct Codegen<'a> {
     /// `line()` pins them all to the statement's own line. `None` = synthetic glue,
     /// emitted with no directive.
     cur_loc: Option<(usize, String)>,
+    /// True while emitting a function whose return type is `Unit`/`Never`, for
+    /// which no `_ret` slot is declared — an explicit `return <unit expr>;`
+    /// must therefore evaluate the expression for its effects and `return;`.
+    cur_fn_returns_nothing: bool,
 }
 
 impl<'a> Codegen<'a> {
@@ -951,6 +956,7 @@ impl<'a> Codegen<'a> {
                 .is_some_and(|&id| matches!(nodes[id.0].kind, NodeKind::Expr(_)));
 
         // Declare return variable for non-unit functions
+        self.cur_fn_returns_nothing = matches!(func.return_type, Type::Unit | Type::Never);
         if !matches!(func.return_type, Type::Unit | Type::Never) {
             let vt = self.val_type(&func.return_type);
             self.linef(format!("{vt} _ret;"));
@@ -1197,10 +1203,14 @@ impl<'a> Codegen<'a> {
                 };
                 // Acquire pairs with the release store of the discriminant in
                 // variant construction/copy: observing the tag also observes
-                // the payload it describes.
+                // the payload it describes. `layout_enum` gives every enum at
+                // least 8-byte alignment; struct fields, array strides, heap
+                // allocations, and generated value typedefs preserve it. The
+                // byte-pointer representation hides that fact from Clang, so
+                // restore the proven alignment before using the atomic builtin.
                 let disc = self.fresh_tmp();
                 self.linef(format!(
-                    "uint64_t {disc} = __atomic_load_n((uint64_t*){enum_base}, __ATOMIC_ACQUIRE);"
+                    "uint64_t {disc} = __atomic_load_n((uint64_t*)__builtin_assume_aligned(({enum_base}), 8), __ATOMIC_ACQUIRE);"
                 ));
                 let ptr_tmp = self.fresh_tmp();
                 let has_meta = !self.is_sized(&nodes[id.0].ty);
@@ -1322,6 +1332,44 @@ impl<'a> Codegen<'a> {
     }
 
     /// Returns a C expression for metadata, or None for sized types (except FixedArray).
+    /// The length shared by every branch's tail value, or `None` if any branch
+    /// has no tail, no statically known length, or disagrees with the others.
+    fn common_branch_meta(nodes: &[Node], bodies: &[Vec<NodeId>]) -> Option<u64> {
+        let mut common: Option<u64> = None;
+        for body in bodies {
+            let m = Self::static_meta(nodes, body.last().copied()?)?;
+            match common {
+                None => common = Some(m),
+                Some(prev) if prev == m => {}
+                Some(_) => return None,
+            }
+        }
+        common
+    }
+
+    /// A value's element count when known from the IR alone, emitting nothing.
+    /// Used where emitting code would be wrong (untaken branches).
+    fn static_meta(nodes: &[Node], id: NodeId) -> Option<u64> {
+        if let Type::FixedArray(_, n) = &nodes[id.0].ty {
+            return Some(*n);
+        }
+        match &nodes[id.0].kind {
+            NodeKind::ArrayLiteral(elems) => Some(elems.len() as u64),
+            NodeKind::ArraySizeCoerce { size, .. } => Some(*size),
+            NodeKind::Expr(inner) => Self::static_meta(nodes, *inner),
+            NodeKind::Match { arms, .. } => {
+                let bodies: Vec<Vec<NodeId>> = arms.iter().map(|a| a.body.clone()).collect();
+                Self::common_branch_meta(nodes, &bodies)
+            }
+            NodeKind::IfExpr {
+                then_body,
+                else_body,
+                ..
+            } => Self::common_branch_meta(nodes, &[then_body.clone(), else_body.clone()]),
+            _ => None,
+        }
+    }
+
     fn emit_meta(&mut self, nodes: &[Node], id: NodeId) -> Option<String> {
         let ty = &nodes[id.0].ty;
         // FixedArray is sized but still has a known meta (element count)
@@ -1338,6 +1386,20 @@ impl<'a> Codegen<'a> {
                 Some(self.emit_load(nodes, count))
             }
             NodeKind::ArraySizeCoerce { size, .. } => Some(format!("{size}")),
+            // A statement-position wrapper carries its inner value's length.
+            NodeKind::Expr(inner) => {
+                let inner = *inner;
+                self.emit_meta(nodes, inner)
+            }
+            // A `match`/`if` used as a value is not a place, so there is no
+            // stored length. When every branch's tail has the same statically
+            // known length (the usual shape: each arm an N-element array
+            // literal) that is the value's length whichever branch runs.
+            // `static_meta` evaluates and emits nothing — measuring a branch
+            // must not emit code belonging to a branch that will not be taken.
+            NodeKind::Match { .. } | NodeKind::IfExpr { .. } => {
+                Self::static_meta(nodes, id).map(|n| format!("{n}"))
+            }
             NodeKind::StructLiteral { name, fields } => {
                 let dt = &self.module.datatypes[name.as_str()];
                 let last_field_name = dt.fields.last().unwrap().name.clone();
@@ -2005,9 +2067,11 @@ impl<'a> Codegen<'a> {
                 // Store the destination's discriminant last, with release
                 // ordering, so a concurrent reader that observes the tag also
                 // observes the payload it describes (same as variant
-                // construction).
+                // construction). Enum destinations are always at least
+                // 8-byte-aligned by the IR layout invariant; the generated C
+                // carries them as byte pointers, so state that alignment here.
                 self.linef(format!(
-                    "__atomic_store_n((uint64_t*){dst}, {disc_tmp}, __ATOMIC_RELEASE);"
+                    "__atomic_store_n((uint64_t*)__builtin_assume_aligned(({dst}), 8), {disc_tmp}, __ATOMIC_RELEASE);"
                 ));
             }
             Type::Struct(name) => {
@@ -2253,7 +2317,12 @@ impl<'a> Codegen<'a> {
                 // kept off the happy path behind the compare. The check runs
                 // BEFORE the copy — `dst` is sized for `size` elements, so a
                 // longer source would write past it.
-                let meta = self.emit_meta(nodes, value).unwrap();
+                let meta = self.emit_meta(nodes, value).unwrap_or_else(|| {
+                    panic!(
+                        "internal error: cannot determine array length for coercion (node kind {:?})",
+                        nodes[value.0].kind
+                    )
+                });
                 self.linef(format!(
                     "if ((uint64_t){meta} != {size}u) {{ sol_assert_array_len((uint64_t){meta}, {size}u); }}"
                 ));
@@ -2368,9 +2437,10 @@ impl<'a> Codegen<'a> {
                 }
                 // Write the discriminant last, with release ordering, so a
                 // concurrent reader (e.g. the GC marker) that observes the
-                // tag also observes the payload it describes.
+                // tag also observes the payload it describes. `layout_enum`
+                // guarantees this base is at least 8-byte aligned.
                 self.linef(format!(
-                    "__atomic_store_n((uint64_t*){dst}, {variant_index}u, __ATOMIC_RELEASE);"
+                    "__atomic_store_n((uint64_t*)__builtin_assume_aligned(({dst}), 8), {variant_index}u, __ATOMIC_RELEASE);"
                 ));
             }
             NodeKind::Match { scrutinee, arms } => {
@@ -2395,10 +2465,12 @@ impl<'a> Codegen<'a> {
                     tmp
                 };
                 // Load discriminant with acquire ordering (pairs with the
-                // release store in variant construction/copy)
+                // release store in variant construction/copy). The enum layout
+                // guarantees 8-byte alignment even though this expression is a
+                // byte pointer in generated C.
                 let disc = self.fresh_tmp();
                 self.linef(format!(
-                    "uint64_t {disc} = __atomic_load_n((uint64_t*){enum_base}, __ATOMIC_ACQUIRE);"
+                    "uint64_t {disc} = __atomic_load_n((uint64_t*)__builtin_assume_aligned(({enum_base}), 8), __ATOMIC_ACQUIRE);"
                 ));
                 // Emit if-else chain
                 for (i, arm) in arms.iter().enumerate() {
@@ -2491,7 +2563,23 @@ impl<'a> Codegen<'a> {
                 let args: Vec<NodeId> = args.clone();
                 let result_ty = nodes[id.0].ty.clone();
 
-                if matches!(result_ty, Type::Unit | Type::Never) {
+                // Whether the emitted C function returns anything is decided by
+                // the CALLEE's declared return type, not by the type of the node
+                // being filled: a `Never`-returning callee (`throw`, or any fn
+                // whose body ends in one) is emitted `void`, yet the node it
+                // fills can be typed as a real value — `fn f() -> &T { throw(m&) }`
+                // or `let x = if c { v } else { throw(m&) }`. Reading the node's
+                // type there produced `T tmp = void_call(...);`, which clang
+                // rejects. The call never returns, so leaving `dst` untouched is
+                // sound.
+                let callee_returns_nothing = self
+                    .module
+                    .functions
+                    .iter()
+                    .find(|f| f.name == function)
+                    .is_some_and(|f| matches!(f.return_type, Type::Unit | Type::Never));
+
+                if callee_returns_nothing || matches!(result_ty, Type::Unit | Type::Never) {
                     let call_expr = self.emit_call_expr(nodes, &function, &args);
                     self.linef(format!("{call_expr};"));
                 } else {
@@ -3283,13 +3371,42 @@ impl<'a> Codegen<'a> {
                         self.linef(format!("uint64_t _vm{} = {n};", var.0));
                     }
                 } else {
-                    let meta = self.emit_meta(nodes, value).unwrap();
+                    // A place-valued expression can select both its data pointer
+                    // and metadata at runtime (notably `if`/`match` expressions
+                    // whose branch tails are unsized places).  Keep those paired
+                    // and evaluate the selector only once.  Asking `emit_meta`
+                    // separately both loses conditional metadata and would emit
+                    // the selector a second time when `emit_into` copies it.
+                    let source = if is_place(nodes, value) {
+                        let (place, meta) = self.emit_place(nodes, value);
+                        Some((place, meta.unwrap()))
+                    } else {
+                        None
+                    };
+                    let meta = source
+                        .as_ref()
+                        .map(|(_, meta)| meta.clone())
+                        .or_else(|| self.emit_meta(nodes, value))
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "missing metadata for unsized let value {:?} with type {:?}",
+                                nodes[value.0].kind, ty
+                            )
+                        });
                     let align = self.type_align(&ty);
                     let mf = self.mark_fn_expr(&ty);
                     let size_expr = self.emit_full_size_expr(&ty, &meta);
                     let tmp = self.fresh_tmp();
                     self.emit_alloc(&tmp, &size_expr, align, &mf);
-                    self.emit_into(nodes, value, &tmp);
+                    if let Some((place, _)) = source {
+                        // `place` points at the data of the unsized value, not
+                        // at a 16-byte fat-pointer slot.  Copy its contents;
+                        // treating `[T]` as a value here would copy only the
+                        // first two machine words and corrupt longer slices.
+                        self.emit_copy_contents(&tmp, &place, &ty, &size_expr);
+                    } else {
+                        self.emit_into(nodes, value, &tmp);
+                    }
                     self.linef(format!("uint8_t* _v{} = {tmp};", var.0));
                     self.linef(format!("uint64_t _vm{} = {meta};", var.0));
                 }
@@ -3415,8 +3532,14 @@ impl<'a> Codegen<'a> {
             }
             NodeKind::Return(inner) => {
                 let inner = *inner;
-                self.emit_into(nodes, inner, "(uint8_t*)&_ret");
-                self.line("return _ret;");
+                if self.cur_fn_returns_nothing {
+                    // No `_ret` slot exists: evaluate for effects, then plain return.
+                    self.emit_into(nodes, inner, "((uint8_t*)0)");
+                    self.line("return;");
+                } else {
+                    self.emit_into(nodes, inner, "(uint8_t*)&_ret");
+                    self.line("return _ret;");
+                }
             }
             _ => unreachable!(),
         }

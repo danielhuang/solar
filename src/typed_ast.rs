@@ -190,9 +190,20 @@ impl Type {
             Type::FixedArray(_, _) | Type::Function { .. } => true,
             Type::Enum(_) => true,
             Type::Struct(name) => {
-                let def = structs
-                    .get(name)
-                    .unwrap_or_else(|| panic!("is_sized: missing struct `{name}`"));
+                let def = structs.get(name).unwrap_or_else(|| {
+                    // Almost always a *name* problem rather than a layout one:
+                    // a module-qualified type the module does not export (a typo
+                    // in `alias::Name`, which `resolve_type_ref` mints a `DefId`
+                    // for without checking), or a generic instantiation nothing
+                    // monomorphized. Say so — this message is the only clue the
+                    // author gets, and bisecting it by hand is expensive.
+                    panic!(
+                        "is_sized: missing struct `{name}` — the name resolved to no \
+                         definition. Check for a module-qualified type whose module does \
+                         not export it (e.g. a typo in `alias::Name`), or a generic type \
+                         used only in a position that never triggered monomorphization."
+                    )
+                });
                 def.fields.last().is_none_or(|f| f.ty.is_sized(structs))
             }
             _ => true,
@@ -1574,6 +1585,17 @@ struct LoopCtx {
     break_ty: Option<Type>,
 }
 
+/// Coarse argument/parameter shape for overload pre-filtering. `Unknown` is the
+/// "no information" case and matches anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ArgShape {
+    Named(DefId),
+    Sequence,
+    Function,
+    Tuple,
+    Unknown,
+}
+
 impl<'a> Lowerer<'a> {
     fn new(source: &'a ast::SourceFile) -> Result<Self, CompileError> {
         let mut structs: HashMap<DefId, &ast::StructDef> = HashMap::new();
@@ -1584,7 +1606,10 @@ impl<'a> Lowerer<'a> {
         let mut method_defs: HashMap<String, Vec<FunctionEntry>> = HashMap::new();
         let mut consts: HashMap<DefId, &ast::ConstDef> = HashMap::new();
         let mut static_defs: Vec<&ast::StaticDef> = Vec::new();
-        let mut static_names: HashSet<&str> = HashSet::new();
+        // Keyed by provenance `DefId`, not by bare name: two different files
+        // may each declare `static FOO` (they are distinct globals, exactly like
+        // two files each declaring `fn foo`).
+        let mut static_names: HashSet<DefId> = HashSet::new();
         for item in &source.items {
             match item {
                 ast::TopLevelItem::Struct(s) => {
@@ -1698,7 +1723,7 @@ impl<'a> Lowerer<'a> {
                             st.value.span,
                         ));
                     }
-                    if !static_names.insert(st.name.as_str()) {
+                    if !static_names.insert(def_id_of_def(&st.name, st.span)) {
                         return Err(CompileError::new(
                             format!("duplicate static definition: `{}`", st.name),
                             st.span,
@@ -2061,6 +2086,38 @@ impl<'a> Lowerer<'a> {
             ast::BinOp::WrapAdd => "operator_wrapadd",
             ast::BinOp::WrapSub => "operator_wrapsub",
             ast::BinOp::WrapMul => "operator_wrapmul",
+        }
+    }
+
+    /// The operand form used by the `operator_*` desugar of a binary operator.
+    ///
+    /// A plain value is referenced (`x` → `x&`) so it can bind to an
+    /// `operator_*(self: &T, other: &T)` declaration. An operand that is
+    /// **already a reference to a struct or enum** is passed through unchanged:
+    /// referencing it again yields `&&T`, a type no `operator_*` declaration
+    /// can name, so `structRef == structRef` could only ever reach the stdlib's
+    /// blanket reflective `operator_eq` and throw `type is not a struct or
+    /// enum` at runtime — even when the pointee type declares a perfectly good
+    /// concrete `operator_eq(self: &T, other: &T)`.
+    ///
+    /// References to non-struct/enum pointees (notably `&[Uint8]`) keep the
+    /// old behaviour and are still wrapped, so the documented rule "compare
+    /// byte-slice *contents* with `a@ == b@`; `==` on two byte-slice
+    /// references throws" is unchanged (`tests/runtime/blanket_eq_throw.solar`).
+    fn auto_reference(expr: &ast::Expr, ty: &Type) -> ast::Expr {
+        let already_referenced = match ty {
+            Type::Ref(inner) | Type::RefUnsized(inner) => {
+                matches!(**inner, Type::Struct(_) | Type::Enum(_))
+            }
+            _ => false,
+        };
+        if already_referenced {
+            expr.clone()
+        } else {
+            ast::Expr {
+                kind: ast::ExprKind::Reference(Box::new(expr.clone())),
+                span: expr.span,
+            }
         }
     }
 
@@ -2444,6 +2501,62 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Expand type aliases inside an `ast::Type`, recursively.
+    ///
+    /// A type *argument* used to go straight to `from_ast_type`, which is a
+    /// structural conversion that does not consult the alias table — so
+    /// `Holder#[Alias]` and `Holder#[Target]` monomorphized to two different
+    /// instantiations and a method resolved on one did not match the other
+    /// ("no matching overload for `put` with argument types (&Holder#[Alias], Target)").
+    /// Aliases may chain, so this recurses; the depth guard is a safety net for
+    /// a cyclic alias, which `resolve_type_alias` does not itself detect.
+    fn expand_type_aliases(&self, ty: &ast::Type, depth: u32) -> ast::Type {
+        if depth > 32 {
+            return ty.clone();
+        }
+        match ty {
+            ast::Type::Named(name) => match self.resolve_type_alias(name, &[]) {
+                Some(target) => self.expand_type_aliases(&target, depth + 1),
+                None => ty.clone(),
+            },
+            ast::Type::Generic { name, type_args } => {
+                let args: Vec<ast::Type> = type_args
+                    .iter()
+                    .map(|a| self.expand_type_aliases(a, depth + 1))
+                    .collect();
+                match self.resolve_type_alias(name, &args) {
+                    Some(target) => self.expand_type_aliases(&target, depth + 1),
+                    None => ast::Type::Generic {
+                        name: name.clone(),
+                        type_args: args,
+                    },
+                }
+            }
+            ast::Type::Reference(inner) => {
+                ast::Type::Reference(Box::new(self.expand_type_aliases(inner, depth + 1)))
+            }
+            ast::Type::NullableReference(inner) => {
+                ast::Type::NullableReference(Box::new(self.expand_type_aliases(inner, depth + 1)))
+            }
+            ast::Type::Unique(inner) => {
+                ast::Type::Unique(Box::new(self.expand_type_aliases(inner, depth + 1)))
+            }
+            ast::Type::Slice(inner) => {
+                ast::Type::Slice(Box::new(self.expand_type_aliases(inner, depth + 1)))
+            }
+            ast::Type::FixedArray(inner, n) => {
+                ast::Type::FixedArray(Box::new(self.expand_type_aliases(inner, depth + 1)), *n)
+            }
+            ast::Type::Tuple(elems) => ast::Type::Tuple(
+                elems
+                    .iter()
+                    .map(|e| self.expand_type_aliases(e, depth + 1))
+                    .collect(),
+            ),
+            _ => ty.clone(),
+        }
+    }
+
     fn ensure_struct_monomorphized(
         &mut self,
         name: &DefId,
@@ -2469,6 +2582,11 @@ impl<'a> Lowerer<'a> {
         }
 
         // Build concrete type args -> the structural identity of this instance.
+        let type_args: Vec<ast::Type> = type_args
+            .iter()
+            .map(|a| self.expand_type_aliases(a, 0))
+            .collect();
+        let type_args = &type_args[..];
         let concrete_args: Vec<Type> = type_args.iter().map(from_ast_type).collect();
         let id = TypeId {
             def: def.clone(),
@@ -2540,6 +2658,11 @@ impl<'a> Lowerer<'a> {
         }
 
         // Build concrete type args -> the structural identity of this instance.
+        let type_args: Vec<ast::Type> = type_args
+            .iter()
+            .map(|a| self.expand_type_aliases(a, 0))
+            .collect();
+        let type_args = &type_args[..];
         let concrete_args: Vec<Type> = type_args.iter().map(from_ast_type).collect();
         let id = TypeId {
             def: def.clone(),
@@ -2561,6 +2684,22 @@ impl<'a> Lowerer<'a> {
 
         // Clone the AST def variants before monomorphizing
         let ast_variants = gdef.ast_def.variants.clone();
+
+        // Insert a placeholder to prevent infinite recursion for self-referential
+        // types, exactly like `ensure_struct_monomorphized` above. A recursive
+        // generic enum — `enum Term#[V] { TOpt(&Term#[V]), … }`, the shape every
+        // packrat/parser combinator has — otherwise re-enters this function while
+        // resolving its own payload types and overflows the lowering stack.
+        // Unlike structs this needs no second pass: `Type::is_sized` answers
+        // `true` for every enum without consulting its variants, so no thin/fat
+        // reference decision can be made against the placeholder.
+        self.lowered_enums.insert(
+            id.clone(),
+            EnumDef {
+                id: id.clone(),
+                variants: Vec::new(),
+            },
+        );
 
         let variants = ast_variants
             .iter()
@@ -3380,6 +3519,29 @@ impl<'a> Lowerer<'a> {
         let return_type = if let Some(rt) = explicit_return_type {
             // Explicit return type: validate the body produces the right type
             if rt != Type::Unit {
+                // A tail expression is subject to the same coercions as an
+                // explicit `return` (which lowers through `try_coerce`).
+                // Without this, `fn f(p: &P) -> &?P { p }` was an error while
+                // `return p;` compiled — the `&T` → `&?T` retag applied in one
+                // position but not the other.
+                if let Some(last) = body.last_mut() {
+                    match &mut last.kind {
+                        StatementKind::Expression(expr) | StatementKind::Return(expr)
+                            if expr.ty != rt =>
+                        {
+                            // Placeholder value while the real expression is moved
+                            // through `try_coerce`; always overwritten.
+                            let placeholder = Expr {
+                                ty: Type::Unit,
+                                kind: ExprKind::IntegerLiteral(0),
+                                span: expr.span,
+                            };
+                            let taken = std::mem::replace(expr, placeholder);
+                            *expr = self.try_coerce(taken, &rt);
+                        }
+                        _ => {}
+                    }
+                }
                 let last_info = body.last().and_then(|s| match &s.kind {
                     StatementKind::Expression(expr) => Some((&expr.ty, s.span)),
                     StatementKind::Return(expr) => Some((&expr.ty, s.span)),
@@ -4916,10 +5078,32 @@ impl<'a> Lowerer<'a> {
                                 return_type,
                             } => (params.clone(), (**return_type).clone()),
                             other => {
-                                return Err(CompileError::new(
-                                    format!("cannot call non-function type {other}"),
-                                    expr.span,
-                                ));
+                                // `a & (b)` and `a ^ (b)` are ambiguous: `&`/`^` are
+                                // both binary operators and postfix reference/unique
+                                // operators, and with a parenthesized right operand
+                                // the postfix parse wins, giving `(a&)(b)` — a call of
+                                // a reference. That is never valid, so when the callee
+                                // is a reference type this is almost always the cause;
+                                // say so rather than leaving the user to guess.
+                                let hint = match other {
+                                    Type::Ref(_)
+                                    | Type::RefUnsized(_)
+                                    | Type::NullableRef(_)
+                                    | Type::NullableRefUnsized(_) => Some('&'),
+                                    Type::Unique(_) | Type::UniqueUnsized(_) => Some('^'),
+                                    _ => None,
+                                };
+                                let msg = match hint {
+                                    Some(op) => format!(
+                                        "cannot call non-function type {other}\n\
+                                         note: if you meant the binary `{op}` operator, a \
+                                         parenthesized right operand parses as the postfix \
+                                         `{op}` instead — write `a {op} b` without the \
+                                         parentheses, or bind the right operand to a `let` first"
+                                    ),
+                                    None => format!("cannot call non-function type {other}"),
+                                };
+                                return Err(CompileError::new(msg, expr.span));
                             }
                         };
 
@@ -5269,14 +5453,16 @@ impl<'a> Lowerer<'a> {
                 if !Self::binop_primitive_applies(*op, &lhs.ty) {
                     let method = Self::binop_method_name(*op);
                     if self.method_defs.contains_key(method) {
-                        let recv = ast::Expr {
-                            kind: ast::ExprKind::Reference(left.clone()),
-                            span: left.span,
-                        };
-                        let arg = ast::Expr {
-                            kind: ast::ExprKind::Reference(right.clone()),
-                            span: right.span,
-                        };
+                        // An operand that is ALREADY a reference is passed
+                        // through unchanged. Wrapping it would produce a `&&T`
+                        // receiver, which no `operator_*` declaration can name,
+                        // so every such comparison fell through to the blanket
+                        // reflective `operator_eq` and threw at runtime — both
+                        // for `refA == refB` and for a struct field whose type
+                        // is itself a reference (the reflective body compares
+                        // `a@ == b@`, and `a@` is that reference).
+                        let recv = Self::auto_reference(left, &lhs.ty);
+                        let arg = Self::auto_reference(right, &rhs.ty);
                         return self.lower_method_call(
                             expr.span,
                             &recv,
@@ -6797,6 +6983,72 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// The base `DefId` of a *declared* (un-lowered) parameter type, peeling
+    /// references exactly as `type_base_key` does for lowered types. Returns
+    /// `None` when the type is one of the function's own type parameters, or
+    /// anything without a nameable base (slice, tuple, function, `Infer`, …) —
+    /// i.e. "this parameter tells us nothing about which overload was meant".
+    fn ast_type_base_def(ty: &ast::Type, type_params: &[String]) -> Option<DefId> {
+        match ty {
+            ast::Type::Reference(inner)
+            | ast::Type::NullableReference(inner)
+            | ast::Type::Unique(inner) => Self::ast_type_base_def(inner, type_params),
+            ast::Type::Named(def) | ast::Type::Generic { name: def, .. } => {
+                if type_params.iter().any(|p| p == &def.name) {
+                    None
+                } else {
+                    Some(def.clone())
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// A coarse shape used to tell overload candidates apart when their
+    /// parameters differ by *form* rather than by named type — e.g. `all_of`'s
+    /// `fn(&T) -> Bool` overload versus its `&[fn(&T) -> Bool]` one. Comparing
+    /// base `DefId`s alone cannot separate those (a slice and a function type
+    /// both have no base def), so an explicit-type-argument call fell back to
+    /// the first-declared candidate and reported a type mismatch.
+    ///
+    /// `Unknown` means "tells us nothing" — a bare type parameter, or any shape
+    /// we do not model — and always stays viable, so this can only reject a
+    /// candidate that could not have matched anyway.
+    fn ast_type_shape(ty: &ast::Type, type_params: &[String]) -> ArgShape {
+        match ty {
+            ast::Type::Reference(inner)
+            | ast::Type::NullableReference(inner)
+            | ast::Type::Unique(inner) => Self::ast_type_shape(inner, type_params),
+            ast::Type::Slice(_) | ast::Type::FixedArray(_, _) => ArgShape::Sequence,
+            ast::Type::Function { .. } => ArgShape::Function,
+            ast::Type::Tuple(_) => ArgShape::Tuple,
+            ast::Type::Named(def) | ast::Type::Generic { name: def, .. } => {
+                if type_params.iter().any(|p| p == &def.name) {
+                    ArgShape::Unknown
+                } else {
+                    ArgShape::Named(def.clone())
+                }
+            }
+            _ => ArgShape::Unknown,
+        }
+    }
+
+    /// The same shape for an already-lowered argument type.
+    fn type_shape(ty: &Type) -> ArgShape {
+        match ty {
+            Type::Ref(inner)
+            | Type::RefUnsized(inner)
+            | Type::NullableRef(inner)
+            | Type::NullableRefUnsized(inner)
+            | Type::Unique(inner)
+            | Type::UniqueUnsized(inner) => Self::type_shape(inner),
+            Type::Array(_) | Type::FixedArray(_, _) => ArgShape::Sequence,
+            Type::Function { .. } => ArgShape::Function,
+            Type::Struct(id) | Type::Enum(id) => ArgShape::Named(id.def.clone()),
+            _ => ArgShape::Unknown,
+        }
+    }
+
     /// Build (once) the receiver index for a method name. `method_defs` is
     /// immutable after `Lowerer::new`, so the index never needs invalidation.
     fn build_method_index(&mut self, name: &str) {
@@ -6903,17 +7155,68 @@ impl<'a> Lowerer<'a> {
 
         // If explicit type args provided, skip concrete entries entirely
         if !type_args.is_empty() {
-            // Find matching generic overload with explicit type args
-            let mut matched: Option<(FunctionEntry, Vec<ast::Expr>)> = None;
+            // Find matching generic overload with explicit type args.
+            //
+            // Type-parameter count and arity alone do not identify an overload:
+            // `f#[T](owner: &Owner#[T], x: Int32)` and `f#[T](key: Key, x: Int32)`
+            // are both 1-type-param/2-argument. Taking the first match made an
+            // explicit-type-arg call always resolve to whichever was declared
+            // first, so `f#[V](key, x)` reported "expected &Owner#[V], got Key".
+            // When several candidates survive that filter, prefer one whose first
+            // parameter's base type matches the first argument's, leaving the
+            // original order (and its diagnostics) intact when the check is
+            // inconclusive — a bare type-parameter parameter matches anything.
+            let mut viable: Vec<(FunctionEntry, Vec<ast::Expr>)> = Vec::new();
             for gdef in &generic_entries {
                 if gdef.type_params.len() != type_args.len() {
                     continue;
                 }
                 if let Some(full) = Self::expand_kwargs(&gdef.ast_def.parameters, arguments, kwargs)
                 {
-                    matched = Some((gdef.clone(), full));
-                    break;
+                    viable.push((gdef.clone(), full));
                 }
+            }
+            let mut matched: Option<(FunctionEntry, Vec<ast::Expr>)> = None;
+            if viable.len() > 1 && !arguments.is_empty() {
+                // Compare each positional argument's *shape* (named type,
+                // sequence, function, tuple) against the candidate's parameter
+                // in the same position. `Unknown` on either side means "no
+                // information", so a candidate is only rejected when some
+                // position definitely cannot match. Checking EVERY position,
+                // not just the first, is what separates overloads that agree on
+                // their leading parameters and differ later — e.g.
+                // `g#[T](Key, Int)` vs `g#[T](Key, &Own#[T])`, where comparing
+                // argument 0 alone is inconclusive and the first candidate wins
+                // by declaration order, producing a bogus
+                // "expected Int, got &Own#[Int]".
+                let arg_shapes: Vec<ArgShape> = arguments
+                    .iter()
+                    .map(|a| {
+                        self.lower_expr(a)
+                            .map(|e| Self::type_shape(&e.ty))
+                            .unwrap_or(ArgShape::Unknown)
+                    })
+                    .collect();
+                if arg_shapes.iter().any(|s| *s != ArgShape::Unknown) {
+                    matched = viable
+                        .iter()
+                        .find(|(gdef, _)| {
+                            arg_shapes.iter().zip(gdef.ast_def.parameters.iter()).all(
+                                |(arg_shape, p)| {
+                                    if *arg_shape == ArgShape::Unknown {
+                                        return true;
+                                    }
+                                    let param_shape =
+                                        Self::ast_type_shape(&p.ty, &gdef.type_params);
+                                    param_shape == ArgShape::Unknown || param_shape == *arg_shape
+                                },
+                            )
+                        })
+                        .cloned();
+                }
+            }
+            if matched.is_none() {
+                matched = viable.into_iter().next();
             }
             let (gdef, full_args) = matched.ok_or_else(|| {
                 CompileError::new(
@@ -7062,6 +7365,39 @@ impl<'a> Lowerer<'a> {
                     .iter()
                     .map(|p| p.ty.clone())
                     .collect();
+                // Cheap pre-filter: a parameter declared with a *concrete*
+                // named base (`self: &Box#[K]`) can never bind an argument
+                // whose base is a different definition, whatever the type
+                // arguments are. Rejecting here is not just a speed-up — the
+                // `params_match` loop below resolves the SUBSTITUTED parameter
+                // type, and resolving `&Box#[[Uint8]]` permanently registers
+                // that struct monomorphization even though this candidate is
+                // then discarded. `ir` later tries to lay the orphan out and
+                // panics ("type_size called on unsized type [T]") whenever the
+                // bogus type argument is unsized. Coercion never changes a
+                // value's base def (only `&T`->`&?T`, array-size and numeric
+                // widening, none of which have a differing base key), so this
+                // rejects nothing that could otherwise have matched.
+                // The declared name must be a struct/enum def for the comparison
+                // to mean anything: a TYPE ALIAS (`&LoadingErrors` for
+                // `hashbrown::HashMap#[…]`) has no def of its own, and its
+                // `DefId` never equals the resolved argument's base.
+                let mut head_mismatch = false;
+                for (arg, pat) in lowered_args.iter().zip(param_ast_types.iter()) {
+                    let (Some(want), Some(got)) = (
+                        Self::ast_type_base_def(pat, &gdef.type_params),
+                        Self::type_base_key(&arg.ty),
+                    ) else {
+                        continue;
+                    };
+                    if !self.type_aliases.contains_key(&want) && want != got {
+                        head_mismatch = true;
+                        break;
+                    }
+                }
+                if head_mismatch {
+                    continue;
+                }
                 let mut bindings: HashMap<String, ast::Type> = HashMap::new();
                 let all_unified =
                     lowered_args

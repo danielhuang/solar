@@ -234,7 +234,7 @@ fn array_len() {
 #[test]
 fn binop_logic() {
     let output = run(&fixture("binop_logic.solar"), "binop_logic");
-    assert_eq!(output, "1\n0\n0\n1\n0\n1\n0\n88\n1\n1\n99\n0\n");
+    assert_eq!(output, "1\n0\n0\n1\n0\n1\n0\n88\n1\n1\n99\n0\n0\n1\n");
 }
 
 #[test]
@@ -381,7 +381,7 @@ fn write_stdout() {
 #[test]
 fn enums() {
     let output = run(&fixture("enums.solar"), "enums");
-    assert_eq!(output, "0\n5\n16\n11\n1\n200\n99\n7\n42\n77\n");
+    assert_eq!(output, "0\n5\n16\n11\n1\n200\n99\n0\n1\n2\n7\n42\n77\n");
 }
 
 #[test]
@@ -872,6 +872,34 @@ fn interior_ref_escape() {
 /// (`x = x;`, `a[i] = a[i]`, aliased `d@ = s@`) and partially overlapping
 /// slice-range assignments in both directions. The debug-codegen run is built
 /// with ASAN, whose interceptors flag overlapping memcpy — so a regression to
+/// A closure capturing a `match` BINDING, returned out of its creating frame.
+/// The binding aliases the scrutinee's storage and closures capture by
+/// reference, so the scrutinee must not be stack-placed. Release-only: debug
+/// heap-boxes every local. Fails as WRONG ANSWERS (the first closure reads a
+/// later call's payload), not a crash, so the interpreter and release backend
+/// are compared against each other.
+#[test]
+fn closure_captures_match_binding() {
+    let output = run(
+        &fixture("closure_captures_match_binding.solar"),
+        "closure_captures_match_binding",
+    );
+    assert_eq!(output, "735\n124\n731\n");
+}
+
+/// A `[T; N]` coerced from a NON-place source — the tail of a `match`/`if` used
+/// as an expression, or a struct field read. The length is not recoverable from
+/// a place, so it must come from the IR statically; getting this wrong panicked
+/// the IR interpreter and codegen at *runtime*, after a clean type-check.
+#[test]
+fn fixed_array_from_branch() {
+    let output = run(
+        &fixture("fixed_array_from_branch.solar"),
+        "fixed_array_from_branch",
+    );
+    assert_eq!(output, "7\n8\n3\n3\n20\n30\n");
+}
+
 /// memcpy semantics on any copy path fails here even when the bytes happen to
 /// come out right.
 #[test]
@@ -896,4 +924,38 @@ fn nullable_unsized_deref() {
         "nullable_unsized_deref",
     );
     assert_eq!(output, "1\n3\n3\n2\n3\n");
+}
+
+#[test]
+fn unsized_if_local() {
+    let output = run(&fixture("unsized_if_local.solar"), "unsized_if_local");
+    assert_eq!(output, "3\n20\n22\n1\nabcdefghijklmnopqrstuvwx\n");
+}
+
+#[test]
+fn call_result_place() {
+    let output = run(&fixture("call_result_place.solar"), "call_result_place");
+    assert_eq!(output, "42\n30\nhello\n7\n13\n");
+}
+
+/// An intrinsic call used directly as a value — as a binop operand or a
+/// condition rather than assigned to a local — must be loadable. This used to
+/// hit `unreachable!("eval_load on non-scalar node: IntrinsicCall ...")` in the
+/// IR interpreter.
+#[test]
+fn intrinsic_call_value() {
+    let output = run(
+        &fixture("intrinsic_call_value.solar"),
+        "intrinsic_call_value",
+    );
+    assert_eq!(output, "1\n1\n1\n");
+}
+
+/// A tail expression must accept the same coercions as an explicit `return`:
+/// `&T` -> `&?T` used to apply in `return x;` but not in tail position, so
+/// `fn f(p: &P) -> &?P { p }` was rejected while the `return` form compiled.
+#[test]
+fn tail_expr_coerce() {
+    let output = run(&fixture("tail_expr_coerce.solar"), "tail_expr_coerce");
+    assert_eq!(output, "1\n1\n3\n3\n");
 }

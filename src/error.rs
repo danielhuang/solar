@@ -39,28 +39,89 @@ impl SourceMap {
     /// The module-mangling prefix for a file's definitions — the piece formerly
     /// produced by `resolve::module_prefix`, now applied here at the
     /// `mangled_ast` stage. Empty for the root file (bare names). Otherwise
-    /// `__mod{len}_{stem}` where `stem` is the file's sanitized basename.
+    /// `__mod{len}_{name}`, where `name` is normally the file's sanitized
+    /// basename.
+    ///
+    /// The basename alone is NOT unique: a program can import two files with
+    /// the same name from different directories (`a/Thing.solar` and
+    /// `b/Thing.solar`, or the 315 `package-info.java` units of a Java port).
+    /// Those used to mangle to the same prefix, silently merging both files'
+    /// definitions into one module — a wrong-symbol miscompile, not an error.
+    /// So when a basename is shared, enough leading directory components are
+    /// folded into the name to disambiguate it (`a_Thing` vs `b_Thing`), and
+    /// the file id is the last-resort tiebreaker. Files with a unique basename
+    /// keep exactly the symbols they had before.
     pub fn module_prefix(&self, file_id: u32) -> String {
         if self.root_file_id == Some(file_id) {
             return String::new();
         }
-        let filename = self.files.get(&file_id).map(|(f, _)| f.as_str());
-        let stem = filename
-            .and_then(|f| std::path::Path::new(f).file_stem())
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let sanitized: String = stem
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || c == '_' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-        format!("__mod{}_{}", sanitized.len(), sanitized)
+        let Some((path, _)) = self.files.get(&file_id) else {
+            return "__mod0_".to_string();
+        };
+        let name = self.unique_module_name(file_id, path);
+        format!("__mod{}_{}", name.len(), name)
     }
+
+    /// The shortest sanitized path suffix (`stem`, then `dir_stem`, then
+    /// `dir_dir_stem`, …) that no other file in this program shares.
+    fn unique_module_name(&self, file_id: u32, path: &str) -> String {
+        let depth = path_components(path).len();
+        for take in 1..=depth {
+            let candidate = path_suffix_name(path, take);
+            let collides = self.files.iter().any(|(&other_id, (other_path, _))| {
+                other_id != file_id
+                    && self.root_file_id != Some(other_id)
+                    && path_suffix_name(other_path, take) == candidate
+            });
+            if !collides {
+                return candidate;
+            }
+        }
+        // Two files with identical full paths cannot both be in the map, but a
+        // relative and an absolute spelling of one file could still tie here.
+        format!("{}_{}", path_suffix_name(path, 1), file_id)
+    }
+}
+
+/// A path split into components, with the final component's extension dropped.
+fn path_components(path: &str) -> Vec<String> {
+    let p = std::path::Path::new(path);
+    let mut comps: Vec<String> = p
+        .parent()
+        .map(|parent| {
+            parent
+                .components()
+                .filter_map(|c| match c {
+                    std::path::Component::Normal(s) => Some(s.to_string_lossy().to_string()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    comps.push(
+        p.file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default(),
+    );
+    comps
+}
+
+/// The last `take` path components, sanitized to identifier characters and
+/// joined with `_` (e.g. `take = 2` over `a/b/Thing.solar` is `b_Thing`).
+fn path_suffix_name(path: &str, take: usize) -> String {
+    let comps = path_components(path);
+    let start = comps.len().saturating_sub(take);
+    let joined = comps[start..].join("_");
+    joined
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]

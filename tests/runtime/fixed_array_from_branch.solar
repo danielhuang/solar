@@ -1,0 +1,67 @@
+// A `[T; N]` coerced from a value that is NOT a place — the tail of a `match`
+// or `if` used as an expression, and a struct field read — must work in all
+// three backends.
+//
+// Regression: `ArraySizeCoerce` asked the place/length-based meta helper for
+// the source length, which returns "no information" for a non-place value. The
+// IR interpreter then unwrapped that `None` and panicked at *runtime*, after a
+// clean type-check (so it looked like a data bug, not a compiler bug), and
+// codegen unwrapped the same `None` while emitting. Both now take the length
+// from the IR statically when every branch's tail agrees.
+//
+// Measuring a branch must evaluate/emit NOTHING, since only one branch runs —
+// hence the length is derived statically rather than by evaluating a tail.
+
+enum Spell {
+  None,
+  Summon,
+  Fangs,
+}
+
+struct Holder {
+  c: [Float64; 3u],
+}
+
+// Java's `float[] getColor()` shape: a fixed array out of every match arm.
+fn spell_color(s: Spell) -> [Float64; 3u] {
+  match s {
+    Spell::None => [0f64, 0f64, 0f64],
+    Spell::Summon => [0.7f64, 0.7f64, 0.8f64],
+    Spell::Fangs => [0.4f64, 0.3f64, 0.35f64],
+  }
+}
+
+// The same, out of an `if` used as an expression.
+fn pick(flag: Bool) -> [Int; 2u] {
+  if flag { [10, 20] } else { [30, 40] }
+}
+
+fn main() {
+  let a = spell_color(Spell::Summon);
+  println(int_to_str(Int(a[0u] * 10f64)));   // 7
+  println(int_to_str(Int(a[2u] * 10f64)));   // 8
+
+  let b = spell_color(Spell::Fangs);
+  println(int_to_str(Int(b[1u] * 10f64)));   // 3
+
+  // Out of a struct field (also not a place the meta helper can measure).
+  let h = Holder { c: [1f64, 2f64, 3f64] };
+  let f = h.c;
+  println(int_to_str(Int(f[2u])));           // 3
+
+  let p = pick(true);
+  println(int_to_str(p[1u]));                // 20
+  let q = pick(false);
+  println(int_to_str(q[0u]));                // 30
+}
+
+fn int_to_str(v: Int) -> &[Uint8] {
+  if v == 0 { return "0"&; }
+  let buf = ([]#[Uint8])^;
+  let n = v;
+  while n > 0 {
+    buf = ([Uint8(48 + (n % 10))] + buf@)^;
+    n = n / 10;
+  }
+  buf@&
+}

@@ -1,0 +1,21 @@
+// An intrinsic call used directly as a value (rather than assigned to a local)
+// must be loadable: `system_time()` here is a binop operand, which used to hit
+// an `unreachable!` in the IR interpreter's eval_load.
+import intrinsics from "@intrinsics";
+
+fn main() {
+  let millis = Int64(intrinsics::system_time() / 1000000u64);
+  // The clock is not deterministic, so assert a property instead of a value:
+  // any plausible wall-clock reading is well past 2020 and before 2200.
+  println(if millis > 1577836800000i64 && millis < 7258118400000i64 { 1 } else { 0 });
+
+  // Same shape through a comparison and a nested call argument.
+  println(if intrinsics::system_time() > 0u64 { 1 } else { 0 });
+  println(monotonic_ratio());
+}
+
+fn monotonic_ratio() -> Int {
+  // Two intrinsic calls as operands of the same binop.
+  let a = intrinsics::monotonic_time();
+  if intrinsics::monotonic_time() >= a { 1 } else { 0 }
+}

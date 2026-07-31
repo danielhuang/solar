@@ -157,6 +157,13 @@ struct SolarLowerGcAlloc : PassInfoMixin<SolarLowerGcAlloc> {
         }
         IRBuilder<> B(CI);
         CallInst *NC = B.CreateCall(AlignedAlloc, {AlignC, Size});
+        // The allocation's GC marker is semantic, not merely optimization
+        // metadata.  SimplifyCFG may otherwise tail-merge identical allocator
+        // calls from sibling branches and drop unknown instruction metadata,
+        // even when both calls carry the same !solar.alloc node.  `nomerge`
+        // prevents only that call-merging transformation; allocation
+        // promotion/SROA and dead-allocation removal remain available.
+        NC->addFnAttr(Attribute::NoMerge);
         NC->setDebugLoc(CI->getDebugLoc());
         Metadata *Ops[] = {ConstantAsMetadata::get(AlignC),
                            ConstantAsMetadata::get(MarkC)};

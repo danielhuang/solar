@@ -1,0 +1,41 @@
+// A call result used as the base of a place projection: deref (`f(x)@`),
+// indexing (`f(x)[i]`), slicing (`f(x)[a..b]`) and field access
+// (`f(x).field`). IR lowering spills the non-place base to a temporary `Let`,
+// so all four behave like `let t = f(x); t@`.
+
+struct Point { x: Int, y: Int, }
+
+fn make_ref(v: Int) -> &Int {
+    let boxed = v;
+    boxed&
+}
+
+fn make_arr() -> &[Int] {
+    let a = [10, 20, 30, 40];
+    a&
+}
+
+fn make_point() -> Point {
+    Point { x: 7, y: 9, }
+}
+
+fn make_str() -> &[Uint8] {
+    let s = "hello world";
+    s&
+}
+
+fn main() {
+    // deref of a call result
+    println(make_ref(42)@);
+    // indexing a call result (through the ref's deref)
+    println(make_arr()@[2u]);
+    // slicing a call result
+    let part = make_str()@[0u..5u];
+    println(part&);
+    // field access on a call result (already worked; kept as a guard)
+    println(make_point().x);
+    // deref used as an assignment target
+    make_ref(1)@ = 5;
+    // nested: deref of a call result inside an expression
+    println(make_ref(3)@ + make_arr()@[0u]);
+}

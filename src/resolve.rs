@@ -452,6 +452,17 @@ impl Resolver {
                             {
                                 continue;
                             }
+                            // Likewise, a wildcard-imported *method* must not
+                            // displace a name already bound to a non-method
+                            // definition: methods are resolved globally by bare
+                            // name as overload sets, so the rename entry belongs
+                            // to the function/type/const. Without this, two
+                            // wildcard imports where one file exports `foo` as a
+                            // function and another exports `foo` as a method made
+                            // the function unreachable ("undefined reference").
+                            if kinds.iter().all(is_method_export) && rename_map.contains_key(name) {
+                                continue;
+                            }
                             if local_defs.contains(name) && !rename_map.contains_key(name) {
                                 return Err(vec![CompileError::new(
                                     format!(

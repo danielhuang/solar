@@ -428,8 +428,66 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let e = self.eval_load(nodes, end)? as usize;
                 Some(e - s)
             }
+            // A `match`/`if` used as a *value* is not a place, so there is no
+            // stored length to read — but when every branch's tail yields the
+            // same length (the usual shape: each arm is an N-element array
+            // literal) that length is the value's length whichever branch runs.
+            // Computing it from the branches is side-effect-free; picking the
+            // taken branch instead would mean evaluating the scrutinee twice.
+            // Branches that disagree fall through to `None`, which the one
+            // caller reports as a clear error rather than unwrapping.
+            // A statement-position wrapper carries its inner value's length.
+            NodeKind::Expr(inner) => {
+                let inner = *inner;
+                self.compute_meta(nodes, inner)?
+            }
+            NodeKind::Match { .. } | NodeKind::IfExpr { .. } => Self::static_meta(nodes, id),
             _ => None,
         })
+    }
+
+    /// The length shared by every branch's tail value, or `None` if any branch
+    /// has no tail, has no *statically* known length, or disagrees with the
+    /// others.
+    ///
+    /// This deliberately uses `static_meta` rather than `compute_meta`: only one
+    /// branch actually runs, so measuring a branch may not evaluate anything
+    /// (`compute_meta` evaluates sub-expressions for `ArrayRepeat`/`Slice`,
+    /// which would run code belonging to an untaken branch).
+    fn common_branch_meta(nodes: &[Node], bodies: &[Vec<NodeId>]) -> Option<usize> {
+        let mut common: Option<usize> = None;
+        for body in bodies {
+            let m = Self::static_meta(nodes, body.last().copied()?)?;
+            match common {
+                None => common = Some(m),
+                Some(prev) if prev == m => {}
+                Some(_) => return None,
+            }
+        }
+        common
+    }
+
+    /// A value's element count when it is known from the IR alone, evaluating
+    /// nothing. Used where running code would be wrong (untaken branches).
+    fn static_meta(nodes: &[Node], id: NodeId) -> Option<usize> {
+        if let Type::FixedArray(_, n) = &nodes[id.0].ty {
+            return Some(*n as usize);
+        }
+        match &nodes[id.0].kind {
+            NodeKind::ArrayLiteral(elems) => Some(elems.len()),
+            NodeKind::ArraySizeCoerce { size, .. } => Some(*size as usize),
+            NodeKind::Expr(inner) => Self::static_meta(nodes, *inner),
+            NodeKind::Match { arms, .. } => {
+                let bodies: Vec<Vec<NodeId>> = arms.iter().map(|a| a.body.clone()).collect();
+                Self::common_branch_meta(nodes, &bodies)
+            }
+            NodeKind::IfExpr {
+                then_body,
+                else_body,
+                ..
+            } => Self::common_branch_meta(nodes, &[then_body.clone(), else_body.clone()]),
+            _ => None,
+        }
     }
 
     fn eval_place(&mut self, nodes: &[Node], id: NodeId) -> Eval<(usize, Option<usize>)> {
@@ -691,8 +749,13 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 self.eval_into(nodes, id, tmp)?;
                 self.scalar_load(tmp, &ty)
             }
+            // An intrinsic call is loadable exactly like an ordinary call: it
+            // reached `eval_load` because its result is used as a value rather
+            // than assigned (e.g. `system_time() / 1000000u64`), which used to
+            // hit the `unreachable!` below.
             NodeKind::Call { .. }
             | NodeKind::CallIndirect { .. }
+            | NodeKind::IntrinsicCall { .. }
             | NodeKind::IfExpr { .. }
             | NodeKind::Match { .. } => {
                 let ty = nodes[id.0].ty.clone();
@@ -1064,7 +1127,18 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 // elements, so copying a longer slice first would write out of
                 // bounds. (compute_meta is place/length-based and safe to run
                 // before the value is evaluated.)
-                let actual_meta = self.compute_meta(nodes, value)?.unwrap();
+                // A `[T; N]` source carries its length in its *type*, so no
+                // runtime metadata is needed — and `compute_meta` is
+                // place/length-based, so it returns `None` for a value that is
+                // not a place (a `match` result, a struct field read). Consult
+                // the static type first; only an unsized `[T]` needs the
+                // runtime length for the bounds check below.
+                let actual_meta = match &nodes[value.0].ty {
+                    Type::FixedArray(_, n) => *n as usize,
+                    _ => self.compute_meta(nodes, value)?.ok_or_else(|| {
+                        self.thrown("internal error: cannot determine array length for coercion")
+                    })?,
+                };
                 if actual_meta != size as usize {
                     return Err(self.thrown(&format!(
                         "array length mismatch: expected {size} elements, got {actual_meta}"
@@ -1820,12 +1894,28 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let var = *var;
                 let value = *value;
                 let ty = nodes[value.0].ty.clone();
-                let meta = self.compute_meta(nodes, value)?;
-                let addr = match meta {
-                    Some(m) if !is_sized(&ty, &self.module.datatypes) => self.alloc_unsized(&ty, m),
-                    _ => self.alloc_ty(&ty),
+                let unsized_place =
+                    !is_sized(&ty, &self.module.datatypes) && is_place(nodes, value);
+                let (addr, meta) = if unsized_place {
+                    // Keep runtime-selected pointer and metadata together.  In
+                    // particular, evaluating an `if`/`match` once tells us both
+                    // which place to copy and how large that place is.
+                    let (src, meta) = self.eval_place(nodes, value)?;
+                    let meta = meta.unwrap();
+                    let addr = self.alloc_unsized(&ty, meta);
+                    self.copy_value(addr, src, &ty, Some(meta));
+                    (addr, Some(meta))
+                } else {
+                    let meta = self.compute_meta(nodes, value)?;
+                    let addr = match meta {
+                        Some(m) if !is_sized(&ty, &self.module.datatypes) => {
+                            self.alloc_unsized(&ty, m)
+                        }
+                        _ => self.alloc_ty(&ty),
+                    };
+                    self.eval_into(nodes, value, addr)?;
+                    (addr, meta)
                 };
-                self.eval_into(nodes, value, addr)?;
                 self.vars.insert(var, addr);
                 if let Some(m) = meta {
                     self.var_meta.insert(var, m);

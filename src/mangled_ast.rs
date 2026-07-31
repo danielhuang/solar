@@ -412,6 +412,8 @@ pub enum TypedPattern {
 // --- Lowering: typed_ast -> mangled_ast (module-mangling happens here) ---
 
 use crate::error::SourceMap;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// Map a type-checked source file into the mangled AST. This is where the
 /// deferred **module-mangling into a single virtual file** happens: every
@@ -421,7 +423,10 @@ use crate::error::SourceMap;
 /// prefix (bare for the root file). Downstream (`ir`, `codegen`, `panic`) is
 /// unchanged — it sees the same `__mod…` symbols it always did.
 pub fn lower(source: &ta::SourceFile, source_map: &SourceMap) -> SourceFile {
-    let r = Renderer { sm: source_map };
+    let r = Renderer {
+        sm: source_map,
+        prefixes: RefCell::new(HashMap::new()),
+    };
     SourceFile {
         structs: source
             .structs
@@ -450,9 +455,29 @@ fn enc_id(s: &str) -> String {
 /// Renders provenance-token identities into final module-mangled C symbols.
 struct Renderer<'a> {
     sm: &'a SourceMap,
+    /// Memoized `SourceMap::module_prefix` per file.
+    ///
+    /// Computing a prefix is O(files): it splits the path into components and
+    /// scans every other file for a colliding suffix. Every rendered symbol
+    /// (and there is one per definition, type instance, call and method) needs
+    /// its defining file's prefix, so recomputing made mangling quadratic in
+    /// (files × symbols) — 85% of the front end's time on a 150-file program
+    /// (the Minecraft port's block package: 94 s, of which ~80 s was here).
+    /// The prefix depends only on the file set, which is fixed by the time
+    /// mangling runs, so one computation per file is enough.
+    prefixes: RefCell<HashMap<u32, Rc<str>>>,
 }
 
 impl Renderer<'_> {
+    fn module_prefix(&self, file: u32) -> Rc<str> {
+        if let Some(prefix) = self.prefixes.borrow().get(&file) {
+            return Rc::clone(prefix);
+        }
+        let prefix: Rc<str> = Rc::from(self.sm.module_prefix(file).as_str());
+        self.prefixes.borrow_mut().insert(file, Rc::clone(&prefix));
+        prefix
+    }
+
     /// The base identifier of a definition, module-prefixed by its defining file
     /// (bare for the root file, and for synthetic defs — closures, numeric
     /// constructors, tuples — which are already globally unique).
@@ -460,7 +485,7 @@ impl Renderer<'_> {
         if def.file == ast::SYNTHETIC_FILE {
             def.name.clone()
         } else {
-            format!("{}{}", self.sm.module_prefix(def.file), def.name)
+            format!("{}{}", self.module_prefix(def.file), def.name)
         }
     }
 
