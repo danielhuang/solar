@@ -1,6 +1,7 @@
 use crate::ast::*;
 use crate::error::{CompileError, SourceMap};
 use crate::parser;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -494,6 +495,7 @@ impl Resolver {
 
         // Rewrite AST items
         let mut rewritten = Vec::new();
+        let rewrite_errors = RefCell::new(Vec::new());
         for item in &file.ast.items {
             match item {
                 TopLevelItem::Struct(s) => {
@@ -532,6 +534,7 @@ impl Resolver {
                         all_module_aliases,
                         &intrinsic_names,
                         &intrinsic_modules,
+                        &rewrite_errors,
                         file_id,
                     );
                     set_file_id_span(&mut f.span, file_id);
@@ -548,6 +551,7 @@ impl Resolver {
                         all_module_aliases,
                         &intrinsic_names,
                         &intrinsic_modules,
+                        &rewrite_errors,
                         file_id,
                     );
                     set_file_id_span(&mut m.span, file_id);
@@ -589,6 +593,7 @@ impl Resolver {
                         all_module_aliases,
                         intrinsic_names: &intrinsic_names,
                         intrinsic_modules: &intrinsic_modules,
+                        errors: &rewrite_errors,
                         type_params: &[],
                         file_id,
                     };
@@ -602,7 +607,12 @@ impl Resolver {
             }
         }
 
-        Ok(rewritten)
+        let rewrite_errors = rewrite_errors.into_inner();
+        if rewrite_errors.is_empty() {
+            Ok(rewritten)
+        } else {
+            Err(rewrite_errors)
+        }
     }
 }
 
@@ -746,6 +756,7 @@ struct RewriteCtx<'a> {
     all_module_aliases: &'a AllModuleAliases,
     intrinsic_names: &'a HashSet<String>,
     intrinsic_modules: &'a HashSet<String>,
+    errors: &'a RefCell<Vec<CompileError>>,
     type_params: &'a [String],
     file_id: FileId,
 }
@@ -758,6 +769,7 @@ fn rewrite_function_body(
     all_module_aliases: &AllModuleAliases,
     intrinsic_names: &HashSet<String>,
     intrinsic_modules: &HashSet<String>,
+    errors: &RefCell<Vec<CompileError>>,
     file_id: FileId,
 ) {
     let type_params = &f.type_params;
@@ -785,6 +797,7 @@ fn rewrite_function_body(
         all_module_aliases,
         intrinsic_names,
         intrinsic_modules,
+        errors,
         type_params,
         file_id,
     };
@@ -932,6 +945,7 @@ fn rewrite_statement(stmt: &mut Statement, ctx: &RewriteCtx, locals: &mut HashSe
                 ctx.all_module_aliases,
                 ctx.intrinsic_names,
                 ctx.intrinsic_modules,
+                ctx.errors,
                 ctx.file_id,
             );
         }
@@ -1013,8 +1027,16 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<String>) {
                 && module_path.is_empty()
                 && ctx.intrinsic_modules.contains(enum_name.name.as_str())
             {
-                let intrinsic = Intrinsic::from_name(variant_name)
-                    .unwrap_or_else(|| panic!("unknown intrinsic: {variant_name}"));
+                let Some(intrinsic) = Intrinsic::from_name(variant_name) else {
+                    ctx.errors.borrow_mut().push(CompileError::new(
+                        format!("unknown intrinsic: `{variant_name}`"),
+                        function.span,
+                    ));
+                    for arg in arguments {
+                        rewrite_expr(arg, ctx, locals);
+                    }
+                    return;
+                };
                 let mut arguments = std::mem::take(arguments);
                 for arg in &mut arguments {
                     rewrite_expr(arg, ctx, locals);

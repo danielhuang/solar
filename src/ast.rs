@@ -1,12 +1,21 @@
+/// A zero-indexed source position. `line` is a line index and `col` is a byte
+/// offset within that line (not a Unicode character or UTF-16 code-unit index).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SourcePos {
+    /// Zero-indexed line number.
     pub line: u32,
+    /// Zero-indexed byte offset within the line.
     pub col: u32,
 }
 
+/// A half-open source range, `[start, end)`: `start` is included and `end` is
+/// excluded. Both positions use the zero-indexed byte coordinates described by
+/// [`SourcePos`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SourceSpan {
+    /// Inclusive start position.
     pub start: SourcePos,
+    /// Exclusive end position.
     pub end: SourcePos,
     pub file_id: u32,
 }

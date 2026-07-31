@@ -1238,3 +1238,28 @@ fn is_operator(text: &str) -> bool {
             | "|"
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_qualified_intrinsic_falls_back_without_panicking() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/multi_file/bad_qualified_intrinsic/main.solar");
+        let uri = format!("file://{}", path.display());
+        let source = r#"
+import intrinsics from "@intrinsics";
+
+fn main() {
+    intrinsics::does_not_exist();
+}
+"#;
+
+        let document = compute(&uri, source);
+
+        assert!(document.analysis.is_none());
+        assert!(document.docs.is_empty());
+        assert!(document.defs.is_empty());
+    }
+}

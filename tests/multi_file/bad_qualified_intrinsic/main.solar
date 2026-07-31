@@ -1,0 +1,5 @@
+import intrinsics from "@intrinsics";
+
+fn main() {
+    intrinsics::does_not_exist();
+}

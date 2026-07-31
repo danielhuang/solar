@@ -86,6 +86,15 @@ fn bad_intrinsic() {
 }
 
 #[test]
+#[should_panic(expected = "unknown intrinsic: `does_not_exist`")]
+fn bad_qualified_intrinsic() {
+    run(
+        &fixture("bad_qualified_intrinsic/main.solar"),
+        "bad_qualified_intrinsic",
+    );
+}
+
+#[test]
 fn path_import() {
     let output = run(&fixture("path_import/main.solar"), "path_import");
     assert_eq!(output, "3\n7\n");
