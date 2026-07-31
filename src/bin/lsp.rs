@@ -392,19 +392,32 @@ fn semantic_tokens(source: &str, analysis: Option<&Analysis>) -> Vec<u32> {
 /// names, if any. The lookup is by name, so it works on the definition and on
 /// every use site — including symbols imported from other files.
 fn hover(source: &str, line: u32, character: u32, document: &Document) -> Option<Value> {
-    let mut docs = Vec::new();
+    let mut entries = Vec::new();
     let mut seen = HashSet::new();
     for target in symbol_targets(source, line, character, document) {
-        if let Some(doc) = document.docs.get(&span_key(target))
-            && seen.insert(doc)
-        {
-            docs.push(doc.as_str());
+        if !seen.insert(span_key(target)) {
+            continue;
         }
+        let signature = document
+            .signatures
+            .get(&span_key(target))
+            .cloned()
+            .or_else(|| span_source_text(target, &document.source_map));
+        let doc = document.docs.get(&span_key(target));
+        let Some(signature) = signature else {
+            continue;
+        };
+        let mut entry = format!("```solar\n{signature}\n```");
+        if let Some(doc) = doc {
+            entry.push_str("\n\n");
+            entry.push_str(doc);
+        }
+        entries.push(entry);
     }
-    if docs.is_empty() {
+    if entries.is_empty() {
         return None;
     }
-    let value = docs.join("\n\n---\n\n");
+    let value = entries.join("\n\n---\n\n");
     Some(json!({
         "contents": {
             "kind": "markdown",
@@ -449,6 +462,110 @@ fn collect_docs(ast: &ast::SourceFile) -> HashMap<SpanKey, String> {
         }
     }
     docs
+}
+
+fn collect_signatures(ast: &ast::SourceFile, source_map: &SourceMap) -> HashMap<SpanKey, String> {
+    use solar::ast::TopLevelItem;
+    let mut signatures = HashMap::new();
+    for item in &ast.items {
+        match item {
+            TopLevelItem::Function(def) | TopLevelItem::Method(def) => {
+                insert_signature(
+                    &mut signatures,
+                    def.span,
+                    source_map,
+                    SignatureShape::Header,
+                );
+            }
+            TopLevelItem::Struct(def) => {
+                insert_signature(
+                    &mut signatures,
+                    def.span,
+                    source_map,
+                    SignatureShape::Header,
+                );
+                for field in &def.fields {
+                    insert_signature(
+                        &mut signatures,
+                        field.span,
+                        source_map,
+                        SignatureShape::Full,
+                    );
+                }
+            }
+            TopLevelItem::Enum(def) => {
+                insert_signature(
+                    &mut signatures,
+                    def.span,
+                    source_map,
+                    SignatureShape::Header,
+                );
+                for variant in &def.variants {
+                    insert_signature(
+                        &mut signatures,
+                        variant.span,
+                        source_map,
+                        SignatureShape::Full,
+                    );
+                }
+            }
+            TopLevelItem::Const(def) => {
+                insert_signature(&mut signatures, def.span, source_map, SignatureShape::Full)
+            }
+            TopLevelItem::Static(def) => {
+                insert_signature(&mut signatures, def.span, source_map, SignatureShape::Full)
+            }
+            TopLevelItem::TypeAlias(def) => {
+                insert_signature(&mut signatures, def.span, source_map, SignatureShape::Full)
+            }
+            TopLevelItem::Import(_) => {}
+        }
+    }
+    signatures
+}
+
+#[derive(Clone, Copy)]
+enum SignatureShape {
+    Header,
+    Full,
+}
+
+fn insert_signature(
+    signatures: &mut HashMap<SpanKey, String>,
+    span: SourceSpan,
+    source_map: &SourceMap,
+    shape: SignatureShape,
+) {
+    let Some(mut text) = span_source_text(span, source_map) else {
+        return;
+    };
+    if matches!(shape, SignatureShape::Header)
+        && let Some(body) = text.find('{')
+    {
+        text.truncate(body);
+    }
+    let text = text.trim().trim_end_matches(',').trim().to_owned();
+    if !text.is_empty() {
+        signatures.insert(span_key(span), text);
+    }
+}
+
+fn span_source_text(span: SourceSpan, source_map: &SourceMap) -> Option<String> {
+    let (_, source) = source_map.get(span.file_id)?;
+    let offsets = source_line_offsets(source);
+    let start = offsets.get(span.start.line as usize)? + span.start.col as usize;
+    let end = offsets.get(span.end.line as usize)? + span.end.col as usize;
+    source.get(start..end).map(str::to_owned)
+}
+
+fn source_line_offsets(source: &str) -> Vec<usize> {
+    let mut offsets = vec![0];
+    for (byte, ch) in source.char_indices() {
+        if ch == '\n' {
+            offsets.push(byte + 1);
+        }
+    }
+    offsets
 }
 
 /// Convert an LSP `(line, character)` position — `character` in UTF-16 code
@@ -1197,6 +1314,9 @@ struct Document {
     /// Exact declaration span → `///` doc across the resolved program. Hover
     /// reaches this only through the shared symbol resolver.
     docs: HashMap<SpanKey, String>,
+    /// Exact declaration span → source-level signature/metadata shown by hover,
+    /// including declarations without doc comments.
+    signatures: HashMap<SpanKey, String>,
     /// Base name → every declaration with that name (all overloads, across all
     /// files), for go-to-definition's name-based fallback and type lookups.
     defs: HashMap<String, Vec<SourceSpan>>,
@@ -1254,8 +1374,10 @@ fn compute(uri: &str, source: &str) -> Document {
         return Document::default();
     };
     let definition_catalog = collect_definition_catalog(&ast, source_map.root_file_id());
+    let signatures = collect_signatures(&ast, &source_map);
     Document {
         docs: collect_docs(&ast),
+        signatures,
         defs: collect_defs(&ast),
         function_defs: definition_catalog.function_defs,
         method_defs: definition_catalog.method_defs,
@@ -2161,8 +2283,35 @@ fn main() {
 
             let hover = hover(source, line, character, &document).expect("hover docs");
             let contents = hover["contents"]["value"].as_str().unwrap();
+            assert!(contents.contains("ping("), "{contents}");
             assert!(contents.contains(expected_doc), "{contents}");
             assert!(!contents.contains(rejected_doc), "{contents}");
         }
+    }
+
+    #[test]
+    fn hover_shows_signature_without_docstring() {
+        let (_, source, document) = fixture_document("tests/multi_file/module_import/main.solar");
+        let (line, character) = occurrence_position(&source, "origin", 0);
+
+        let hover = hover(&source, line, character, &document).expect("signature hover");
+        let contents = hover["contents"]["value"].as_str().unwrap();
+
+        assert!(contents.contains("```solar"), "{contents}");
+        assert!(contents.contains("pub fn origin() -> Point"), "{contents}");
+    }
+
+    #[test]
+    fn hover_shows_every_generic_overload_candidate() {
+        let (_, source, document) =
+            fixture_document("tests/multi_file/lsp_generic_definition/main.solar");
+        let (line, character) = occurrence_position(&source, "choose", 2);
+
+        let hover = hover(&source, line, character, &document).expect("candidate hover");
+        let contents = hover["contents"]["value"].as_str().unwrap();
+
+        assert!(contents.contains("fn choose(x: A) -> Int"), "{contents}");
+        assert!(contents.contains("fn choose(x: B) -> Int"), "{contents}");
+        assert!(contents.contains("\n\n---\n\n"), "{contents}");
     }
 }
