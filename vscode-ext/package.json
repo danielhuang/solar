@@ -1,7 +1,7 @@
 {
   "name": "solar-lang",
   "displayName": "Solar Language",
-  "description": "Semantic syntax highlighting for the Solar programming language.",
+  "description": "Language support and compiler diagnostics for the Solar programming language.",
   "version": "0.1.0",
   "publisher": "solar",
   "license": "MIT",

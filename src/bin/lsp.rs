@@ -1,13 +1,13 @@
-//! A small, syntax-only Language Server Protocol implementation for Solar.
+//! Language Server Protocol support for Solar.
 //!
-//! It deliberately keeps no compiler state: semantic tokens are derived from
-//! the same tree-sitter grammar the compiler uses, so incomplete documents are
-//! still highlighted while they are being edited.
+//! Semantic tokens are derived from the compiler's tree-sitter grammar, so
+//! incomplete documents remain highlighted. Each open document is also checked
+//! as a program root and compiler errors are pushed as diagnostics.
 
 use serde_json::{Value, json};
 use solar::{
     ast::{self, SourceSpan},
-    error::SourceMap,
+    error::{CompileError, SourceMap},
     resolve, typed_ast,
 };
 use std::{
@@ -45,6 +45,9 @@ fn main() {
     // Resolving reparses the stdlib, so both hover and semantic tokens share
     // one cached resolve per edit rather than paying for it on every request.
     let mut cache = HashMap::<String, Document>::new();
+    // Root document URI → every URI to which its last check published
+    // diagnostics. Used to clear errors that disappear after an edit.
+    let mut diagnostic_uris = HashMap::<String, HashMap<String, Vec<Value>>>::new();
 
     while let Some(message) = read_message(&mut input) {
         let method = message.get("method").and_then(Value::as_str);
@@ -74,7 +77,8 @@ fn main() {
             Some("textDocument/didOpen") => {
                 if let Some((uri, text)) = document_and_text(&params) {
                     cache.remove(&uri);
-                    documents.insert(uri, text);
+                    documents.insert(uri.clone(), text.clone());
+                    publish_check_diagnostics(&mut output, &uri, &text, &mut diagnostic_uris);
                 }
             }
             Some("textDocument/didChange") => {
@@ -85,12 +89,14 @@ fn main() {
                 if let (Some(uri), Some(text)) = (uri, text) {
                     cache.remove(uri);
                     documents.insert(uri.to_owned(), text.to_owned());
+                    publish_check_diagnostics(&mut output, uri, text, &mut diagnostic_uris);
                 }
             }
             Some("textDocument/didClose") => {
                 if let Some(uri) = params.pointer("/textDocument/uri").and_then(Value::as_str) {
                     documents.remove(uri);
                     cache.remove(uri);
+                    clear_check_diagnostics(&mut output, uri, &mut diagnostic_uris);
                 }
             }
             Some("textDocument/semanticTokens/full") => {
@@ -156,6 +162,136 @@ fn document_and_text(params: &Value) -> Option<(String, String)> {
         params.pointer("/textDocument/uri")?.as_str()?.to_owned(),
         params.pointer("/textDocument/text")?.as_str()?.to_owned(),
     ))
+}
+
+fn publish_check_diagnostics(
+    output: &mut impl Write,
+    root_uri: &str,
+    source: &str,
+    published: &mut HashMap<String, HashMap<String, Vec<Value>>>,
+) {
+    let diagnostics = check_document(root_uri, source);
+    let mut affected: HashSet<String> = published
+        .get(root_uri)
+        .into_iter()
+        .flat_map(|old| old.keys().cloned())
+        .chain(diagnostics.keys().cloned())
+        .collect();
+    affected.insert(root_uri.to_owned());
+    published.insert(root_uri.to_owned(), diagnostics);
+
+    for uri in affected {
+        publish_aggregate_diagnostics(output, &uri, published);
+    }
+}
+
+fn clear_check_diagnostics(
+    output: &mut impl Write,
+    root_uri: &str,
+    published: &mut HashMap<String, HashMap<String, Vec<Value>>>,
+) {
+    let mut affected: HashSet<String> = published
+        .remove(root_uri)
+        .into_iter()
+        .flat_map(|old| old.into_keys())
+        .collect();
+    affected.insert(root_uri.to_owned());
+    for uri in affected {
+        publish_aggregate_diagnostics(output, &uri, published);
+    }
+}
+
+fn publish_aggregate_diagnostics(
+    output: &mut impl Write,
+    uri: &str,
+    published: &HashMap<String, HashMap<String, Vec<Value>>>,
+) {
+    let diagnostics: Vec<Value> = published
+        .values()
+        .filter_map(|by_uri| by_uri.get(uri))
+        .flatten()
+        .cloned()
+        .collect();
+    publish_diagnostics(output, uri, &diagnostics);
+}
+
+fn publish_diagnostics(output: &mut impl Write, uri: &str, diagnostics: &[Value]) {
+    write_message(
+        output,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": { "uri": uri, "diagnostics": diagnostics },
+        }),
+    );
+}
+
+/// Compile the in-memory document as the program root and return LSP diagnostics
+/// grouped by the source file they point into.
+fn check_document(root_uri: &str, source: &str) -> HashMap<String, Vec<Value>> {
+    let Some(path) = file_uri_to_path(root_uri) else {
+        return HashMap::new();
+    };
+    let (errors, source_map) = match resolve::resolve_source(&path, source.to_owned()) {
+        Ok((ast, source_map)) => match typed_ast::lower(&ast) {
+            Ok(_) => return HashMap::new(),
+            Err(error) => (vec![error], source_map),
+        },
+        Err((errors, source_map)) => (errors, source_map),
+    };
+    diagnostics_from_errors(root_uri, source, &errors, &source_map)
+}
+
+fn diagnostics_from_errors(
+    root_uri: &str,
+    root_source: &str,
+    errors: &[CompileError],
+    source_map: &SourceMap,
+) -> HashMap<String, Vec<Value>> {
+    let mut diagnostics = HashMap::<String, Vec<Value>>::new();
+    let root_path = file_uri_to_path(root_uri).map(|path| path.canonicalize().unwrap_or(path));
+    for error in errors {
+        // Parsing can fail before resolve_source has recorded root_file_id, so
+        // also recognize the root by its canonical filename in the SourceMap.
+        let mapped_source = source_map.get(error.span.file_id);
+        let is_root = source_map.root_file_id() == Some(error.span.file_id)
+            || mapped_source.is_some_and(|(filename, _)| {
+                let path = PathBuf::from(filename);
+                let path = path.canonicalize().unwrap_or(path);
+                root_path.as_ref() == Some(&path)
+            });
+        let (uri, file_source) = if is_root {
+            (root_uri.to_owned(), root_source)
+        } else if let Some((filename, source)) = mapped_source {
+            (path_to_file_uri(filename), source)
+        } else {
+            (root_uri.to_owned(), root_source)
+        };
+        diagnostics
+            .entry(uri)
+            .or_default()
+            .push(compile_error_diagnostic(error, file_source));
+    }
+    diagnostics
+}
+
+fn compile_error_diagnostic(error: &CompileError, source: &str) -> Value {
+    let position = |pos: ast::SourcePos| {
+        let line = source.lines().nth(pos.line as usize).unwrap_or("");
+        json!({
+            "line": pos.line,
+            "character": utf16_column(line, pos.col as usize),
+        })
+    };
+    json!({
+        "range": {
+            "start": position(error.span.start),
+            "end": position(error.span.end),
+        },
+        "severity": 1,
+        "source": "solar",
+        "message": error.message,
+    })
 }
 
 fn respond(output: &mut impl Write, id: Option<Value>, result: Value) {
@@ -1261,5 +1397,63 @@ fn main() {
         assert!(document.analysis.is_none());
         assert!(document.docs.is_empty());
         assert!(document.defs.is_empty());
+    }
+
+    #[test]
+    fn check_document_reports_root_type_errors() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/multi_file/bad_qualified_intrinsic/main.solar");
+        let uri = format!("file://{}", path.display());
+        let diagnostics = check_document(
+            &uri,
+            r#"
+fn main() {
+    let value: Int = true;
+}
+"#,
+        );
+
+        let root = diagnostics.get(&uri).expect("root diagnostics");
+        assert_eq!(root.len(), 1);
+        assert_eq!(root[0]["severity"], 1);
+        assert_eq!(root[0]["source"], "solar");
+        assert!(
+            root[0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("expected Int, got Bool")
+        );
+    }
+
+    #[test]
+    fn check_document_reports_root_parse_errors() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/multi_file/bad_qualified_intrinsic/main.solar");
+        let uri = format!("file://{}", path.display());
+
+        let diagnostics = check_document(&uri, "fn main( {");
+
+        assert!(
+            diagnostics
+                .get(&uri)
+                .is_some_and(|errors| !errors.is_empty())
+        );
+    }
+
+    #[test]
+    fn diagnostic_columns_are_utf16() {
+        let error = CompileError::new(
+            "test".to_owned(),
+            SourceSpan {
+                start: ast::SourcePos { line: 0, col: 2 },
+                end: ast::SourcePos { line: 0, col: 3 },
+                file_id: 0,
+            },
+        );
+
+        let diagnostic = compile_error_diagnostic(&error, "éx");
+
+        assert_eq!(diagnostic["range"]["start"]["character"], 1);
+        assert_eq!(diagnostic["range"]["end"]["character"], 2);
     }
 }
