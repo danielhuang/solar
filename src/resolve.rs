@@ -521,6 +521,7 @@ impl Resolver {
                         if let Some(ty) = &mut variant.inner_type {
                             *ty = rewrite_type(ty, &rename_map, &module_aliases, &e.type_params);
                         }
+                        set_file_id_span(&mut variant.span, file_id);
                     }
                     set_file_id_span(&mut e.span, file_id);
                     rewritten.push(TopLevelItem::Enum(e));

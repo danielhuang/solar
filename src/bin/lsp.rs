@@ -120,7 +120,7 @@ fn main() {
                 let result = match (target, line, character) {
                     (Some((uri, text)), Some(line), Some(character)) => {
                         let document = cached(&mut cache, uri, text);
-                        hover(text, line as u32, character as u32, &document.docs)
+                        hover(text, line as u32, character as u32, document)
                     }
                     _ => None,
                 };
@@ -391,48 +391,61 @@ fn semantic_tokens(source: &str, analysis: Option<&Analysis>) -> Vec<u32> {
 /// `///` doc comment of the item (from anywhere in the resolved program) it
 /// names, if any. The lookup is by name, so it works on the definition and on
 /// every use site — including symbols imported from other files.
-fn hover(source: &str, line: u32, character: u32, docs: &HashMap<String, String>) -> Option<Value> {
-    let mut parser = Parser::new();
-    parser
-        .set_language(&tree_sitter_solar::LANGUAGE.into())
-        .expect("Solar grammar must load");
-    let tree = parser.parse(source, None)?;
-    let byte = position_to_byte(source, line, character)?;
-    let node = tree.root_node().descendant_for_byte_range(byte, byte)?;
-    if node.kind() != "identifier" {
+fn hover(source: &str, line: u32, character: u32, document: &Document) -> Option<Value> {
+    let mut docs = Vec::new();
+    let mut seen = HashSet::new();
+    for target in symbol_targets(source, line, character, document) {
+        if let Some(doc) = document.docs.get(&span_key(target))
+            && seen.insert(doc)
+        {
+            docs.push(doc.as_str());
+        }
+    }
+    if docs.is_empty() {
         return None;
     }
-    let name = &source[node.byte_range()];
-    let doc = docs.get(name)?;
+    let value = docs.join("\n\n---\n\n");
     Some(json!({
         "contents": {
             "kind": "markdown",
-            "value": format!("```solar\n{name}\n```\n\n{doc}"),
+            "value": value,
         }
     }))
 }
 
 /// Map every declaration (and method) that carries a `///` doc comment to its
-/// documentation, keyed by the name a hover would see. Built from the resolved
-/// program, so it spans every file (a symbol imported from another module still
-/// gets its doc). The first declaration of a name wins.
-fn collect_docs(ast: &ast::SourceFile) -> HashMap<String, String> {
+/// documentation, keyed by its exact resolved declaration span. The shared
+/// symbol resolver selects this key, so same-named overloads and symbols from
+/// different files cannot borrow one another's documentation.
+type SpanKey = (u32, u32, u32, u32, u32);
+
+fn span_key(span: SourceSpan) -> SpanKey {
+    (
+        span.file_id,
+        span.start.line,
+        span.start.col,
+        span.end.line,
+        span.end.col,
+    )
+}
+
+fn collect_docs(ast: &ast::SourceFile) -> HashMap<SpanKey, String> {
     use solar::ast::TopLevelItem;
     let mut docs = HashMap::new();
     for item in &ast.items {
-        let (name, doc) = match item {
+        let (span, doc) = match item {
             TopLevelItem::Function(function) | TopLevelItem::Method(function) => {
-                (&function.display_name, &function.doc)
+                (function.span, &function.doc)
             }
-            TopLevelItem::Struct(def) => (&def.name, &def.doc),
-            TopLevelItem::Enum(def) => (&def.name, &def.doc),
-            TopLevelItem::Const(def) => (&def.name, &def.doc),
-            TopLevelItem::Static(def) => (&def.name, &def.doc),
-            TopLevelItem::TypeAlias(def) => (&def.name, &def.doc),
+            TopLevelItem::Struct(def) => (def.span, &def.doc),
+            TopLevelItem::Enum(def) => (def.span, &def.doc),
+            TopLevelItem::Const(def) => (def.span, &def.doc),
+            TopLevelItem::Static(def) => (def.span, &def.doc),
+            TopLevelItem::TypeAlias(def) => (def.span, &def.doc),
             TopLevelItem::Import(_) => continue,
         };
         if let Some(doc) = doc {
-            docs.entry(name.clone()).or_insert_with(|| doc.clone());
+            docs.insert(span_key(span), doc.clone());
         }
     }
     docs
@@ -460,27 +473,71 @@ fn position_to_byte(source: &str, line: u32, character: u32) -> Option<usize> {
 
 /// A `textDocument/definition` response for the identifier under the cursor.
 ///
-/// A call is resolved through the typed AST to the *exact* overload it binds
-/// to. Because the typed program contains one body per monomorphization, a call
-/// inside a generic can resolve to different overloads in different
-/// instantiations — every distinct candidate is returned. Anything the typed
-/// pass can't pin to one call (a type name, a definition, a module-qualified or
-/// never-instantiated generic call) falls back to every declaration sharing the
-/// name — again, all candidates.
+/// Lexical bindings are resolved from the syntax scopes; globals, types,
+/// fields, variants, functions, and methods use their resolved/typed identity.
+/// A concrete call navigates to its selected overload. A call in a generic
+/// source body returns every resolver-visible overload that its
+/// monomorphizations may select. The final name-only fallback is used only when
+/// exactly one declaration has that spelling, so ambiguity never produces a
+/// confidently wrong location.
 fn definition(source: &str, line: u32, character: u32, document: &Document) -> Option<Value> {
+    let targets = symbol_targets(source, line, character, document);
+    let mut locations = Vec::new();
+    for span in targets {
+        if let Some(location) = span_to_location(span, &document.source_map) {
+            locations.push(location);
+        }
+    }
+    match locations.len() {
+        0 => None,
+        1 => locations.pop(),
+        _ => Some(Value::Array(locations)),
+    }
+}
+
+/// Resolve the identifier at an LSP position to its declaration span(s). This
+/// is the single symbol-resolution path shared by go-to-definition and hover.
+fn symbol_targets(source: &str, line: u32, character: u32, document: &Document) -> Vec<SourceSpan> {
     let mut parser = Parser::new();
     parser
         .set_language(&tree_sitter_solar::LANGUAGE.into())
         .expect("Solar grammar must load");
-    let tree = parser.parse(source, None)?;
-    let byte = position_to_byte(source, line, character)?;
-    let node = tree.root_node().descendant_for_byte_range(byte, byte)?;
+    let Some(tree) = parser.parse(source, None) else {
+        return Vec::new();
+    };
+    let Some(byte) = position_to_byte(source, line, character) else {
+        return Vec::new();
+    };
+    let Some(node) = tree.root_node().descendant_for_byte_range(byte, byte) else {
+        return Vec::new();
+    };
     if node.kind() != "identifier" {
-        return None;
+        return Vec::new();
     }
     let name = &source[node.byte_range()];
     let start = node.start_position();
     let cursor = (start.row as u32, start.column as u32);
+
+    if let Some(parent) = declaration_parent(node)
+        && let Some(file_id) = document.source_map.root_file_id()
+    {
+        return vec![node_span(parent, file_id)];
+    }
+    if let Some(binding) = local_definition(node, name, source)
+        && let Some(file_id) = document.source_map.root_file_id()
+    {
+        let target = node_span(binding, file_id);
+        return vec![target];
+    }
+    if let Some(target) = path_definition(node, name, source, document) {
+        return vec![target];
+    }
+
+    let anchor = definition_anchor(node);
+    let generic_site = document
+        .generic_bodies
+        .iter()
+        .any(|span| span_contains(*span, document.source_map.root_file_id(), cursor));
 
     // Precise pass: resolve the specific overload(s) via the typed AST. Only
     // calls in functions defined in this file can sit at the cursor, so the walk
@@ -492,7 +549,17 @@ fn definition(source: &str, line: u32, character: u32, document: &Document) -> O
             root_file: analysis.file_id,
             cursor,
             name,
-            receiver: method_call_receiver(node),
+            anchor,
+            generic_site,
+            function_defs: &document.function_defs,
+            method_defs: &document.method_defs,
+            field_defs: &document.field_defs,
+            variant_defs: &document.variant_defs,
+            type_defs: &document.type_defs,
+            global_defs: &document.global_defs,
+            field_init: node.parent().is_some_and(|parent| {
+                parent.kind() == "field_init" && parent.child_by_field_name("name") == Some(node)
+            }),
             out: &mut targets,
         };
         for function in analysis.typed.functions.values() {
@@ -507,28 +574,257 @@ fn definition(source: &str, line: u32, character: u32, document: &Document) -> O
         }
     }
 
-    // Fallback: nothing precise sat at the cursor → every declaration with this
-    // name (a type, a definition itself, a method whose receiver could not be
-    // pinned, or a generic that was never instantiated).
+    // Conservative syntax fallback for declarations/type annotations that do
+    // not survive into typed expressions. A unique spelling is safe; ambiguous
+    // same-name declarations return no result instead of the old behavior of
+    // navigating to unrelated symbols.
     if targets.is_empty()
         && let Some(spans) = document.defs.get(name)
+        && spans.len() == 1
     {
         targets.extend(spans.iter().copied());
     }
 
-    let mut locations = Vec::new();
     let mut seen = HashSet::new();
-    for span in targets {
-        if seen.insert((span.file_id, span.start.line, span.start.col))
-            && let Some(location) = span_to_location(span, &document.source_map)
+    targets.retain(|span| seen.insert(span_key(*span)));
+    targets
+}
+
+fn declaration_parent(node: Node<'_>) -> Option<Node<'_>> {
+    let parent = node.parent()?;
+    matches!(
+        parent.kind(),
+        "function_def"
+            | "method_def"
+            | "struct_def"
+            | "enum_def"
+            | "type_alias_def"
+            | "const_def"
+            | "static_def"
+    )
+    .then(|| parent.child_by_field_name("name"))
+    .flatten()
+    .filter(|name| *name == node)
+    .map(|_| parent)
+}
+
+/// Resolve a lexical identifier to the nearest visible source binding. This is
+/// intentionally syntax-based: typed AST identifiers retain only their name,
+/// while tree-sitter preserves the scopes and exact declaration token spans
+/// needed by go-to-definition.
+fn local_definition<'a>(node: Node<'a>, name: &str, source: &str) -> Option<Node<'a>> {
+    if is_binding_identifier(node) {
+        return Some(node);
+    }
+
+    let mut child = node;
+    while let Some(parent) = child.parent() {
+        match parent.kind() {
+            "block" => {
+                let mut found = None;
+                let mut cursor = parent.walk();
+                for statement in parent.named_children(&mut cursor) {
+                    if statement.start_byte() >= child.start_byte() {
+                        break;
+                    }
+                    if let Some(binding) = statement_binding(statement, name, source) {
+                        found = Some(binding);
+                    }
+                }
+                if found.is_some() {
+                    return found;
+                }
+            }
+            "function_def" | "method_def" => {
+                if let Some(parameters) = named_child(parent, "parameter_list") {
+                    let mut cursor = parameters.walk();
+                    for parameter in parameters
+                        .named_children(&mut cursor)
+                        .filter(|child| child.kind() == "parameter")
+                    {
+                        if let Some(pattern) = parameter.child_by_field_name("pattern")
+                            && let Some(binding) = descendant_binding(pattern, name, source)
+                        {
+                            return Some(binding);
+                        }
+                    }
+                }
+            }
+            "closure_expr" => {
+                let mut cursor = parent.walk();
+                for parameter in parent
+                    .named_children(&mut cursor)
+                    .filter(|child| child.kind() == "closure_param")
+                {
+                    if let Some(binding) = parameter.child_by_field_name("name")
+                        && &source[binding.byte_range()] == name
+                    {
+                        return Some(binding);
+                    }
+                }
+            }
+            "for_statement" => {
+                if let Some(body) = parent.child_by_field_name("body")
+                    && body.start_byte() <= node.start_byte()
+                    && node.end_byte() <= body.end_byte()
+                    && let Some(binding) = parent.child_by_field_name("variable")
+                    && &source[binding.byte_range()] == name
+                {
+                    return Some(binding);
+                }
+            }
+            "try_statement" => {
+                if let Some(handler) = parent.child_by_field_name("handler")
+                    && handler.start_byte() <= node.start_byte()
+                    && node.end_byte() <= handler.end_byte()
+                    && let Some(binding) = parent.child_by_field_name("binding")
+                    && &source[binding.byte_range()] == name
+                {
+                    return Some(binding);
+                }
+            }
+            "match_arm" => {
+                if let Some(body) = parent.child_by_field_name("body")
+                    && body.start_byte() <= node.start_byte()
+                    && node.end_byte() <= body.end_byte()
+                    && let Some(pattern) = parent.child_by_field_name("pattern")
+                    && let Some(binding) = match_binding(pattern, name, source)
+                {
+                    return Some(binding);
+                }
+            }
+            _ => {}
+        }
+        child = parent;
+    }
+    None
+}
+
+fn path_definition(
+    node: Node<'_>,
+    name: &str,
+    source: &str,
+    document: &Document,
+) -> Option<SourceSpan> {
+    let path = node
+        .parent()
+        .filter(|parent| parent.kind() == "path_segment")?
+        .parent()
+        .filter(|parent| parent.kind() == "path_expr")?;
+    let mut cursor = path.walk();
+    let segments: Vec<Node<'_>> = path
+        .named_children(&mut cursor)
+        .filter(|child| child.kind() == "path_segment")
+        .filter_map(|segment| segment.child_by_field_name("name"))
+        .collect();
+    let index = segments.iter().position(|segment| *segment == node)?;
+
+    // The final segment of `Enum::Variant` names a variant. Resolve the owner
+    // first so common names such as `None` do not jump to another enum.
+    if index + 1 == segments.len() && index > 0 {
+        let owner_name = &source[segments[index - 1].byte_range()];
+        let owners: Vec<&ast::DefId> = document
+            .type_defs
+            .keys()
+            .filter(|id| id.name == owner_name)
+            .collect();
+        if owners.len() == 1
+            && let Some(span) = document
+                .variant_defs
+                .get(&(owners[0].clone(), name.to_owned()))
         {
-            locations.push(location);
+            return Some(*span);
         }
     }
-    match locations.len() {
-        0 => None,
-        1 => locations.pop(),
-        _ => Some(Value::Array(locations)),
+
+    let types: Vec<SourceSpan> = document
+        .type_defs
+        .iter()
+        .filter_map(|(id, span)| (id.name == name).then_some(*span))
+        .collect();
+    if types.len() == 1 {
+        types.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn statement_binding<'a>(statement: Node<'a>, name: &str, source: &str) -> Option<Node<'a>> {
+    match statement.kind() {
+        "let_statement" => {
+            descendant_binding(statement.child_by_field_name("pattern")?, name, source)
+        }
+        "function_def" | "const_def" => {
+            let binding = statement.child_by_field_name("name")?;
+            (&source[binding.byte_range()] == name).then_some(binding)
+        }
+        _ => None,
+    }
+}
+
+fn descendant_binding<'a>(pattern: Node<'a>, name: &str, source: &str) -> Option<Node<'a>> {
+    if pattern.kind() == "identifier" && &source[pattern.byte_range()] == name {
+        return Some(pattern);
+    }
+    let mut cursor = pattern.walk();
+    for child in pattern.named_children(&mut cursor) {
+        if let Some(binding) = descendant_binding(child, name, source) {
+            return Some(binding);
+        }
+    }
+    None
+}
+
+fn match_binding<'a>(pattern: Node<'a>, name: &str, source: &str) -> Option<Node<'a>> {
+    match pattern.kind() {
+        "variant_pattern" => {
+            let binding = pattern.child_by_field_name("binding")?;
+            (&source[binding.byte_range()] == name).then_some(binding)
+        }
+        "wildcard_pattern" => {
+            let binding = pattern.child_by_field_name("name")?;
+            (&source[binding.byte_range()] == name).then_some(binding)
+        }
+        _ => None,
+    }
+}
+
+fn is_binding_identifier(node: Node<'_>) -> bool {
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    matches!(
+        parent.kind(),
+        "parameter" | "closure_param" | "let_statement"
+    ) && (parent.child_by_field_name("name") == Some(node)
+        || parent.child_by_field_name("pattern") == Some(node))
+        || matches!(parent.kind(), "for_statement" | "try_statement")
+            && (parent.child_by_field_name("variable") == Some(node)
+                || parent.child_by_field_name("binding") == Some(node))
+        || matches!(parent.kind(), "variant_pattern" | "wildcard_pattern")
+            && (parent.child_by_field_name("binding") == Some(node)
+                || parent.child_by_field_name("name") == Some(node))
+}
+
+fn named_child<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .find(|child| child.kind() == kind)
+}
+
+fn node_span(node: Node<'_>, file_id: u32) -> SourceSpan {
+    let start = node.start_position();
+    let end = node.end_position();
+    SourceSpan {
+        start: ast::SourcePos {
+            line: start.row as u32,
+            col: start.column as u32,
+        },
+        end: ast::SourcePos {
+            line: end.row as u32,
+            col: end.column as u32,
+        },
+        file_id,
     }
 }
 
@@ -542,12 +838,31 @@ struct DefFinder<'a> {
     root_file: u32,
     cursor: (u32, u32),
     name: &'a str,
-    receiver: Option<(u32, u32)>,
+    anchor: Option<(u32, u32)>,
+    generic_site: bool,
+    function_defs: &'a HashMap<ast::DefId, Vec<SourceSpan>>,
+    method_defs: &'a HashMap<String, Vec<SourceSpan>>,
+    field_defs: &'a HashMap<(ast::DefId, String), SourceSpan>,
+    variant_defs: &'a HashMap<(ast::DefId, String), SourceSpan>,
+    type_defs: &'a HashMap<ast::DefId, SourceSpan>,
+    global_defs: &'a HashMap<ast::DefId, SourceSpan>,
+    field_init: bool,
     out: &'a mut Vec<SourceSpan>,
 }
 
 impl DefFinder<'_> {
     fn record(&mut self, function: &typed_ast::FuncId) {
+        if self.generic_site {
+            let candidates = if function.method {
+                self.method_defs.get(&function.def.name)
+            } else {
+                self.function_defs.get(&function.def)
+            };
+            if let Some(candidates) = candidates {
+                self.out.extend(candidates.iter().copied());
+                return;
+            }
+        }
         if let Some(def) = self.typed.functions.get(function) {
             self.out.push(def.def_span);
         }
@@ -596,7 +911,9 @@ impl DefFinder<'_> {
         use typed_ast::ExprKind;
         match &expr.kind {
             ExprKind::FunctionRef(function) => {
-                if self.at(expr.span, self.cursor) {
+                if self.at(expr.span, self.anchor.unwrap_or(self.cursor))
+                    && function.def.name == self.name
+                {
                     self.record(function);
                 }
             }
@@ -604,14 +921,9 @@ impl DefFinder<'_> {
                 function,
                 arguments,
             } => {
-                if function.method {
-                    if let Some(receiver) = self.receiver
-                        && self.at(expr.span, receiver)
-                        && function.def.name == self.name
-                    {
-                        self.record(function);
-                    }
-                } else if self.at(expr.span, self.cursor) {
+                if self.at(expr.span, self.anchor.unwrap_or(self.cursor))
+                    && function.def.name == self.name
+                {
                     self.record(function);
                 }
                 for argument in arguments {
@@ -624,8 +936,17 @@ impl DefFinder<'_> {
                     self.walk_expr(argument);
                 }
             }
-            ExprKind::FieldAccess { object, .. }
-            | ExprKind::Deref(object)
+            ExprKind::FieldAccess { object, field } => {
+                if field == self.name
+                    && self.at(expr.span, self.anchor.unwrap_or(self.cursor))
+                    && let Some(owner) = struct_owner(&object.ty)
+                    && let Some(span) = self.field_defs.get(&(owner, field.clone()))
+                {
+                    self.out.push(*span);
+                }
+                self.walk_expr(object);
+            }
+            ExprKind::Deref(object)
             | ExprKind::Reference(object)
             | ExprKind::Unique(object)
             | ExprKind::Not(object)
@@ -639,7 +960,20 @@ impl DefFinder<'_> {
                 self.walk_expr(start);
                 self.walk_expr(end);
             }
-            ExprKind::StructLiteral { fields, .. } => {
+            ExprKind::StructLiteral { id, fields } => {
+                if self.field_init
+                    && fields.iter().any(|field| field.name == self.name)
+                    && span_contains(expr.span, Some(self.root_file), self.cursor)
+                    && let Some(span) = self.field_defs.get(&(id.def.clone(), self.name.to_owned()))
+                {
+                    self.out.push(*span);
+                }
+                if id.def.name == self.name
+                    && self.at(expr.span, self.anchor.unwrap_or(self.cursor))
+                    && let Some(span) = self.type_defs.get(&id.def)
+                {
+                    self.out.push(*span);
+                }
                 for field in fields {
                     self.walk_expr(&field.value);
                 }
@@ -676,7 +1010,25 @@ impl DefFinder<'_> {
                     self.walk_statement(statement);
                 }
             }
-            ExprKind::EnumVariant { value, .. } => {
+            ExprKind::EnumVariant {
+                enum_id,
+                variant_name,
+                value,
+                ..
+            } => {
+                if self.at(expr.span, self.anchor.unwrap_or(self.cursor)) {
+                    if variant_name == self.name
+                        && let Some(span) = self
+                            .variant_defs
+                            .get(&(enum_id.def.clone(), variant_name.clone()))
+                    {
+                        self.out.push(*span);
+                    } else if enum_id.def.name == self.name
+                        && let Some(span) = self.type_defs.get(&enum_id.def)
+                    {
+                        self.out.push(*span);
+                    }
+                }
                 if let Some(value) = value {
                     self.walk_expr(value);
                 }
@@ -694,8 +1046,15 @@ impl DefFinder<'_> {
                     self.walk_expr(argument);
                 }
             }
+            ExprKind::Global(id) => {
+                if id.name == self.name
+                    && self.at(expr.span, self.anchor.unwrap_or(self.cursor))
+                    && let Some(span) = self.global_defs.get(id)
+                {
+                    self.out.push(*span);
+                }
+            }
             ExprKind::Identifier(_)
-            | ExprKind::Global(_)
             | ExprKind::FloatLiteral(_)
             | ExprKind::IntegerLiteral(_)
             | ExprKind::BooleanLiteral(_)
@@ -705,25 +1064,77 @@ impl DefFinder<'_> {
     }
 }
 
-/// If the identifier `node` is a method-call's method name (`recv.method(…)` or
-/// `recv.method#[T](…)`), the start position of its receiver — which is where
-/// the typed method call's span begins. `None` otherwise.
-fn method_call_receiver(node: Node<'_>) -> Option<(u32, u32)> {
-    let parent = node.parent()?;
-    let receiver = match parent.kind() {
-        "field_access"
-            if parent.child_by_field_name("field") == Some(node)
-                && field_access_is_callee(node) =>
-        {
-            parent.child_by_field_name("object")?
+/// The source start used by the typed expression containing an identifier.
+/// Typed calls span the whole call (and methods therefore begin at the
+/// receiver), while fields/struct literals/path expressions begin at their
+/// respective syntax node.
+fn definition_anchor(node: Node<'_>) -> Option<(u32, u32)> {
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        let anchor = match parent.kind() {
+            "generic_method_call" if parent.child_by_field_name("method") == Some(node) => {
+                parent.child_by_field_name("receiver")
+            }
+            "field_access" if parent.child_by_field_name("field") == Some(node) => {
+                if field_access_is_callee(node) {
+                    parent.child_by_field_name("object")
+                } else {
+                    Some(parent)
+                }
+            }
+            "generic_call_expr" if parent.child_by_field_name("function") == Some(node) => {
+                Some(parent)
+            }
+            "call_expr" => {
+                let function = parent.child_by_field_name("function")?;
+                (function.start_byte() <= node.start_byte()
+                    && node.end_byte() <= function.end_byte())
+                .then_some(parent)
+            }
+            "struct_literal" if parent.child_by_field_name("name") == Some(node) => Some(parent),
+            "path_expr" => Some(parent),
+            _ => None,
+        };
+        if let Some(anchor) = anchor {
+            // A path used as a callee is represented by the surrounding call,
+            // not by the path itself.
+            if parent.kind() == "path_expr"
+                && let Some(call) = parent.parent()
+                && call.kind() == "call_expr"
+                && call.child_by_field_name("function") == Some(parent)
+            {
+                let start = call.start_position();
+                return Some((start.row as u32, start.column as u32));
+            }
+            let start = anchor.start_position();
+            return Some((start.row as u32, start.column as u32));
         }
-        "generic_method_call" if parent.child_by_field_name("method") == Some(node) => {
-            parent.child_by_field_name("receiver")?
-        }
-        _ => return None,
-    };
-    let start = receiver.start_position();
-    Some((start.row as u32, start.column as u32))
+        current = parent;
+    }
+    None
+}
+
+fn span_contains(span: SourceSpan, file: Option<u32>, position: (u32, u32)) -> bool {
+    if file != Some(span.file_id) {
+        return false;
+    }
+    let start = (span.start.line, span.start.col);
+    let end = (span.end.line, span.end.col);
+    start <= position && position < end
+}
+
+fn struct_owner(ty: &typed_ast::Type) -> Option<ast::DefId> {
+    use typed_ast::Type;
+    match ty {
+        Type::Struct(id) => Some(id.def.clone()),
+        Type::Ref(inner)
+        | Type::RefUnsized(inner)
+        | Type::NullableRef(inner)
+        | Type::NullableRefUnsized(inner)
+        | Type::Unique(inner)
+        | Type::UniqueUnsized(inner) => struct_owner(inner),
+        _ => None,
+    }
 }
 
 /// Turn a definition's span into an LSP `Location` (file URI + UTF-16 range),
@@ -783,11 +1194,26 @@ struct Context<'a> {
 /// hover and semantic tokens share one resolve per edit.
 #[derive(Default)]
 struct Document {
-    /// Name → `///` doc across the whole resolved program, for hover.
-    docs: HashMap<String, String>,
+    /// Exact declaration span → `///` doc across the resolved program. Hover
+    /// reaches this only through the shared symbol resolver.
+    docs: HashMap<SpanKey, String>,
     /// Base name → every declaration with that name (all overloads, across all
     /// files), for go-to-definition's name-based fallback and type lookups.
     defs: HashMap<String, Vec<SourceSpan>>,
+    /// Free-function overload declarations keyed by resolved provenance.
+    function_defs: HashMap<ast::DefId, Vec<SourceSpan>>,
+    /// Method overload declarations keyed by their source name.
+    method_defs: HashMap<String, Vec<SourceSpan>>,
+    /// Struct fields keyed by owning type and field name.
+    field_defs: HashMap<(ast::DefId, String), SourceSpan>,
+    /// Enum variants keyed by owning type and variant name.
+    variant_defs: HashMap<(ast::DefId, String), SourceSpan>,
+    /// Struct/enum declarations keyed by resolved type identity.
+    type_defs: HashMap<ast::DefId, SourceSpan>,
+    /// Top-level const/static declarations keyed by resolved identity.
+    global_defs: HashMap<ast::DefId, SourceSpan>,
+    /// Source ranges of generic functions/methods in the root file.
+    generic_bodies: Vec<SourceSpan>,
     /// `file_id` → path + source, to turn a definition's span into an LSP
     /// `Location` (URI + UTF-16 range) in whatever file it lives in.
     source_map: SourceMap,
@@ -827,12 +1253,84 @@ fn compute(uri: &str, source: &str) -> Document {
     let Ok((ast, source_map)) = resolve::resolve_source(&path, source.to_owned()) else {
         return Document::default();
     };
+    let definition_catalog = collect_definition_catalog(&ast, source_map.root_file_id());
     Document {
         docs: collect_docs(&ast),
         defs: collect_defs(&ast),
+        function_defs: definition_catalog.function_defs,
+        method_defs: definition_catalog.method_defs,
+        field_defs: definition_catalog.field_defs,
+        variant_defs: definition_catalog.variant_defs,
+        type_defs: definition_catalog.type_defs,
+        global_defs: definition_catalog.global_defs,
+        generic_bodies: definition_catalog.generic_bodies,
         analysis: analyze(&ast, &source_map),
         source_map,
     }
+}
+
+#[derive(Default)]
+struct DefinitionCatalog {
+    function_defs: HashMap<ast::DefId, Vec<SourceSpan>>,
+    method_defs: HashMap<String, Vec<SourceSpan>>,
+    field_defs: HashMap<(ast::DefId, String), SourceSpan>,
+    variant_defs: HashMap<(ast::DefId, String), SourceSpan>,
+    type_defs: HashMap<ast::DefId, SourceSpan>,
+    global_defs: HashMap<ast::DefId, SourceSpan>,
+    generic_bodies: Vec<SourceSpan>,
+}
+
+fn collect_definition_catalog(ast: &ast::SourceFile, root_file: Option<u32>) -> DefinitionCatalog {
+    use solar::ast::TopLevelItem;
+    let mut out = DefinitionCatalog::default();
+    for item in &ast.items {
+        match item {
+            TopLevelItem::Function(def) => {
+                let id = ast::DefId::new(def.span.file_id, def.name.clone());
+                out.function_defs.entry(id).or_default().push(def.span);
+                if !def.type_params.is_empty() && root_file == Some(def.span.file_id) {
+                    out.generic_bodies.push(def.span);
+                }
+            }
+            TopLevelItem::Method(def) => {
+                out.method_defs
+                    .entry(def.display_name.clone())
+                    .or_default()
+                    .push(def.span);
+                if !def.type_params.is_empty() && root_file == Some(def.span.file_id) {
+                    out.generic_bodies.push(def.span);
+                }
+            }
+            TopLevelItem::Struct(def) => {
+                out.type_defs.insert(def.def_id.clone(), def.span);
+                for field in &def.fields {
+                    out.field_defs
+                        .insert((def.def_id.clone(), field.name.clone()), field.span);
+                }
+            }
+            TopLevelItem::Enum(def) => {
+                out.type_defs.insert(def.def_id.clone(), def.span);
+                for variant in &def.variants {
+                    out.variant_defs
+                        .insert((def.def_id.clone(), variant.name.clone()), variant.span);
+                }
+            }
+            TopLevelItem::Const(def) => {
+                out.global_defs.insert(
+                    ast::DefId::new(def.span.file_id, def.name.clone()),
+                    def.span,
+                );
+            }
+            TopLevelItem::Static(def) => {
+                out.global_defs.insert(
+                    ast::DefId::new(def.span.file_id, def.name.clone()),
+                    def.span,
+                );
+            }
+            TopLevelItem::TypeAlias(_) | TopLevelItem::Import(_) => {}
+        }
+    }
+    out
 }
 
 /// Index every declaration (functions/methods — all overloads — structs, enums,
@@ -847,8 +1345,20 @@ fn collect_defs(ast: &ast::SourceFile) -> HashMap<String, Vec<SourceSpan>> {
             TopLevelItem::Function(function) | TopLevelItem::Method(function) => {
                 (&function.display_name, function.span)
             }
-            TopLevelItem::Struct(def) => (&def.name, def.span),
-            TopLevelItem::Enum(def) => (&def.name, def.span),
+            TopLevelItem::Struct(def) => {
+                for field in &def.fields {
+                    defs.entry(field.name.clone()).or_default().push(field.span);
+                }
+                (&def.name, def.span)
+            }
+            TopLevelItem::Enum(def) => {
+                for variant in &def.variants {
+                    defs.entry(variant.name.clone())
+                        .or_default()
+                        .push(variant.span);
+                }
+                (&def.name, def.span)
+            }
             TopLevelItem::Const(def) => (&def.name, def.span),
             TopLevelItem::Static(def) => (&def.name, def.span),
             TopLevelItem::TypeAlias(def) => (&def.name, def.span),
@@ -1379,6 +1889,34 @@ fn is_operator(text: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn fixture_document(relative: &str) -> (String, String, Document) {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+        let uri = format!("file://{}", path.display());
+        let source = std::fs::read_to_string(&path).unwrap();
+        let document = compute(&uri, &source);
+        (uri, source, document)
+    }
+
+    fn occurrence_position(source: &str, needle: &str, occurrence: usize) -> (u32, u32) {
+        let byte = source
+            .match_indices(needle)
+            .nth(occurrence)
+            .map(|(byte, _)| byte)
+            .unwrap();
+        let prefix = &source[..byte];
+        let line = prefix.bytes().filter(|byte| *byte == b'\n').count() as u32;
+        let line_start = prefix.rfind('\n').map_or(0, |index| index + 1);
+        let character = source[line_start..byte].encode_utf16().count() as u32;
+        (line, character)
+    }
+
+    fn definition_locations(value: Value) -> Vec<Value> {
+        match value {
+            Value::Array(values) => values,
+            value => vec![value],
+        }
+    }
+
     #[test]
     fn unknown_qualified_intrinsic_falls_back_without_panicking() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1455,5 +1993,176 @@ fn main() {
 
         assert_eq!(diagnostic["range"]["start"]["character"], 1);
         assert_eq!(diagnostic["range"]["end"]["character"], 2);
+    }
+
+    #[test]
+    fn definition_resolves_imported_function_type_and_field() {
+        let (_, source, document) = fixture_document("tests/multi_file/module_import/main.solar");
+
+        for (needle, occurrence, target_line) in [("origin", 0, 5), ("Point", 0, 0), ("x", 0, 1)] {
+            let (line, character) = occurrence_position(&source, needle, occurrence);
+            let locations =
+                definition(&source, line, character, &document).expect("definition location");
+            let locations = definition_locations(locations);
+            assert_eq!(locations.len(), 1, "{needle}");
+            assert!(
+                locations[0]["uri"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with("/module_import/lib.solar"),
+                "{needle}: {}",
+                locations[0]
+            );
+            assert_eq!(
+                locations[0]["range"]["start"]["line"], target_line,
+                "{needle}"
+            );
+        }
+    }
+
+    #[test]
+    fn definition_selects_concrete_generic_overload() {
+        let (_, source, document) =
+            fixture_document("tests/multi_file/generic_overload_type_args/main.solar");
+
+        for (occurrence, target_line) in [(1, 6), (2, 11)] {
+            let (line, character) = occurrence_position(&source, "make", occurrence);
+            let location =
+                definition(&source, line, character, &document).expect("overload definition");
+            let locations = definition_locations(location);
+            assert_eq!(locations.len(), 1);
+            assert_eq!(locations[0]["range"]["start"]["line"], target_line);
+        }
+    }
+
+    #[test]
+    fn definition_in_generic_body_returns_all_possible_overloads() {
+        let (_, source, document) =
+            fixture_document("tests/multi_file/lsp_generic_definition/main.solar");
+        let (line, character) = occurrence_position(&source, "choose", 2);
+
+        let locations = definition(&source, line, character, &document)
+            .map(definition_locations)
+            .expect("generic overload candidates");
+        let mut lines: Vec<u64> = locations
+            .iter()
+            .map(|location| location["range"]["start"]["line"].as_u64().unwrap())
+            .collect();
+        lines.sort_unstable();
+        lines.dedup();
+
+        assert_eq!(lines, vec![3, 4]);
+    }
+
+    #[test]
+    fn definition_distinguishes_free_function_from_same_named_method() {
+        let (_, source, document) = fixture_document("tests/runtime/methods.solar");
+
+        for (occurrence, target_line) in [(5, 41), (7, 8)] {
+            let (line, character) = occurrence_position(&source, "double", occurrence);
+            let location =
+                definition(&source, line, character, &document).expect("double definition");
+            let locations = definition_locations(location);
+            assert_eq!(locations.len(), 1);
+            assert_eq!(locations[0]["range"]["start"]["line"], target_line);
+        }
+    }
+
+    #[test]
+    fn definition_resolves_enum_constructor_and_match_variant() {
+        let (_, source, document) = fixture_document("tests/runtime/enums.solar");
+
+        // `Shape::Circle` in the first match arm: Shape resolves to the enum and
+        // Circle resolves to the variant declaration.
+        for (needle, occurrence, target_line) in [("Shape", 3, 0), ("Circle", 1, 1)] {
+            let (line, character) = occurrence_position(&source, needle, occurrence);
+            let location =
+                definition(&source, line, character, &document).expect("enum definition");
+            let locations = definition_locations(location);
+            assert_eq!(locations.len(), 1, "{needle}");
+            assert_eq!(locations[0]["range"]["start"]["line"], target_line);
+        }
+    }
+
+    #[test]
+    fn definition_resolves_shadowed_local_bindings() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/runtime/methods.solar");
+        let uri = format!("file://{}", path.display());
+        let source = r#"fn use_value(x: Int) {
+    let before = x;
+    if true {
+        let x = 2;
+        println(x);
+    }
+    println(x);
+}
+
+fn main() { use_value(1); }
+"#;
+        let document = compute(&uri, source);
+
+        for (occurrence, target_line, target_character) in [
+            (1, 0, 13), // `x` in `before = x` → parameter
+            (3, 3, 12), // inner use → shadowing let
+            (4, 0, 13), // use after block → parameter
+        ] {
+            let (line, character) = occurrence_position(source, "x", occurrence);
+            let location = definition(source, line, character, &document)
+                .unwrap_or_else(|| panic!("local definition for occurrence {occurrence}"));
+            assert_eq!(location["range"]["start"]["line"], target_line);
+            assert_eq!(location["range"]["start"]["character"], target_character);
+        }
+    }
+
+    #[test]
+    fn definition_resolves_example_blue_variant() {
+        let (_, source, document) = fixture_document("examples/example.solar");
+        let (line, character) = occurrence_position(&source, "Blue", 2);
+
+        let location = definition(&source, line, character, &document).expect("Blue definition");
+
+        assert!(
+            location["uri"]
+                .as_str()
+                .unwrap()
+                .ends_with("/examples/example.solar"),
+            "{location}"
+        );
+        assert_eq!(location["range"]["start"]["line"], 80, "{location}");
+        assert_eq!(location["range"]["start"]["character"], 2, "{location}");
+    }
+
+    #[test]
+    fn hover_and_definition_resolve_the_same_overload() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/runtime/methods.solar");
+        let uri = format!("file://{}", path.display());
+        let source = r#"/// Method documentation.
+method ping(self: Int) -> Int { self }
+
+/// Free documentation.
+fn ping(x: Int) -> Int { x }
+
+fn main() {
+    println(1.ping());
+    println(ping(1));
+}
+"#;
+        let document = compute(&uri, source);
+
+        for (occurrence, target_line, expected_doc, rejected_doc) in [
+            (2, 1, "Method documentation.", "Free documentation."),
+            (3, 4, "Free documentation.", "Method documentation."),
+        ] {
+            let (line, character) = occurrence_position(source, "ping", occurrence);
+            let target = definition(source, line, character, &document).expect("definition target");
+            assert_eq!(target["range"]["start"]["line"], target_line);
+
+            let hover = hover(source, line, character, &document).expect("hover docs");
+            let contents = hover["contents"]["value"].as_str().unwrap();
+            assert!(contents.contains(expected_doc), "{contents}");
+            assert!(!contents.contains(rejected_doc), "{contents}");
+        }
     }
 }
