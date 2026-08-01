@@ -380,15 +380,24 @@ fn hover(source: &str, line: u32, character: u32, document: &Document) -> Option
     let mut entries = Vec::new();
     let mut seen = HashSet::new();
     for target in symbol_targets(source, line, character, document) {
-        if !seen.insert(span_key(target)) {
+        let target_key = span_key(target);
+        if !seen.insert(target_key) {
+            continue;
+        }
+        if let Some(signatures) = document.binding_signatures.get(&target_key) {
+            entries.extend(
+                signatures
+                    .iter()
+                    .map(|signature| format!("```solar\n{signature}\n```")),
+            );
             continue;
         }
         let signature = document
             .signatures
-            .get(&span_key(target))
+            .get(&target_key)
             .cloned()
             .or_else(|| span_source_text(target, &document.source_map));
-        let doc = document.docs.get(&span_key(target));
+        let doc = document.docs.get(&target_key);
         let Some(signature) = signature else {
             continue;
         };
@@ -422,6 +431,12 @@ fn span_key(span: SourceSpan) -> SpanKey {
         span.end.line,
         span.end.col,
     )
+}
+
+fn span_key_contains(outer: SpanKey, inner: SpanKey) -> bool {
+    outer.0 == inner.0
+        && (outer.1, outer.2) <= (inner.1, inner.2)
+        && (inner.3, inner.4) <= (outer.3, outer.4)
 }
 
 fn collect_docs(ast: &ast::SourceFile) -> HashMap<SpanKey, String> {
@@ -900,6 +915,12 @@ fn descendant_binding<'a>(pattern: Node<'a>, name: &str, source: &str) -> Option
 
 fn match_binding<'a>(pattern: Node<'a>, name: &str, source: &str) -> Option<Node<'a>> {
     match pattern.kind() {
+        "match_pattern" => {
+            let mut cursor = pattern.walk();
+            pattern
+                .named_children(&mut cursor)
+                .find_map(|child| match_binding(child, name, source))
+        }
         "variant_pattern" => {
             let binding = pattern.child_by_field_name("binding")?;
             (&source[binding.byte_range()] == name).then_some(binding)
@@ -913,20 +934,45 @@ fn match_binding<'a>(pattern: Node<'a>, name: &str, source: &str) -> Option<Node
 }
 
 fn is_binding_identifier(node: Node<'_>) -> bool {
-    let Some(parent) = node.parent() else {
+    if node.kind() != "identifier" {
         return false;
-    };
-    matches!(
-        parent.kind(),
-        "parameter" | "closure_param" | "let_statement"
-    ) && (parent.child_by_field_name("name") == Some(node)
-        || parent.child_by_field_name("pattern") == Some(node))
-        || matches!(parent.kind(), "for_statement" | "try_statement")
-            && (parent.child_by_field_name("variable") == Some(node)
-                || parent.child_by_field_name("binding") == Some(node))
-        || matches!(parent.kind(), "variant_pattern" | "wildcard_pattern")
-            && (parent.child_by_field_name("binding") == Some(node)
-                || parent.child_by_field_name("name") == Some(node))
+    }
+    let mut child = node;
+    while let Some(parent) = child.parent() {
+        let contains = |ancestor: Node<'_>| {
+            ancestor.start_byte() <= node.start_byte() && node.end_byte() <= ancestor.end_byte()
+        };
+        match parent.kind() {
+            "parameter" | "let_statement" => {
+                return parent.child_by_field_name("pattern").is_some_and(contains);
+            }
+            "closure_param" => return parent.child_by_field_name("name") == Some(node),
+            "for_statement" => return parent.child_by_field_name("variable") == Some(node),
+            "try_statement" => return parent.child_by_field_name("binding") == Some(node),
+            "variant_pattern" => return parent.child_by_field_name("binding") == Some(node),
+            "wildcard_pattern" => return parent.child_by_field_name("name") == Some(node),
+            "tuple_pattern" | "array_pattern" => {}
+            "struct_pattern_field" => {
+                if let Some(pattern) = parent.child_by_field_name("pattern") {
+                    if !contains(pattern) {
+                        return false;
+                    }
+                } else if parent.child_by_field_name("field_name") != Some(node) {
+                    return false;
+                }
+            }
+            "struct_pattern" => {
+                if parent.child_by_field_name("name").is_some_and(contains)
+                    || parent.child_by_field_name("module").is_some_and(contains)
+                {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+        child = parent;
+    }
+    false
 }
 
 fn named_child<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
@@ -1307,6 +1353,8 @@ struct Document {
     /// Exact declaration span → source-level signature/metadata shown by hover,
     /// including declarations without doc comments.
     signatures: HashMap<SpanKey, String>,
+    /// Exact local-binding span → concrete `name: Type` signatures.
+    binding_signatures: HashMap<SpanKey, Vec<String>>,
     /// Free-function overload declarations keyed by resolved provenance.
     function_defs: HashMap<ast::DefId, Vec<SourceSpan>>,
     /// Method overload declarations keyed by their source name.
@@ -1375,9 +1423,13 @@ fn compute_with_diagnostics(uri: &str, source: &str) -> (Document, HashMap<Strin
             diagnostics_from_errors(uri, source, std::slice::from_ref(&error), &source_map),
         ),
     };
+    let binding_signatures = analysis.as_ref().map_or_else(HashMap::new, |analysis| {
+        collect_binding_signatures(analysis, source)
+    });
     let document = Document {
         docs: collect_docs(&ast),
         signatures,
+        binding_signatures,
         function_defs: definition_catalog.function_defs,
         method_defs: definition_catalog.method_defs,
         field_defs: definition_catalog.field_defs,
@@ -1510,6 +1562,308 @@ fn analysis_from_typed(typed: typed_ast::SourceFile, source_map: &SourceMap) -> 
         file_id,
         names,
     })
+}
+
+type BindingDeclarationKey = (SpanKey, String);
+
+fn collect_binding_signatures(analysis: &Analysis, source: &str) -> HashMap<SpanKey, Vec<String>> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_solar::LANGUAGE.into())
+        .expect("Solar grammar must load");
+    let Some(tree) = parser.parse(source, None) else {
+        return HashMap::new();
+    };
+    let root = tree.root_node();
+    let mut declarations = HashMap::new();
+    collect_binding_declarations(root, analysis.file_id, source, &mut declarations);
+
+    let mut collector = BindingSignatureCollector {
+        file_id: analysis.file_id,
+        scope: None,
+        declarations: &declarations,
+        out: HashMap::new(),
+    };
+    for function in analysis.typed.functions.values() {
+        if function.def_span.file_id != analysis.file_id {
+            continue;
+        }
+        collector.scope = Some(function.def_span);
+        for parameter in &function.parameters {
+            collector.record_declaration(parameter.span, &parameter.name, &parameter.ty);
+        }
+        for statement in &function.body {
+            collector.walk_statement(statement);
+        }
+    }
+    collector.scope = None;
+    for static_item in &analysis.typed.statics {
+        collector.walk_expr(&static_item.init);
+    }
+    for signatures in collector.out.values_mut() {
+        signatures.sort();
+        signatures.dedup();
+    }
+    collector.out
+}
+
+fn collect_binding_declarations(
+    node: Node<'_>,
+    file_id: u32,
+    source: &str,
+    out: &mut HashMap<BindingDeclarationKey, Vec<SpanKey>>,
+) {
+    let pattern = match node.kind() {
+        "parameter" | "let_statement" => node.child_by_field_name("pattern"),
+        "closure_param" => node.child_by_field_name("name"),
+        "for_statement" => node.child_by_field_name("variable"),
+        "try_statement" => node.child_by_field_name("binding"),
+        "match_arm" => node.child_by_field_name("pattern"),
+        _ => None,
+    };
+    if let Some(pattern) = pattern {
+        let container_node = if node.kind() == "match_arm" {
+            node.child_by_field_name("body").unwrap_or(node)
+        } else {
+            node
+        };
+        let container = span_key(node_span(container_node, file_id));
+        collect_pattern_declarations(pattern, container, file_id, source, out);
+    }
+
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_binding_declarations(child, file_id, source, out);
+    }
+}
+
+fn collect_pattern_declarations(
+    pattern: Node<'_>,
+    container: SpanKey,
+    file_id: u32,
+    source: &str,
+    out: &mut HashMap<BindingDeclarationKey, Vec<SpanKey>>,
+) {
+    if pattern.kind() == "identifier" {
+        let name = source[pattern.byte_range()].to_owned();
+        out.entry((container, name))
+            .or_default()
+            .push(span_key(node_span(pattern, file_id)));
+        return;
+    }
+    if matches!(pattern.kind(), "variant_pattern" | "wildcard_pattern") {
+        let field = if pattern.kind() == "variant_pattern" {
+            "binding"
+        } else {
+            "name"
+        };
+        if let Some(binding) = pattern.child_by_field_name(field) {
+            collect_pattern_declarations(binding, container, file_id, source, out);
+        }
+        return;
+    }
+    if pattern.kind() == "struct_pattern_field" {
+        if let Some(inner) = pattern.child_by_field_name("pattern") {
+            collect_pattern_declarations(inner, container, file_id, source, out);
+        } else if let Some(name) = pattern.child_by_field_name("field_name") {
+            collect_pattern_declarations(name, container, file_id, source, out);
+        }
+        return;
+    }
+    let mut cursor = pattern.walk();
+    for child in pattern.named_children(&mut cursor) {
+        if matches!(
+            pattern.kind(),
+            "tuple_pattern" | "array_pattern" | "match_pattern"
+        ) || pattern.kind() == "struct_pattern" && child.kind() == "struct_pattern_field"
+        {
+            collect_pattern_declarations(child, container, file_id, source, out);
+        }
+    }
+}
+
+struct BindingSignatureCollector<'a> {
+    file_id: u32,
+    scope: Option<SourceSpan>,
+    declarations: &'a HashMap<BindingDeclarationKey, Vec<SpanKey>>,
+    out: HashMap<SpanKey, Vec<String>>,
+}
+
+impl BindingSignatureCollector<'_> {
+    fn insert(&mut self, target: SpanKey, name: &str, ty: &typed_ast::Type) {
+        self.out
+            .entry(target)
+            .or_default()
+            .push(format!("{name}: {ty}"));
+    }
+
+    fn record_declaration(&mut self, span: SourceSpan, name: &str, ty: &typed_ast::Type) {
+        let span = SourceSpan {
+            file_id: self.file_id,
+            ..span
+        };
+        let key = (span_key(span), name.to_owned());
+        let targets = self.declarations.get(&key).cloned().or_else(|| {
+            let scope = span_key(self.scope?);
+            let mut targets: Vec<SpanKey> = self
+                .declarations
+                .iter()
+                .filter(|((container, candidate), _)| {
+                    candidate == name && span_key_contains(scope, *container)
+                })
+                .flat_map(|(_, targets)| targets.iter().copied())
+                .collect();
+            targets.sort_unstable();
+            targets.dedup();
+            (targets.len() == 1).then_some(targets)
+        });
+        for target in targets.into_iter().flatten() {
+            self.insert(target, name, ty);
+        }
+    }
+
+    fn walk_statement(&mut self, statement: &typed_ast::Statement) {
+        use typed_ast::StatementKind;
+        match &statement.kind {
+            StatementKind::Let { name, ty, value } => {
+                self.record_declaration(statement.span, name, ty);
+                self.walk_expr(value);
+            }
+            StatementKind::Expression(value) | StatementKind::Return(value) => {
+                self.walk_expr(value)
+            }
+            StatementKind::Assignment { target, value } => {
+                self.walk_expr(target);
+                self.walk_expr(value);
+            }
+            StatementKind::If {
+                condition,
+                body,
+                else_body,
+            } => {
+                self.walk_expr(condition);
+                for statement in body.iter().chain(else_body) {
+                    self.walk_statement(statement);
+                }
+            }
+            StatementKind::While { condition, body } => {
+                self.walk_expr(condition);
+                for statement in body {
+                    self.walk_statement(statement);
+                }
+            }
+            StatementKind::Break(value) => {
+                if let Some(value) = value {
+                    self.walk_expr(value);
+                }
+            }
+            StatementKind::Continue => {}
+        }
+    }
+
+    fn walk_expr(&mut self, expr: &typed_ast::Expr) {
+        use typed_ast::ExprKind;
+        match &expr.kind {
+            ExprKind::Call { arguments, .. } | ExprKind::IntrinsicCall { arguments, .. } => {
+                for argument in arguments {
+                    self.walk_expr(argument);
+                }
+            }
+            ExprKind::CallIndirect { callee, arguments } => {
+                self.walk_expr(callee);
+                for argument in arguments {
+                    self.walk_expr(argument);
+                }
+            }
+            ExprKind::FieldAccess { object, .. }
+            | ExprKind::Deref(object)
+            | ExprKind::Reference(object)
+            | ExprKind::Unique(object)
+            | ExprKind::Not(object)
+            | ExprKind::ArraySizeCoerce { expr: object, .. } => self.walk_expr(object),
+            ExprKind::Index { object, index } => {
+                self.walk_expr(object);
+                self.walk_expr(index);
+            }
+            ExprKind::Slice { object, start, end } => {
+                self.walk_expr(object);
+                self.walk_expr(start);
+                self.walk_expr(end);
+            }
+            ExprKind::StructLiteral { fields, .. } => {
+                for field in fields {
+                    self.walk_expr(&field.value);
+                }
+            }
+            ExprKind::ArrayLiteral(values) => {
+                for value in values {
+                    self.walk_expr(value);
+                }
+            }
+            ExprKind::Block(statements) | ExprKind::Loop(statements) => {
+                for statement in statements {
+                    self.walk_statement(statement);
+                }
+            }
+            ExprKind::ArrayRepeat { element, count }
+            | ExprKind::ArrayInit {
+                init: element,
+                count,
+            } => {
+                self.walk_expr(element);
+                self.walk_expr(count);
+            }
+            ExprKind::BinaryOp { left, right, .. } => {
+                self.walk_expr(left);
+                self.walk_expr(right);
+            }
+            ExprKind::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                self.walk_expr(condition);
+                for statement in then_body.iter().chain(else_body) {
+                    self.walk_statement(statement);
+                }
+            }
+            ExprKind::EnumVariant { value, .. } => {
+                if let Some(value) = value {
+                    self.walk_expr(value);
+                }
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                self.walk_expr(scrutinee);
+                for arm in arms {
+                    let span = arm
+                        .body
+                        .first()
+                        .map_or(expr.span, |statement| statement.span);
+                    match &arm.pattern {
+                        typed_ast::TypedPattern::Variant {
+                            binding: Some((name, ty)),
+                            ..
+                        }
+                        | typed_ast::TypedPattern::Wildcard(name, ty) => {
+                            self.record_declaration(span, name, ty);
+                        }
+                        typed_ast::TypedPattern::Variant { binding: None, .. } => {}
+                    }
+                    for statement in &arm.body {
+                        self.walk_statement(statement);
+                    }
+                }
+            }
+            ExprKind::Identifier(_)
+            | ExprKind::Global(_)
+            | ExprKind::FunctionRef(_)
+            | ExprKind::FloatLiteral(_)
+            | ExprKind::IntegerLiteral(_)
+            | ExprKind::BooleanLiteral(_)
+            | ExprKind::NullLiteral
+            | ExprKind::Closure { .. } => {}
+        }
+    }
 }
 
 /// Collects typed expression classifications.
@@ -2342,6 +2696,96 @@ fn main() {
 
         assert!(contents.contains("```solar"), "{contents}");
         assert!(contents.contains("pub fn origin() -> Point"), "{contents}");
+    }
+
+    #[test]
+    fn hover_shows_binding_types() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/runtime/methods.solar");
+        let uri = format!("file://{}", path.display());
+        let source = r#"fn copy#[T](input: T) -> T {
+    let output = input;
+    output
+}
+
+fn main() {
+    copy(1);
+    copy(true);
+}
+"#;
+        let document = compute(&uri, source);
+
+        for (name, occurrences) in [("input", [0, 1]), ("output", [0, 1])] {
+            for occurrence in occurrences {
+                let (line, character) = occurrence_position(source, name, occurrence);
+                let hover = hover(source, line, character, &document)
+                    .unwrap_or_else(|| panic!("missing hover for {name} occurrence {occurrence}"));
+                let contents = hover["contents"]["value"].as_str().unwrap();
+                assert!(contents.contains(&format!("{name}: Bool")), "{contents}");
+                assert!(contents.contains(&format!("{name}: Int")), "{contents}");
+            }
+        }
+    }
+
+    #[test]
+    fn hover_shows_destructured_binding_types() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/runtime/destructure.solar");
+        let uri = format!("file://{}", path.display());
+        let source = r#"fn main() {
+    let (left, right) = (1, 2u);
+    println(left);
+    println(right);
+}
+"#;
+        let document = compute(&uri, source);
+
+        for (name, ty) in [("left", "Int"), ("right", "Uint")] {
+            for occurrence in 0..2 {
+                let (line, character) = occurrence_position(source, name, occurrence);
+                let hover = hover(source, line, character, &document).expect("binding hover");
+                let contents = hover["contents"]["value"].as_str().unwrap();
+                assert!(contents.contains(&format!("{name}: {ty}")), "{contents}");
+            }
+        }
+    }
+
+    #[test]
+    fn hover_shows_loop_and_match_binding_types() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/runtime/enums.solar");
+        let uri = format!("file://{}", path.display());
+        let source = r#"enum Shape {
+    Circle(Int),
+    Empty,
+}
+
+fn main() {
+    let shape = Shape::Circle(1);
+    let radius = match shape {
+        Shape::Circle(value) => value,
+        Shape::Empty => 0,
+    };
+    for index in 0..radius {
+        println(index);
+    }
+    try {
+        println(radius);
+    } catch (message) {
+        println(message);
+    }
+}
+"#;
+        let document = compute(&uri, source);
+        for (name, ty) in [("value", "Int"), ("index", "Int"), ("message", "&[Uint8]")] {
+            for occurrence in 0..2 {
+                let (line, character) = occurrence_position(source, name, occurrence);
+                let hover = hover(source, line, character, &document)
+                    .unwrap_or_else(|| panic!("missing hover for {name} occurrence {occurrence}"));
+                let contents = hover["contents"]["value"].as_str().unwrap();
+                assert!(contents.contains(&format!("{name}: {ty}")), "{contents}");
+            }
+        }
     }
 
     #[test]
