@@ -44,6 +44,9 @@ Do not add spelling-based definition fallbacks.
 
 The LSP treats the open file as the compilation root for diagnostics. Convert
 compiler failures into diagnostics rather than terminating the server.
+Diagnostics and language features share one resolved and type-checked analysis
+per document revision; do not compile the same buffer independently for each
+request.
 
 ## Validation
 

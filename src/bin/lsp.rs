@@ -37,9 +37,9 @@ fn main() {
     let stdout = io::stdout();
     let mut output = stdout.lock();
     let mut documents = HashMap::<String, String>::new();
-    // Per-document resolve results, invalidated whenever the buffer changes.
-    // Resolving reparses the stdlib, so both hover and semantic tokens share
-    // one cached resolve per edit rather than paying for it on every request.
+    // Per-document analysis, replaced whenever the buffer changes. Resolving
+    // reparses the stdlib, so diagnostics, navigation, hover, and semantic
+    // tokens share one resolve and type-check per document revision.
     let mut cache = HashMap::<String, Document>::new();
     // Root document URI → every URI to which its last check published
     // diagnostics. Used to clear errors that disappear after an edit.
@@ -72,9 +72,10 @@ fn main() {
             Some("exit") => break,
             Some("textDocument/didOpen") => {
                 if let Some((uri, text)) = document_and_text(&params) {
-                    cache.remove(&uri);
+                    let (document, diagnostics) = compute_with_diagnostics(&uri, &text);
+                    cache.insert(uri.clone(), document);
                     documents.insert(uri.clone(), text.clone());
-                    publish_check_diagnostics(&mut output, &uri, &text, &mut diagnostic_uris);
+                    publish_check_diagnostics(&mut output, &uri, diagnostics, &mut diagnostic_uris);
                 }
             }
             Some("textDocument/didChange") => {
@@ -83,9 +84,10 @@ fn main() {
                     .pointer("/contentChanges/0/text")
                     .and_then(Value::as_str);
                 if let (Some(uri), Some(text)) = (uri, text) {
-                    cache.remove(uri);
+                    let (document, diagnostics) = compute_with_diagnostics(uri, text);
+                    cache.insert(uri.to_owned(), document);
                     documents.insert(uri.to_owned(), text.to_owned());
-                    publish_check_diagnostics(&mut output, uri, text, &mut diagnostic_uris);
+                    publish_check_diagnostics(&mut output, uri, diagnostics, &mut diagnostic_uris);
                 }
             }
             Some("textDocument/didClose") => {
@@ -163,10 +165,9 @@ fn document_and_text(params: &Value) -> Option<(String, String)> {
 fn publish_check_diagnostics(
     output: &mut impl Write,
     root_uri: &str,
-    source: &str,
+    diagnostics: HashMap<String, Vec<Value>>,
     published: &mut HashMap<String, HashMap<String, Vec<Value>>>,
 ) {
-    let diagnostics = check_document(root_uri, source);
     let mut affected: HashSet<String> = published
         .get(root_uri)
         .into_iter()
@@ -224,18 +225,9 @@ fn publish_diagnostics(output: &mut impl Write, uri: &str, diagnostics: &[Value]
 
 /// Compile the in-memory document as the program root and return LSP diagnostics
 /// grouped by the source file they point into.
+#[cfg(test)]
 fn check_document(root_uri: &str, source: &str) -> HashMap<String, Vec<Value>> {
-    let Some(path) = file_uri_to_path(root_uri) else {
-        return HashMap::new();
-    };
-    let (errors, source_map) = match resolve::resolve_source(&path, source.to_owned()) {
-        Ok((ast, source_map)) => match typed_ast::lower(&ast) {
-            Ok(_) => return HashMap::new(),
-            Err(error) => (vec![error], source_map),
-        },
-        Err((errors, source_map)) => (errors, source_map),
-    };
-    diagnostics_from_errors(root_uri, source, &errors, &source_map)
+    compute_with_diagnostics(root_uri, source).1
 }
 
 fn diagnostics_from_errors(
@@ -1347,16 +1339,32 @@ fn cached<'a>(cache: &'a mut HashMap<String, Document>, uri: &str, source: &str)
 
 /// Analyzes an in-memory document.
 fn compute(uri: &str, source: &str) -> Document {
+    compute_with_diagnostics(uri, source).0
+}
+
+/// Analyzes an in-memory document once for diagnostics and language features.
+fn compute_with_diagnostics(uri: &str, source: &str) -> (Document, HashMap<String, Vec<Value>>) {
     let Some(path) = file_uri_to_path(uri) else {
-        return Document::default();
+        return (Document::default(), HashMap::new());
     };
-    let Ok((ast, source_map)) = resolve::resolve_source(&path, source.to_owned()) else {
-        return Document::default();
+    let (ast, source_map) = match resolve::resolve_source(&path, source.to_owned()) {
+        Ok(resolved) => resolved,
+        Err((errors, source_map)) => {
+            let diagnostics = diagnostics_from_errors(uri, source, &errors, &source_map);
+            return (Document::default(), diagnostics);
+        }
     };
     let definition_catalog = collect_definition_catalog(&ast, source_map.root_file_id());
     let module_files = collect_module_files(&path, source, &source_map);
     let signatures = collect_signatures(&ast, &source_map);
-    Document {
+    let (analysis, diagnostics) = match typed_ast::lower(&ast) {
+        Ok(typed) => (analysis_from_typed(typed, &source_map), HashMap::new()),
+        Err(error) => (
+            None,
+            diagnostics_from_errors(uri, source, std::slice::from_ref(&error), &source_map),
+        ),
+    };
+    let document = Document {
         docs: collect_docs(&ast),
         signatures,
         function_defs: definition_catalog.function_defs,
@@ -1367,9 +1375,10 @@ fn compute(uri: &str, source: &str) -> Document {
         global_defs: definition_catalog.global_defs,
         generic_bodies: definition_catalog.generic_bodies,
         module_files,
-        analysis: analyze(&ast, &source_map),
+        analysis,
         source_map,
-    }
+    };
+    (document, diagnostics)
 }
 
 #[derive(Default)]
@@ -1466,9 +1475,8 @@ fn collect_module_files(
     modules
 }
 
-/// Builds semantic-token data from a resolved program.
-fn analyze(ast: &ast::SourceFile, source_map: &SourceMap) -> Option<Analysis> {
-    let typed = typed_ast::lower(ast).ok()?;
+/// Builds language-feature data from a type-checked program.
+fn analysis_from_typed(typed: typed_ast::SourceFile, source_map: &SourceMap) -> Option<Analysis> {
     let file_id = source_map.root_file_id()?;
 
     // Collect every struct/enum name and every enum variant name across the
@@ -2066,6 +2074,28 @@ fn main() {
                 .get(&uri)
                 .is_some_and(|errors| !errors.is_empty())
         );
+    }
+
+    #[test]
+    fn diagnostics_analysis_resolves_mutex_unlock() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/compile_only/mutex.solar");
+        let uri = format!("file://{}", path.display());
+        let source = std::fs::read_to_string(path).unwrap();
+
+        let (document, diagnostics) = compute_with_diagnostics(&uri, &source);
+
+        assert!(diagnostics.is_empty());
+        let (line, character) = occurrence_position(&source, "unlock", 0);
+        let location = definition(&source, line, character, &document)
+            .expect("definition from diagnostics analysis");
+        assert!(
+            location["uri"]
+                .as_str()
+                .unwrap()
+                .ends_with("/src/std/sync.solar")
+        );
+        assert_eq!(location["range"]["start"]["line"], 91);
     }
 
     #[test]
