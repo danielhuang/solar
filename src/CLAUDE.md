@@ -29,6 +29,12 @@ AST, while `ir_interp` and native codegen consume IR.
 - User program errors must use `CompileError` and the reporting system in
   `error.rs`; malformed input must not panic the compiler or LSP.
 - Escape analysis is conservative: uncertainty means the value may escape.
+- Escape analysis follows place roots, not value-only index or slice-bound
+  operands. An interior reference derived through a dereference is non-escaping
+  only when the derived reference is itself contained.
+- Compile-time field reflection evaluates its object once. Simple tuple
+  patterns bind generated components directly, and wildcard components may be
+  omitted because those generated name/reference expressions are pure.
 - Solar copies may alias. Every backend must implement memmove semantics,
   including aggregate and slice-range copies.
 - Pointer-bearing values must reach LLVM with pointer-typed pointer words so

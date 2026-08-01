@@ -6123,18 +6123,22 @@ impl<'a> Lowerer<'a> {
                 })),
                 span,
             };
-            let tuple = ast::Expr {
-                kind: ast::ExprKind::TupleLiteral(vec![name_ref, field_ref]),
-                span,
-            };
-            let mut block_stmts = vec![ast::Statement {
-                kind: ast::StatementKind::Let {
-                    pattern: pattern.clone(),
-                    ty: None,
-                    value: tuple,
-                },
-                span,
-            }];
+            let components = [name_ref, field_ref];
+            let mut block_stmts =
+                Self::direct_reflect_bindings(pattern, &components, &[tmp_name.as_str()], span)
+                    .unwrap_or_else(|| {
+                        vec![ast::Statement {
+                            kind: ast::StatementKind::Let {
+                                pattern: pattern.clone(),
+                                ty: None,
+                                value: ast::Expr {
+                                    kind: ast::ExprKind::TupleLiteral(components.to_vec()),
+                                    span,
+                                },
+                            },
+                            span,
+                        }]
+                    });
             block_stmts.extend(body.iter().cloned());
             outer_stmts.push(ast::Statement {
                 kind: ast::StatementKind::Expression(ast::Expr {
@@ -6152,6 +6156,49 @@ impl<'a> Lowerer<'a> {
             }),
             span,
         })
+    }
+
+    /// Bind compiler-generated reflection components directly for a simple
+    /// tuple pattern. This avoids constructing a temporary tuple, and a `_`
+    /// component can be omitted because field names and field references are
+    /// pure compiler-generated expressions. Falling back preserves the normal
+    /// destructuring diagnostics for compound or wrong-length patterns.
+    fn direct_reflect_bindings(
+        pattern: &ast::DestructurePattern,
+        components: &[ast::Expr],
+        protected_names: &[&str],
+        span: ast::SourceSpan,
+    ) -> Option<Vec<ast::Statement>> {
+        let ast::DestructurePattern::Tuple(parts) = pattern else {
+            return None;
+        };
+        if parts.len() != components.len()
+            || !parts.iter().all(|part| {
+                matches!(part, ast::DestructurePattern::Name(name) if !protected_names.contains(&name.as_str()))
+            })
+        {
+            return None;
+        }
+
+        Some(
+            parts
+                .iter()
+                .zip(components)
+                .filter_map(|(part, value)| {
+                    let ast::DestructurePattern::Name(name) = part else {
+                        unreachable!();
+                    };
+                    (name != "_").then(|| ast::Statement {
+                        kind: ast::StatementKind::Let {
+                            pattern: part.clone(),
+                            ty: None,
+                            value: value.clone(),
+                        },
+                        span,
+                    })
+                })
+                .collect(),
+        )
     }
 
     /// Extract the two object expressions from a paired-reflection object, which
@@ -6262,22 +6309,26 @@ impl<'a> Lowerer<'a> {
                 })),
                 span,
             };
-            let tuple = ast::Expr {
-                kind: ast::ExprKind::TupleLiteral(vec![
-                    name_ref,
-                    field_ref(&tmp0, &fname),
-                    field_ref(&tmp1, &fname),
-                ]),
+            let components = [name_ref, field_ref(&tmp0, &fname), field_ref(&tmp1, &fname)];
+            let mut block_stmts = Self::direct_reflect_bindings(
+                pattern,
+                &components,
+                &[tmp0.as_str(), tmp1.as_str()],
                 span,
-            };
-            let mut block_stmts = vec![ast::Statement {
-                kind: ast::StatementKind::Let {
-                    pattern: pattern.clone(),
-                    ty: None,
-                    value: tuple,
-                },
-                span,
-            }];
+            )
+            .unwrap_or_else(|| {
+                vec![ast::Statement {
+                    kind: ast::StatementKind::Let {
+                        pattern: pattern.clone(),
+                        ty: None,
+                        value: ast::Expr {
+                            kind: ast::ExprKind::TupleLiteral(components.to_vec()),
+                            span,
+                        },
+                    },
+                    span,
+                }]
+            });
             block_stmts.extend(body.iter().cloned());
             outer_stmts.push(ast::Statement {
                 kind: ast::StatementKind::Expression(ast::Expr {

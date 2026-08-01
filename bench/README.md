@@ -9,11 +9,10 @@
 - [Binary trees](#binary-trees)
 - [Build and run guide](guide.md)
 
-The results below were measured on July 31, 2026 from freshly built current
-sources. The machine was an Intel Core Ultra 9 275HX with 24 cores and 93 GiB
-of RAM, running Linux 7.1.3. See the [benchmark guide](guide.md) for the source
-layout, prerequisites, build commands, measurement definitions, and commands
-used to reproduce each group.
+The results below were measured on an Intel Core Ultra 9 275HX with 24 cores
+and 93 GiB of RAM, running Linux 7.1.3. See the [benchmark guide](guide.md) for
+the source layout, prerequisites, build commands, measurement definitions, and
+commands used to reproduce each group.
 
 ## Allocation and GC
 
@@ -184,25 +183,31 @@ are measured separately from `point` and `mixed` struct keys.
 
 ### Results
 
-Wall time is the best of seven independent process runs per phase; RSS is the
-largest peak reported for those runs. Lower is better.
+The results below report the best of seven independent process runs per phase;
+RSS is the largest peak reported for those runs. Lower is better.
 
 | Phase | Solar | Rust | Solar/Rust | Solar RSS | Rust RSS | Checksum |
 | --- | ---: | ---: | ---: | ---: | ---: | :---: |
-| `u64` | 248.1 ms | 111.3 ms | 2.23× | 102.1 MB | 52.9 MB | match |
-| `u32` | 256.8 ms | 107.0 ms | 2.40× | 101.8 MB | 53.0 MB | match |
-| `point` | 376.7 ms | 143.8 ms | 2.62× | 190.7 MB | 77.0 MB | match |
-| `mixed` | 380.0 ms | 145.0 ms | 2.62× | 190.7 MB | 76.8 MB | match |
-| **Total** | **1,261.6 ms** | **507.1 ms** | **2.49×** |  |  |  |
+| `u64` | 138.8 ms | 116.6 ms | 1.19× | 68.3 MB | 52.8 MB | match |
+| `u32` | 150.1 ms | 97.8 ms | 1.54× | 68.2 MB | 53.0 MB | match |
+| `point` | 219.9 ms | 131.8 ms | 1.67× | 99.9 MB | 76.8 MB | match |
+| `mixed` | 202.0 ms | 137.8 ms | 1.47× | 99.8 MB | 76.9 MB | match |
+| **Total** | **710.8 ms** | **484.0 ms** | **1.47×** |  |  |  |
+
+With `SOLAR_PRINT_GC_STATS=1`, every phase performed 43 allocations. Reported
+live memory was 56,623,184 bytes for each primitive phase and 106,954,832 bytes
+for each struct phase.
 
 ### Conclusions
 
-1. Rust was faster in every phase. Solar's summed best times were 2.49× Rust's,
-   with per-phase ratios from 2.23× to 2.62×.
-2. Solar's peak RSS was 1.92–1.93× Rust's for primitive keys and 2.48× Rust's
-   for struct keys.
-3. All four checksums matched, so both implementations produced the same
-   lookup results for every measured key type.
+1. Rust was faster in every phase. Solar's summed best times were 1.47× Rust's,
+   with per-phase ratios from 1.19× to 1.67×.
+2. Solar's peak RSS was 1.29× Rust's for primitive keys and 1.30× for struct
+   keys.
+3. Solar's 43 allocations per phase do not scale with the three million map
+   operations in each phase.
+4. All four checksums matched, so both implementations produced the same lookup
+   results for every measured key type.
 
 ## Binary trees
 

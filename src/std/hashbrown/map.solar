@@ -26,22 +26,23 @@ pub method is_empty#[K, V](self: &HashMap#[K, V]) -> Bool {
 pub method insert#[K, V](self: &HashMap#[K, V], key: K, val: V) -> Option#[V] {
   let t = self@.table&;
   let h = raw::key_hash(key&);
-  let existing = t.find(h, key&);
-  let result = match existing {
-    Option#[Uint]::Some(idx) => {
+  let location = t.find_or_find_insert(h, key&);
+  let result = match location {
+    raw::FindInsert::Found(idx) => {
       let s = t@.slots;
       let old = s@[idx].val;
       s@[idx].val = val;
       Option#[V]::Some(old)
     },
-    Option#[Uint]::None => {
-      if t@.growth_left == 0u {
-        let sample = raw::Entry#[K, V] { key: key, val: val, };
-        let need = t@.items + 1u;
-        t.resize(need, sample&);
-      }
+    raw::FindInsert::Vacant(slot) => {
       let e = raw::Entry#[K, V] { key: key, val: val, };
-      t.insert_in_slot(h, e);
+      if t@.growth_left == 0u {
+        let need = t@.items + 1u;
+        t.resize(need, e&);
+        t.insert_in_slot(h, e);
+      } else {
+        t.insert_at_slot(h, slot, e);
+      }
       Option#[V]::None
     },
   };
@@ -52,8 +53,7 @@ pub method insert#[K, V](self: &HashMap#[K, V], key: K, val: V) -> Option#[V] {
 pub method get#[K, V](self: &HashMap#[K, V], key: &K) -> Option#[&V] {
   let t = self@.table&;
   let h = raw::key_hash(key);
-  let found = t.find(h, key);
-  let result = match found {
+  let result = match t.find(h, key) {
     Option#[Uint]::Some(idx) => {
       let s = t@.slots;
       Option#[&V]::Some(s@[idx].val&)
@@ -67,8 +67,7 @@ pub method get#[K, V](self: &HashMap#[K, V], key: &K) -> Option#[&V] {
 pub method contains_key#[K, V](self: &HashMap#[K, V], key: &K) -> Bool {
   let t = self@.table&;
   let h = raw::key_hash(key);
-  let found = t.find(h, key);
-  let result = match found {
+  let result = match t.find(h, key) {
     Option#[Uint]::Some(idx) => true,
     Option#[Uint]::None => false,
   };
@@ -84,8 +83,7 @@ pub method get_mut#[K, V](self: &HashMap#[K, V], key: &K) -> Option#[&V] {
 pub method remove#[K, V](self: &HashMap#[K, V], key: &K) -> Option#[V] {
   let t = self@.table&;
   let h = raw::key_hash(key);
-  let found = t.find(h, key);
-  let result = match found {
+  let result = match t.find(h, key) {
     Option#[Uint]::Some(idx) => {
       let s = t@.slots;
       let v = s@[idx].val;

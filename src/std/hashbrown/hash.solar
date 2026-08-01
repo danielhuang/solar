@@ -4,8 +4,8 @@ import fh from "foldhash.solar";
 pub method hash#[T](self: &T, hasher: &fh::Hasher) {
   match.reflect T {
     "struct" => {
-      for.reflect_fields f in self {
-        f.1.hash(hasher);
+      for.reflect_fields (_, field) in self {
+        field.hash(hasher);
       }
     },
     "enum" => {

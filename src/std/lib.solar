@@ -105,9 +105,10 @@ pub method operator_eq#[T](self: &T, other: &T) -> Bool {
   let eq = true;
   match.reflect T {
     "struct" => {
-      for.reflect_fields_pair (name, a, b) in (self, other) {
-        let e = a@ == b@;
-        if !e { eq = false; }
+      for.reflect_fields_pair (_, a, b) in (self, other) {
+        if eq {
+          if a@ != b@ { eq = false; }
+        }
       }
     },
     "enum" => {

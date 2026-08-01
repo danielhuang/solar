@@ -58,14 +58,13 @@ struct FnFacts {
     /// Node indices that are the direct operand of a `Deref` (read/written
     /// through, so a pointer used there isn't itself leaked).
     deref_operand: HashSet<usize>,
-    /// Deref operands that are NOT plain read-throughs: the `Deref` forms the
-    /// base of a `Ref`'s place (`p@.b&`), which re-derives the pointer `p`
-    /// holds into a fresh reference. If that reference escapes (e.g. it's
-    /// returned), `p`'s pointee escapes with it — so this use must not count
-    /// toward containment/non-escape. (Only the *outermost* deref of the base
-    /// chain re-derives: in `a@.b@.c&` the escaping address lies in `b`'s
-    /// pointee, while `a`'s pointer is merely read through.)
-    ref_base_deref: HashSet<usize>,
+    /// Deref operand -> `Ref` results derived from its pointee (`p@.b&`). The
+    /// operand is non-escaping only when every resulting reference is contained.
+    /// Only the outermost deref in the place chain re-derives the address.
+    ref_base_deref: HashMap<usize, Vec<usize>>,
+    /// Deref operands whose re-derived reference is known to escape without a
+    /// traceable `Ref` result, such as an escaping match binding.
+    escaping_ref_base_deref: HashSet<usize>,
     /// `value` node index -> the `Let` var bound to it. Identifies the reference
     /// temp a `Ref` result flows into.
     let_var_of_value: HashMap<usize, VarId>,
@@ -80,7 +79,7 @@ struct FnFacts {
     direct_refs: HashMap<VarId, Vec<usize>>,
     /// Vars to give up on (their address reaches a `^` move/deep-copy).
     bad: HashSet<VarId>,
-    /// Vars whose address is taken anywhere in a `Ref`/`Unique` operand subtree.
+    /// Vars whose own storage is addressed or conservatively moved/captured.
     addr_taken: HashSet<VarId>,
 }
 
@@ -89,7 +88,13 @@ struct FnFacts {
 /// pointer that operand holds (see `FnFacts::ref_base_deref`). Index/slice
 /// *index* subexpressions are not part of the base chain (a deref there is an
 /// ordinary value read).
-fn mark_ref_base_deref(nodes: &[Node], ref_operand: NodeId, out: &mut HashSet<usize>) {
+fn mark_ref_base_deref(
+    nodes: &[Node],
+    ref_operand: NodeId,
+    ref_result: Option<usize>,
+    out: &mut HashMap<usize, Vec<usize>>,
+    escaping: &mut HashSet<usize>,
+) {
     let mut id = ref_operand;
     loop {
         match &nodes[id.0].kind {
@@ -97,7 +102,11 @@ fn mark_ref_base_deref(nodes: &[Node], ref_operand: NodeId, out: &mut HashSet<us
             | NodeKind::Index { object, .. }
             | NodeKind::Slice { object, .. } => id = *object,
             NodeKind::Deref(op) => {
-                out.insert(op.0);
+                if let Some(ref_result) = ref_result {
+                    out.entry(op.0).or_default().push(ref_result);
+                } else {
+                    escaping.insert(op.0);
+                }
                 return;
             }
             _ => return,
@@ -109,7 +118,8 @@ fn mark_ref_base_deref(nodes: &[Node], ref_operand: NodeId, out: &mut HashSet<us
 fn collect_fn_facts(nodes: &[Node]) -> FnFacts {
     let mut f = FnFacts {
         deref_operand: HashSet::new(),
-        ref_base_deref: HashSet::new(),
+        ref_base_deref: HashMap::new(),
+        escaping_ref_base_deref: HashSet::new(),
         let_var_of_value: HashMap::new(),
         let_node_of_var: HashMap::new(),
         ref_let_vars: Vec::new(),
@@ -136,11 +146,19 @@ fn collect_fn_facts(nodes: &[Node]) -> FnFacts {
                 // … but not through a deref) addresses `V`'s own storage. A ref
                 // reached through a deref points into a pointee — a different
                 // allocation — so it can't make any local's storage escape.
-                collect_locals(nodes, *op, &mut f.addr_taken);
-                if let Some(v) = ref_root_local(nodes, *op) {
+                let mut roots = HashSet::new();
+                collect_place_roots(nodes, *op, &mut roots);
+                f.addr_taken.extend(&roots);
+                for v in roots {
                     f.direct_refs.entry(v).or_default().push(idx);
                 }
-                mark_ref_base_deref(nodes, *op, &mut f.ref_base_deref);
+                mark_ref_base_deref(
+                    nodes,
+                    *op,
+                    Some(idx),
+                    &mut f.ref_base_deref,
+                    &mut f.escaping_ref_base_deref,
+                );
             }
             NodeKind::Unique(op) => {
                 // `^place` moves/deep-copies; conservatively give up on its locals.
@@ -171,15 +189,42 @@ fn collect_fn_facts(nodes: &[Node]) -> FnFacts {
                 MatchPattern::Wildcard(v, _) => f.addr_taken.contains(v),
             });
             if binding_escapes {
-                mark_ref_base_deref(nodes, *scrutinee, &mut f.ref_base_deref);
+                mark_ref_base_deref(
+                    nodes,
+                    *scrutinee,
+                    None,
+                    &mut f.ref_base_deref,
+                    &mut f.escaping_ref_base_deref,
+                );
                 let mut roots = HashSet::new();
-                collect_locals(nodes, *scrutinee, &mut roots);
+                collect_place_roots(nodes, *scrutinee, &mut roots);
                 f.addr_taken.extend(&roots);
                 f.bad.extend(roots);
             }
         }
     }
     f
+}
+
+/// Whether a deref use that forms the base of one or more interior references
+/// is contained. Each resulting reference must either be passed directly to a
+/// non-escaping parameter or be stored in a contained reference binding.
+fn rederived_refs_contained(
+    use_idx: usize,
+    facts: &FnFacts,
+    good_use: &HashSet<usize>,
+    contained: &HashSet<VarId>,
+) -> bool {
+    !facts.escaping_ref_base_deref.contains(&use_idx)
+        && facts.ref_base_deref.get(&use_idx).is_none_or(|refs| {
+            refs.iter().all(|ref_idx| {
+                good_use.contains(ref_idx)
+                    || facts
+                        .let_var_of_value
+                        .get(ref_idx)
+                        .is_some_and(|var| contained.contains(var))
+            })
+        })
 }
 
 /// Fixpoint over reference-holding `Let` bindings that are "contained" — analogous
@@ -208,7 +253,8 @@ fn compute_contained(facts: &FnFacts, good_use: &HashSet<usize>) -> HashSet<VarI
             }
             let contents_ok = facts.local_uses.get(&r).is_none_or(|uses| {
                 uses.iter().all(|&u| {
-                    (facts.deref_operand.contains(&u) && !facts.ref_base_deref.contains(&u))
+                    (facts.deref_operand.contains(&u)
+                        && rederived_refs_contained(u, facts, good_use, &contained))
                         || good_use.contains(&u)
                         || facts
                             .let_var_of_value
@@ -243,13 +289,24 @@ fn storage_noescape(var: VarId, facts: &FnFacts, contained: &HashSet<VarId>) -> 
 /// storage is never addressed (which would re-expose the pointer, e.g. `(p@)&`)
 /// and (a) every `Local(param)` use is either the direct operand of a `Deref` or
 /// forwarded into an already-non-escaping callee param (the transitive case, e.g.
-/// `f(p: &T) { g(p) }` once `g`'s param is non-escaping).
-fn reference_param_noescape(var: VarId, facts: &FnFacts, good_use: &HashSet<usize>) -> bool {
+/// `f(p: &T) { g(p) }` once `g`'s param is non-escaping), or copied into a
+/// contained reference binding.
+fn reference_param_noescape(
+    var: VarId,
+    facts: &FnFacts,
+    good_use: &HashSet<usize>,
+    contained: &HashSet<VarId>,
+) -> bool {
     !facts.addr_taken.contains(&var)
         && facts.local_uses.get(&var).is_none_or(|uses| {
             uses.iter().all(|&u| {
-                (facts.deref_operand.contains(&u) && !facts.ref_base_deref.contains(&u))
+                (facts.deref_operand.contains(&u)
+                    && rederived_refs_contained(u, facts, good_use, contained))
                     || good_use.contains(&u)
+                    || facts
+                        .let_var_of_value
+                        .get(&u)
+                        .is_some_and(|next| contained.contains(next))
             })
         })
 }
@@ -279,7 +336,7 @@ pub fn analyze_param_escapes(module: &mut Module) -> bool {
             .iter()
             .map(|p| {
                 if is_reference_type(&p.ty) {
-                    reference_param_noescape(p.var, &facts, &good_use)
+                    reference_param_noescape(p.var, &facts, &good_use, &contained)
                 } else {
                     storage_noescape(p.var, &facts, &contained)
                 }
@@ -296,20 +353,11 @@ pub fn analyze_param_escapes(module: &mut Module) -> bool {
     changed
 }
 
-/// Mark `Let` bindings that provably don't escape so codegen can place them on
-/// the C stack. A binding `V` is non-escaping when **every** pointer to its
-/// storage is `V&` taken *directly as a call argument* whose callee parameter is
-/// itself non-escaping (`param_noescape`) — which is **vacuously true when `V`'s
-/// address is never taken at all** (nothing points at it, so nothing can leak
-/// it). Deliberately simple — anything more involved is treated as escaping:
-///   * `^V` (unique reference) or taking the address of a field/element of `V`;
-///   * routing `V&` through another binding first (`let r = V&; f(r)`), since the
-///     reference temp is then used as something other than a direct call arg.
-///
-/// Must run after `analyze_param_escapes` (it reads callees' `param_noescape`).
-/// Returns whether any `Let` flag flipped `false` → `true`. A `Let` is marked
-/// when its storage doesn't escape — the same `storage_noescape` test the value-
-/// parameter case uses, over the shared per-function `FnFacts`/`contained`.
+/// Mark `Let` bindings whose storage can live on the C stack. Direct references
+/// may flow through contained reference bindings and non-escaping callees;
+/// unique moves, captures, returns, and other uncertain uses remain escaping.
+/// This consumes the stable parameter facts and uses the same `storage_noescape`
+/// proof as value parameters.
 fn analyze_let_noescape(module: &mut Module) -> bool {
     let noescape_params = param_noescape_snapshot(module);
     let mut changed = false;
@@ -334,18 +382,43 @@ fn analyze_let_noescape(module: &mut Module) -> bool {
     changed
 }
 
-/// The local variable whose *own storage* the place at `id` is part of, if any:
-/// descends `FieldAccess`/`Index`/`Slice` objects down to a `Local`. Stops
-/// (returns `None`) at a `Deref` — past a deref the place lives in a pointee, a
-/// separate allocation, not in any local's storage. (Index/slice subscripts are
-/// by-value reads, not address-takings, so they're not followed.)
-fn ref_root_local(nodes: &[Node], id: NodeId) -> Option<VarId> {
+/// Collect the locals whose own storage contains the place at `id`. Index and
+/// slice bounds are value operands, and a dereference crosses into a separate
+/// allocation, so none of those operands are place roots. Conditional places
+/// may have a different root in each branch.
+fn collect_place_roots(nodes: &[Node], id: NodeId, out: &mut HashSet<VarId>) {
     match &nodes[id.0].kind {
-        NodeKind::Local(v) => Some(*v),
+        NodeKind::Local(v) => {
+            out.insert(*v);
+        }
+        NodeKind::Global(_) | NodeKind::Deref(_) => {}
         NodeKind::FieldAccess { object, .. }
         | NodeKind::Index { object, .. }
-        | NodeKind::Slice { object, .. } => ref_root_local(nodes, *object),
-        _ => None,
+        | NodeKind::Slice { object, .. } => collect_place_roots(nodes, *object, out),
+        NodeKind::IfExpr {
+            then_body,
+            else_body,
+            ..
+        } => {
+            collect_branch_place_roots(nodes, then_body, out);
+            collect_branch_place_roots(nodes, else_body, out);
+        }
+        NodeKind::Match { arms, .. } => {
+            for arm in arms {
+                collect_branch_place_roots(nodes, &arm.body, out);
+            }
+        }
+        // Valid Ref operands are places. Retain a conservative fallback for
+        // malformed or newly lowered IR until its place semantics are explicit.
+        _ => collect_locals(nodes, id, out),
+    }
+}
+
+fn collect_branch_place_roots(nodes: &[Node], body: &[NodeId], out: &mut HashSet<VarId>) {
+    if let Some(last) = body.last()
+        && let NodeKind::Expr(value) = &nodes[last.0].kind
+    {
+        collect_place_roots(nodes, *value, out);
     }
 }
 
@@ -368,11 +441,10 @@ fn refs_to_storage_contained(
     })
 }
 
-/// Collect every `Local(var)` reachable from `id`'s subtree into `out`. Used on
-/// the operand of a `Ref`/`Unique` to find which variables have their address
-/// taken. The match is exhaustive (no wildcard) on purpose: if a new `NodeKind`
-/// is added, this fails to compile rather than silently missing an address-take
-/// and unsoundly marking a parameter as non-escaping.
+/// Collect every local reachable from `id`. Address-forming operations use the
+/// more precise `collect_place_roots`; conservative consumers such as unique
+/// moves and closure capture use this full expression walk. The match is
+/// exhaustive so new node kinds cannot silently weaken escape analysis.
 fn collect_locals(nodes: &[Node], id: NodeId, out: &mut HashSet<VarId>) {
     match &nodes[id.0].kind {
         NodeKind::Local(var) => {
@@ -581,6 +653,37 @@ mod tests {
     }
 
     #[test]
+    fn noescape_reference_copy_must_be_contained() {
+        let m = ir_of(
+            "fn reads(value: &Int) -> Int { value@ }\n\
+             fn leaks(value: &Int) -> &Int { value }\n\
+             fn reads_copy(value: &Int) -> Int { let copy = value; reads(copy) }\n\
+             fn leaks_copy(value: &Int) -> &Int { let copy = value; leaks(copy) }\n\
+             fn main() { let a = 1; let b = 2; println(reads_copy(a&)); println(leaks_copy(b&)@); }\n",
+        );
+        assert_eq!(noescape_of(&m, "reads_copy"), vec![true]);
+        assert_eq!(noescape_of(&m, "leaks_copy"), vec![false]);
+    }
+
+    #[test]
+    fn noescape_interior_reference_tracks_derived_reference() {
+        let m = ir_of(
+            "struct Pair { value: Int, }\n\
+             fn reads(value: &Int) -> Int { value@ }\n\
+             fn reads_field(pair: &Pair) -> Int { reads(pair@.value&) }\n\
+             fn leaks_field(pair: &Pair) -> &Int { pair@.value& }\n\
+             fn main() { let pair = Pair { value: 7, }; println(reads_field(pair&)); println(leaks_field(pair&)@); }\n",
+        );
+        assert_eq!(
+            noescape_of(&m, "reads_field"),
+            vec![true],
+            "optimized reads_field IR: {:#?}",
+            find_func(&m, "reads_field").nodes
+        );
+        assert_eq!(noescape_of(&m, "leaks_field"), vec![false]);
+    }
+
+    #[test]
     fn noescape_value_param_addr_to_noescape_callee() {
         // A *value* parameter whose address is taken only to forward it into a
         // non-escaping callee is itself non-escaping — the `insert(key) ->
@@ -683,5 +786,131 @@ mod tests {
              fn main() { println(caller()); }\n",
         );
         assert!(!int_let_noescape(&m, "caller", 30));
+    }
+
+    #[test]
+    fn match_call_scrutinee_is_stack_allocated_when_binding_does_not_escape() {
+        let m = ir_of(
+            "fn find(x: Int) -> Option#[Int] { Option#[Int]::Some(x) }\n\
+             fn get(p: &Int) -> Option#[&Int] {\n\
+               match find(p@) {\n\
+                 Option#[Int]::Some(i) => { let _ = i; Option#[&Int]::Some(p) },\n\
+                 Option#[Int]::None => Option#[&Int]::None,\n\
+               }\n\
+             }\n\
+             fn main() { let x = 1; match get(x&) { Option#[&Int]::Some(v) => println(v@), Option#[&Int]::None => {} }; }\n",
+        );
+        let get = find_func(&m, "get");
+        let noescape = get.nodes.iter().find_map(|node| {
+            let ir::NodeKind::Let {
+                value, noescape, ..
+            } = &node.kind
+            else {
+                return None;
+            };
+            matches!(get.nodes[value.0].kind, ir::NodeKind::Call { ref function, .. } if function.contains("4_findG"))
+                .then_some(*noescape)
+        });
+        assert_eq!(noescape, Some(true), "optimized get IR: {:#?}", get.nodes);
+    }
+
+    #[test]
+    fn hashmap_get_find_result_is_stack_allocated() {
+        let m = ir_of(
+            "fn main() {\n\
+               let map = hashbrown::HashMap#[Uint64, Uint64]();\n\
+               map&.insert(1u64, 2u64);\n\
+               match map&.get(1u64&) { Option#[&Uint64]::Some(v) => println(Uint(v@)), Option#[&Uint64]::None => {} };\n\
+             }\n",
+        );
+        let get = find_func(&m, "get");
+        let noescape = get.nodes.iter().find_map(|node| {
+            let ir::NodeKind::Let {
+                value, noescape, ..
+            } = &node.kind
+            else {
+                return None;
+            };
+            matches!(get.nodes[value.0].kind, ir::NodeKind::Call { ref function, .. } if function.contains("method_4_findG"))
+                .then_some(*noescape)
+        });
+        assert_eq!(noescape, Some(true), "optimized get IR: {:#?}", get.nodes);
+    }
+
+    #[test]
+    fn index_value_does_not_escape_with_returned_element_reference() {
+        let m = ir_of(
+            "fn select(values: &[Int], index: Uint) -> &Int { values@[index]& }\n\
+             fn main() { let values: [Int] = [10, 20]; println(select(values&, 0u)@); }\n",
+        );
+        // The result points into `values`, so that pointer may escape. It never
+        // points at the storage holding `index`, which is consumed by value.
+        assert_eq!(noescape_of(&m, "select"), vec![false, true]);
+    }
+
+    #[test]
+    fn slice_bounds_do_not_escape_with_returned_slice_reference() {
+        let m = ir_of(
+            "fn select(values: &[Int], start: Uint, end: Uint) -> &[Int] { values@[start..end]& }\n\
+             fn main() { let values: [Int] = [10, 20]; println(select(values&, 0u, 1u)@[0u]); }\n",
+        );
+        // A slice retains its object's pointer and its bounds' numeric values;
+        // it does not retain pointers to the bound variables themselves.
+        assert_eq!(noescape_of(&m, "select"), vec![false, true, true]);
+    }
+
+    #[test]
+    fn escaping_reference_inside_index_is_still_detected() {
+        let m = ir_of(
+            "fn leaks(value: &Uint) -> &Uint { value }\n\
+             fn select(values: &[Int], index: Uint) -> &Int { values@[leaks(index&)@]& }\n\
+             fn main() { let values: [Int] = [10, 20]; println(select(values&, 0u)@); }\n",
+        );
+        // Skipping the index while walking the outer element place must not
+        // hide the nested `index&`: its own Ref node is analyzed separately.
+        assert_eq!(noescape_of(&m, "select"), vec![false, false]);
+    }
+
+    #[test]
+    fn reflective_struct_hash_parameters_do_not_escape() {
+        let m = ir_of(
+            "pub struct Point { pub x: Int64, pub y: Int64, }\n\
+             fn main() { let map = hashbrown::HashMap#[Point, Int](); map&.insert(Point { x: 1i64, y: 2i64, }, 3); }\n",
+        );
+        let hash = m
+            .functions
+            .iter()
+            .find(|f| f.name.contains("method_4_hashG1_5_Point"))
+            .expect("monomorphized Point hash");
+        assert_eq!(
+            hash.param_noescape,
+            vec![true, true],
+            "optimized Point hash IR: {:#?}",
+            hash.nodes
+        );
+        assert!(
+            !hash
+                .nodes
+                .iter()
+                .any(|node| matches!(node.kind, ir::NodeKind::ArrayLiteral(_))),
+            "unused reflected field names should not be materialized"
+        );
+        let eq = m
+            .functions
+            .iter()
+            .find(|f| f.name.contains("operator_eq") && f.name.contains("Point"))
+            .expect("monomorphized Point equality");
+        assert_eq!(
+            eq.param_noescape,
+            vec![true, true],
+            "optimized Point equality IR: {:#?}",
+            eq.nodes
+        );
+        assert!(
+            !eq.nodes
+                .iter()
+                .any(|node| matches!(node.kind, ir::NodeKind::ArrayLiteral(_))),
+            "unused reflected field names should not be materialized"
+        );
     }
 }
