@@ -626,6 +626,15 @@ fn symbol_targets(source: &str, line: u32, character: u32, document: &Document) 
     }
 
     let anchor = definition_anchor(node);
+    let field_access = document.source_map.root_file_id().and_then(|file_id| {
+        node.parent()
+            .filter(|parent| {
+                parent.kind() == "field_access"
+                    && parent.child_by_field_name("field") == Some(node)
+                    && !field_access_is_callee(node)
+            })
+            .map(|access| span_key(node_span(access, file_id)))
+    });
     let generic_site = document
         .generic_bodies
         .iter()
@@ -642,6 +651,7 @@ fn symbol_targets(source: &str, line: u32, character: u32, document: &Document) 
             cursor,
             name,
             anchor,
+            field_access,
             generic_site,
             function_defs: &document.function_defs,
             method_defs: &document.method_defs,
@@ -941,13 +951,14 @@ fn node_span(node: Node<'_>, file_id: u32) -> SourceSpan {
     }
 }
 
-/// Finds call targets at a source position.
+/// Finds typed symbol targets at a source position.
 struct DefFinder<'a> {
     typed: &'a typed_ast::SourceFile,
     root_file: u32,
     cursor: (u32, u32),
     name: &'a str,
     anchor: Option<(u32, u32)>,
+    field_access: Option<SpanKey>,
     generic_site: bool,
     function_defs: &'a HashMap<ast::DefId, Vec<SourceSpan>>,
     method_defs: &'a HashMap<String, Vec<SourceSpan>>,
@@ -1047,7 +1058,7 @@ impl DefFinder<'_> {
             }
             ExprKind::FieldAccess { object, field } => {
                 if field == self.name
-                    && self.at(expr.span, self.anchor.unwrap_or(self.cursor))
+                    && self.field_access == Some(span_key(expr.span))
                     && let Some(owner) = struct_owner(&object.ty)
                     && let Some(span) = self.field_defs.get(&(owner, field.clone()))
                 {
@@ -2137,6 +2148,40 @@ fn main() {
                 locations[0]["range"]["start"]["line"], target_line,
                 "{needle}"
             );
+        }
+    }
+
+    #[test]
+    fn definition_and_hover_resolve_exact_chained_field() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/runtime/methods.solar");
+        let uri = format!("file://{}", path.display());
+        let source = r#"struct Leaf {
+    item: Int,
+}
+
+struct Branch {
+    item: Leaf,
+}
+
+fn main() {
+    let branch = Branch { item: Leaf { item: 1, }, };
+    println(branch.item.item);
+}
+"#;
+        let document = compute(&uri, source);
+
+        for (occurrence, target_line, signature) in [(4, 5, "item: Leaf"), (5, 1, "item: Int")] {
+            let (line, character) = occurrence_position(source, "item", occurrence);
+            let locations = definition(source, line, character, &document)
+                .map(definition_locations)
+                .expect("field definition");
+            assert_eq!(locations.len(), 1, "item occurrence {occurrence}");
+            assert_eq!(locations[0]["range"]["start"]["line"], target_line);
+
+            let hover = hover(source, line, character, &document).expect("field hover");
+            let contents = hover["contents"]["value"].as_str().unwrap();
+            assert!(contents.contains(signature), "{contents}");
         }
     }
 
