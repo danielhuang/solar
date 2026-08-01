@@ -9,7 +9,7 @@ round runs each language once before the next round begins, so background-load
 drift over the session is spread evenly across languages rather than
 penalizing whichever ran last.
 
-Prereqs (see README.md "How to reproduce"):
+Prereqs (see guide.md):
   Solar  target/{allocs3,threads_list2,splay,allocs5}   (cargo ... --bin compile)
   C      bench/c/{allocs3,threads_list2,splay,allocs5}  (make -C bench/c)
   Go     bench/go/{allocs3,threads_list2,splay,allocs5} (go build)
