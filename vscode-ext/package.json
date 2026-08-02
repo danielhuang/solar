@@ -32,6 +32,13 @@
         "configuration": "./language-configuration.json"
       }
     ],
+    "grammars": [
+      {
+        "language": "solar",
+        "scopeName": "source.solar",
+        "path": "./syntaxes/solar.tmLanguage.json"
+      }
+    ],
     "configurationDefaults": {
       "[solar]": {
         "editor.semanticHighlighting.enabled": true

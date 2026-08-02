@@ -14,11 +14,6 @@ use std::{
 use tree_sitter::{Node, Parser};
 
 const TOKEN_TYPES: &[&str] = &[
-    "comment",
-    "string",
-    "number",
-    "keyword",
-    "operator",
     "function",
     "method",
     "type",
@@ -2148,17 +2143,11 @@ fn token_kind(node: Node<'_>, source: &str, context: &Context) -> Option<u32> {
     let text = &source[node.byte_range()];
 
     match kind {
-        "comment" | "doc_comment" => Some(token_index("comment")),
-        "string_literal" | "char_literal" => Some(token_index("string")),
-        "integer_literal" | "float_literal" => Some(token_index("number")),
-        "boolean_literal" => Some(token_index("keyword")),
         "identifier" => Some(refine(
             identifier_kind(node, parent_kind, text),
             text,
             context,
         )),
-        _ if is_keyword(text) => Some(token_index("keyword")),
-        _ if is_operator(text) => Some(token_index("operator")),
         _ => None,
     }
 }
@@ -2284,70 +2273,6 @@ fn path_identifier_kind(node: Node<'_>, text: &str) -> u32 {
     }
 }
 
-fn is_keyword(text: &str) -> bool {
-    matches!(
-        text,
-        "struct"
-            | "enum"
-            | "type"
-            | "const"
-            | "static"
-            | "pub"
-            | "fn"
-            | "method"
-            | "let"
-            | "import"
-            | "from"
-            | "if"
-            | "else"
-            | "match"
-            | "while"
-            | "for"
-            | "loop"
-            | "in"
-            | "return"
-            | "break"
-            | "continue"
-            | "try"
-            | "catch"
-            | "reflect"
-            | "reflect_fields"
-            | "reflect_fields_pair"
-            | "reflect_variant"
-            | "reflect_variant_pair"
-            | "null"
-    )
-}
-
-fn is_operator(text: &str) -> bool {
-    matches!(
-        text,
-        "=" | "->"
-            | "=>"
-            | ".."
-            | "@"
-            | "&"
-            | "^"
-            | "?"
-            | "\\"
-            | "!"
-            | "+"
-            | "-"
-            | "*"
-            | "/"
-            | "%"
-            | "=="
-            | "!="
-            | "<"
-            | "<="
-            | ">"
-            | ">="
-            | "&&"
-            | "||"
-            | "|"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2378,6 +2303,16 @@ mod tests {
             Value::Array(values) => values,
             value => vec![value],
         }
+    }
+
+    #[test]
+    fn semantic_tokens_leave_lexical_tokens_to_textmate() {
+        let data = semantic_tokens("import intrinsics from \"@intrinsics\";\n", None);
+
+        assert_eq!(
+            data.get(..5),
+            Some(&[0, 7, 10, token_index("namespace"), 0][..])
+        );
     }
 
     #[test]

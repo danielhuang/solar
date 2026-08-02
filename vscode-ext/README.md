@@ -2,10 +2,9 @@
 
 Semantic syntax highlighting for the Solar programming language.
 
-Highlighting is provided by the Solar language server as VS Code **semantic
-tokens**. The server uses the compiler's tree-sitter grammar directly; this
-extension does not bundle a TextMate grammar, WASM grammar, or `highlights.scm`
-query.
+Resolved syntax highlighting is provided by the Solar language server as VS
+Code **semantic tokens**. A small TextMate grammar provides lexical fallback
+highlighting.
 
 ## Features
 

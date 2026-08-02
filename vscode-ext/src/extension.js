@@ -1,6 +1,5 @@
-// Solar highlighting is supplied by the compiler's LSP server. Keeping the
-// semantic-token classifier in Rust means the extension no longer bundles a
-// WASM grammar or a separate highlights.scm query.
+// The compiler's LSP server supplies semantic highlighting. The bundled
+// TextMate grammar provides lexical fallback highlighting.
 
 const path = require("path");
 const { LanguageClient, TransportKind } = require("vscode-languageclient/node");
