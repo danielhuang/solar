@@ -610,6 +610,11 @@ fn symbol_targets(source: &str, line: u32, character: u32, document: &Document) 
     let Some(node) = tree.root_node().descendant_for_byte_range(byte, byte) else {
         return Vec::new();
     };
+    if node.kind() == "string_literal" {
+        return import_path_definition(node, source, document)
+            .into_iter()
+            .collect();
+    }
     if node.kind() != "identifier" {
         return Vec::new();
     }
@@ -880,6 +885,26 @@ fn type_definition(
         .type_defs
         .iter()
         .find_map(|(id, span)| (id.name == name && Some(id.file) == file).then_some(*span))
+}
+
+fn import_path_definition(node: Node<'_>, source: &str, document: &Document) -> Option<SourceSpan> {
+    if node.parent()?.kind() != "import_statement" {
+        return None;
+    }
+    let path = source[node.byte_range()]
+        .strip_prefix('"')?
+        .strip_suffix('"')?;
+    if path.starts_with('@') {
+        return None;
+    }
+    let root_file = document.source_map.root_file_id()?;
+    let (root_path, _) = document.source_map.get(root_file)?;
+    let base = std::path::Path::new(root_path).parent()?;
+    let file_id = document.source_map.file_id_for_path(&base.join(path))?;
+    Some(SourceSpan {
+        file_id,
+        ..SourceSpan::default()
+    })
 }
 
 fn statement_binding<'a>(statement: Node<'a>, name: &str, source: &str) -> Option<Node<'a>> {
@@ -2438,6 +2463,24 @@ fn main() {
                 "{needle}"
             );
         }
+    }
+
+    #[test]
+    fn definition_resolves_import_file_path() {
+        let (_, source, document) = fixture_document("tests/multi_file/module_import/main.solar");
+        let (line, character) = occurrence_position(&source, "lib.solar", 0);
+
+        let location = definition(&source, line, character, &document).expect("import target");
+
+        assert!(
+            location["uri"]
+                .as_str()
+                .unwrap()
+                .ends_with("/tests/multi_file/module_import/lib.solar"),
+            "{location}"
+        );
+        assert_eq!(location["range"]["start"]["line"], 0);
+        assert_eq!(location["range"]["start"]["character"], 0);
     }
 
     #[test]
