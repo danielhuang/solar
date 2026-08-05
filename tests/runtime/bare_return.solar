@@ -1,0 +1,11 @@
+fn stop_early(stop: Bool) {
+    if stop {
+        return;
+    }
+    println(99);
+}
+
+fn main() {
+    stop_early(true);
+    stop_early(false);
+}

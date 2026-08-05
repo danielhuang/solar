@@ -1,0 +1,6 @@
+fn main() {
+    let bytes = "ab";
+    let nullable: &?[Uint8] = bytes&;
+    let doubled = nullable@ + nullable@;
+    println(doubled&);
+}

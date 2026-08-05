@@ -182,7 +182,7 @@ module.exports = grammar({
       choice($.let_statement, $.assignment_statement, $.expression_statement, $.if_statement, $.while_statement, $.for_statement, $.reflect_fields_statement, $.reflect_fields_pair_statement, $.reflect_variant_statement, $.reflect_variant_pair_statement, $.return_statement, $.break_statement, $.continue_statement, $.try_statement, $.function_def, $.const_def),
 
     return_statement: ($) =>
-      seq("return", field("value", $._expression_with_struct), ";"),
+      seq("return", optional(field("value", $._expression_with_struct)), ";"),
 
     // The `;` is optional so `loop { break 5 }` works as a tail-less block. The
     // value excludes bare blocks/struct-literals to avoid `break {` ambiguity.
@@ -434,7 +434,7 @@ module.exports = grammar({
     match_arm: ($) =>
       seq(field("pattern", $.match_pattern), "=>", field("body", $._expression_with_struct)),
 
-    match_pattern: ($) => choice($.variant_pattern, $.unit_variant_pattern, $.wildcard_pattern),
+    match_pattern: ($) => choice($.variant_pattern, $.unit_variant_pattern, $.integer_literal, $.wildcard_pattern),
 
     // ── Compile-time reflection ─────────────────────────────
     // match.reflect Type { "struct" => ..., "enum" => ..., _ => ... }

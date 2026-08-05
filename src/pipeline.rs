@@ -4,8 +4,21 @@ use std::process::Command;
 use crate::error::{CompileError, SourceMap};
 use crate::{codegen, ir, ir_opt, mangled_ast, resolve, typed_ast};
 
+const COMPILE_STACK_SIZE: usize = 64 << 20;
+
 /// Resolves and type-checks a Solar program.
 pub fn compile(file_path: &Path) -> Result<Typed, (Vec<CompileError>, SourceMap)> {
+    let file_path = file_path.to_owned();
+    std::thread::Builder::new()
+        .name("solar-compile".to_string())
+        .stack_size(COMPILE_STACK_SIZE)
+        .spawn(move || compile_inner(&file_path))
+        .expect("failed to spawn compiler thread")
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
+fn compile_inner(file_path: &Path) -> Result<Typed, (Vec<CompileError>, SourceMap)> {
     let (ast, source_map) = resolve::resolve(file_path)?;
     let typed = typed_ast::lower(&ast).map_err(|e| (vec![e], source_map.clone()))?;
     Ok(Typed { typed, source_map })

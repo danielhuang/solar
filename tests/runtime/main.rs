@@ -913,6 +913,48 @@ fn call_result_place() {
     assert_eq!(output, "42\n30\nhello\n7\n13\n");
 }
 
+#[test]
+fn bitwise_parenthesized_rhs_is_not_a_postfix_reference() {
+    let output = run(
+        &fixture("bitwise_parenthesized_rhs.solar"),
+        "bitwise_parenthesized_rhs",
+    );
+    assert_eq!(output, "8\n7\n");
+}
+
+#[test]
+fn zero_parameter_closure_call_body_is_not_a_parameter_list() {
+    let output = run(
+        &fixture("zero_parameter_closure_call_body.solar"),
+        "zero_parameter_closure_call_body",
+    );
+    assert_eq!(output, "5\n13\n");
+}
+
+#[test]
+fn bare_return_in_unit_function() {
+    let output = run(&fixture("bare_return.solar"), "bare_return");
+    assert_eq!(output, "99\n");
+}
+
+#[test]
+fn integer_literal_match_patterns() {
+    let output = run(
+        &fixture("integer_match_patterns.solar"),
+        "integer_match_patterns",
+    );
+    assert_eq!(output, "10\n20\n37\n31\n1\n");
+}
+
+#[test]
+fn nullable_unsized_concat_does_not_require_reborrow() {
+    let output = run(
+        &fixture("nullable_unsized_concat.solar"),
+        "nullable_unsized_concat",
+    );
+    assert_eq!(output, "abab\n");
+}
+
 // Intrinsic calls must be loadable when used directly as values.
 #[test]
 fn intrinsic_call_value() {

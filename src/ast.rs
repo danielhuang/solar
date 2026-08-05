@@ -779,6 +779,8 @@ pub enum Pattern {
         variant_name: String,
         binding: Option<String>,
     },
+    /// An exact integer value pattern.
+    IntegerLiteral(i128, IntegerType),
     Wildcard(String),
 }
 

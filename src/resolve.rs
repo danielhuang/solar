@@ -1218,6 +1218,7 @@ fn rewrite_pattern(
                 *ta = rewrite_type(ta, rename_map, module_aliases, type_params);
             }
         }
+        Pattern::IntegerLiteral(..) => {}
         Pattern::Wildcard(_) => {}
     }
 }

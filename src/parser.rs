@@ -838,7 +838,17 @@ fn convert_expression_statement(node: tree_sitter::Node, source: &str) -> Statem
 
 fn convert_return_statement(node: tree_sitter::Node, source: &str) -> Statement {
     let span = source_span(node);
-    let value = convert_expr(node.child_by_field_name("value").unwrap(), source);
+    // A valueless return is the Unit-valued empty block. Keeping Return's AST
+    // representation expression-based lets the existing return-type checking,
+    // interpreters, and codegen handle `return;` without a parallel special
+    // case in every compiler stage.
+    let value = node
+        .child_by_field_name("value")
+        .map(|value| convert_expr(value, source))
+        .unwrap_or(Expr {
+            kind: ExprKind::Block(Vec::new()),
+            span,
+        });
     Statement {
         kind: StatementKind::Return(value),
         span,
@@ -968,7 +978,29 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             // a.b(c) parses as call_expr(field_access(a, b), [c])
             // Convert to MethodCall when the callee is a field_access with an identifier field
             // (not a numeric field like .0 from tuple access)
-            if func_node.kind() == "field_access"
+            if matches!(func_node.kind(), "reference_expr" | "unique_expr")
+                && arguments.len() == 1
+                && kwargs.is_empty()
+                && node
+                    .parent()
+                    .is_none_or(|parent| parent.kind() != "binary_expression")
+            {
+                // `a & (b)` / `a ^ (b)` is parsed as the invalid calls `(a&)(b)` /
+                // `(a^)(b)` because postfix operators have higher precedence.
+                // A direct call through a referenced function is parenthesized
+                // (`(f&)(x)`), so this unparenthesized CST shape is the binary
+                // expression the source spelling denotes.
+                let left = convert_expr(func_node.child_by_field_name("operand").unwrap(), source);
+                ExprKind::BinaryOp {
+                    op: if func_node.kind() == "reference_expr" {
+                        BinOp::BitAnd
+                    } else {
+                        BinOp::BitXor
+                    },
+                    left: Box::new(left),
+                    right: Box::new(arguments.into_iter().next().unwrap()),
+                }
+            } else if func_node.kind() == "field_access"
                 && func_node.child_by_field_name("field").unwrap().kind() == "identifier"
             {
                 let receiver =
@@ -1205,7 +1237,45 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                 .child_by_field_name("return_type")
                 .map(|n| convert_type(n, source));
             let body_node = node.child_by_field_name("body").unwrap();
-            let body = if body_node.kind() == "block" {
+            // `\ f(x)` has two valid CST interpretations: a zero-parameter
+            // closure whose body calls `f`, or a one-parameter closure named
+            // `f` whose body is the parenthesized expression `x`. Tree-sitter's
+            // static postfix precedence selects the latter. It is almost never
+            // useful and made call-shaped zero-parameter closures fail type
+            // inference, so reinterpret that exact ambiguous shape as a call.
+            // A typed parameter (`\f: T (x)`) remains unambiguous.
+            let ambiguous_call = parameters.len() == 1
+                && matches!(parameters[0].ty, Type::Infer)
+                && return_type.is_none()
+                && matches!(
+                    body_node.kind(),
+                    "parenthesized_expression" | "tuple_literal"
+                );
+            let body = if ambiguous_call {
+                let parameter = parameters.pop().unwrap();
+                let DestructurePattern::Name(function) = parameter.pattern else {
+                    unreachable!("closure parameters are names");
+                };
+                let arguments = code_children(body_node)
+                    .into_iter()
+                    .map(|argument| convert_expr(argument, source))
+                    .collect();
+                vec![Statement {
+                    kind: StatementKind::Expression(Expr {
+                        kind: ExprKind::Call {
+                            function: Box::new(Expr {
+                                kind: ExprKind::Identifier(function),
+                                span: parameter.span,
+                            }),
+                            type_args: Vec::new(),
+                            arguments,
+                            kwargs: Vec::new(),
+                        },
+                        span: source_span(body_node),
+                    }),
+                    span: source_span(body_node),
+                }]
+            } else if body_node.kind() == "block" {
                 convert_block(body_node, source)
             } else {
                 let body_span = source_span(body_node);
@@ -1344,6 +1414,11 @@ fn convert_pattern(node: tree_sitter::Node, source: &str) -> Pattern {
         "wildcard_pattern" => {
             let name = node_text(node.child_by_field_name("name").unwrap(), source).to_string();
             Pattern::Wildcard(name)
+        }
+        "integer_literal" => {
+            let text = node_text(node, source);
+            let (num_str, int_ty) = parse_integer_suffix(text);
+            Pattern::IntegerLiteral(parse_integer_value(num_str), int_ty)
         }
         other => panic!("unexpected pattern node kind: {other}"),
     }

@@ -826,6 +826,7 @@ fn apply_subst_to_ast_pattern(
             variant_name: variant_name.clone(),
             binding: binding.clone(),
         },
+        ast::Pattern::IntegerLiteral(value, ty) => ast::Pattern::IntegerLiteral(*value, *ty),
         ast::Pattern::Wildcard(name) => ast::Pattern::Wildcard(name.clone()),
     }
 }
@@ -5791,11 +5792,14 @@ impl<'a> Lowerer<'a> {
         arms: &[ast::MatchArm],
     ) -> Result<Expr, CompileError> {
         let lowered_scrutinee = self.lower_expr(scrutinee)?;
+        if lowered_scrutinee.ty.is_integer() {
+            return self.lower_integer_match(span, lowered_scrutinee, arms);
+        }
         let enum_name = match &lowered_scrutinee.ty {
             Type::Enum(name) => name.clone(),
             other => {
                 return Err(CompileError::new(
-                    format!("match scrutinee must be an enum type, got {other}"),
+                    format!("match scrutinee must be an enum or integer type, got {other}"),
                     span,
                 ));
             }
@@ -5879,6 +5883,12 @@ impl<'a> Lowerer<'a> {
                     has_wildcard = true;
                     TypedPattern::Wildcard(name.clone(), Type::Enum(enum_name.clone()))
                 }
+                ast::Pattern::IntegerLiteral(..) => {
+                    return Err(CompileError::new(
+                        "integer pattern used with an enum scrutinee".to_string(),
+                        span,
+                    ));
+                }
             };
 
             // Lower the arm body in a new scope with the binding defined
@@ -5946,6 +5956,187 @@ impl<'a> Lowerer<'a> {
                 scrutinee: Box::new(lowered_scrutinee),
                 arms: typed_arms,
             },
+            span,
+        })
+    }
+
+    /// Lower an integer match to a block containing one scrutinee temporary and
+    /// a nested if/else chain. The ordinary integer equality machinery then
+    /// provides identical behavior in the AST interpreter, IR interpreter, and
+    /// native backend without teaching enum-layout match nodes about scalars.
+    fn lower_integer_match(
+        &mut self,
+        span: ast::SourceSpan,
+        scrutinee: Expr,
+        arms: &[ast::MatchArm],
+    ) -> Result<Expr, CompileError> {
+        let scrutinee_ty = scrutinee.ty.clone();
+        let n = self.destructure_counter;
+        self.destructure_counter += 1;
+        let temp_name = format!("__integer_match_{n}");
+
+        let mut seen_literals = HashSet::new();
+        let mut wildcard_index = None;
+        let mut lowered_arms: Vec<(Option<Expr>, Vec<Statement>)> = Vec::new();
+        let mut result_ty: Option<Type> = None;
+
+        for (index, arm) in arms.iter().enumerate() {
+            self.push_scope();
+            let literal = match &arm.pattern {
+                ast::Pattern::IntegerLiteral(value, int_ty) => {
+                    let literal_ast = ast::Expr {
+                        kind: ast::ExprKind::IntegerLiteral(*value, *int_ty),
+                        span: arm.body.span,
+                    };
+                    let literal = self.lower_expr(&literal_ast)?;
+                    if literal.ty != scrutinee_ty {
+                        self.pop_scope();
+                        return Err(CompileError::new(
+                            format!(
+                                "integer pattern type mismatch: scrutinee is {scrutinee_ty}, pattern is {}",
+                                literal.ty
+                            ),
+                            arm.body.span,
+                        ));
+                    }
+                    let ExprKind::IntegerLiteral(bits) = literal.kind else {
+                        unreachable!();
+                    };
+                    if !seen_literals.insert(bits) {
+                        self.pop_scope();
+                        return Err(CompileError::new(
+                            format!("duplicate integer pattern {value}"),
+                            arm.body.span,
+                        ));
+                    }
+                    Some(Expr {
+                        ty: literal.ty,
+                        kind: ExprKind::IntegerLiteral(bits),
+                        span: literal.span,
+                    })
+                }
+                ast::Pattern::Wildcard(name) => {
+                    if wildcard_index.is_some() {
+                        self.pop_scope();
+                        return Err(CompileError::new(
+                            "duplicate wildcard pattern in match".to_string(),
+                            arm.body.span,
+                        ));
+                    }
+                    wildcard_index = Some(index);
+                    self.define_var(name.clone(), scrutinee_ty.clone());
+                    None
+                }
+                ast::Pattern::Variant { .. } => {
+                    self.pop_scope();
+                    return Err(CompileError::new(
+                        "enum variant pattern used with an integer scrutinee".to_string(),
+                        arm.body.span,
+                    ));
+                }
+            };
+
+            let lowered_body_expr = self.lower_expr(&arm.body)?;
+            let arm_ty = lowered_body_expr.ty.clone();
+            let mut body = Vec::new();
+            if let ast::Pattern::Wildcard(name) = &arm.pattern {
+                body.push(Statement {
+                    kind: StatementKind::Let {
+                        name: name.clone(),
+                        ty: scrutinee_ty.clone(),
+                        value: Expr {
+                            ty: scrutinee_ty.clone(),
+                            kind: ExprKind::Identifier(temp_name.clone()),
+                            span: arm.body.span,
+                        },
+                    },
+                    span: arm.body.span,
+                });
+            }
+            body.push(Statement {
+                kind: StatementKind::Expression(lowered_body_expr),
+                span: arm.body.span,
+            });
+            self.pop_scope();
+
+            if arm_ty == Type::Never {
+                // A diverging arm is compatible with the eventual result type.
+            } else if let Some(expected) = &result_ty {
+                if arm_ty != *expected {
+                    return Err(CompileError::new(
+                        format!("match arm type mismatch: expected {expected}, got {arm_ty}"),
+                        arm.body.span,
+                    ));
+                }
+            } else {
+                result_ty = Some(arm_ty);
+            }
+            lowered_arms.push((literal, body));
+        }
+
+        let Some(wildcard_index) = wildcard_index else {
+            return Err(CompileError::new(
+                "non-exhaustive integer match: add a wildcard arm".to_string(),
+                span,
+            ));
+        };
+        let result_ty = result_ty.unwrap_or(Type::Unit);
+
+        // Arms after the first wildcard are unreachable, matching the existing
+        // first-match semantics of enum matches.
+        let mut chain: Option<Expr> = None;
+        for (literal, body) in lowered_arms.into_iter().take(wildcard_index + 1).rev() {
+            chain = Some(if let Some(literal) = literal {
+                let else_expr = chain.expect("wildcard arm terminates integer match");
+                Expr {
+                    ty: result_ty.clone(),
+                    kind: ExprKind::If {
+                        condition: Box::new(Expr {
+                            ty: Type::Bool,
+                            kind: ExprKind::BinaryOp {
+                                op: ast::BinOp::Eq,
+                                left: Box::new(Expr {
+                                    ty: scrutinee_ty.clone(),
+                                    kind: ExprKind::Identifier(temp_name.clone()),
+                                    span,
+                                }),
+                                right: Box::new(literal),
+                            },
+                            span,
+                        }),
+                        then_body: body,
+                        else_body: vec![Statement {
+                            kind: StatementKind::Expression(else_expr),
+                            span,
+                        }],
+                    },
+                    span,
+                }
+            } else {
+                Expr {
+                    ty: result_ty.clone(),
+                    kind: ExprKind::Block(body),
+                    span,
+                }
+            });
+        }
+
+        Ok(Expr {
+            ty: result_ty,
+            kind: ExprKind::Block(vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        name: temp_name,
+                        ty: scrutinee_ty,
+                        value: scrutinee,
+                    },
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Expression(chain.unwrap()),
+                    span,
+                },
+            ]),
             span,
         })
     }

@@ -1,0 +1,10 @@
+fn add_one(x: Int) -> Int { x + 1 }
+fn add(x: Int, y: Int) -> Int { x + y }
+
+fn main() {
+    let thunk: fn() -> Int = \ add_one(4);
+    println(thunk());
+
+    let thunk2: fn() -> Int = \ add(6, 7);
+    println(thunk2());
+}

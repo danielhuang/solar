@@ -1,0 +1,4 @@
+fn main() {
+    println(12 & (10 | 1));
+    println(12 ^ (10 | 1));
+}
