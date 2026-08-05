@@ -15,9 +15,6 @@
   "scripts": {
     "build:lsp": "cargo build --manifest-path ../Cargo.toml --release --bin lsp && mkdir -p server && cp ../target/release/lsp server/lsp"
   },
-  "activationEvents": [
-    "onLanguage:solar"
-  ],
   "contributes": {
     "languages": [
       {
