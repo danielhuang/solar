@@ -275,14 +275,6 @@ pub fn sol_panic_internal(msg: &str) -> ! {
     std::process::abort();
 }
 
-/// Aborts with a Solar panic message and stack trace.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn sol_panic(msg: *const u8, len: usize) -> ! {
-    let slice = unsafe { std::slice::from_raw_parts(msg, len) };
-    let text = std::str::from_utf8(slice).unwrap_or("<invalid utf8>");
-    sol_panic_internal(text)
-}
-
 /// Installs the runtime panic hook.
 ///
 /// Recoverable Solar exceptions are allowed to continue unwinding.

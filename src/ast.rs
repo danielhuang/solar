@@ -560,7 +560,6 @@ impl NumericType {
 /// A compiler intrinsic.
 #[derive(Debug, Clone)]
 pub enum Intrinsic {
-    Panic,
     RefEq,
     Throw,
     Try,
@@ -632,7 +631,6 @@ pub enum Intrinsic {
 }
 
 const INTRINSIC_NAMES: &[(&str, Intrinsic)] = &[
-    ("panic", Intrinsic::Panic),
     ("ref_eq", Intrinsic::RefEq),
     ("throw", Intrinsic::Throw),
     ("try", Intrinsic::Try),

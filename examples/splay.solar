@@ -293,10 +293,10 @@ fn run_once() -> Uint64 {
     let ok = true;
     traverse_check(t@.root, acc&, count&, last&, ok&);
     if count != kTreeSize {
-        panic("Splay tree has wrong size"&);
+        throw("Splay tree has wrong size"&);
     }
     if !ok {
-        panic("Splay tree not sorted"&);
+        throw("Splay tree not sorted"&);
     }
     acc
 }
@@ -309,7 +309,7 @@ fn main() {
             checksum = acc;
         } else {
             if acc != checksum {
-                panic("Splay checksum differs between runs"&);
+                throw("Splay checksum differs between runs"&);
             }
         }
     }

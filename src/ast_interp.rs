@@ -1079,32 +1079,6 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         result_ty: &Type,
     ) -> Eval<Value> {
         Ok(match intrinsic {
-            Intrinsic::Panic => {
-                let val = self.eval_expr(&arguments[0])?;
-                match &val {
-                    Value::Ref(slot) | Value::Unique(slot) => {
-                        let inner = slot.borrow();
-                        match &*inner {
-                            Value::Array(elements) => {
-                                let bytes: Vec<u8> = elements
-                                    .iter()
-                                    .map(|s| {
-                                        let v = s.borrow();
-                                        match &*v {
-                                            Value::Int(n) => *n as u8,
-                                            _ => unreachable!(),
-                                        }
-                                    })
-                                    .collect();
-                                let msg = String::from_utf8_lossy(&bytes);
-                                panic!("{msg}");
-                            }
-                            _ => unreachable!(),
-                        }
-                    }
-                    _ => unreachable!(),
-                }
-            }
             Intrinsic::RefEq => {
                 let a = self.eval_expr(&arguments[0])?;
                 let b = self.eval_expr(&arguments[1])?;

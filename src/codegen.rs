@@ -718,7 +718,6 @@ impl<'a> Codegen<'a> {
         self.line("extern uint8_t* sol_alloc(size_t size, size_t align, sol_mark_fn_t mark_fn);");
         self.line("extern void sol_gc_mark(void* ctx, uint8_t* ptr);");
         self.line("extern void sol_memcpy(uint8_t* dst, const uint8_t* src, size_t size);");
-        self.line("extern void sol_panic(const uint8_t* ptr, size_t len);");
         self.line("extern uint8_t* sol_file_open(const uint8_t* ptr, size_t len, int64_t flags, uint64_t mode);");
         self.line("extern void sol_file_close(uint8_t* fd);");
         self.line("extern uint8_t* sol_file_stdin(void);");
@@ -2689,16 +2688,6 @@ impl<'a> Codegen<'a> {
         dst: &str,
     ) {
         match intrinsic {
-            Intrinsic::Panic => {
-                let (ref_place, _) = self.emit_place(nodes, args[0]);
-                let data_ptr = self.fresh_tmp();
-                let data_len = self.fresh_tmp();
-                self.linef(format!("uint8_t* {data_ptr} = *(uint8_t**){ref_place};"));
-                self.linef(format!(
-                    "uint64_t {data_len} = *(uint64_t*)({ref_place} + 8);"
-                ));
-                self.linef(format!("sol_panic({data_ptr}, {data_len});"));
-            }
             Intrinsic::RefEq => {
                 let (a, _) = self.emit_place(nodes, args[0]);
                 let (b, _) = self.emit_place(nodes, args[1]);

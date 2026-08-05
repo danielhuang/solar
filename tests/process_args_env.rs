@@ -110,7 +110,7 @@ fn main() {
         // Retain a fresh env() copy reachable through the chain.
         head = (Node { data: process::env(), sum: env_sum, next: Opt::Some(head) })&;
         root&.atomic_store(head);
-        if checksum(head@.data) != head@.sum { panic("env copy corrupted!"&); }
+        if checksum(head@.data) != head@.sum { throw("env copy corrupted!"&); }
         // Build >1 MiB of escaping garbage so the collector runs each iteration.
         let g = sentinel;
         for j in 0..40000 {
@@ -122,7 +122,7 @@ fn main() {
     let walk = head;
     let going = true;
     while going {
-        if checksum(walk@.data) != walk@.sum { panic("retained env corrupted!"&); }
+        if checksum(walk@.data) != walk@.sum { throw("retained env corrupted!"&); }
         match walk@.next {
             Opt::Some(m) => { walk = m; },
             Opt::None => { going = false; },

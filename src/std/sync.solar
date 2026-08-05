@@ -1,4 +1,4 @@
-import { atomic_load, atomic_store, atomic_exchange, atomic_compare_exchange, futex_wait, futex_wake, panic } from "@intrinsics";
+import { atomic_load, atomic_store, atomic_exchange, atomic_compare_exchange, futex_wait, futex_wake, throw } from "@intrinsics";
 
 /// Atomically loads a value.
 pub method atomic_load#[T](self: &T) -> T {
@@ -143,6 +143,6 @@ pub method recv#[T](self: &Channel#[T]) -> T {
     self@.recv_lock&.unlock();
     match slot {
         ChannelSlot#[T]::Full(v) => v,
-        ChannelSlot#[T]::Empty => panic("recv on empty channel"&),
+        ChannelSlot#[T]::Empty => throw("recv on empty channel"&),
     }
 }

@@ -81,18 +81,18 @@ fn destructure_bad_len_codegen() {
 
 #[test]
 #[should_panic(expected = "something went wrong")]
-fn panic_ast() {
-    run_ast_file(&fixture("panic.solar"));
+fn uncaught_throw_ast() {
+    run_ast_file(&fixture("uncaught_throw.solar"));
 }
 
 #[test]
 #[should_panic(expected = "something went wrong")]
-fn panic_ir() {
-    run_ir_file(&fixture("panic.solar"));
+fn uncaught_throw_ir() {
+    run_ir_file(&fixture("uncaught_throw.solar"));
 }
 
 #[test]
 #[should_panic(expected = "something went wrong")]
-fn panic_codegen() {
-    run_codegen_file(&fixture("panic.solar"), "panic");
+fn uncaught_throw_codegen() {
+    run_codegen_file(&fixture("uncaught_throw.solar"), "uncaught_throw");
 }

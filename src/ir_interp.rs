@@ -1418,15 +1418,6 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         dst: usize,
     ) -> Eval<()> {
         match intrinsic {
-            Intrinsic::Panic => {
-                assert_eq!(*result_ty, Type::Never);
-                let (ref_addr, _) = self.eval_place(nodes, args[0])?;
-                let data_ptr = self.mem.load(ref_addr, 8) as usize;
-                let data_len = self.mem.load(ref_addr + 8, 8) as usize;
-                let bytes = self.mem.data[data_ptr..data_ptr + data_len].to_vec();
-                let msg = String::from_utf8_lossy(&bytes);
-                panic!("{msg}");
-            }
             Intrinsic::RefEq => {
                 let (a_place, _) = self.eval_place(nodes, args[0])?;
                 let (b_place, _) = self.eval_place(nodes, args[1])?;

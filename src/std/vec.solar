@@ -1,4 +1,4 @@
-import { panic } from "@intrinsics";
+import { throw } from "@intrinsics";
 import { Option } from "lib.solar";
 import iter from "iter.solar";
 
@@ -34,7 +34,7 @@ pub method push#[T](self: &Vec#[T], value: T) {
 /// Returns the element at `index`.
 pub method at#[T](self: &Vec#[T], index: Uint) -> &T {
     if index >= self@.len {
-        panic("Vec.at: index out of bounds"&);
+        throw("Vec.at: index out of bounds"&);
     }
     self@.inner@[index]&
 }

@@ -169,11 +169,6 @@ pub fn println#[T](x: T) {
     println(x.to_string());
 }
 
-/// Terminates the program with a panic message.
-pub fn panic(s: &[Uint8]) {
-    intrinsics::panic(s);
-}
-
 /// Throws a recoverable exception.
 pub fn throw(s: &[Uint8]) {
     intrinsics::throw(s);

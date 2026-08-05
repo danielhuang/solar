@@ -8453,10 +8453,6 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
     };
 
     match intrinsic {
-        ast::Intrinsic::Panic => IntrinsicSpec {
-            params: vec![byte_slice()],
-            ret: Fixed(Type::Never),
-        },
         ast::Intrinsic::RefEq => IntrinsicSpec {
             params: vec![IsRef, MatchesRef],
             ret: Fixed(Type::Bool),
