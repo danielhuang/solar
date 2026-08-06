@@ -19,8 +19,8 @@ pub fn compile(file_path: &Path) -> Result<Typed, (Vec<CompileError>, SourceMap)
 }
 
 fn compile_inner(file_path: &Path) -> Result<Typed, (Vec<CompileError>, SourceMap)> {
-    let (ast, source_map) = resolve::resolve(file_path)?;
-    let typed = typed_ast::lower(&ast).map_err(|e| (vec![e], source_map.clone()))?;
+    let (resolved, source_map) = resolve::resolve(file_path)?;
+    let typed = typed_ast::lower(&resolved).map_err(|e| (vec![e], source_map.clone()))?;
     Ok(Typed { typed, source_map })
 }
 

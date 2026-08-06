@@ -1,6 +1,6 @@
-use crate::ast;
 use crate::error::CompileError;
 use crate::scope::ScopeStack;
+use crate::{ast, resolved_ast};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -438,7 +438,9 @@ fn apply_subst_to_ast_expr(expr: &ast::Expr, subst: &HashMap<String, ast::Type>)
         | ast::ExprKind::GlobalRef(_)
         | ast::ExprKind::IntegerLiteral(_, _)
         | ast::ExprKind::FloatLiteral(_, _)
-        | ast::ExprKind::BooleanLiteral(_) => expr.kind.clone(),
+        | ast::ExprKind::BooleanLiteral(_)
+        | ast::ExprKind::StringLiteral(_)
+        | ast::ExprKind::CharLiteral(_) => expr.kind.clone(),
         ast::ExprKind::FieldAccess { object, field } => ast::ExprKind::FieldAccess {
             object: Box::new(apply_subst_to_ast_expr(object, subst)),
             field: field.clone(),
@@ -726,6 +728,25 @@ fn apply_subst_to_ast_statement(
                 .map(|s| apply_subst_to_ast_statement(s, subst))
                 .collect(),
         },
+        ast::StatementKind::Try {
+            body,
+            binding,
+            binding_type,
+            handler,
+        } => ast::StatementKind::Try {
+            body: body
+                .iter()
+                .map(|s| apply_subst_to_ast_statement(s, subst))
+                .collect(),
+            binding: binding.clone(),
+            binding_type: binding_type
+                .as_ref()
+                .map(|ty| apply_subst_to_ast_type(ty, subst)),
+            handler: handler
+                .iter()
+                .map(|s| apply_subst_to_ast_statement(s, subst))
+                .collect(),
+        },
         ast::StatementKind::ForReflectFields {
             pattern,
             object,
@@ -760,6 +781,7 @@ fn apply_subst_to_ast_statement(
         ast::StatementKind::Return(expr) => {
             ast::StatementKind::Return(apply_subst_to_ast_expr(expr, subst))
         }
+        ast::StatementKind::ReturnVoid => ast::StatementKind::ReturnVoid,
         ast::StatementKind::Break(value) => {
             ast::StatementKind::Break(value.as_ref().map(|v| apply_subst_to_ast_expr(v, subst)))
         }
@@ -1638,7 +1660,7 @@ enum ArgShape {
 }
 
 impl<'a> Lowerer<'a> {
-    fn new(source: &'a ast::SourceFile) -> Result<Self, CompileError> {
+    fn new(source: &'a resolved_ast::SourceFile) -> Result<Self, CompileError> {
         let mut structs: HashMap<DefId, &ast::StructDef> = HashMap::new();
         let mut enums: HashMap<DefId, &ast::EnumDef> = HashMap::new();
         let mut generic_structs: HashMap<DefId, GenericStructDef> = HashMap::new();
@@ -3945,175 +3967,10 @@ impl<'a> Lowerer<'a> {
                 body,
                 paired,
             } => self.lower_match_reflect_variant(stmt.span, pattern, object, body, *paired),
-            ast::StatementKind::ForIn {
-                variable,
-                iterable,
-                body,
-            } => {
-                let n = self.for_counter;
-                self.for_counter += 1;
-                let arr_name = format!("__for_arr_{n}");
-                let len_name = format!("__for_len_{n}");
-                let idx_name = format!("__for_idx_{n}");
-
-                let lowered_iter = self.lower_expr(iterable)?;
-                let arr_ty = lowered_iter.ty.clone();
-                let elem_ty = match &arr_ty {
-                    Type::Array(inner) => (**inner).clone(),
-                    Type::FixedArray(inner, _) => (**inner).clone(),
-                    _ => {
-                        return Err(CompileError::new(
-                            format!("for-in iterable must be an array type, got {}", arr_ty),
-                            stmt.span,
-                        ));
-                    }
-                };
-
-                let mut stmts = Vec::new();
-
-                // let __for_arr_N = iterable;
-                self.define_var(arr_name.clone(), arr_ty.clone());
-                stmts.push(Statement {
-                    kind: StatementKind::Let {
-                        name: arr_name.clone(),
-                        ty: arr_ty.clone(),
-                        value: lowered_iter,
-                    },
-                    span: stmt.span,
-                });
-
-                // let __for_len_N = intrinsic::array_len(__for_arr_N);
-                self.define_var(len_name.clone(), Type::Uint);
-                stmts.push(Statement {
-                    kind: StatementKind::Let {
-                        name: len_name.clone(),
-                        ty: Type::Uint,
-                        value: Expr {
-                            ty: Type::Uint,
-                            kind: ExprKind::IntrinsicCall {
-                                intrinsic: ast::Intrinsic::ArrayLen,
-                                arguments: vec![Expr {
-                                    ty: arr_ty.clone(),
-                                    kind: ExprKind::Identifier(arr_name.clone()),
-                                    span: ast::SourceSpan::default(),
-                                }],
-                            },
-                            span: ast::SourceSpan::default(),
-                        },
-                    },
-                    span: stmt.span,
-                });
-
-                // let __for_idx_N = 0u;
-                self.define_var(idx_name.clone(), Type::Uint);
-                stmts.push(Statement {
-                    kind: StatementKind::Let {
-                        name: idx_name.clone(),
-                        ty: Type::Uint,
-                        value: Expr {
-                            ty: Type::Uint,
-                            kind: ExprKind::IntegerLiteral(0),
-                            span: ast::SourceSpan::default(),
-                        },
-                    },
-                    span: stmt.span,
-                });
-
-                // Build while body
-                self.push_scope();
-                self.define_var(variable.clone(), elem_ty.clone());
-                let let_var = Statement {
-                    kind: StatementKind::Let {
-                        name: variable.clone(),
-                        ty: elem_ty.clone(),
-                        value: Expr {
-                            ty: elem_ty.clone(),
-                            kind: ExprKind::Index {
-                                object: Box::new(Expr {
-                                    ty: arr_ty.clone(),
-                                    kind: ExprKind::Identifier(arr_name.clone()),
-                                    span: ast::SourceSpan::default(),
-                                }),
-                                index: Box::new(Expr {
-                                    ty: Type::Uint,
-                                    kind: ExprKind::Identifier(idx_name.clone()),
-                                    span: ast::SourceSpan::default(),
-                                }),
-                            },
-                            span: ast::SourceSpan::default(),
-                        },
-                    },
-                    span: stmt.span,
-                };
-                // Increment the index right after binding the loop variable and
-                // before the user body, so `continue` still advances the index
-                // (the loop variable already captured the element at the old
-                // index).
-                let increment = Statement {
-                    kind: StatementKind::Assignment {
-                        target: Expr {
-                            ty: Type::Uint,
-                            kind: ExprKind::Identifier(idx_name.clone()),
-                            span: ast::SourceSpan::default(),
-                        },
-                        value: Expr {
-                            ty: Type::Uint,
-                            kind: ExprKind::BinaryOp {
-                                op: ast::BinOp::Add,
-                                left: Box::new(Expr {
-                                    ty: Type::Uint,
-                                    kind: ExprKind::Identifier(idx_name.clone()),
-                                    span: ast::SourceSpan::default(),
-                                }),
-                                right: Box::new(Expr {
-                                    ty: Type::Uint,
-                                    kind: ExprKind::IntegerLiteral(1),
-                                    span: ast::SourceSpan::default(),
-                                }),
-                            },
-                            span: ast::SourceSpan::default(),
-                        },
-                    },
-                    span: stmt.span,
-                };
-                let mut while_body = vec![let_var, increment];
-                self.loop_ctx.push(LoopCtx {
-                    is_value_loop: false,
-                    break_ty: None,
-                });
-                for s in body {
-                    while_body.extend(self.lower_statement(s)?);
-                }
-                self.loop_ctx.pop();
-                self.pop_scope();
-
-                let condition = Expr {
-                    ty: Type::Bool,
-                    kind: ExprKind::BinaryOp {
-                        op: ast::BinOp::Lt,
-                        left: Box::new(Expr {
-                            ty: Type::Uint,
-                            kind: ExprKind::Identifier(idx_name.clone()),
-                            span: ast::SourceSpan::default(),
-                        }),
-                        right: Box::new(Expr {
-                            ty: Type::Uint,
-                            kind: ExprKind::Identifier(len_name.clone()),
-                            span: ast::SourceSpan::default(),
-                        }),
-                    },
-                    span: ast::SourceSpan::default(),
-                };
-
-                stmts.push(Statement {
-                    kind: StatementKind::While {
-                        condition,
-                        body: while_body,
-                    },
-                    span: stmt.span,
-                });
-
-                Ok(stmts)
+            ast::StatementKind::ForIn { .. }
+            | ast::StatementKind::Try { .. }
+            | ast::StatementKind::ReturnVoid => {
+                unreachable!("surface statement reached typed AST lowering")
             }
             ast::StatementKind::Expression(expr) => Ok(vec![Statement {
                 kind: StatementKind::Expression(self.lower_expr(expr)?),
@@ -5748,6 +5605,9 @@ impl<'a> Lowerer<'a> {
                 intrinsic,
                 arguments,
             } => self.lower_intrinsic_call(expr.span, intrinsic, arguments),
+            ast::ExprKind::StringLiteral(_) | ast::ExprKind::CharLiteral(_) => {
+                unreachable!("surface literal reached typed AST lowering")
+            }
         }
     }
 
@@ -8837,7 +8697,7 @@ fn atomic_type_align(ty: &Type, structs: &HashMap<TypeId, StructDef>) -> Option<
 }
 
 /// Type-checks and monomorphizes a resolved AST.
-pub fn lower(source: &ast::SourceFile) -> Result<SourceFile, CompileError> {
+pub fn lower(source: &resolved_ast::SourceFile) -> Result<SourceFile, CompileError> {
     // A larger stack lets MONO_DEPTH_LIMIT report runaway polymorphic recursion.
     const LOWER_STACK_SIZE: usize = 512 << 20;
     std::thread::scope(|s| {

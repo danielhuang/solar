@@ -109,9 +109,8 @@ module.exports = grammar({
     field_def: ($) =>
       seq(optional("pub"), field("name", $.identifier), ":", field("type", $._type)),
 
-    // Tuple structs desugar to normal fields named `_0`, `_1`, and so on.
-    // Keeping their types in a separate list lets the parser perform that
-    // desugaring without adding a second struct representation downstream.
+    // Keep tuple fields distinct in the CST so the surface AST can preserve
+    // positional field names until the desugaring stage.
     tuple_struct_field_list: ($) =>
       seq($.tuple_struct_field, repeat(seq(",", $.tuple_struct_field)), optional(",")),
 
@@ -212,8 +211,8 @@ module.exports = grammar({
     while_statement: ($) =>
       seq("while", field("condition", $._expression), field("body", $.block)),
 
-    // `try { … } catch (e) { … }` — desugars in the parser to a call of the
-    // `try` intrinsic with two closures (body `\ { … }`, handler `\ e { … }`).
+    // `try { … } catch (e) { … }` is preserved in the surface AST and lowered
+    // to the `try` intrinsic by the desugaring stage.
     // The binding `e` is a `&[Uint8]` (the thrown message); its type annotation
     // is optional and, if present, must be `&[Uint8]`.
     try_statement: ($) =>

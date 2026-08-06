@@ -340,6 +340,13 @@ pub enum StatementKind {
         iterable: Expr,
         body: Vec<Statement>,
     },
+    /// Surface `try { ... } catch (binding[: type]) { ... }` syntax.
+    Try {
+        body: Vec<Statement>,
+        binding: String,
+        binding_type: Option<Type>,
+        handler: Vec<Statement>,
+    },
     ForReflectFields {
         pattern: DestructurePattern,
         object: Expr,
@@ -358,6 +365,8 @@ pub enum StatementKind {
     },
     Expression(Expr),
     Return(Expr),
+    /// A surface `return;`, before it is normalized to a Unit-valued return.
+    ReturnVoid,
     /// `break;` (no value) or `break <expr>;` (value, only inside a `loop`).
     Break(Option<Expr>),
     Continue,
@@ -423,6 +432,10 @@ pub enum ExprKind {
     /// double rounding occurs.
     FloatLiteral(f64, FloatType),
     BooleanLiteral(bool),
+    /// A decoded surface string literal, before conversion to a byte array.
+    StringLiteral(Vec<u8>),
+    /// A decoded surface character literal, before conversion to `Uint8`.
+    CharLiteral(u8),
     FieldAccess {
         object: Box<Expr>,
         field: String,

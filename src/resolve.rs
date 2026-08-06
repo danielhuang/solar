@@ -1,6 +1,7 @@
 use crate::ast::*;
 use crate::error::{CompileError, SourceMap};
 use crate::parser;
+use crate::{desugared_ast, resolved_ast};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -14,7 +15,7 @@ type AllModuleAliases = HashMap<FileId, ModuleAliasMap>;
 struct ParsedFile {
     file_id: FileId,
     path: PathBuf,
-    ast: SourceFile,
+    ast: desugared_ast::SourceFile,
 }
 
 fn is_method_export(kind: &ExportKind) -> bool {
@@ -105,6 +106,7 @@ impl Resolver {
                 })
                 .collect::<Vec<_>>()
         })?;
+        let ast = desugared_ast::lower(&ast);
 
         self.files.push(ParsedFile {
             file_id,
@@ -859,14 +861,8 @@ fn rewrite_statement(stmt: &mut Statement, ctx: &RewriteCtx, locals: &mut HashSe
             rewrite_expr(end, ctx, locals);
             rewrite_statements(body, ctx, locals);
         }
-        StatementKind::ForIn {
-            variable,
-            iterable,
-            body,
-        } => {
-            locals.insert(variable.clone());
-            rewrite_expr(iterable, ctx, locals);
-            rewrite_statements(body, ctx, locals);
+        StatementKind::ForIn { .. } | StatementKind::Try { .. } => {
+            unreachable!("surface statement reached name resolution")
         }
         StatementKind::ForReflectFields {
             pattern,
@@ -891,6 +887,7 @@ fn rewrite_statement(stmt: &mut Statement, ctx: &RewriteCtx, locals: &mut HashSe
         StatementKind::Return(expr) => {
             rewrite_expr(expr, ctx, locals);
         }
+        StatementKind::ReturnVoid => unreachable!("surface return reached name resolution"),
         StatementKind::NestedFunction(fdef) => {
             locals.insert(fdef.name.clone());
             rewrite_function_body(fdef, ctx);
@@ -930,6 +927,9 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<String>) {
         ExprKind::IntegerLiteral(_, _)
         | ExprKind::FloatLiteral(_, _)
         | ExprKind::BooleanLiteral(_) => {}
+        ExprKind::StringLiteral(_) | ExprKind::CharLiteral(_) => {
+            unreachable!("surface literal reached name resolution")
+        }
         ExprKind::FieldAccess { object, .. } => {
             rewrite_expr(object, ctx, locals);
         }
@@ -1226,7 +1226,7 @@ fn rewrite_pattern(
 /// Resolves a Solar program and its imports.
 pub fn resolve(
     file_path: &Path,
-) -> Result<(SourceFile, SourceMap), (Vec<CompileError>, SourceMap)> {
+) -> Result<(resolved_ast::SourceFile, SourceMap), (Vec<CompileError>, SourceMap)> {
     resolve_with_root_source(file_path, None)
 }
 
@@ -1234,19 +1234,19 @@ pub fn resolve(
 pub fn resolve_source(
     file_path: &Path,
     source: String,
-) -> Result<(SourceFile, SourceMap), (Vec<CompileError>, SourceMap)> {
+) -> Result<(resolved_ast::SourceFile, SourceMap), (Vec<CompileError>, SourceMap)> {
     resolve_with_root_source(file_path, Some(source))
 }
 
 fn resolve_with_root_source(
     file_path: &Path,
     root_source: Option<String>,
-) -> Result<(SourceFile, SourceMap), (Vec<CompileError>, SourceMap)> {
+) -> Result<(resolved_ast::SourceFile, SourceMap), (Vec<CompileError>, SourceMap)> {
     let mut resolver = Resolver::new();
     let result = resolve_impl(&mut resolver, file_path, root_source);
     let source_map = resolver.source_map;
     match result {
-        Ok(all_items) => Ok((SourceFile { items: all_items }, source_map)),
+        Ok(all_items) => Ok((resolved_ast::from_items(all_items), source_map)),
         Err(errors) => Err((errors, source_map)),
     }
 }
@@ -1309,8 +1309,6 @@ fn resolve_impl(
         let items = resolver.resolve_file(fid, root_id, &all_module_aliases)?;
         all_items.extend(items);
     }
-
-    parser::generate_numeric_constructors(&mut all_items);
 
     Ok(all_items)
 }

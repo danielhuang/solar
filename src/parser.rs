@@ -1,66 +1,6 @@
 use crate::ast::*;
 use std::fmt;
 
-/// Generate overloaded constructor functions for each numeric type.
-/// e.g. `fn Int(x: Uint) -> Int { IntrinsicCall(Cast(Uint, Int), [x]) }`
-pub fn generate_numeric_constructors(items: &mut Vec<TopLevelItem>) {
-    const TYPES: &[&str] = &[
-        "Int", "Uint", "Int8", "Int16", "Int32", "Int64", "Uint8", "Uint16", "Uint32", "Uint64",
-        "Float32", "Float64",
-    ];
-
-    // Numeric constructors are compiler-synthesized and globally unique — use
-    // the synthetic file so `typed_ast`/`mangled_ast` treat them as bare names
-    // (no module prefix), and so their references (bare `Identifier`s that
-    // `resolve` never sees) resolve to a stable `DefId`.
-    let span = SourceSpan {
-        file_id: SYNTHETIC_FILE,
-        ..SourceSpan::default()
-    };
-
-    for &target_name in TYPES {
-        for &from_name in TYPES {
-            if target_name == from_name {
-                continue;
-            }
-            let intrinsic = Intrinsic::Cast(
-                NumericType::from_name(from_name).unwrap(),
-                NumericType::from_name(target_name).unwrap(),
-            );
-            items.push(TopLevelItem::Function(FunctionDef {
-                name: target_name.to_string(),
-                display_name: target_name.to_string(),
-                type_params: vec![],
-                parameters: vec![Parameter {
-                    pattern: DestructurePattern::Name("x".to_string()),
-                    ty: Type::Named(DefId::new(0, from_name)),
-                    default: None,
-                    span,
-                }],
-                return_type: Some(Type::Named(DefId::new(0, target_name))),
-                return_type_span: None,
-                body: vec![Statement {
-                    kind: StatementKind::Expression(Expr {
-                        kind: ExprKind::IntrinsicCall {
-                            intrinsic,
-                            arguments: vec![Expr {
-                                kind: ExprKind::Identifier("x".to_string()),
-                                span,
-                            }],
-                        },
-                        span,
-                    }),
-                    span,
-                }],
-                is_pub: false,
-                inline_hint: false,
-                doc: None,
-                span,
-            }));
-        }
-    }
-}
-
 /// A syntax error reported by the parser.
 #[derive(Debug)]
 pub struct ParseError {
@@ -303,7 +243,7 @@ fn convert_struct_def(node: tree_sitter::Node, source: &str) -> StructDef {
                     );
                 }
                 fields.push(FieldDef {
-                    name: format!("_{index}"),
+                    name: index.to_string(),
                     ty: convert_type(child.child_by_field_name("type").unwrap(), source),
                     is_pub: is_field_pub,
                     span: source_span(child),
@@ -490,54 +430,22 @@ fn convert_parameter(node: tree_sitter::Node, source: &str) -> Parameter {
     }
 }
 
-/// Desugar `try { body } catch (e[: T]) { handler }` into a call of the `try`
-/// intrinsic with two closures: `intrinsics::try(\ { body }, \ e: &[Uint8] { handler })`.
-/// The handler's parameter type is synthesized as `&[Uint8]` when omitted; an
-/// explicit annotation is kept (and the intrinsic's signature enforces it must
-/// be `&[Uint8]`).
 fn convert_try_statement(node: tree_sitter::Node, source: &str) -> Statement {
     let span = source_span(node);
     let body = convert_block(node.child_by_field_name("body").unwrap(), source);
-    let handler_body = convert_block(node.child_by_field_name("handler").unwrap(), source);
+    let handler = convert_block(node.child_by_field_name("handler").unwrap(), source);
     let binding = node_text(node.child_by_field_name("binding").unwrap(), source).to_string();
-    let binding_ty = match node.child_by_field_name("binding_type") {
-        Some(t) => convert_type(t, source),
-        // `&[Uint8]`
-        None => Type::Reference(Box::new(Type::Slice(Box::new(Type::Named(DefId::new(
-            0, "Uint8",
-        )))))),
-    };
-
-    let body_closure = Expr {
-        kind: ExprKind::Closure {
-            parameters: Vec::new(),
-            return_type: None,
-            body,
-        },
-        span,
-    };
-    let handler_closure = Expr {
-        kind: ExprKind::Closure {
-            parameters: vec![Parameter {
-                pattern: DestructurePattern::Name(binding),
-                ty: binding_ty,
-                default: None,
-                span,
-            }],
-            return_type: None,
-            body: handler_body,
-        },
-        span,
-    };
+    let binding_type = node
+        .child_by_field_name("binding_type")
+        .map(|ty| convert_type(ty, source));
 
     Statement {
-        kind: StatementKind::Expression(Expr {
-            kind: ExprKind::IntrinsicCall {
-                intrinsic: Intrinsic::Try,
-                arguments: vec![body_closure, handler_closure],
-            },
-            span,
-        }),
+        kind: StatementKind::Try {
+            body,
+            binding,
+            binding_type,
+            handler,
+        },
         span,
     }
 }
@@ -838,21 +746,12 @@ fn convert_expression_statement(node: tree_sitter::Node, source: &str) -> Statem
 
 fn convert_return_statement(node: tree_sitter::Node, source: &str) -> Statement {
     let span = source_span(node);
-    // A valueless return is the Unit-valued empty block. Keeping Return's AST
-    // representation expression-based lets the existing return-type checking,
-    // interpreters, and codegen handle `return;` without a parallel special
-    // case in every compiler stage.
-    let value = node
+    let kind = node
         .child_by_field_name("value")
-        .map(|value| convert_expr(value, source))
-        .unwrap_or(Expr {
-            kind: ExprKind::Block(Vec::new()),
-            span,
+        .map_or(StatementKind::ReturnVoid, |value| {
+            StatementKind::Return(convert_expr(value, source))
         });
-    Statement {
-        kind: StatementKind::Return(value),
-        span,
-    }
+    Statement { kind, span }
 }
 
 fn convert_if_expression(node: tree_sitter::Node, source: &str) -> Expr {
@@ -920,17 +819,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             let text = node_text(node, source);
             let inner = &text[1..text.len() - 1]; // strip quotes
             let bytes = unescape_string(inner);
-            ExprKind::ArrayLiteral(
-                bytes
-                    .into_iter()
-                    .map(|b| Expr {
-                        kind: ExprKind::IntegerLiteral(b as i128, IntegerType::Uint8),
-                        span,
-                    })
-                    .collect(),
-                // implicit annotation so the empty string works like []#[Uint8]
-                Some(Type::Named(DefId::new(0, "Uint8"))),
-            )
+            ExprKind::StringLiteral(bytes)
         }
         "char_literal" => {
             let text = node_text(node, source);
@@ -940,16 +829,12 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                 bytes.len() == 1,
                 "character literal must be a single byte, got {inner:?}"
             );
-            ExprKind::IntegerLiteral(bytes[0] as i128, IntegerType::Uint8)
+            ExprKind::CharLiteral(bytes[0])
         }
         "field_access" => {
             let object = convert_expr(node.child_by_field_name("object").unwrap(), source);
             let field_node = node.child_by_field_name("field").unwrap();
-            let field = if field_node.kind() == "integer_literal" {
-                format!("_{}", node_text(field_node, source))
-            } else {
-                node_text(field_node, source).to_string()
-            };
+            let field = node_text(field_node, source).to_string();
             ExprKind::FieldAccess {
                 object: Box::new(object),
                 field,

@@ -211,7 +211,7 @@ fn struct_literal_span() {
 }
 
 #[test]
-fn tuple_struct_desugars_and_numeric_access_does_not_capture_float_literals() {
+fn tuple_struct_surface_syntax_preserves_numeric_fields() {
     let ast = parse("struct Pair(Int, Float64);\nfn f() {\n    let p = Pair(1, 1.0f);\n    p.0\n}");
     let pair = match &ast.items[0] {
         TopLevelItem::Struct(pair) => pair,
@@ -220,7 +220,7 @@ fn tuple_struct_desugars_and_numeric_access_does_not_capture_float_literals() {
     assert!(pair.is_tuple);
     assert_eq!(
         pair.fields.iter().map(|f| &f.name).collect::<Vec<_>>(),
-        ["_0", "_1"]
+        ["0", "1"]
     );
     let func = match &ast.items[1] {
         TopLevelItem::Function(func) => func,
@@ -237,7 +237,7 @@ fn tuple_struct_desugars_and_numeric_access_does_not_capture_float_literals() {
     let StatementKind::Expression(access) = &func.body[1].kind else {
         panic!("expected field access");
     };
-    assert!(matches!(&access.kind, ExprKind::FieldAccess { field, .. } if field == "_0"));
+    assert!(matches!(&access.kind, ExprKind::FieldAccess { field, .. } if field == "0"));
 }
 
 #[test]
@@ -343,6 +343,7 @@ fn string_literal_span() {
         StatementKind::Expression(e) => e,
         _ => panic!("expected expression"),
     };
+    assert!(matches!(&expr.kind, ExprKind::StringLiteral(bytes) if bytes == b"hello"));
     // "\"hello\"" = col 4..11
     check(expr.span, 1, 4, 1, 11);
 }

@@ -6,6 +6,8 @@ pub mod ast;
 pub mod ast_interp;
 /// C code generation.
 pub mod codegen;
+/// Untyped AST with surface syntax normalized.
+pub mod desugared_ast;
 /// Compiler diagnostics and source mapping.
 pub mod error;
 /// Interpreter file and directory support.
@@ -24,6 +26,8 @@ pub mod parser;
 pub mod pipeline;
 /// Module and import resolution.
 pub mod resolve;
+/// Name-resolved AST and compiler-supplied definitions.
+pub mod resolved_ast;
 /// Lexical scope utilities.
 pub mod scope;
 /// Typed and monomorphized AST.

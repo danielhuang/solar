@@ -10,7 +10,11 @@ fn fixture(name: &str) -> PathBuf {
 fn compile(file_path: &Path) {
     let source = std::fs::read_to_string(file_path).unwrap();
     let ast = solar::parser::parse(&source).unwrap();
-    match solar::typed_ast::lower(&ast) {
+    let desugared = solar::desugared_ast::lower(&ast);
+    let resolved = solar::resolved_ast::SourceFile {
+        items: desugared.items,
+    };
+    match solar::typed_ast::lower(&resolved) {
         Ok(_) => {}
         Err(e) => panic!("{}", e.message),
     }

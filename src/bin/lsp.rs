@@ -434,7 +434,7 @@ fn span_key_contains(outer: SpanKey, inner: SpanKey) -> bool {
         && (inner.3, inner.4) <= (outer.3, outer.4)
 }
 
-fn collect_docs(ast: &ast::SourceFile) -> HashMap<SpanKey, String> {
+fn collect_docs(ast: &solar::resolved_ast::SourceFile) -> HashMap<SpanKey, String> {
     use solar::ast::TopLevelItem;
     let mut docs = HashMap::new();
     for item in &ast.items {
@@ -456,7 +456,10 @@ fn collect_docs(ast: &ast::SourceFile) -> HashMap<SpanKey, String> {
     docs
 }
 
-fn collect_signatures(ast: &ast::SourceFile, source_map: &SourceMap) -> HashMap<SpanKey, String> {
+fn collect_signatures(
+    ast: &solar::resolved_ast::SourceFile,
+    source_map: &SourceMap,
+) -> HashMap<SpanKey, String> {
     use solar::ast::TopLevelItem;
     let mut signatures = HashMap::new();
     for item in &ast.items {
@@ -1475,7 +1478,10 @@ struct DefinitionCatalog {
     generic_bodies: Vec<SourceSpan>,
 }
 
-fn collect_definition_catalog(ast: &ast::SourceFile, root_file: Option<u32>) -> DefinitionCatalog {
+fn collect_definition_catalog(
+    ast: &solar::resolved_ast::SourceFile,
+    root_file: Option<u32>,
+) -> DefinitionCatalog {
     use solar::ast::TopLevelItem;
     let mut out = DefinitionCatalog::default();
     for item in &ast.items {
