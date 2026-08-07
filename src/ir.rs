@@ -289,14 +289,19 @@ pub fn lower(source: &mangled_ast::SourceFile) -> Module {
     let functions = source
         .functions
         .values()
-        // Skip orphan synthetic closures: a `__closure_N` no surviving
+        // Skip orphan synthetic closures: a `$synthetic$__closure_N` no surviving
         // `Closure` expression references. These are left over from typed_ast's
         // throwaway return-type-inference lowering (the referencing body was
         // discarded). They are never callable — a closure's code pointer is
         // only ever taken by its `Closure` expr — and their captured-variable
         // identifiers can't be resolved without a captures entry, so lowering
         // one would panic with "undefined variable".
-        .filter(|f| !f.name.starts_with("__closure_") || closure_captures.contains_key(&f.name))
+        .filter(|f| {
+            !f.name
+                .strip_prefix(mangled_ast::SYNTHETIC_NAME_PREFIX)
+                .is_some_and(|name| name.starts_with("__closure_"))
+                || closure_captures.contains_key(&f.name)
+        })
         .map(|f| {
             // Statics are initialized by assignments prepended to `main` (their
             // values are literals, so this is pure stores — no user code runs

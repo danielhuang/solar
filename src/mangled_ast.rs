@@ -452,6 +452,10 @@ use crate::error::SourceMap;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+/// Prefix for compiler-generated names after structural identifiers are
+/// rendered to strings. `$` is not valid in a Solar source identifier.
+pub(crate) const SYNTHETIC_NAME_PREFIX: &str = "$synthetic$";
+
 /// Replaces structural definition identities with final symbol names.
 pub fn lower(source: &ta::SourceFile, source_map: &SourceMap) -> SourceFile {
     let r = Renderer {
@@ -500,12 +504,14 @@ struct Renderer<'a> {
 }
 
 impl Renderer<'_> {
+    fn synthetic_name(&self, name: &str) -> String {
+        format!("{SYNTHETIC_NAME_PREFIX}{name}")
+    }
+
     fn ident_name(&self, ident: &ast::Ident) -> String {
         match ident {
             ast::Ident::User(name) => name.clone(),
-            // `$` cannot occur in source identifiers, so this encoding keeps
-            // the structural namespaces disjoint after conversion to strings.
-            ast::Ident::Synthetic(name) => format!("$synthetic${name}"),
+            ast::Ident::Synthetic(name) => self.synthetic_name(name),
         }
     }
 
@@ -518,12 +524,12 @@ impl Renderer<'_> {
         prefix
     }
 
-    /// The base identifier of a definition, module-prefixed by its defining file
-    /// (bare for the root file, and for synthetic defs — closures, numeric
-    /// constructors, tuples — which are already globally unique).
+    /// The base identifier of a definition, module-prefixed by its defining
+    /// file. Root definitions stay bare; synthetic definitions receive the
+    /// source-impossible synthetic prefix.
     fn base_name(&self, def: &ast::DefId) -> String {
         if def.file == ast::SYNTHETIC_FILE {
-            def.name.clone()
+            self.synthetic_name(&def.name)
         } else {
             format!("{}{}", self.module_prefix(def.file), def.name)
         }
@@ -848,8 +854,7 @@ impl Renderer<'_> {
                 synthetic_fn,
                 captures,
             } => ExprKind::Closure {
-                // Closure names (`__closure_N`) are already globally unique.
-                synthetic_fn: synthetic_fn.clone(),
+                synthetic_fn: self.synthetic_name(synthetic_fn),
                 captures: captures.iter().map(|c| self.conv_capture(c)).collect(),
             },
             K::EnumVariant {

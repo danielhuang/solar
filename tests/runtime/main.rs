@@ -13,7 +13,10 @@ fn synthetic_ident_collision() {
         &fixture("synthetic_ident_collision.solar"),
         "synthetic_ident_collision",
     );
-    assert_eq!(output, "91\n92\n93\n94\n95\n7\n96\n97\n97\n98\n99\n17\n");
+    assert_eq!(
+        output,
+        "91\n92\n93\n94\n95\n7\n96\n97\n97\n98\n99\n17\n41\n42\n"
+    );
 }
 
 #[test]

@@ -11,6 +11,10 @@ fn param_collision(__param_1: Int, (a, b): (Int, Int)) -> Int {
     __param_1 + a + b
 }
 
+fn __closure_0() -> Int {
+    41
+}
+
 fn main() {
     let __for_arr_0 = [91];
     let __for_len_0 = 92u;
@@ -51,4 +55,8 @@ fn main() {
     }
 
     println(param_collision(10, (3, 4)));
+
+    let closure = \ { 42 };
+    println(__closure_0());
+    println(closure());
 }

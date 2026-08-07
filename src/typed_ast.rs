@@ -7026,8 +7026,7 @@ impl<'a> Lowerer<'a> {
         // through the env.
         let synthetic_fn = FunctionDef {
             // Closures are synthetic top-level functions with globally-unique
-            // `__closure_N` names — rendered bare (no module prefix) via the
-            // synthetic file.
+            // `__closure_N` names in the synthetic definition namespace.
             id: FuncId::free(DefId::synthetic(&synthetic_name), Vec::new()),
             parameters: typed_params.clone(),
             return_type: fn_return_type.clone(),
