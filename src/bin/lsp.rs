@@ -630,6 +630,9 @@ fn symbol_targets(source: &str, line: u32, character: u32, document: &Document) 
     {
         return vec![node_span(parent, file_id)];
     }
+    if let Some(target) = import_fragment_definition(node, source, document) {
+        return vec![target];
+    }
     if let Some(binding) = local_definition(node, name, source)
         && let Some(file_id) = document.source_map.root_file_id()
     {
@@ -834,12 +837,7 @@ fn path_definition(
     // first so common names such as `None` do not jump to another enum.
     if index + 1 == segments.len() && index > 0 {
         let owner_name = &source[segments[index - 1].byte_range()];
-        let owner_file = if index > 1 {
-            let module = &source[segments[index - 2].byte_range()];
-            document.module_files.get(module).copied()
-        } else {
-            document.source_map.root_file_id()
-        };
+        let owner_file = module_path_file(&segments[..index - 1], source, document);
         let owners: Vec<&ast::DefId> = document
             .type_defs
             .keys()
@@ -854,12 +852,7 @@ fn path_definition(
         }
     }
 
-    let expected_file = if index > 0 {
-        let module = &source[segments[index - 1].byte_range()];
-        document.module_files.get(module).copied()
-    } else {
-        document.source_map.root_file_id()
-    };
+    let expected_file = module_path_file(&segments[..index], source, document);
     document
         .type_defs
         .iter()
@@ -877,10 +870,7 @@ fn type_definition(
         "named_type" => document.source_map.root_file_id(),
         "qualified_type" if parent.child_by_field_name("name") == Some(node) => {
             let module = parent.child_by_field_name("module")?;
-            document
-                .module_files
-                .get(&source[module.byte_range()])
-                .copied()
+            module_path_file(&[module], source, document)
         }
         _ => return None,
     };
@@ -888,6 +878,61 @@ fn type_definition(
         .type_defs
         .iter()
         .find_map(|(id, span)| (id.name == name && Some(id.file) == file).then_some(*span))
+}
+
+/// Resolves a module fragment in a qualified path to the import statement
+/// that introduced it. Later fragments walk imports in the preceding module,
+/// so `a::b::item` maps `a` to the root import and `b` to the import in `a`.
+fn import_fragment_definition(
+    node: Node<'_>,
+    source: &str,
+    document: &Document,
+) -> Option<SourceSpan> {
+    let parent = node.parent()?;
+    let segments = if parent.kind() == "path_segment" {
+        let path = parent.parent().filter(|path| {
+            matches!(
+                path.kind(),
+                "path_expr" | "variant_pattern" | "unit_variant_pattern"
+            )
+        })?;
+        let mut cursor = path.walk();
+        path.named_children(&mut cursor)
+            .filter(|child| child.kind() == "path_segment")
+            .filter_map(|segment| segment.child_by_field_name("name"))
+            .collect::<Vec<_>>()
+    } else if matches!(
+        parent.kind(),
+        "qualified_type" | "struct_literal" | "struct_pattern"
+    ) && parent.child_by_field_name("module") == Some(node)
+    {
+        vec![node]
+    } else {
+        return None;
+    };
+    let index = segments.iter().position(|segment| *segment == node)?;
+    let mut file_id = document.source_map.root_file_id()?;
+    for (segment_index, segment) in segments.iter().enumerate().take(index + 1) {
+        let name = source.get(segment.byte_range())?;
+        let import = document.module_imports.get(&(file_id, name.to_owned()))?;
+        if segment_index == index {
+            return Some(import.span);
+        }
+        file_id = import.file_id;
+    }
+    None
+}
+
+fn module_path_file(segments: &[Node<'_>], source: &str, document: &Document) -> Option<u32> {
+    let mut file_id = document.source_map.root_file_id()?;
+    for segment in segments {
+        let name = source.get(segment.byte_range())?;
+        file_id = document
+            .module_imports
+            .get(&(file_id, name.to_owned()))?
+            .file_id;
+    }
+    Some(file_id)
 }
 
 fn import_path_definition(node: Node<'_>, source: &str, document: &Document) -> Option<SourceSpan> {
@@ -1392,9 +1437,10 @@ struct Document {
     global_defs: HashMap<ast::DefId, SourceSpan>,
     /// Source ranges of generic functions/methods in the root file.
     generic_bodies: Vec<SourceSpan>,
-    /// Module aliases declared by the root source, resolved to source-map file
-    /// identities for qualified type/path navigation.
-    module_files: HashMap<String, u32>,
+    /// Module aliases declared throughout the resolved import graph. Each
+    /// entry records both the imported file and the import statement so path
+    /// fragments can navigate through re-exported modules.
+    module_imports: HashMap<(u32, String), ModuleImport>,
     /// `file_id` → path + source, to turn a definition's span into an LSP
     /// `Location` (URI + UTF-16 range) in whatever file it lives in.
     source_map: SourceMap,
@@ -1408,6 +1454,12 @@ struct Analysis {
     typed: typed_ast::SourceFile,
     file_id: u32,
     names: Names,
+}
+
+#[derive(Clone, Copy)]
+struct ModuleImport {
+    file_id: u32,
+    span: SourceSpan,
 }
 
 /// Returns cached analysis for a document.
@@ -1437,7 +1489,7 @@ fn compute_with_diagnostics(uri: &str, source: &str) -> (Document, HashMap<Strin
         }
     };
     let definition_catalog = collect_definition_catalog(&ast, source_map.root_file_id());
-    let module_files = collect_module_files(&path, source, &source_map);
+    let module_imports = collect_module_imports(&source_map);
     let signatures = collect_signatures(&ast, &source_map);
     let (analysis, diagnostics) = match typed_ast::lower(&ast) {
         Ok(typed) => (analysis_from_typed(typed, &source_map), HashMap::new()),
@@ -1460,7 +1512,7 @@ fn compute_with_diagnostics(uri: &str, source: &str) -> (Document, HashMap<Strin
         type_defs: definition_catalog.type_defs,
         global_defs: definition_catalog.global_defs,
         generic_bodies: definition_catalog.generic_bodies,
-        module_files,
+        module_imports,
         analysis,
         source_map,
     };
@@ -1534,31 +1586,50 @@ fn collect_definition_catalog(
     out
 }
 
-fn collect_module_files(
-    root_path: &std::path::Path,
-    source: &str,
-    source_map: &SourceMap,
-) -> HashMap<String, u32> {
+fn collect_module_imports(source_map: &SourceMap) -> HashMap<(u32, String), ModuleImport> {
     use solar::ast::{ImportKind, TopLevelItem};
-    let Ok(parsed) = solar::parser::parse(source) else {
-        return HashMap::new();
-    };
-    let base = root_path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."));
     let mut modules = HashMap::new();
-    for item in parsed.items {
-        let TopLevelItem::Import(import) = item else {
-            continue;
-        };
-        let ImportKind::Module(alias) = import.kind else {
-            continue;
-        };
-        if import.path.starts_with('@') {
+    let Some(root_file) = source_map.root_file_id() else {
+        return modules;
+    };
+    let mut pending = vec![root_file];
+    let mut visited = HashSet::new();
+
+    while let Some(file_id) = pending.pop() {
+        if !visited.insert(file_id) {
             continue;
         }
-        if let Some(file_id) = source_map.file_id_for_path(&base.join(import.path)) {
-            modules.insert(alias, file_id);
+        let Some((filename, source)) = source_map.get(file_id) else {
+            continue;
+        };
+        let Ok(parsed) = solar::parser::parse(source) else {
+            continue;
+        };
+        let base = std::path::Path::new(filename)
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+
+        for item in parsed.items {
+            let TopLevelItem::Import(mut import) = item else {
+                continue;
+            };
+            if import.path.starts_with('@') {
+                continue;
+            }
+            let Some(imported_file) = source_map.file_id_for_path(&base.join(&import.path)) else {
+                continue;
+            };
+            pending.push(imported_file);
+            if let ImportKind::Module(alias) = import.kind {
+                import.span.file_id = file_id;
+                modules.insert(
+                    (file_id, alias),
+                    ModuleImport {
+                        file_id: imported_file,
+                        span: import.span,
+                    },
+                );
+            }
         }
     }
     modules
@@ -2495,6 +2566,47 @@ fn main() {
         );
         assert_eq!(location["range"]["start"]["line"], 0);
         assert_eq!(location["range"]["start"]["character"], 0);
+    }
+
+    #[test]
+    fn definition_and_hover_resolve_imported_path_fragments() {
+        let (_, source, document) = fixture_document("tests/multi_file/many_modules/main.solar");
+
+        for (needle, target_file, import_statement) in [
+            (
+                "d::c::b::a::Enum::Variant",
+                "many_modules/main.solar",
+                "import d from \"d.solar\";",
+            ),
+            (
+                "c::b::a::Enum::Variant",
+                "many_modules/d.solar",
+                "pub import c from \"c.solar\";",
+            ),
+            (
+                "b::a::Enum::Variant",
+                "many_modules/c.solar",
+                "pub import b from \"b.solar\";",
+            ),
+            (
+                "a::Enum::Variant",
+                "many_modules/b.solar",
+                "pub import a from \"a.solar\";",
+            ),
+        ] {
+            let (line, character) = occurrence_position(&source, needle, 0);
+            let location = definition(&source, line, character, &document)
+                .expect("import fragment definition");
+            assert!(
+                location["uri"].as_str().unwrap().ends_with(target_file),
+                "{needle}: {location}"
+            );
+            assert_eq!(location["range"]["start"]["line"], 0, "{needle}");
+
+            let hover = hover(&source, line, character, &document).expect("import fragment hover");
+            let contents = hover["contents"]["value"].as_str().unwrap();
+            assert!(contents.contains(import_statement), "{needle}: {contents}");
+        }
     }
 
     #[test]
