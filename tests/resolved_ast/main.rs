@@ -39,6 +39,6 @@ fn numeric_constructors_are_added_once_to_resolver_output() {
         StatementKind::Expression(ast::Expr {
             kind: ExprKind::Call { function, .. },
             ..
-        }) if matches!(&function.kind, ExprKind::Identifier(name) if name == "Int")
+        }) if matches!(&function.kind, ExprKind::Identifier(ast::Ident::User(name)) if name == "Int")
     ));
 }

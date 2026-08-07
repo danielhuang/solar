@@ -856,8 +856,18 @@ fn apply_subst_to_ast_pattern(
 /// Extract the name from a simple DestructurePattern::Name, or return a placeholder.
 fn pattern_name_or_placeholder(pat: &ast::DestructurePattern) -> String {
     match pat {
-        ast::DestructurePattern::Name(name) => name.clone(),
+        ast::DestructurePattern::Name(ast::Ident::User(name)) => name.clone(),
+        ast::DestructurePattern::Name(ast::Ident::Synthetic(_)) => {
+            unreachable!("synthetic parameter used for source-level diagnostics")
+        }
         _ => "<pattern>".to_string(),
+    }
+}
+
+fn pattern_ident_or_placeholder(pat: &ast::DestructurePattern, index: usize) -> ast::Ident {
+    match pat {
+        ast::DestructurePattern::Name(name) => name.clone(),
+        _ => ast::Ident::synthetic(format!("__param_{index}")),
     }
 }
 
@@ -981,7 +991,7 @@ fn prepare_keyword_params(f: &mut ast::FunctionDef) -> Result<(), CompileError> 
 }
 
 /// Extract the name from a simple DestructurePattern::Name, or panic for compound patterns.
-fn pattern_name(pat: &ast::DestructurePattern) -> &str {
+fn pattern_name(pat: &ast::DestructurePattern) -> &ast::Ident {
     match pat {
         ast::DestructurePattern::Name(name) => name,
         _ => panic!("expected simple identifier pattern, got compound pattern"),
@@ -1051,7 +1061,7 @@ pub struct FunctionDef {
 #[derive(Debug, Clone)]
 pub struct Parameter {
     /// Parameter name.
-    pub name: String,
+    pub name: ast::Ident,
     /// Parameter type.
     pub ty: Type,
     /// Declaration span.
@@ -1071,7 +1081,7 @@ pub struct Statement {
 #[derive(Debug, Clone)]
 pub enum StatementKind {
     Let {
-        name: String,
+        name: ast::Ident,
         ty: Type,
         value: Expr,
     },
@@ -1108,7 +1118,7 @@ pub struct Expr {
 /// A typed expression.
 #[derive(Debug, Clone)]
 pub enum ExprKind {
-    Identifier(String),
+    Identifier(ast::Ident),
     /// A float literal; the expression's `ty` selects Float32/Float64.
     FloatLiteral(f64),
     /// A reference to a top-level `static` (a global mutable place).
@@ -1208,7 +1218,7 @@ pub struct FieldInit {
 #[derive(Debug, Clone)]
 pub struct CapturedVar {
     /// Variable name.
-    pub name: String,
+    pub name: ast::Ident,
     /// Captured type.
     pub ty: Type,
 }
@@ -1249,15 +1259,15 @@ pub enum TypedPattern {
         enum_id: TypeId,
         variant_name: String,
         variant_index: usize,
-        binding: Option<(String, Type)>,
+        binding: Option<(ast::Ident, Type)>,
     },
-    Wildcard(String, Type),
+    Wildcard(ast::Ident, Type),
 }
 
 struct CaptureContext {
     scope_depth_barrier: usize,
     captures: Vec<CapturedVar>,
-    captured_names: HashSet<String>,
+    captured_names: HashSet<ast::Ident>,
 }
 
 struct GenericStructDef {
@@ -1589,7 +1599,7 @@ struct Lowerer<'a> {
     mono_depth: usize,
     resolved_return_types: HashMap<FuncId, Type>,
     resolving_return_types: Vec<FuncId>,
-    scopes: ScopeStack<Type>,
+    scopes: ScopeStack<Type, ast::Ident>,
     current_return_type: Option<Type>,
     current_return_type_span: Option<ast::SourceSpan>,
     closure_counter: usize,
@@ -2072,11 +2082,11 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn define_var(&mut self, name: String, ty: Type) {
+    fn define_var(&mut self, name: ast::Ident, ty: Type) {
         self.scopes.define(name, ty);
     }
 
-    fn lookup_var(&mut self, name: &str) -> Option<Type> {
+    fn lookup_var(&mut self, name: &ast::Ident) -> Option<Type> {
         if let Some(ty) = self.scopes.lookup(name) {
             let ty = ty.clone();
             // If we're inside one or more closures and the variable is from
@@ -2102,9 +2112,9 @@ impl<'a> Lowerer<'a> {
                         // the closure (below its scope barrier).
                         if ctx.scope_depth_barrier > def_depth && !ctx.captured_names.contains(name)
                         {
-                            ctx.captured_names.insert(name.to_string());
+                            ctx.captured_names.insert(name.clone());
                             ctx.captures.push(CapturedVar {
-                                name: name.to_string(),
+                                name: name.clone(),
                                 ty: ty.clone(),
                             });
                         }
@@ -3117,9 +3127,10 @@ impl<'a> Lowerer<'a> {
             let stub_params = ast_def
                 .parameters
                 .iter()
-                .map(|p| {
+                .enumerate()
+                .map(|(index, p)| {
                     Ok(Parameter {
-                        name: pattern_name_or_placeholder(&p.pattern),
+                        name: pattern_ident_or_placeholder(&p.pattern, index),
                         ty: self.resolve_ast_type(&p.ty)?,
                         span: p.span,
                     })
@@ -3493,7 +3504,7 @@ impl<'a> Lowerer<'a> {
                     });
                 }
                 _ => {
-                    let synthetic_name = format!("__param_{i}");
+                    let synthetic_name = ast::Ident::synthetic(format!("__param_{i}"));
                     self.define_var(synthetic_name.clone(), ty.clone());
                     let base_expr = Expr {
                         ty: ty.clone(),
@@ -3703,7 +3714,10 @@ impl<'a> Lowerer<'a> {
                     }
                     _ => {
                         // Bind RHS to a temp, then expand destructuring
-                        let tmp_name = format!("__destructure_{}", self.destructure_counter);
+                        let tmp_name = ast::Ident::synthetic(format!(
+                            "__destructure_{}",
+                            self.destructure_counter
+                        ));
                         self.destructure_counter += 1;
                         self.define_var(tmp_name.clone(), resolved_ty.clone());
                         let mut stmts = vec![Statement {
@@ -3842,7 +3856,7 @@ impl<'a> Lowerer<'a> {
             } => {
                 let n = self.for_counter;
                 self.for_counter += 1;
-                let counter_name = format!("__for_counter_{n}");
+                let counter_name = ast::Ident::synthetic(format!("__for_counter_{n}"));
                 let lowered_start = self.lower_expr(start)?;
                 let lowered_end = self.lower_expr(end)?;
                 let iter_ty = lowered_start.ty.clone();
@@ -4141,10 +4155,11 @@ impl<'a> Lowerer<'a> {
                     &fdef.body,
                 )?;
                 let fn_ty = closure_expr.ty.clone();
-                self.define_var(fdef.name.clone(), fn_ty.clone());
+                let local_name = ast::Ident::user(fdef.name.clone());
+                self.define_var(local_name.clone(), fn_ty.clone());
                 Ok(vec![Statement {
                     kind: StatementKind::Let {
-                        name: fdef.name.clone(),
+                        name: local_name,
                         ty: fn_ty,
                         value: closure_expr,
                     },
@@ -4232,16 +4247,23 @@ impl<'a> Lowerer<'a> {
     fn lower_expr(&mut self, expr: &ast::Expr) -> Result<Expr, CompileError> {
         match &expr.kind {
             ast::ExprKind::Identifier(name) => {
+                let source_name = match name {
+                    ast::Ident::User(name) => Some(name.as_str()),
+                    ast::Ident::Synthetic(_) => None,
+                };
                 // Check for nested overloaded/generic functions (can't be used as values)
                 let has_nested_multi = self.nested_function_defs.iter().rev().any(|m| {
-                    m.get(name.as_str()).is_some_and(|entries| {
-                        entries.len() > 1 || !entries[0].type_params.is_empty()
-                    })
+                    source_name
+                        .and_then(|name| m.get(name))
+                        .is_some_and(|entries| {
+                            entries.len() > 1 || !entries[0].type_params.is_empty()
+                        })
                 });
                 if has_nested_multi {
                     return Err(CompileError::new(
                         format!(
-                            "ambiguous function reference: nested function `{name}` has multiple overloads"
+                            "ambiguous function reference: nested function `{}` has multiple overloads",
+                            source_name.unwrap()
                         ),
                         expr.span,
                     ));
@@ -4252,7 +4274,7 @@ impl<'a> Lowerer<'a> {
                         kind: ExprKind::Identifier(name.clone()),
                         span: expr.span,
                     })
-                } else if let Some(cdef) = self.lookup_const(name) {
+                } else if let Some(cdef) = source_name.and_then(|name| self.lookup_const(name)) {
                     // A block-local const: substitute its literal value.
                     let value = self.lower_const_value(&cdef)?;
                     Ok(Expr {
@@ -4260,8 +4282,8 @@ impl<'a> Lowerer<'a> {
                         kind: value.kind,
                         span: expr.span,
                     })
-                } else if let Some(def) =
-                    self.function_defs.keys().find(|d| d.name == *name).cloned()
+                } else if let Some(def) = source_name
+                    .and_then(|name| self.function_defs.keys().find(|d| d.name == name).cloned())
                 {
                     // A top-level function referenced by bare name: a numeric
                     // constructor (synthetic), or the resolve-bypassing raw
@@ -4269,7 +4291,10 @@ impl<'a> Lowerer<'a> {
                     self.lower_global_ref(&def, expr.span)
                 } else {
                     Err(CompileError::new(
-                        format!("undefined variable: {name}"),
+                        format!(
+                            "undefined variable: {}",
+                            source_name.unwrap_or("<synthetic>")
+                        ),
                         expr.span,
                     ))
                 }
@@ -4517,7 +4542,7 @@ impl<'a> Lowerer<'a> {
                         {
                             Some(def.clone())
                         }
-                        ast::ExprKind::Identifier(name) => self
+                        ast::ExprKind::Identifier(ast::Ident::User(name)) => self
                             .structs
                             .iter()
                             .find(|(_, s)| s.name == *name && s.is_tuple)
@@ -4646,7 +4671,7 @@ impl<'a> Lowerer<'a> {
                 // (Intrinsic calls are handled by IntrinsicCall variant now)
 
                 // Nested function calls (unified: generic + concrete + overloaded)
-                if let ast::ExprKind::Identifier(name) = &function.as_ref().kind {
+                if let ast::ExprKind::Identifier(ast::Ident::User(name)) = &function.as_ref().kind {
                     let nested_entries = self
                         .nested_function_defs
                         .iter()
@@ -4851,8 +4876,8 @@ impl<'a> Lowerer<'a> {
                 // A call to a top-level function via a bare `Identifier` callee:
                 // a numeric constructor (synthetic), or the resolve-bypassing raw
                 // typecheck path.
-                if let ast::ExprKind::Identifier(name) = &function.as_ref().kind
-                    && self.lookup_var(name).is_none()
+                if let ast::ExprKind::Identifier(ast::Ident::User(name)) = &function.as_ref().kind
+                    && self.lookup_var(&ast::Ident::User(name.clone())).is_none()
                     && let Some(def) = self.function_defs.keys().find(|d| d.name == *name).cloned()
                 {
                     let entries = self.function_defs[&def].clone();
@@ -5833,7 +5858,7 @@ impl<'a> Lowerer<'a> {
         let scrutinee_ty = scrutinee.ty.clone();
         let n = self.destructure_counter;
         self.destructure_counter += 1;
-        let temp_name = format!("__integer_match_{n}");
+        let temp_name = ast::Ident::synthetic(format!("__integer_match_{n}"));
 
         let mut seen_literals = HashSet::new();
         let mut wildcard_index = None;
@@ -6131,7 +6156,8 @@ impl<'a> Lowerer<'a> {
             .map(|f| f.name.clone())
             .collect();
 
-        let tmp_name = format!("__reflect_fields_{}", self.destructure_counter);
+        let tmp_name =
+            ast::Ident::synthetic(format!("__reflect_fields_{}", self.destructure_counter));
         self.destructure_counter += 1;
 
         // { let tmp = object; { let x = ("f1"&, tmp@.f1&); body } { ... } }
@@ -6175,21 +6201,25 @@ impl<'a> Lowerer<'a> {
                 span,
             };
             let components = [name_ref, field_ref];
-            let mut block_stmts =
-                Self::direct_reflect_bindings(pattern, &components, &[tmp_name.as_str()], span)
-                    .unwrap_or_else(|| {
-                        vec![ast::Statement {
-                            kind: ast::StatementKind::Let {
-                                pattern: pattern.clone(),
-                                ty: None,
-                                value: ast::Expr {
-                                    kind: ast::ExprKind::TupleLiteral(components.to_vec()),
-                                    span,
-                                },
-                            },
+            let mut block_stmts = Self::direct_reflect_bindings(
+                pattern,
+                &components,
+                std::slice::from_ref(&tmp_name),
+                span,
+            )
+            .unwrap_or_else(|| {
+                vec![ast::Statement {
+                    kind: ast::StatementKind::Let {
+                        pattern: pattern.clone(),
+                        ty: None,
+                        value: ast::Expr {
+                            kind: ast::ExprKind::TupleLiteral(components.to_vec()),
                             span,
-                        }]
-                    });
+                        },
+                    },
+                    span,
+                }]
+            });
             block_stmts.extend(body.iter().cloned());
             outer_stmts.push(ast::Statement {
                 kind: ast::StatementKind::Expression(ast::Expr {
@@ -6217,7 +6247,7 @@ impl<'a> Lowerer<'a> {
     fn direct_reflect_bindings(
         pattern: &ast::DestructurePattern,
         components: &[ast::Expr],
-        protected_names: &[&str],
+        protected_names: &[ast::Ident],
         span: ast::SourceSpan,
     ) -> Option<Vec<ast::Statement>> {
         let ast::DestructurePattern::Tuple(parts) = pattern else {
@@ -6225,7 +6255,7 @@ impl<'a> Lowerer<'a> {
         };
         if parts.len() != components.len()
             || !parts.iter().all(|part| {
-                matches!(part, ast::DestructurePattern::Name(name) if !protected_names.contains(&name.as_str()))
+                matches!(part, ast::DestructurePattern::Name(name) if !protected_names.contains(name))
             })
         {
             return None;
@@ -6239,13 +6269,15 @@ impl<'a> Lowerer<'a> {
                     let ast::DestructurePattern::Name(name) = part else {
                         unreachable!();
                     };
-                    (name != "_").then(|| ast::Statement {
-                        kind: ast::StatementKind::Let {
-                            pattern: part.clone(),
-                            ty: None,
-                            value: value.clone(),
-                        },
-                        span,
+                    (!matches!(name, ast::Ident::User(name) if name == "_")).then(|| {
+                        ast::Statement {
+                            kind: ast::StatementKind::Let {
+                                pattern: part.clone(),
+                                ty: None,
+                                value: value.clone(),
+                            },
+                            span,
+                        }
                     })
                 })
                 .collect(),
@@ -6315,12 +6347,12 @@ impl<'a> Lowerer<'a> {
 
         let n = self.destructure_counter;
         self.destructure_counter += 1;
-        let tmp0 = format!("__reflect_fields_{n}_a");
-        let tmp1 = format!("__reflect_fields_{n}_b");
+        let tmp0 = ast::Ident::synthetic(format!("__reflect_fields_{n}_a"));
+        let tmp1 = ast::Ident::synthetic(format!("__reflect_fields_{n}_b"));
 
-        let let_tmp = |name: &str, value: &ast::Expr| ast::Statement {
+        let let_tmp = |name: &ast::Ident, value: &ast::Expr| ast::Statement {
             kind: ast::StatementKind::Let {
-                pattern: ast::DestructurePattern::Name(name.to_string()),
+                pattern: ast::DestructurePattern::Name(name.clone()),
                 ty: None,
                 value: value.clone(),
             },
@@ -6328,12 +6360,12 @@ impl<'a> Lowerer<'a> {
         };
         let mut outer_stmts = vec![let_tmp(&tmp0, obj0), let_tmp(&tmp1, obj1)];
 
-        let field_ref = |tmp: &str, fname: &str| ast::Expr {
+        let field_ref = |tmp: &ast::Ident, fname: &str| ast::Expr {
             kind: ast::ExprKind::Reference(Box::new(ast::Expr {
                 kind: ast::ExprKind::FieldAccess {
                     object: Box::new(ast::Expr {
                         kind: ast::ExprKind::Deref(Box::new(ast::Expr {
-                            kind: ast::ExprKind::Identifier(tmp.to_string()),
+                            kind: ast::ExprKind::Identifier(tmp.clone()),
                             span,
                         })),
                         span,
@@ -6364,7 +6396,7 @@ impl<'a> Lowerer<'a> {
             let mut block_stmts = Self::direct_reflect_bindings(
                 pattern,
                 &components,
-                &[tmp0.as_str(), tmp1.as_str()],
+                &[tmp0.clone(), tmp1.clone()],
                 span,
             )
             .unwrap_or_else(|| {
@@ -6443,13 +6475,13 @@ impl<'a> Lowerer<'a> {
 
         let n = self.destructure_counter;
         self.destructure_counter += 1;
-        let tmp0 = format!("__reflect_variant_{n}_a");
-        let tmp1 = format!("__reflect_variant_{n}_b");
-        let bind0 = format!("__reflect_variant_binding_{n}_a");
-        let bind1 = format!("__reflect_variant_binding_{n}_b");
+        let tmp0 = ast::Ident::synthetic(format!("__reflect_variant_{n}_a"));
+        let tmp1 = ast::Ident::synthetic(format!("__reflect_variant_{n}_b"));
+        let bind0 = ast::Ident::synthetic(format!("__reflect_variant_binding_{n}_a"));
+        let bind1 = ast::Ident::synthetic(format!("__reflect_variant_binding_{n}_b"));
 
-        let ident = |name: &str| ast::Expr {
-            kind: ast::ExprKind::Identifier(name.to_string()),
+        let ident = |name: &ast::Ident| ast::Expr {
+            kind: ast::ExprKind::Identifier(name.clone()),
             span,
         };
 
@@ -6530,7 +6562,7 @@ impl<'a> Lowerer<'a> {
                     },
                 },
                 ast::MatchArm {
-                    pattern: ast::Pattern::Wildcard("_".to_string()),
+                    pattern: ast::Pattern::Wildcard(ast::Ident::synthetic("_")),
                     body: ast::Expr {
                         kind: ast::ExprKind::Block(vec![]),
                         span,
@@ -6573,9 +6605,9 @@ impl<'a> Lowerer<'a> {
             }),
             span,
         };
-        let let_tmp = |name: &str, value: &ast::Expr| ast::Statement {
+        let let_tmp = |name: &ast::Ident, value: &ast::Expr| ast::Statement {
             kind: ast::StatementKind::Let {
-                pattern: ast::DestructurePattern::Name(name.to_string()),
+                pattern: ast::DestructurePattern::Name(name.clone()),
                 ty: None,
                 value: value.clone(),
             },
@@ -6652,8 +6684,8 @@ impl<'a> Lowerer<'a> {
         let (enum_ast_name, enum_ast_targs) = self.enum_pattern_parts(&enum_name);
         let n = self.destructure_counter;
         self.destructure_counter += 1;
-        let tmp_name = format!("__reflect_variant_{n}");
-        let binding_name = format!("__reflect_variant_binding_{n}");
+        let tmp_name = ast::Ident::synthetic(format!("__reflect_variant_{n}"));
+        let binding_name = ast::Ident::synthetic(format!("__reflect_variant_binding_{n}"));
 
         // { let tmp = object;
         //   match tmp@ {
@@ -6863,7 +6895,10 @@ impl<'a> Lowerer<'a> {
 
         let mut typed_params: Vec<Parameter> = Vec::new();
         for (i, p) in parameters.iter().enumerate() {
-            let name = pattern_name(&p.pattern).to_string();
+            let name = pattern_name(&p.pattern).clone();
+            let ast::Ident::User(display_name) = &name else {
+                unreachable!("closure parameters originate in source")
+            };
             let ty = if matches!(p.ty, ast::Type::Infer) {
                 expected_params
                     .and_then(|ps| ps.get(i))
@@ -6871,7 +6906,7 @@ impl<'a> Lowerer<'a> {
                     .ok_or_else(|| {
                         CompileError::new(
                             format!(
-                                "cannot infer type of closure parameter `{name}` without context"
+                                "cannot infer type of closure parameter `{display_name}` without context"
                             ),
                             span,
                         )
@@ -6881,7 +6916,7 @@ impl<'a> Lowerer<'a> {
             };
             if !ty.is_sized(&self.lowered_structs) {
                 return Err(CompileError::new(
-                    format!("closure parameter `{name}` has unsized type {}", ty),
+                    format!("closure parameter `{display_name}` has unsized type {}", ty),
                     span,
                 ));
             }
@@ -7041,22 +7076,19 @@ impl<'a> Lowerer<'a> {
         }
         let optional = &params[required..];
         let opt_name = |p: &ast::Parameter| match &p.pattern {
-            ast::DestructurePattern::Name(n) => Some(n.clone()),
+            ast::DestructurePattern::Name(ast::Ident::User(n)) => Some(n.clone()),
             _ => None,
         };
         // Every kwarg must name an optional parameter.
         for (k, _) in kwargs {
-            if !optional
-                .iter()
-                .any(|p| opt_name(p).as_deref() == Some(k.as_str()))
-            {
+            if !optional.iter().any(|p| opt_name(p).as_ref() == Some(k)) {
                 return None;
             }
         }
         let mut full: Vec<ast::Expr> = arguments.to_vec();
         for p in optional {
             let pname = opt_name(p)?;
-            match kwargs.iter().find(|(k, _)| *k == pname) {
+            match kwargs.iter().find(|(k, _)| k == &pname) {
                 Some((_, v)) => full.push(v.clone()),
                 None => full.push((**p.default.as_ref()?).clone()),
             }
@@ -7328,20 +7360,21 @@ impl<'a> Lowerer<'a> {
                 };
                 let coerced = self.try_coerce(lowered, &param.ty);
                 if coerced.ty != param.ty {
+                    let param_name = match &param.name {
+                        ast::Ident::User(name) => name.as_str(),
+                        ast::Ident::Synthetic(_) => "<destructured parameter>",
+                    };
                     return Err(CompileError::new(
                         format!(
                             "type mismatch in argument `{}` of {}: expected {}, got {}",
-                            param.name,
+                            param_name,
                             self.display_name(name),
                             param.ty,
                             coerced.ty
                         ),
                         coerced.span,
                     )
-                    .with_label(
-                        format!("parameter `{}` defined here", param.name),
-                        param.span,
-                    ));
+                    .with_label(format!("parameter `{param_name}` defined here"), param.span));
                 }
                 lowered_args.push(coerced);
             }
@@ -7526,7 +7559,7 @@ impl<'a> Lowerer<'a> {
                             if arguments.len() == required
                                 && let Some((k, _)) = kwargs.iter().find(|(k, _)| {
                                     !params[required..].iter().any(|p| {
-                                        matches!(&p.pattern, ast::DestructurePattern::Name(n) if n == k)
+                                        matches!(&p.pattern, ast::DestructurePattern::Name(ast::Ident::User(n)) if n == k)
                                     })
                                 })
                             {
@@ -7648,10 +7681,14 @@ impl<'a> Lowerer<'a> {
                     {
                         let coerced = self.try_coerce(lowered, &param.ty);
                         if coerced.ty != param.ty {
+                            let param_name = match &param.name {
+                                ast::Ident::User(name) => name.as_str(),
+                                ast::Ident::Synthetic(_) => "<destructured parameter>",
+                            };
                             return Err(CompileError::new(
                                 format!(
                                     "type mismatch in argument `{}` of {}: expected {}, got {}",
-                                    param.name,
+                                    param_name,
                                     self.display_name(name),
                                     param.ty,
                                     coerced.ty
@@ -7659,7 +7696,7 @@ impl<'a> Lowerer<'a> {
                                 coerced.span,
                             )
                             .with_label(
-                                format!("parameter `{}` defined here", param.name),
+                                format!("parameter `{param_name}` defined here"),
                                 param.span,
                             ));
                         }
@@ -7880,7 +7917,8 @@ impl<'a> Lowerer<'a> {
     ) -> Result<(), CompileError> {
         match pattern {
             ast::DestructurePattern::Name(name) => {
-                if name == "_" {
+                if matches!(name, ast::Ident::User(name) | ast::Ident::Synthetic(name) if name == "_")
+                {
                     // Wildcard — skip
                     return Ok(());
                 }

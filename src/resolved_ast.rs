@@ -40,7 +40,7 @@ fn generate_numeric_constructors(items: &mut Vec<ast::TopLevelItem>) {
                 display_name: target_name.to_string(),
                 type_params: Vec::new(),
                 parameters: vec![ast::Parameter {
-                    pattern: ast::DestructurePattern::Name("x".to_string()),
+                    pattern: ast::DestructurePattern::Name(ast::Ident::user("x")),
                     ty: ast::Type::Named(ast::DefId::new(0, from_name)),
                     default: None,
                     span,
@@ -52,7 +52,7 @@ fn generate_numeric_constructors(items: &mut Vec<ast::TopLevelItem>) {
                         kind: ast::ExprKind::IntrinsicCall {
                             intrinsic,
                             arguments: vec![ast::Expr {
-                                kind: ast::ExprKind::Identifier("x".to_string()),
+                                kind: ast::ExprKind::Identifier(ast::Ident::user("x")),
                                 span,
                             }],
                         },

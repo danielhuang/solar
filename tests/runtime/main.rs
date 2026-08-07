@@ -8,6 +8,15 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 #[test]
+fn synthetic_ident_collision() {
+    let output = run(
+        &fixture("synthetic_ident_collision.solar"),
+        "synthetic_ident_collision",
+    );
+    assert_eq!(output, "91\n92\n93\n94\n95\n7\n96\n97\n97\n98\n99\n17\n");
+}
+
+#[test]
 fn hashbrown_tag() {
     let output = run(&fixture("hashbrown_tag.solar"), "hashbrown_tag");
     assert_eq!(output, "255\n128\n127\n0\n1\n0\n1\n0\n1\n0\n");

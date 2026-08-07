@@ -97,7 +97,7 @@ fn try_catch_becomes_intrinsic_call_with_closures() {
                     pattern: ast::DestructurePattern::Name(name),
                     ty: ast::Type::Reference(inner),
                     ..
-                } if name == "e" && matches!(
+                } if matches!(name, ast::Ident::User(name) if name == "e") && matches!(
                     inner.as_ref(),
                     ast::Type::Slice(element)
                         if matches!(element.as_ref(), ast::Type::Named(ty) if ty.name == "Uint8")
@@ -139,7 +139,7 @@ fn numeric_constructor_syntax_remains_a_normal_call() {
         StatementKind::Expression(ast::Expr {
             kind: ExprKind::Call { function, .. },
             ..
-        }) if matches!(&function.kind, ExprKind::Identifier(name) if name == "Int")
+        }) if matches!(&function.kind, ExprKind::Identifier(ast::Ident::User(name)) if name == "Int")
     ));
 }
 
@@ -160,7 +160,7 @@ fn for_in_becomes_indexed_while_loop() {
         StatementKind::Let {
             pattern: ast::DestructurePattern::Name(name),
             ..
-        } if name == "__for_arr_0"
+        } if matches!(name, ast::Ident::Synthetic(name) if name == "__for_arr_0")
     ));
     assert!(matches!(
         &body[2].kind,
@@ -190,7 +190,7 @@ fn for_in_becomes_indexed_while_loop() {
                 ..
             },
             ..
-        } if name == "value"
+        } if matches!(name, ast::Ident::User(name) if name == "value")
     ));
     assert!(matches!(
         loop_body[1].kind,

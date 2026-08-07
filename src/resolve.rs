@@ -718,7 +718,7 @@ fn rewrite_function_body(f: &mut FunctionDef, parent_ctx: &RewriteCtx<'_>) {
     let type_params = &f.type_params;
 
     // Collect locally-bound names to avoid renaming them
-    let mut locals: HashSet<String> = HashSet::new();
+    let mut locals: HashSet<Ident> = HashSet::new();
     for p in &f.parameters {
         collect_pattern_names(&p.pattern, &mut locals);
     }
@@ -763,7 +763,7 @@ fn rewrite_function_body(f: &mut FunctionDef, parent_ctx: &RewriteCtx<'_>) {
     rewrite_statements(&mut f.body, &ctx, &mut locals);
 }
 
-fn collect_pattern_names(pat: &DestructurePattern, names: &mut HashSet<String>) {
+fn collect_pattern_names(pat: &DestructurePattern, names: &mut HashSet<Ident>) {
     match pat {
         DestructurePattern::Name(n) => {
             names.insert(n.clone());
@@ -816,13 +816,13 @@ fn rewrite_destructure_pattern(
     }
 }
 
-fn rewrite_statements(stmts: &mut [Statement], ctx: &RewriteCtx, locals: &mut HashSet<String>) {
+fn rewrite_statements(stmts: &mut [Statement], ctx: &RewriteCtx, locals: &mut HashSet<Ident>) {
     for stmt in stmts.iter_mut() {
         rewrite_statement(stmt, ctx, locals);
     }
 }
 
-fn rewrite_statement(stmt: &mut Statement, ctx: &RewriteCtx, locals: &mut HashSet<String>) {
+fn rewrite_statement(stmt: &mut Statement, ctx: &RewriteCtx, locals: &mut HashSet<Ident>) {
     stmt.span.file_id = ctx.file_id;
     match &mut stmt.kind {
         StatementKind::Let { pattern, ty, value } => {
@@ -889,13 +889,13 @@ fn rewrite_statement(stmt: &mut Statement, ctx: &RewriteCtx, locals: &mut HashSe
         }
         StatementKind::ReturnVoid => unreachable!("surface return reached name resolution"),
         StatementKind::NestedFunction(fdef) => {
-            locals.insert(fdef.name.clone());
+            locals.insert(Ident::user(fdef.name.clone()));
             rewrite_function_body(fdef, ctx);
         }
         StatementKind::Const(c) => {
             // A local const is block-scoped; treat its name as a local so later
             // references aren't rewritten to a module-mangled name.
-            locals.insert(c.name.clone());
+            locals.insert(Ident::user(c.name.clone()));
             if let Some(t) = &mut c.ty {
                 *t = rewrite_type(t, ctx.rename_map, ctx.module_aliases, ctx.type_params);
             }
@@ -911,13 +911,14 @@ fn rewrite_statement(stmt: &mut Statement, ctx: &RewriteCtx, locals: &mut HashSe
     }
 }
 
-fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<String>) {
+fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<Ident>) {
     expr.span.file_id = ctx.file_id;
     match &mut expr.kind {
         ExprKind::Identifier(name) => {
             // A non-local name is a reference to a top-level function / const /
             // static — resolve it to its provenance `DefId`.
-            if !locals.contains(name.as_str())
+            if let Ident::User(name) = name
+                && !locals.contains(&Ident::User(name.clone()))
                 && let Some(defid) = ctx.rename_map.get(name.as_str())
             {
                 expr.kind = ExprKind::GlobalRef(defid.clone());
@@ -949,7 +950,7 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<String>) {
             kwargs,
         } => {
             // Case 1: direct name import — func(x) where func is in intrinsic_names
-            if let ExprKind::Identifier(name) = &function.kind
+            if let ExprKind::Identifier(Ident::User(name)) = &function.kind
                 && ctx.intrinsic_names.contains(name.as_str())
             {
                 let intrinsic = Intrinsic::from_name(name).unwrap();

@@ -54,6 +54,30 @@ impl std::fmt::Display for DefId {
     }
 }
 
+/// The identity of a local binding.
+///
+/// User-written and compiler-generated identifiers remain distinct until the
+/// mangled AST, even when their descriptive names are the same.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Ident {
+    /// An identifier written in Solar source.
+    User(String),
+    /// An identifier introduced by compiler lowering.
+    Synthetic(String),
+}
+
+impl Ident {
+    /// Creates a user-written identifier.
+    pub fn user(name: impl Into<String>) -> Self {
+        Self::User(name.into())
+    }
+
+    /// Creates a compiler-generated identifier.
+    pub fn synthetic(name: impl Into<String>) -> Self {
+        Self::Synthetic(name.into())
+    }
+}
+
 /// A parsed Solar source file.
 #[derive(Debug)]
 pub struct SourceFile {
@@ -280,7 +304,7 @@ pub struct Parameter {
 /// A binding pattern used by parameters and local declarations.
 #[derive(Debug, Clone)]
 pub enum DestructurePattern {
-    Name(String),
+    Name(Ident),
     Tuple(Vec<DestructurePattern>),
     Struct {
         module: Option<String>,
@@ -330,20 +354,20 @@ pub enum StatementKind {
         body: Vec<Statement>,
     },
     ForRange {
-        variable: String,
+        variable: Ident,
         start: Expr,
         end: Expr,
         body: Vec<Statement>,
     },
     ForIn {
-        variable: String,
+        variable: Ident,
         iterable: Expr,
         body: Vec<Statement>,
     },
     /// Surface `try { ... } catch (binding[: type]) { ... }` syntax.
     Try {
         body: Vec<Statement>,
-        binding: String,
+        binding: Ident,
         binding_type: Option<Type>,
         handler: Vec<Statement>,
     },
@@ -422,7 +446,7 @@ pub struct Expr {
 #[derive(Debug, Clone)]
 pub enum ExprKind {
     /// A local or unresolved name.
-    Identifier(String),
+    Identifier(Ident),
     /// A resolved top-level name.
     GlobalRef(DefId),
     IntegerLiteral(i128, IntegerType),
@@ -788,11 +812,11 @@ pub enum Pattern {
         enum_name: DefId,
         type_args: Vec<Type>,
         variant_name: String,
-        binding: Option<String>,
+        binding: Option<Ident>,
     },
     /// An exact integer value pattern.
     IntegerLiteral(i128, IntegerType),
-    Wildcard(String),
+    Wildcard(Ident),
 }
 
 /// A field initializer in a struct literal.

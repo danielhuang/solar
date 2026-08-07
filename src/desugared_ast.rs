@@ -399,7 +399,7 @@ impl Desugarer {
         &mut self,
         span: ast::SourceSpan,
         body: Vec<ast::Statement>,
-        binding: String,
+        binding: ast::Ident,
         binding_type: Option<ast::Type>,
         handler: Vec<ast::Statement>,
     ) -> ast::StatementKind {
@@ -441,21 +441,21 @@ impl Desugarer {
     fn for_in(
         &mut self,
         span: ast::SourceSpan,
-        variable: String,
+        variable: ast::Ident,
         iterable: ast::Expr,
         mut body: Vec<ast::Statement>,
     ) -> Vec<ast::Statement> {
         let index = self.for_counter;
         self.for_counter += 1;
-        let array = format!("__for_arr_{index}");
-        let length = format!("__for_len_{index}");
-        let counter = format!("__for_idx_{index}");
+        let array = ast::Ident::synthetic(format!("__for_arr_{index}"));
+        let length = ast::Ident::synthetic(format!("__for_len_{index}"));
+        let counter = ast::Ident::synthetic(format!("__for_idx_{index}"));
 
-        let identifier = |name: &str| ast::Expr {
-            kind: ast::ExprKind::Identifier(name.to_string()),
+        let identifier = |name: &ast::Ident| ast::Expr {
+            kind: ast::ExprKind::Identifier(name.clone()),
             span,
         };
-        let binding = |name: String, value: ast::Expr| ast::Statement {
+        let binding = |name: ast::Ident, value: ast::Expr| ast::Statement {
             kind: ast::StatementKind::Let {
                 pattern: ast::DestructurePattern::Name(name),
                 ty: None,

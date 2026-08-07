@@ -500,6 +500,15 @@ struct Renderer<'a> {
 }
 
 impl Renderer<'_> {
+    fn ident_name(&self, ident: &ast::Ident) -> String {
+        match ident {
+            ast::Ident::User(name) => name.clone(),
+            // `$` cannot occur in source identifiers, so this encoding keeps
+            // the structural namespaces disjoint after conversion to strings.
+            ast::Ident::Synthetic(name) => format!("$synthetic${name}"),
+        }
+    }
+
     fn module_prefix(&self, file: u32) -> Rc<str> {
         if let Some(prefix) = self.prefixes.borrow().get(&file) {
             return Rc::clone(prefix);
@@ -698,7 +707,7 @@ impl Renderer<'_> {
 
     fn conv_param(&self, p: &ta::Parameter) -> Parameter {
         Parameter {
-            name: p.name.clone(),
+            name: self.ident_name(&p.name),
             ty: self.conv_type(&p.ty),
             span: p.span,
         }
@@ -706,7 +715,7 @@ impl Renderer<'_> {
 
     fn conv_capture(&self, c: &ta::CapturedVar) -> CapturedVar {
         CapturedVar {
-            name: c.name.clone(),
+            name: self.ident_name(&c.name),
             ty: self.conv_type(&c.ty),
         }
     }
@@ -722,7 +731,7 @@ impl Renderer<'_> {
         use ta::StatementKind as K;
         match k {
             K::Let { name, ty, value } => StatementKind::Let {
-                name: name.clone(),
+                name: self.ident_name(name),
                 ty: self.conv_type(ty),
                 value: self.conv_expr(value),
             },
@@ -765,7 +774,7 @@ impl Renderer<'_> {
     fn conv_expr_kind(&self, k: &ta::ExprKind) -> ExprKind {
         use ta::ExprKind as K;
         match k {
-            K::Identifier(name) => ExprKind::Identifier(name.clone()),
+            K::Identifier(name) => ExprKind::Identifier(self.ident_name(name)),
             K::FloatLiteral(v) => ExprKind::FloatLiteral(*v),
             K::Global(def) => ExprKind::Global(self.base_name(def)),
             K::IntegerLiteral(v) => ExprKind::IntegerLiteral(*v),
@@ -895,10 +904,10 @@ impl Renderer<'_> {
                 variant_index: *variant_index,
                 binding: binding
                     .as_ref()
-                    .map(|(n, t)| (n.clone(), self.conv_type(t))),
+                    .map(|(n, t)| (self.ident_name(n), self.conv_type(t))),
             },
             ta::TypedPattern::Wildcard(name, ty) => {
-                TypedPattern::Wildcard(name.clone(), self.conv_type(ty))
+                TypedPattern::Wildcard(self.ident_name(name), self.conv_type(ty))
             }
         }
     }

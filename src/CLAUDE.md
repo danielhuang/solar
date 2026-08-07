@@ -25,6 +25,8 @@ AST, while `ir_interp` and native codegen consume IR.
 
 - Keep identities structural through resolution and type checking. Do not
   encode file provenance in names before `mangled_ast`.
+- Keep user-written and compiler-generated local identifiers as distinct
+  `Ident` variants until `mangled_ast` renders them into disjoint strings.
 - Keep mangling and `solar-system/src/panic.rs` demangling in sync.
 - User program errors must use `CompileError` and the reporting system in
   `error.rs`; malformed input must not panic the compiler or LSP.

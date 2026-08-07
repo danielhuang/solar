@@ -434,7 +434,10 @@ fn convert_try_statement(node: tree_sitter::Node, source: &str) -> Statement {
     let span = source_span(node);
     let body = convert_block(node.child_by_field_name("body").unwrap(), source);
     let handler = convert_block(node.child_by_field_name("handler").unwrap(), source);
-    let binding = node_text(node.child_by_field_name("binding").unwrap(), source).to_string();
+    let binding = Ident::user(node_text(
+        node.child_by_field_name("binding").unwrap(),
+        source,
+    ));
     let binding_type = node
         .child_by_field_name("binding_type")
         .map(|ty| convert_type(ty, source));
@@ -457,7 +460,7 @@ fn convert_closure_parameter(node: tree_sitter::Node, source: &str) -> Parameter
         None => Type::Infer,
     };
     Parameter {
-        pattern: DestructurePattern::Name(name),
+        pattern: DestructurePattern::Name(Ident::user(name)),
         ty,
         default: None,
         span: source_span(node),
@@ -488,7 +491,7 @@ fn convert_arguments(node: tree_sitter::Node, source: &str) -> (Vec<Expr>, Vec<(
 
 fn convert_destructure_pattern(node: tree_sitter::Node, source: &str) -> DestructurePattern {
     match node.kind() {
-        "identifier" => DestructurePattern::Name(node_text(node, source).to_string()),
+        "identifier" => DestructurePattern::Name(Ident::user(node_text(node, source))),
         "tuple_pattern" => {
             let mut elements = Vec::new();
             for child in code_children(node) {
@@ -530,7 +533,7 @@ fn convert_struct_pattern_field(node: tree_sitter::Node, source: &str) -> Destru
         convert_destructure_pattern(pat_node, source)
     } else {
         // Shorthand: `field_name` binds to same name
-        DestructurePattern::Name(field_name.clone())
+        DestructurePattern::Name(Ident::user(field_name.clone()))
     };
     DestructureField {
         field_name,
@@ -663,7 +666,10 @@ fn convert_while_statement(node: tree_sitter::Node, source: &str) -> Statement {
 
 fn convert_for_statement(node: tree_sitter::Node, source: &str) -> Statement {
     let span = source_span(node);
-    let variable = node_text(node.child_by_field_name("variable").unwrap(), source).to_string();
+    let variable = Ident::user(node_text(
+        node.child_by_field_name("variable").unwrap(),
+        source,
+    ));
     let body_node = node.child_by_field_name("body").unwrap();
     let body = convert_block(body_node, source);
 
@@ -784,7 +790,7 @@ fn convert_if_expression(node: tree_sitter::Node, source: &str) -> Expr {
 fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
     let span = source_span(node);
     let kind = match node.kind() {
-        "identifier" => ExprKind::Identifier(node_text(node, source).to_string()),
+        "identifier" => ExprKind::Identifier(Ident::user(node_text(node, source))),
         "integer_literal" => {
             let text = node_text(node, source);
             let (num_str, int_ty) = parse_integer_suffix(text);
@@ -950,7 +956,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             let (arguments, kwargs) = convert_arguments(node, source);
             ExprKind::Call {
                 function: Box::new(Expr {
-                    kind: ExprKind::Identifier(name),
+                    kind: ExprKind::Identifier(Ident::user(name)),
                     span,
                 }),
                 type_args,
@@ -1262,8 +1268,10 @@ fn convert_pattern(node: tree_sitter::Node, source: &str) -> Pattern {
             let (variant_name, _) = segments.pop().unwrap();
             let (enum_name, type_args) = segments.pop().unwrap();
             let module_path: Vec<String> = segments.into_iter().map(|(n, _)| n).collect();
-            let binding =
-                node_text(node.child_by_field_name("binding").unwrap(), source).to_string();
+            let binding = Ident::user(node_text(
+                node.child_by_field_name("binding").unwrap(),
+                source,
+            ));
             Pattern::Variant {
                 module_path,
                 enum_name: DefId::new(0, enum_name),
@@ -1297,8 +1305,8 @@ fn convert_pattern(node: tree_sitter::Node, source: &str) -> Pattern {
             }
         }
         "wildcard_pattern" => {
-            let name = node_text(node.child_by_field_name("name").unwrap(), source).to_string();
-            Pattern::Wildcard(name)
+            let name = node_text(node.child_by_field_name("name").unwrap(), source);
+            Pattern::Wildcard(Ident::user(name))
         }
         "integer_literal" => {
             let text = node_text(node, source);

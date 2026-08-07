@@ -1723,7 +1723,15 @@ impl BindingSignatureCollector<'_> {
             .push(format!("{name}: {ty}"));
     }
 
-    fn record_declaration(&mut self, span: SourceSpan, name: &str, ty: &typed_ast::Type) {
+    fn record_declaration(
+        &mut self,
+        span: SourceSpan,
+        ident: &solar::ast::Ident,
+        ty: &typed_ast::Type,
+    ) {
+        let solar::ast::Ident::User(name) = ident else {
+            return;
+        };
         let span = SourceSpan {
             file_id: self.file_id,
             ..span

@@ -1,17 +1,19 @@
+use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::hash::Hash;
 
 /// A stack of lexical scopes.
-pub struct ScopeStack<V> {
-    scopes: Vec<HashMap<String, V>>,
+pub struct ScopeStack<V, K = String> {
+    scopes: Vec<HashMap<K, V>>,
 }
 
-impl<V> Default for ScopeStack<V> {
+impl<V, K> Default for ScopeStack<V, K> {
     fn default() -> Self {
         ScopeStack { scopes: Vec::new() }
     }
 }
 
-impl<V> ScopeStack<V> {
+impl<V, K: Eq + Hash> ScopeStack<V, K> {
     /// Pushes an empty innermost scope.
     pub fn push(&mut self) {
         self.scopes.push(HashMap::new());
@@ -23,12 +25,16 @@ impl<V> ScopeStack<V> {
     }
 
     /// Defines a name in the innermost scope.
-    pub fn define(&mut self, name: String, value: V) {
+    pub fn define(&mut self, name: K, value: V) {
         self.scopes.last_mut().unwrap().insert(name, value);
     }
 
     /// Finds the nearest binding for a name.
-    pub fn lookup(&self, name: &str) -> Option<&V> {
+    pub fn lookup<Q>(&self, name: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         for scope in self.scopes.iter().rev() {
             if let Some(v) = scope.get(name) {
                 return Some(v);
@@ -43,7 +49,11 @@ impl<V> ScopeStack<V> {
     }
 
     /// Looks up a name in a specific scope.
-    pub fn lookup_at(&self, name: &str, index: usize) -> Option<&V> {
+    pub fn lookup_at<Q>(&self, name: &Q, index: usize) -> Option<&V>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         self.scopes[index].get(name)
     }
 }
