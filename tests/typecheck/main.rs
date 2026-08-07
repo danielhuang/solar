@@ -47,6 +47,12 @@ fn try_catch_bad_binding_type() {
 }
 
 #[test]
+#[should_panic(expected = "undefined enum: TryBlockResult_0")]
+fn try_result_type_is_inaccessible() {
+    compile(&fixture("try_result_type_inaccessible.solar"));
+}
+
+#[test]
 #[should_panic(expected = "type mismatch in argument `n` of takes_int: expected Int, got Foo")]
 fn bad_arg() {
     compile(&fixture("typecheck_bad_arg.solar"));

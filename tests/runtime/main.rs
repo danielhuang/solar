@@ -20,6 +20,15 @@ fn synthetic_ident_collision() {
 }
 
 #[test]
+fn try_control_flow() {
+    let output = run(&fixture("try_control_flow.solar"), "try_control_flow");
+    assert_eq!(
+        output,
+        "10\n20\n30\n1\n3\n4\n11\n13\n4\n40\n50\n60\n70\n80\n"
+    );
+}
+
+#[test]
 fn hashbrown_tag() {
     let output = run(&fixture("hashbrown_tag.solar"), "hashbrown_tag");
     assert_eq!(output, "255\n128\n127\n0\n1\n0\n1\n0\n1\n0\n");

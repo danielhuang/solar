@@ -2,7 +2,7 @@
 
 use crate::ast;
 
-/// An untyped program with surface-only constructs removed.
+/// An untyped program after type-independent normalization.
 #[derive(Debug)]
 pub struct SourceFile {
     /// Top-level declarations in source order.
@@ -135,7 +135,12 @@ impl Desugarer {
             } => {
                 self.statements(&mut body);
                 self.statements(&mut handler);
-                one(self.try_statement(span, body, binding, binding_type, handler))
+                one(ast::StatementKind::Try {
+                    body,
+                    binding,
+                    binding_type,
+                    handler,
+                })
             }
             ast::StatementKind::ForReflectFields {
                 pattern,
@@ -393,49 +398,6 @@ impl Desugarer {
             },
         };
         ast::Expr { kind, span }
-    }
-
-    fn try_statement(
-        &mut self,
-        span: ast::SourceSpan,
-        body: Vec<ast::Statement>,
-        binding: ast::Ident,
-        binding_type: Option<ast::Type>,
-        handler: Vec<ast::Statement>,
-    ) -> ast::StatementKind {
-        let binding_type = binding_type.unwrap_or_else(|| {
-            ast::Type::Reference(Box::new(ast::Type::Slice(Box::new(ast::Type::Named(
-                ast::DefId::new(0, "Uint8"),
-            )))))
-        });
-        let body = ast::Expr {
-            kind: ast::ExprKind::Closure {
-                parameters: Vec::new(),
-                return_type: None,
-                body,
-            },
-            span,
-        };
-        let handler = ast::Expr {
-            kind: ast::ExprKind::Closure {
-                parameters: vec![ast::Parameter {
-                    pattern: ast::DestructurePattern::Name(binding),
-                    ty: binding_type,
-                    default: None,
-                    span,
-                }],
-                return_type: None,
-                body: handler,
-            },
-            span,
-        };
-        ast::StatementKind::Expression(ast::Expr {
-            kind: ast::ExprKind::IntrinsicCall {
-                intrinsic: ast::Intrinsic::Try,
-                arguments: vec![body, handler],
-            },
-            span,
-        })
     }
 
     fn for_in(

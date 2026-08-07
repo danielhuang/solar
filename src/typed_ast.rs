@@ -1605,6 +1605,7 @@ struct Lowerer<'a> {
     closure_counter: usize,
     destructure_counter: usize,
     for_counter: usize,
+    try_counter: usize,
     pending_closures: Vec<FunctionDef>,
     /// Stack of capture contexts, one per enclosing closure currently being
     /// lowered (innermost last). A variable referenced from an outer scope is
@@ -1630,16 +1631,15 @@ struct Lowerer<'a> {
     /// outer function's loop. Each entry tracks whether the loop is a value-
     /// producing `loop` and the unified type of its `break` values so far.
     loop_ctx: Vec<LoopCtx>,
-    /// Set (for the duration of one `lower_expr` call) when lowering an
-    /// argument of the `try` intrinsic — consumed by `lower_closure_with_expected`
-    /// to mark the closure as a `try` body / `catch` handler block.
+    /// Set while lowering a generated surface-`try` closure and consumed by
+    /// `lower_closure_with_expected` to activate its result context.
     next_closure_is_try_block: bool,
-    /// True while lowering statements directly inside a `try` body or `catch`
-    /// handler block (cleared on entering any nested closure or function).
-    /// `return` there is rejected: the block is compiled as a closure, so a
-    /// return could only exit the block, not the enclosing function — a silent
-    /// semantic trap. Users assign to a local and return after the `try`.
-    in_try_block: bool,
+    /// Active synthetic result state while lowering a `try` body or handler
+    /// closure. Cleared on entry to ordinary nested closures/functions.
+    in_try_block: Option<usize>,
+    /// Nested `try` lowering contexts. The active index is stored separately so
+    /// an inner ordinary closure can temporarily disable non-local control flow.
+    try_contexts: Vec<TryBlockContext>,
     /// `return <expr>` types (with spans) seen while lowering the body of a
     /// function/closure whose return type is *inferred* (`current_return_type`
     /// is `None`). Validated against the inferred return type once it is known
@@ -1649,6 +1649,7 @@ struct Lowerer<'a> {
 }
 
 /// Per-loop state used to type `loop` expressions and validate `break`.
+#[derive(Clone)]
 struct LoopCtx {
     /// True for a `loop` expression (a `break <value>` is allowed); false for
     /// `while`/`for`, which are statements and accept only valueless `break`.
@@ -1657,6 +1658,23 @@ struct LoopCtx {
     /// been encountered yet. A valueless `break` contributes `Unit`.
     break_ty: Option<Type>,
 }
+
+struct TryBlockContext {
+    result_name: ast::Ident,
+    result_id: TypeId,
+    target_return_type: Option<Type>,
+    target_return_span: Option<ast::SourceSpan>,
+    target_loop: Option<LoopCtx>,
+    return_ty: Option<Type>,
+    break_ty: Option<Type>,
+    has_break_void: bool,
+    has_continue: bool,
+}
+
+const TRY_RETURN_VARIANT: usize = 1;
+const TRY_BREAK_VARIANT: usize = 2;
+const TRY_BREAK_VOID_VARIANT: usize = 3;
+const TRY_CONTINUE_VARIANT: usize = 4;
 
 /// Coarse argument/parameter shape for overload pre-filtering. `Unknown` is the
 /// "no information" case and matches anything.
@@ -1936,6 +1954,7 @@ impl<'a> Lowerer<'a> {
             closure_counter: 0,
             destructure_counter: 0,
             for_counter: 0,
+            try_counter: 0,
             pending_closures: Vec::new(),
             capture_contexts: Vec::new(),
             nested_function_defs: Vec::new(),
@@ -1946,7 +1965,8 @@ impl<'a> Lowerer<'a> {
             statics: HashMap::new(),
             loop_ctx: Vec::new(),
             next_closure_is_try_block: false,
-            in_try_block: false,
+            in_try_block: None,
+            try_contexts: Vec::new(),
             inference_returns: Vec::new(),
         })
     }
@@ -3479,7 +3499,7 @@ impl<'a> Lowerer<'a> {
         let saved_loop_ctx = std::mem::take(&mut self.loop_ctx);
         // A nested function body is not part of any enclosing `try` block, and
         // collects its own inferred-return-type records.
-        let saved_in_try_block = std::mem::replace(&mut self.in_try_block, false);
+        let saved_in_try_block = self.in_try_block.take();
         let saved_inference_returns = std::mem::take(&mut self.inference_returns);
         let mut param_destructure_stmts: Vec<Statement> = Vec::new();
         let mut parameters: Vec<Parameter> = Vec::new();
@@ -3670,6 +3690,374 @@ impl<'a> Lowerer<'a> {
             inline_hint: func.inline_hint,
             def_span: func.span,
         })
+    }
+
+    fn lower_try_statement(
+        &mut self,
+        span: ast::SourceSpan,
+        body: &[ast::Statement],
+        binding: &ast::Ident,
+        binding_type: Option<&ast::Type>,
+        handler: &[ast::Statement],
+    ) -> Result<Vec<Statement>, CompileError> {
+        let index = self.try_counter;
+        self.try_counter += 1;
+        let result_def = DefId::synthetic(format!("TryBlockResult_{index}"));
+        let result_id = TypeId::plain(result_def.clone());
+        let variants = ["Default", "Return", "Break", "BreakVoid", "Continue"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, name)| EnumVariantDef {
+                name: name.to_string(),
+                inner_type: None,
+                index,
+            })
+            .collect();
+        self.lowered_enums.insert(
+            result_id.clone(),
+            EnumDef {
+                id: result_id.clone(),
+                variants,
+            },
+        );
+
+        let result_name = ast::Ident::synthetic(format!("__try_block_result_{index}"));
+        let initial = ast::Statement {
+            kind: ast::StatementKind::Let {
+                pattern: ast::DestructurePattern::Name(result_name.clone()),
+                ty: None,
+                value: ast::Expr {
+                    kind: ast::ExprKind::EnumVariant {
+                        module_path: Vec::new(),
+                        enum_name: result_def.clone(),
+                        type_args: Vec::new(),
+                        variant_name: "Default".to_string(),
+                    },
+                    span,
+                },
+            },
+            span,
+        };
+        let mut lowered = self.lower_statement(&initial)?;
+
+        let parent = self
+            .in_try_block
+            .and_then(|parent| self.try_contexts.get(parent));
+        let target_return_type = parent
+            .and_then(|context| context.target_return_type.clone())
+            .or_else(|| self.current_return_type.clone());
+        let target_return_span = parent
+            .and_then(|context| context.target_return_span)
+            .or(self.current_return_type_span);
+        let target_loop = self
+            .loop_ctx
+            .last()
+            .cloned()
+            .or_else(|| parent.and_then(|context| context.target_loop.clone()));
+        self.try_contexts.push(TryBlockContext {
+            result_name: result_name.clone(),
+            result_id: result_id.clone(),
+            target_return_type,
+            target_return_span,
+            target_loop,
+            return_ty: None,
+            break_ty: None,
+            has_break_void: false,
+            has_continue: false,
+        });
+
+        let binding_type = binding_type.cloned().unwrap_or_else(|| {
+            ast::Type::Reference(Box::new(ast::Type::Slice(Box::new(ast::Type::Named(
+                DefId::new(0, "Uint8"),
+            )))))
+        });
+        let closure = |parameters, body: &[ast::Statement]| ast::Expr {
+            kind: ast::ExprKind::Closure {
+                parameters,
+                return_type: None,
+                body: body.to_vec(),
+            },
+            span,
+        };
+        let arguments = [
+            closure(Vec::new(), body),
+            closure(
+                vec![ast::Parameter {
+                    pattern: ast::DestructurePattern::Name(binding.clone()),
+                    ty: binding_type,
+                    default: None,
+                    span,
+                }],
+                handler,
+            ),
+        ];
+        let mut lowered_arguments = Vec::with_capacity(arguments.len());
+        for argument in &arguments {
+            self.next_closure_is_try_block = true;
+            let lowered_argument = self.lower_expr(argument);
+            self.next_closure_is_try_block = false;
+            lowered_arguments.push(lowered_argument?);
+        }
+        let expected_arguments = intrinsic_spec(&ast::Intrinsic::Try).params;
+        for (argument, expected) in lowered_arguments.iter_mut().zip(expected_arguments) {
+            let ParamRequirement::Exact(expected) = expected else {
+                unreachable!("try closure requirements are exact function types")
+            };
+            *argument = self.try_coerce(argument.clone(), &expected);
+            if argument.ty != expected {
+                return Err(CompileError::new(
+                    format!("try: expected {expected}, got {}", argument.ty),
+                    span,
+                ));
+            }
+        }
+        let intrinsic = Expr {
+            ty: Type::Unit,
+            kind: ExprKind::IntrinsicCall {
+                intrinsic: ast::Intrinsic::Try,
+                arguments: lowered_arguments,
+            },
+            span,
+        };
+        lowered.push(Statement {
+            kind: StatementKind::Expression(intrinsic),
+            span,
+        });
+
+        let context = self.try_contexts.pop().unwrap();
+        let enum_def = self.lowered_enums.get_mut(&result_id).unwrap();
+        enum_def.variants[TRY_RETURN_VARIANT].inner_type = context.return_ty.clone();
+        enum_def.variants[TRY_BREAK_VARIANT].inner_type = context.break_ty.clone();
+
+        let empty_body = || ast::Expr {
+            kind: ast::ExprKind::Block(Vec::new()),
+            span,
+        };
+        let arm = |variant_name: &str,
+                   binding: Option<ast::Ident>,
+                   statements: Vec<ast::Statement>| ast::MatchArm {
+            pattern: ast::Pattern::Variant {
+                module_path: Vec::new(),
+                enum_name: result_def.clone(),
+                type_args: Vec::new(),
+                variant_name: variant_name.to_string(),
+                binding,
+            },
+            body: if statements.is_empty() {
+                empty_body()
+            } else {
+                ast::Expr {
+                    kind: ast::ExprKind::Block(statements),
+                    span,
+                }
+            },
+        };
+        let return_binding = ast::Ident::synthetic(format!("__try_return_{index}"));
+        let break_binding = ast::Ident::synthetic(format!("__try_break_{index}"));
+        let control_statement = |kind| ast::Statement { kind, span };
+        let mut arms = vec![arm("Default", None, Vec::new())];
+        arms.push(if context.return_ty.is_some() {
+            arm(
+                "Return",
+                Some(return_binding.clone()),
+                vec![control_statement(ast::StatementKind::Return(ast::Expr {
+                    kind: ast::ExprKind::Identifier(return_binding),
+                    span,
+                }))],
+            )
+        } else {
+            arm("Return", None, Vec::new())
+        });
+        arms.push(if context.break_ty.is_some() {
+            arm(
+                "Break",
+                Some(break_binding.clone()),
+                vec![control_statement(ast::StatementKind::Break(Some(
+                    ast::Expr {
+                        kind: ast::ExprKind::Identifier(break_binding),
+                        span,
+                    },
+                )))],
+            )
+        } else {
+            arm("Break", None, Vec::new())
+        });
+        arms.push(if context.has_break_void {
+            arm(
+                "BreakVoid",
+                None,
+                vec![control_statement(ast::StatementKind::Break(None))],
+            )
+        } else {
+            arm("BreakVoid", None, Vec::new())
+        });
+        arms.push(if context.has_continue {
+            arm(
+                "Continue",
+                None,
+                vec![control_statement(ast::StatementKind::Continue)],
+            )
+        } else {
+            arm("Continue", None, Vec::new())
+        });
+        let replay = self.lower_expr(&ast::Expr {
+            kind: ast::ExprKind::Match {
+                scrutinee: Box::new(ast::Expr {
+                    kind: ast::ExprKind::Identifier(result_name),
+                    span,
+                }),
+                arms,
+            },
+            span,
+        })?;
+        lowered.push(Statement {
+            kind: StatementKind::Expression(replay),
+            span,
+        });
+        Ok(lowered)
+    }
+
+    fn lower_try_return(
+        &mut self,
+        value: &ast::Expr,
+        span: ast::SourceSpan,
+    ) -> Result<Vec<Statement>, CompileError> {
+        let context_index = self.in_try_block.unwrap();
+        let mut lowered = self.lower_expr(value)?;
+        if lowered.ty == Type::Never {
+            return Ok(self.lower_never_try_control(lowered, span));
+        }
+        let expected = self.try_contexts[context_index]
+            .target_return_type
+            .clone()
+            .or_else(|| self.try_contexts[context_index].return_ty.clone());
+        if let Some(expected) = expected {
+            lowered = self.try_coerce(lowered, &expected);
+            if lowered.ty != expected {
+                let mut error = CompileError::new(
+                    format!(
+                        "return type mismatch: expected {expected}, got {}",
+                        lowered.ty
+                    ),
+                    lowered.span,
+                );
+                if let Some(return_span) = self.try_contexts[context_index].target_return_span {
+                    error = error.with_label(
+                        format!("expected {expected} because of return type"),
+                        return_span,
+                    );
+                }
+                return Err(error);
+            }
+        }
+        self.try_contexts[context_index].return_ty = Some(lowered.ty.clone());
+        Ok(self.lower_try_control("Return", TRY_RETURN_VARIANT, Some(lowered), span))
+    }
+
+    fn lower_try_break(
+        &mut self,
+        value: Option<&ast::Expr>,
+        span: ast::SourceSpan,
+    ) -> Result<Vec<Statement>, CompileError> {
+        let context_index = self.in_try_block.unwrap();
+        let target = self.try_contexts[context_index]
+            .target_loop
+            .clone()
+            .unwrap();
+        let Some(value) = value else {
+            self.try_contexts[context_index].has_break_void = true;
+            return Ok(self.lower_try_control("BreakVoid", TRY_BREAK_VOID_VARIANT, None, span));
+        };
+        if !target.is_value_loop {
+            return Err(CompileError::new(
+                "cannot `break` with a value out of a `while`/`for` loop".to_string(),
+                span,
+            ));
+        }
+        let mut lowered = self.lower_expr(value)?;
+        if lowered.ty == Type::Never {
+            return Ok(self.lower_never_try_control(lowered, span));
+        }
+        let expected = target
+            .break_ty
+            .or_else(|| self.try_contexts[context_index].break_ty.clone());
+        if let Some(expected) = expected {
+            lowered = self.try_coerce(lowered, &expected);
+            if lowered.ty != expected {
+                return Err(CompileError::new(
+                    format!(
+                        "`break` value type mismatch: expected {expected}, got {}",
+                        lowered.ty
+                    ),
+                    lowered.span,
+                ));
+            }
+        }
+        self.try_contexts[context_index].break_ty = Some(lowered.ty.clone());
+        Ok(self.lower_try_control("Break", TRY_BREAK_VARIANT, Some(lowered), span))
+    }
+
+    fn lower_try_control(
+        &mut self,
+        variant_name: &str,
+        variant_index: usize,
+        value: Option<Expr>,
+        span: ast::SourceSpan,
+    ) -> Vec<Statement> {
+        let context_index = self.in_try_block.unwrap();
+        if variant_index == TRY_CONTINUE_VARIANT {
+            self.try_contexts[context_index].has_continue = true;
+        }
+        let result_name = self.try_contexts[context_index].result_name.clone();
+        let result_id = self.try_contexts[context_index].result_id.clone();
+        let result_ty = self.lookup_var(&result_name).unwrap();
+        vec![
+            Statement {
+                kind: StatementKind::Assignment {
+                    target: Expr {
+                        ty: result_ty,
+                        kind: ExprKind::Identifier(result_name),
+                        span,
+                    },
+                    value: Expr {
+                        ty: Type::Enum(result_id.clone()),
+                        kind: ExprKind::EnumVariant {
+                            enum_id: result_id,
+                            variant_name: variant_name.to_string(),
+                            variant_index,
+                            value: value.map(Box::new),
+                        },
+                        span,
+                    },
+                },
+                span,
+            },
+            Statement {
+                kind: StatementKind::Return(Self::unit_expr(span)),
+                span,
+            },
+        ]
+    }
+
+    fn lower_never_try_control(&self, value: Expr, span: ast::SourceSpan) -> Vec<Statement> {
+        vec![
+            Statement {
+                kind: StatementKind::Expression(value),
+                span,
+            },
+            Statement {
+                kind: StatementKind::Return(Self::unit_expr(span)),
+                span,
+            },
+        ]
+    }
+
+    fn unit_expr(span: ast::SourceSpan) -> Expr {
+        Expr {
+            ty: Type::Unit,
+            kind: ExprKind::Block(Vec::new()),
+            span,
+        }
     }
 
     fn lower_statement(&mut self, stmt: &ast::Statement) -> Result<Vec<Statement>, CompileError> {
@@ -3981,29 +4369,22 @@ impl<'a> Lowerer<'a> {
                 body,
                 paired,
             } => self.lower_match_reflect_variant(stmt.span, pattern, object, body, *paired),
-            ast::StatementKind::ForIn { .. }
-            | ast::StatementKind::Try { .. }
-            | ast::StatementKind::ReturnVoid => {
+            ast::StatementKind::ForIn { .. } | ast::StatementKind::ReturnVoid => {
                 unreachable!("surface statement reached typed AST lowering")
             }
+            ast::StatementKind::Try {
+                body,
+                binding,
+                binding_type,
+                handler,
+            } => self.lower_try_statement(stmt.span, body, binding, binding_type.as_ref(), handler),
             ast::StatementKind::Expression(expr) => Ok(vec![Statement {
                 kind: StatementKind::Expression(self.lower_expr(expr)?),
                 span: stmt.span,
             }]),
             ast::StatementKind::Return(expr) => {
-                if self.in_try_block {
-                    // A `try` body / `catch` handler is compiled as a closure
-                    // (`sol_try` runs it via `catch_unwind`), so a `return`
-                    // could only exit the block — never the enclosing function
-                    // like the syntax suggests. Reject it instead of silently
-                    // diverging from the user's intent.
-                    return Err(CompileError::new(
-                        "`return` is not supported inside a `try` body or `catch` handler \
-                         (the block is compiled as a closure); assign to a variable and \
-                         `return` after the `try`"
-                            .to_string(),
-                        stmt.span,
-                    ));
+                if self.in_try_block.is_some() {
+                    return self.lower_try_return(expr, stmt.span);
                 }
                 let lowered = self.lower_expr(expr)?;
                 if self.current_return_type.is_none() {
@@ -4040,6 +4421,12 @@ impl<'a> Lowerer<'a> {
             }
             ast::StatementKind::Break(value) => {
                 if self.loop_ctx.is_empty() {
+                    if self
+                        .in_try_block
+                        .is_some_and(|index| self.try_contexts[index].target_loop.is_some())
+                    {
+                        return self.lower_try_break(value.as_ref(), stmt.span);
+                    }
                     return Err(CompileError::new(
                         "`break` outside of a loop".to_string(),
                         stmt.span,
@@ -4103,6 +4490,17 @@ impl<'a> Lowerer<'a> {
             }
             ast::StatementKind::Continue => {
                 if self.loop_ctx.is_empty() {
+                    if self
+                        .in_try_block
+                        .is_some_and(|index| self.try_contexts[index].target_loop.is_some())
+                    {
+                        return Ok(self.lower_try_control(
+                            "Continue",
+                            TRY_CONTINUE_VARIANT,
+                            None,
+                            stmt.span,
+                        ));
+                    }
                     return Err(CompileError::new(
                         "`continue` outside of a loop".to_string(),
                         stmt.span,
@@ -6890,7 +7288,10 @@ impl<'a> Lowerer<'a> {
         // intrinsic argument): it applies to THIS closure's direct body. Any
         // closure nested inside starts a fresh (false) context.
         let is_try_block = std::mem::take(&mut self.next_closure_is_try_block);
-        let saved_in_try_block = std::mem::replace(&mut self.in_try_block, is_try_block);
+        let saved_in_try_block = self.in_try_block.take();
+        self.in_try_block = is_try_block
+            .then(|| self.try_contexts.len().checked_sub(1))
+            .flatten();
         let saved_inference_returns = std::mem::take(&mut self.inference_returns);
 
         let mut typed_params: Vec<Parameter> = Vec::new();
@@ -8138,15 +8539,7 @@ impl<'a> Lowerer<'a> {
         let mut ref_ty: Option<Type> = None;
         let mut float_ty: Option<Type> = None;
         for (i, (ast_arg, param)) in arguments.iter().zip(&spec.params).enumerate() {
-            // Mark the `try` intrinsic's closure arguments (the `try` body and
-            // `catch` handler blocks) so `return` inside them errors cleanly.
-            if matches!(intrinsic, ast::Intrinsic::Try)
-                && matches!(ast_arg.kind, ast::ExprKind::Closure { .. })
-            {
-                self.next_closure_is_try_block = true;
-            }
             let mut arg = self.lower_expr(ast_arg)?;
-            self.next_closure_is_try_block = false;
             match param {
                 ParamRequirement::Exact(expected) => {
                     // Coerce first so e.g. a `[Uint8]` slice argument coerces to

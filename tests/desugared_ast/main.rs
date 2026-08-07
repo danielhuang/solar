@@ -64,7 +64,7 @@ fn literals_and_bare_return_are_normalized() {
 }
 
 #[test]
-fn try_catch_becomes_intrinsic_call_with_closures() {
+fn try_catch_is_preserved_for_typed_lowering() {
     let surface = parse("fn main() { try { throw(\"x\"&); } catch (e) { println(e); } }");
     assert!(matches!(
         function(&surface.items, 0).body[0].kind,
@@ -72,38 +72,19 @@ fn try_catch_becomes_intrinsic_call_with_closures() {
     ));
 
     let desugared = solar::desugared_ast::lower(&surface);
-    let StatementKind::Expression(ast::Expr {
-        kind:
-            ExprKind::IntrinsicCall {
-                intrinsic: ast::Intrinsic::Try,
-                arguments,
-            },
-        ..
-    }) = &function(&desugared.items, 0).body[0].kind
+    let StatementKind::Try {
+        body,
+        binding,
+        binding_type,
+        handler,
+    } = &function(&desugared.items, 0).body[0].kind
     else {
-        panic!("expected try intrinsic call");
+        panic!("expected try statement");
     };
-    assert_eq!(arguments.len(), 2);
-    assert!(matches!(
-        &arguments[0].kind,
-        ExprKind::Closure { parameters, .. } if parameters.is_empty()
-    ));
-    assert!(matches!(
-        &arguments[1].kind,
-        ExprKind::Closure { parameters, .. }
-            if matches!(
-                &parameters[0],
-                ast::Parameter {
-                    pattern: ast::DestructurePattern::Name(name),
-                    ty: ast::Type::Reference(inner),
-                    ..
-                } if matches!(name, ast::Ident::User(name) if name == "e") && matches!(
-                    inner.as_ref(),
-                    ast::Type::Slice(element)
-                        if matches!(element.as_ref(), ast::Type::Named(ty) if ty.name == "Uint8")
-                )
-            )
-    ));
+    assert!(matches!(binding, ast::Ident::User(name) if name == "e"));
+    assert!(binding_type.is_none());
+    assert_eq!(body.len(), 1);
+    assert_eq!(handler.len(), 1);
 }
 
 #[test]

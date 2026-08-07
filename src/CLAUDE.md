@@ -27,6 +27,9 @@ AST, while `ir_interp` and native codegen consume IR.
   encode file provenance in names before `mangled_ast`.
 - Keep user-written and compiler-generated local identifiers as distinct
   `Ident` variants until `mangled_ast` renders them into disjoint strings.
+- Lower surface `try` statements during type checking: crossing `return`,
+  `break`, and `continue` paths are carried through a synthetic result enum and
+  replayed after the runtime `try` intrinsic returns.
 - Keep mangling and `solar-system/src/panic.rs` demangling in sync.
 - User program errors must use `CompileError` and the reporting system in
   `error.rs`; malformed input must not panic the compiler or LSP.

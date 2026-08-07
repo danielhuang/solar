@@ -861,8 +861,23 @@ fn rewrite_statement(stmt: &mut Statement, ctx: &RewriteCtx, locals: &mut HashSe
             rewrite_expr(end, ctx, locals);
             rewrite_statements(body, ctx, locals);
         }
-        StatementKind::ForIn { .. } | StatementKind::Try { .. } => {
+        StatementKind::ForIn { .. } => {
             unreachable!("surface statement reached name resolution")
+        }
+        StatementKind::Try {
+            body,
+            binding,
+            binding_type,
+            handler,
+        } => {
+            let mut body_locals = locals.clone();
+            rewrite_statements(body, ctx, &mut body_locals);
+            if let Some(ty) = binding_type {
+                *ty = rewrite_type(ty, ctx.rename_map, ctx.module_aliases, ctx.type_params);
+            }
+            let mut handler_locals = locals.clone();
+            handler_locals.insert(binding.clone());
+            rewrite_statements(handler, ctx, &mut handler_locals);
         }
         StatementKind::ForReflectFields {
             pattern,
