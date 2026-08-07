@@ -21,30 +21,21 @@ compile(path) -> Typed -> Mangled -> Ir -> CSource -> Binary
 Both execution paths pass through `Mangled`: `ast_interp` consumes the mangled
 AST, while `ir_interp` and native codegen consume IR.
 
-## Invariants
+## Correctness constraints
 
 - Keep identities structural through resolution and type checking. Do not
   encode file provenance in names before `mangled_ast`.
 - Keep user-written and compiler-generated local identifiers as distinct
   `Ident` variants until `mangled_ast` renders them into disjoint strings.
-- Lower surface `try` statements during type checking: crossing `return`,
-  `break`, and `continue` paths are carried through a synthetic result enum and
-  replayed after the runtime `try` intrinsic returns.
 - Keep mangling and `solar-system/src/panic.rs` demangling in sync.
 - User program errors must use `CompileError` and the reporting system in
   `error.rs`; malformed input must not panic the compiler or LSP.
 - Escape analysis is conservative: uncertainty means the value may escape.
-- Escape analysis follows place roots, not value-only index or slice-bound
-  operands. An interior reference derived through a dereference is non-escaping
-  only when the derived reference is itself contained.
-- Compile-time field reflection evaluates its object once. Simple tuple
-  patterns bind generated components directly, and wildcard components may be
-  omitted because those generated name/reference expressions are pure.
+- Compile-time field reflection evaluates its object once.
 - Solar copies may alias. Every backend must implement memmove semantics,
   including aggregate and slice-range copies.
 - Pointer-bearing values must reach LLVM with pointer-typed pointer words so
   the write-barrier pass can distinguish references from scalar data.
-- Generated C is compiled with `-fno-strict-aliasing`.
 
 ## LSP
 
