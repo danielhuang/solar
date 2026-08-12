@@ -67,8 +67,8 @@ pub method next#[T](self: &Iter#[T]) -> Option#[&T] {
   Option#[&T]::Some(item)
 }
 
-/// Content equality for byte slices.
-pub method operator_eq(self: &[Uint8], other: &[Uint8]) -> Bool {
+/// Compares slices element by element.
+pub method operator_eq#[T](self: &[T], other: &[T]) -> Bool {
   let n = self.len();
   if n != other.len() {
     return false;

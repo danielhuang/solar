@@ -420,6 +420,12 @@ fn slice_iter() {
 }
 
 #[test]
+fn slice_eq() {
+    let output = run(&fixture("slice_eq.solar"), "slice_eq");
+    assert_eq!(output, "1\n0\n0\n1\n0\n");
+}
+
+#[test]
 fn place_if_match() {
     let output = run(&fixture("place_if_match.solar"), "place_if_match");
     assert_eq!(output, "5\n0\n0\n10\n42\n0\n0\n77\n0\n99\n0\n");

@@ -1,0 +1,35 @@
+pub struct LastDigit {
+  pub value: Int,
+}
+
+method operator_eq(self: &LastDigit, other: &LastDigit) -> Bool {
+  self@.value % 10 == other@.value % 10
+}
+
+fn print_bool(value: Bool) {
+  if value { println(1); } else { println(0); }
+}
+
+fn main() {
+  let a: [Int] = [1, 2, 3];
+  let b: [Int] = [1, 2, 3];
+  let different: [Int] = [1, 2, 4];
+  let shorter: [Int] = [1, 2];
+  let a_slice: &[Int] = a&;
+  let b_slice: &[Int] = b&;
+  let different_slice: &[Int] = different&;
+  let shorter_slice: &[Int] = shorter&;
+  print_bool(a_slice@ == b_slice@);
+  print_bool(a_slice@ == different_slice@);
+  print_bool(a_slice@ == shorter_slice@);
+
+  // Slice equality dispatches element comparison through `operator_eq`.
+  let digits: [LastDigit] = [LastDigit { value: 12, }, LastDigit { value: 25, }];
+  let equal_digits: [LastDigit] = [LastDigit { value: 2, }, LastDigit { value: 15, }];
+  let unequal_digits: [LastDigit] = [LastDigit { value: 2, }, LastDigit { value: 18, }];
+  let digit_slice: &[LastDigit] = digits&;
+  let equal_digit_slice: &[LastDigit] = equal_digits&;
+  let unequal_digit_slice: &[LastDigit] = unequal_digits&;
+  print_bool(digit_slice@ == equal_digit_slice@);
+  print_bool(digit_slice@ == unequal_digit_slice@);
+}
