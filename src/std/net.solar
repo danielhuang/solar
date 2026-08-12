@@ -27,14 +27,8 @@ const SOCKADDR_MAX = 28u;
 
 /// Is `addr` an IPv6 literal? (Any ':' marks IPv6 — dotted quads have none.)
 fn is_ipv6(addr: &[Uint8]) -> Bool {
-    let found = false;
-    let i = 0u;
-    let n = addr.len();
-    while i < n {
-        if addr@[i] == ':' { found = true; }
-        i = i + 1u;
-    }
-    found
+    let colon = ':';
+    addr.contains(colon&)
 }
 
 /// Parses a dotted-quad from addr[from..to) into 4 bytes at out[at..at+4).
@@ -77,13 +71,13 @@ fn parse_groups(addr: &[Uint8], from: Uint, to: Uint, out: &[Uint8], at: Uint) -
     let w = at;
     let group_start = from;
     let val = 0u;
-    let has_dot = false;
+    let dot = '.';
     let i = from;
     while i <= to {
         let c = if i == to { ':' } else { addr@[i] }; // treat the end as ':'
         if c == ':' {
             if i > group_start {
-                if has_dot {
+                if addr@[group_start..i]&.contains(dot&) {
                     parse_ipv4_range(addr, group_start, i, out, w);
                     w = w + 4u;
                 } else {
@@ -93,10 +87,9 @@ fn parse_groups(addr: &[Uint8], from: Uint, to: Uint, out: &[Uint8], at: Uint) -
                 }
             }
             val = 0u;
-            has_dot = false;
             group_start = i + 1u;
         } else {
-            if c == '.' { has_dot = true; } else { val = val * 16u + hex_digit(c); }
+            if c != '.' { val = val * 16u + hex_digit(c); }
         }
         i = i + 1u;
     }
@@ -108,30 +101,24 @@ fn parse_groups(addr: &[Uint8], from: Uint, to: Uint, out: &[Uint8], at: Uint) -
 /// trailing dotted-quad ("::ffff:192.168.1.10"). No zone IDs.
 pub fn parse_ipv6(addr: &[Uint8], out: &[Uint8]) {
     let n = addr.len();
-    // Locate the `::` gap, if any.
-    let gap = n + 1u;
+    // Locate and parse around the `::` gap, if any.
     let i = 0u;
     while i + 1u < n {
         if addr@[i] == ':' && addr@[i + 1u] == ':' {
-            gap = i;
-            i = n;
-        } else {
-            i = i + 1u;
+            let left = parse_groups(addr, 0u, i, out, 0u);
+            // Groups right of the `::` are flush with the end of the address.
+            let tail = [0u8; 16u];
+            let tail_len = parse_groups(addr, i + 2u, n, tail&, 0u);
+            let j = 0u;
+            while j < tail_len {
+                out@[16u - tail_len + j] = tail[j];
+                j = j + 1u;
+            }
+            return;
         }
+        i = i + 1u;
     }
-    if gap > n {
-        let full = parse_groups(addr, 0u, n, out, 0u);
-    } else {
-        let left = parse_groups(addr, 0u, gap, out, 0u);
-        // Groups right of the `::` are flush with the end of the address.
-        let tail = [0u8; 16u];
-        let tail_len = parse_groups(addr, gap + 2u, n, tail&, 0u);
-        let j = 0u;
-        while j < tail_len {
-            out@[16u - tail_len + j] = tail[j];
-            j = j + 1u;
-        }
-    }
+    let full = parse_groups(addr, 0u, n, out, 0u);
 }
 
 /// Builds a sockaddr into `sa` (which must be SOCKADDR_MAX bytes, zeroed) and

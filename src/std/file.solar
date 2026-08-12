@@ -215,13 +215,14 @@ pub method read_entries(self: FileDesc) -> &[DirEntry] {
     let out = [DirEntry { kind: 2u, name: "?"& }; 0u]^;
     loop {
         let batch = intrinsics::dir_read(self);
-        if batch.len() == 0u { break; }
+        if batch.len() == 0u {
+            let n = out@&.len();
+            return out@[0u..n]&;
+        }
         for raw in batch@ {
             let name = raw@[1u..raw.len()]&;
             if name@ == "." || name@ == ".." { continue; }
             out = (out@ + [DirEntry { kind: Uint(raw@[0u]), name: name }])^;
         }
-    };
-    let n = out@&.len();
-    out@[0u..n]&
+    }
 }

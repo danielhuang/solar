@@ -69,42 +69,43 @@ pub method len#[T](self: &[T]) -> Uint {
 
 /// Returns whether the slice contains an element equal to `value`.
 pub method contains#[T](self: &[T], value: &T) -> Bool {
-  let found = false;
   let i = 0u;
   let n = self.len();
-  while !found && i < n {
+  while i < n {
     if self@[i] == value@ {
-      found = true;
-    } else {
-      i = i + 1u;
+      return true;
     }
+    i = i + 1u;
   }
-  found
+  false
 }
 
 /// Returns whether the slice contains a contiguous slice equal to `value`.
 pub method contains#[T](self: &[T], value: &[T]) -> Bool {
-  let found = value.len() == 0u;
-  let i = 0u;
   let n = self.len();
   let m = value.len();
-  while !found && m <= n && i <= n - m {
-    let equal = true;
+  if m == 0u {
+    return true;
+  }
+  if m > n {
+    return false;
+  }
+  let i = 0u;
+  while i <= n - m {
     let j = 0u;
-    while equal && j < m {
+    while j < m {
       if self@[i + j] == value@[j] {
         j = j + 1u;
       } else {
-        equal = false;
+        break;
       }
     }
-    if equal {
-      found = true;
-    } else {
-      i = i + 1u;
+    if j == m {
+      return true;
     }
+    i = i + 1u;
   }
-  found
+  false
 }
 
 /// Counts trailing zero bits.
@@ -142,12 +143,11 @@ pub method operator_eq#[T](self: &&T, other: &&T) -> Bool {
 
 /// Compares structs and enums by value.
 pub method operator_eq#[T](self: &T, other: &T) -> Bool {
-  let eq = true;
   match.reflect T {
     "struct" => {
       for.reflect_fields_pair (_, a, b) in (self, other) {
-        if eq {
-          if a@ != b@ { eq = false; }
+        if a@ != b@ {
+          return false;
         }
       }
     },
@@ -157,11 +157,12 @@ pub method operator_eq#[T](self: &T, other: &T) -> Bool {
       match.reflect_variant (n, idx, v) in self { si = idx; }
       match.reflect_variant (n, idx, v) in other { oi = idx; }
       if si != oi {
-        eq = false;
+        return false;
       } else {
         match.reflect_variant_pair (n, idx, sval, oval) in (self, other) {
-          let e = sval == oval;
-          if !e { eq = false; }
+          if sval != oval {
+            return false;
+          }
         }
       }
     },
@@ -169,23 +170,23 @@ pub method operator_eq#[T](self: &T, other: &T) -> Bool {
       throw("operator_eq: type is not a struct or enum"&);
     },
   };
-  eq
+  true
 }
 
 /// Content equality for byte slices.
 pub method operator_eq(self: &[Uint8], other: &[Uint8]) -> Bool {
   let n = self.len();
-  let eq = n == other.len();
+  if n != other.len() {
+    return false;
+  }
   let i = 0u;
   while i < n {
     if self@[i] != other@[i] {
-      eq = false;
-      i = n;
-    } else {
-      i = i + 1u;
+      return false;
     }
+    i = i + 1u;
   }
-  eq
+  true
 }
 
 /// Returns the negation of structural equality.

@@ -118,86 +118,75 @@ method set_ctrl#[K, V](self: &RawTable#[K, V], index: Uint, t: Uint8) {
 
 /// Find the slot holding `key`, or None. `key` is compared with `==`.
 pub method find#[K, V](self: &RawTable#[K, V], hash: Uint64, key: &K) -> Option#[Uint] {
-  let found = Option#[Uint]::None;
-  if self@.bucket_mask != 0u {
-    let h2 = tag::full(hash);
-    let pos = h1(hash) & self@.bucket_mask;
-    let stride = 0u;
-    let done = false;
-    // Bind the slice reference (a cheap fat-pointer copy), then deref-index it
-    // via `s@[..]`. Binding `self@.slots@` would copy the whole array.
-    let s = self@.slots;
-    let ctrl = self@.ctrl;
-    loop {
-      let g = group::load(ctrl, pos);
-      let m = g.match_tag(h2);
-      while m.any_bit_set() {
-        let bit = m.lowest_set_bit_index();
-        let posbit = pos ++ bit;
-        let idx = posbit & self@.bucket_mask;
-        let eq = s@[idx].key == key@;
-        if eq {
-          found = Option#[Uint]::Some(idx);
-          done = true;
-          break;
-        }
-        m = m.remove_lowest_bit();
-      }
-      if done { break; }
-      let empties = g.match_empty();
-      if empties.any_bit_set() { break; }
-      stride = stride ++ GROUP_WIDTH;
-      let nextpos = pos ++ stride;
-      pos = nextpos & self@.bucket_mask;
-    };
+  if self@.bucket_mask == 0u {
+    return Option#[Uint]::None;
   }
-  found
+  let h2 = tag::full(hash);
+  let pos = h1(hash) & self@.bucket_mask;
+  let stride = 0u;
+  // Bind the slice reference (a cheap fat-pointer copy), then deref-index it
+  // via `s@[..]`. Binding `self@.slots@` would copy the whole array.
+  let s = self@.slots;
+  let ctrl = self@.ctrl;
+  loop {
+    let g = group::load(ctrl, pos);
+    let m = g.match_tag(h2);
+    while m.any_bit_set() {
+      let bit = m.lowest_set_bit_index();
+      let posbit = pos ++ bit;
+      let idx = posbit & self@.bucket_mask;
+      if s@[idx].key == key@ {
+        return Option#[Uint]::Some(idx);
+      }
+      m = m.remove_lowest_bit();
+    }
+    if g.match_empty().any_bit_set() {
+      return Option#[Uint]::None;
+    }
+    stride = stride ++ GROUP_WIDTH;
+    let nextpos = pos ++ stride;
+    pos = nextpos & self@.bucket_mask;
+  }
 }
 
 /// Find an existing key or a slot where it can be inserted in one probe walk.
 pub method find_or_find_insert#[K, V](self: &RawTable#[K, V], hash: Uint64, key: &K) -> FindInsert {
-  let result = FindInsert::Vacant(0u);
-  if self@.bucket_mask != 0u {
-    let h2 = tag::full(hash);
-    let pos = h1(hash) & self@.bucket_mask;
-    let stride = 0u;
-    let insert_slot = 0u;
-    let have_insert_slot = false;
-    let done = false;
-    let s = self@.slots;
-    let ctrl = self@.ctrl;
-    loop {
-      let g = group::load(ctrl, pos);
-      let m = g.match_tag(h2);
-      while m.any_bit_set() {
-        let bit = m.lowest_set_bit_index();
-        let idx = (pos ++ bit) & self@.bucket_mask;
-        if s@[idx].key == key@ {
-          result = FindInsert::Found(idx);
-          done = true;
-          break;
-        }
-        m = m.remove_lowest_bit();
-      }
-      if done { break; }
-
-      if !have_insert_slot {
-        let available = g.match_empty_or_deleted();
-        if available.any_bit_set() {
-          insert_slot = (pos ++ available.lowest_set_bit_index()) & self@.bucket_mask;
-          have_insert_slot = true;
-        }
-      }
-      if g.match_empty().any_bit_set() {
-        result = FindInsert::Vacant(insert_slot);
-        break;
-      }
-
-      stride = stride ++ GROUP_WIDTH;
-      pos = (pos ++ stride) & self@.bucket_mask;
-    };
+  if self@.bucket_mask == 0u {
+    return FindInsert::Vacant(0u);
   }
-  result
+  let h2 = tag::full(hash);
+  let pos = h1(hash) & self@.bucket_mask;
+  let stride = 0u;
+  let insert_slot = 0u;
+  let have_insert_slot = false;
+  let s = self@.slots;
+  let ctrl = self@.ctrl;
+  loop {
+    let g = group::load(ctrl, pos);
+    let m = g.match_tag(h2);
+    while m.any_bit_set() {
+      let bit = m.lowest_set_bit_index();
+      let idx = (pos ++ bit) & self@.bucket_mask;
+      if s@[idx].key == key@ {
+        return FindInsert::Found(idx);
+      }
+      m = m.remove_lowest_bit();
+    }
+
+    if !have_insert_slot {
+      let available = g.match_empty_or_deleted();
+      if available.any_bit_set() {
+        insert_slot = (pos ++ available.lowest_set_bit_index()) & self@.bucket_mask;
+        have_insert_slot = true;
+      }
+    }
+    if g.match_empty().any_bit_set() {
+      return FindInsert::Vacant(insert_slot);
+    }
+
+    stride = stride ++ GROUP_WIDTH;
+    pos = (pos ++ stride) & self@.bucket_mask;
+  }
 }
 
 /// First EMPTY-or-DELETED slot in the probe sequence. Terminates because the
@@ -205,21 +194,18 @@ pub method find_or_find_insert#[K, V](self: &RawTable#[K, V], hash: Uint64, key:
 method find_insert_slot#[K, V](self: &RawTable#[K, V], hash: Uint64) -> Uint {
   let pos = h1(hash) & self@.bucket_mask;
   let stride = 0u;
-  let result = 0u;
   loop {
     let g = group::load(self@.ctrl, pos);
     let m = g.match_empty_or_deleted();
     if m.any_bit_set() {
       let bit = m.lowest_set_bit_index();
       let posbit = pos ++ bit;
-      result = posbit & self@.bucket_mask;
-      break;
+      return posbit & self@.bucket_mask;
     }
     stride = stride ++ GROUP_WIDTH;
     let nextpos = pos ++ stride;
     pos = nextpos & self@.bucket_mask;
-  };
-  result
+  }
 }
 
 /// Place an entry known to be absent into its insert slot (no growth check).

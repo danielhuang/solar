@@ -63,7 +63,7 @@ method spin(self: &Mutex) -> Uint32 {
     loop {
         let state = self@.futex&.atomic_load();
         if state != 1u32 || spin == 0u32 {
-            break state;
+            return state;
         }
         spin = spin - 1u32;
     }
