@@ -420,6 +420,15 @@ fn slice_find() {
 }
 
 #[test]
+fn slice_split() {
+    let output = run(&fixture("slice_split.solar"), "slice_split");
+    assert_eq!(
+        output,
+        "1\n1\n2\n2\n3\n1\n4\n99\n0\n0\n1\n7\n0\n99\n2\n8\n9\n99\n0\n99\n1\n5\n1\n6\n1\n5\n"
+    );
+}
+
+#[test]
 fn option_is_some() {
     let output = run(&fixture("option_is_some.solar"), "option_is_some");
     assert_eq!(output, "1\n0\n");

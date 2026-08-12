@@ -1,0 +1,51 @@
+fn print_next(split: &slice::Split#[Int]) {
+  match split.next() {
+    Option#[&[Int]]::Some(part) => {
+      println(part.len());
+      for value in part@ {
+        println(value);
+      }
+    },
+    Option#[&[Int]]::None => println(99),
+  };
+}
+
+fn main() {
+  let separator = 0;
+
+  let values: [Int] = [1, 0, 2, 3, 0, 4];
+  let split = values&.split(separator&);
+  print_next(split&); // [1]
+  print_next(split&); // [2, 3]
+  print_next(split&); // [4]
+  print_next(split&); // None
+
+  // Leading, adjacent, and trailing separators produce empty subslices.
+  let edged: [Int] = [0, 0, 7, 0];
+  let edged_split = edged&.split(separator&);
+  print_next(edged_split&); // []
+  print_next(edged_split&); // []
+  print_next(edged_split&); // [7]
+  print_next(edged_split&); // []
+  print_next(edged_split&); // None
+
+  // With no separator, the whole slice is returned once.
+  let unbroken: [Int] = [8, 9];
+  let unbroken_split = unbroken&.split(separator&);
+  print_next(unbroken_split&); // [8, 9]
+  print_next(unbroken_split&); // None
+
+  // An empty slice similarly yields one empty subslice.
+  let empty: [Int] = []#[Int];
+  let empty_split = empty&.split(separator&);
+  print_next(empty_split&); // []
+  print_next(empty_split&); // None
+
+  // Copies keep independent positions, like other slice iterators.
+  let copied_values: [Int] = [5, 0, 6];
+  let original = copied_values&.split(separator&);
+  let copy = original;
+  print_next(original&); // [5]
+  print_next(original&); // [6]
+  print_next(copy&);     // [5]
+}

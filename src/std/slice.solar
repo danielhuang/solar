@@ -6,6 +6,13 @@ pub struct Iter#[T] {
   remaining: &[T],
 }
 
+/// An iterator over subslices separated by an element.
+pub struct Split#[T] {
+  remaining: &[T],
+  separator: &T,
+  finished: Bool,
+}
+
 /// Number of elements in a slice.
 pub method len#[T](self: &[T]) -> Uint {
   intrinsics::array_len(self@)
@@ -82,6 +89,34 @@ pub method find#[T](self: &[T], value: &[T]) -> Option#[Uint] {
 /// Returns whether the slice contains a contiguous slice equal to `value`.
 pub method contains#[T](self: &[T], value: &[T]) -> Bool {
   self.find(value).is_some()
+}
+
+/// Returns an iterator over subslices separated by `separator`.
+pub method split#[T](self: &[T], separator: &T) -> Split#[T] {
+  Split#[T] {
+    remaining: self,
+    separator: separator,
+    finished: false,
+  }
+}
+
+/// Advances the split iterator and returns the next subslice.
+pub method next#[T](self: &Split#[T]) -> Option#[&[T]] {
+  if self@.finished {
+    return Option#[&[T]]::None;
+  }
+  let remaining = self@.remaining;
+  match remaining.find(self@.separator) {
+    Option#[Uint]::Some(index) => {
+      let item = remaining@[0u..index]&;
+      self@.remaining = remaining@[index + 1u..remaining.len()]&;
+      Option#[&[T]]::Some(item)
+    },
+    Option#[Uint]::None => {
+      self@.finished = true;
+      Option#[&[T]]::Some(remaining)
+    },
+  }
 }
 
 /// Returns an iterator over the slice's elements.
