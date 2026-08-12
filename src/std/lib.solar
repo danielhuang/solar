@@ -26,6 +26,14 @@ pub enum Option#[T] {
   None,
 }
 
+/// Returns whether the option contains a value.
+pub method is_some#[T](self: Option#[T]) -> Bool {
+  match self {
+    Option#[T]::Some(value) => true,
+    Option#[T]::None => false,
+  }
+}
+
 /// Returns the decimal representation of an integer.
 pub method to_string(self: Int) -> &[Uint8] {
   let buf: [Uint8] = [0u8; 20u];

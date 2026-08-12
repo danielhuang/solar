@@ -414,6 +414,18 @@ fn slice_contains() {
 }
 
 #[test]
+fn slice_find() {
+    let output = run(&fixture("slice_find.solar"), "slice_find");
+    assert_eq!(output, "1\n99\n1\n3\n99\n0\n2\n");
+}
+
+#[test]
+fn option_is_some() {
+    let output = run(&fixture("option_is_some.solar"), "option_is_some");
+    assert_eq!(output, "1\n0\n");
+}
+
+#[test]
 fn slice_iter() {
     let output = run(&fixture("slice_iter.solar"), "slice_iter");
     assert_eq!(output, "10\n20\n10\n20\n30\n0\n30\n0\n0\n");

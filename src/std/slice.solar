@@ -11,28 +11,33 @@ pub method len#[T](self: &[T]) -> Uint {
   intrinsics::array_len(self@)
 }
 
-/// Returns whether the slice contains an element equal to `value`.
-pub method contains#[T](self: &[T], value: &T) -> Bool {
+/// Returns the index of the first element equal to `value`.
+pub method find#[T](self: &[T], value: &T) -> Option#[Uint] {
   let i = 0u;
   let n = self.len();
   while i < n {
     if self@[i] == value@ {
-      return true;
+      return Option#[Uint]::Some(i);
     }
     i = i + 1u;
   }
-  false
+  Option#[Uint]::None
 }
 
-/// Returns whether the slice contains a contiguous slice equal to `value`.
-pub method contains#[T](self: &[T], value: &[T]) -> Bool {
+/// Returns whether the slice contains an element equal to `value`.
+pub method contains#[T](self: &[T], value: &T) -> Bool {
+  self.find(value).is_some()
+}
+
+/// Returns the start index of the first contiguous slice equal to `value`.
+pub method find#[T](self: &[T], value: &[T]) -> Option#[Uint] {
   let n = self.len();
   let m = value.len();
   if m == 0u {
-    return true;
+    return Option#[Uint]::Some(0u);
   }
   if m > n {
-    return false;
+    return Option#[Uint]::None;
   }
 
   // Knuth-Morris-Pratt prefix table: prefix[i] is the length of the longest
@@ -66,12 +71,17 @@ pub method contains#[T](self: &[T], value: &[T]) -> Bool {
     if equal {
       matched = matched + 1u;
       if matched == m {
-        return true;
+        return Option#[Uint]::Some(i + 1u - m);
       }
     }
     i = i + 1u;
   }
-  false
+  Option#[Uint]::None
+}
+
+/// Returns whether the slice contains a contiguous slice equal to `value`.
+pub method contains#[T](self: &[T], value: &[T]) -> Bool {
+  self.find(value).is_some()
 }
 
 /// Returns an iterator over the slice's elements.

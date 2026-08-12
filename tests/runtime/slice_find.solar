@@ -1,0 +1,28 @@
+fn print_index(value: Option#[Uint]) {
+  match value {
+    Option#[Uint]::Some(index) => println(index),
+    Option#[Uint]::None => println(99u),
+  };
+}
+
+fn main() {
+  let values: [Int] = [1, 2, 3, 2, 4];
+  let two = 2;
+  let missing = 9;
+  print_index(values&.find(two&));       // 1
+  print_index(values&.find(missing&));   // None
+
+  let middle: [Int] = [2, 3, 2];
+  let tail: [Int] = [2, 4];
+  let absent: [Int] = [3, 4];
+  let empty: [Int] = []#[Int];
+  print_index(values&.find(middle&));    // 1
+  print_index(values&.find(tail&));      // 3
+  print_index(values&.find(absent&));    // None
+  print_index(values&.find(empty&));     // 0
+
+  // Prefix-table fallback still reports the first overlapping match.
+  let overlapping: [Int] = [1, 2, 1, 2, 1, 2, 3];
+  let overlap_match: [Int] = [1, 2, 1, 2, 3];
+  print_index(overlapping&.find(overlap_match&)); // 2
+}
