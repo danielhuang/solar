@@ -414,6 +414,12 @@ fn slice_contains() {
 }
 
 #[test]
+fn slice_iter() {
+    let output = run(&fixture("slice_iter.solar"), "slice_iter");
+    assert_eq!(output, "10\n20\n10\n20\n30\n0\n30\n0\n0\n");
+}
+
+#[test]
 fn place_if_match() {
     let output = run(&fixture("place_if_match.solar"), "place_if_match");
     assert_eq!(output, "5\n0\n0\n10\n42\n0\n0\n77\n0\n99\n0\n");
@@ -582,6 +588,12 @@ fn vec() {
 fn vec_iter() {
     let output = run(&fixture("vec_iter.solar"), "vec_iter");
     assert_eq!(output, "3\n10\n20\n30\n60\n3\n999\n0\n2\n");
+}
+
+#[test]
+fn vec_iter_copy() {
+    let output = run(&fixture("vec_iter_copy.solar"), "vec_iter_copy");
+    assert_eq!(output, "10\n20\n10\n20\n30\n30\n");
 }
 
 #[test]

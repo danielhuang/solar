@@ -8,14 +8,13 @@ fn main() {
     println(s@[1u]);                  // 20
     println(s@[2u]);                  // 30
 
-    // iter walks every element, yielding Some(&T) until exhausted. The `next`
-    // method wraps the field closure so call sites need no parens.
+    // iter walks every element, yielding Some(&T) until exhausted.
     let it = v&.iter();
     let sum = 0;
     let count = 0;
     let cont = true;
     while cont {
-        match it.next() {
+        match it&.next() {
             Option#[&Int]::Some(r) => {
                 sum = sum + r@;
                 count = count + 1;
@@ -27,9 +26,9 @@ fn main() {
     println(count);                   // 3
 
     // The references yielded by iter point into the Vec's storage, so writing
-    // through one is visible afterwards. (Uses the raw field-closure call form.)
+    // through one is visible afterwards.
     let it2 = v&.iter();
-    match (it2.next)() {
+    match it2&.next() {
         Option#[&Int]::Some(r) => { r@ = 999; },
         Option#[&Int]::None => {},
     };
@@ -39,7 +38,7 @@ fn main() {
     let empty = vec::Vec#[Int]([0; 0u]&);
     let ite = empty&.iter();
     let any = 0;
-    match ite.next() {
+    match ite&.next() {
         Option#[&Int]::Some(r) => { any = 1; },
         Option#[&Int]::None => { any = 0; },
     };
@@ -51,7 +50,7 @@ fn main() {
     let trues = 0;
     let contb = true;
     while contb {
-        match itb.next() {
+        match itb&.next() {
             Option#[&Bool]::Some(r) => {
                 if r@ { trues = trues + 1; }
             },

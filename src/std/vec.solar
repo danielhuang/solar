@@ -1,6 +1,5 @@
 import { throw } from "@intrinsics";
-import { Option } from "lib.solar";
-import iter from "iter.solar";
+import slice from "slice.solar";
 
 /// A growable array.
 pub struct Vec#[T] {
@@ -40,17 +39,6 @@ pub method at#[T](self: &Vec#[T], index: Uint) -> &T {
 }
 
 /// Iterates over the vector's elements.
-pub method iter#[T](self: &Vec#[T]) -> iter::Iterator#[T] {
-    let slice = self.as_slice();
-    iter::Iterator#[T] {
-        next: \ {
-            if slice.len() > 0u {
-                let ret = slice@[0u]&;
-                slice = slice@[1u..slice.len()]&;
-                Option#[&T]::Some(ret)
-            } else {
-                Option#[&T]::None
-            }
-        }
-    }
+pub method iter#[T](self: &Vec#[T]) -> slice::Iter#[T] {
+    self.as_slice().iter()
 }

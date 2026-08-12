@@ -1,0 +1,26 @@
+fn print_next(iter: &slice::Iter#[Int]) {
+    match iter.next() {
+        Option#[&Int]::Some(value) => println(value@),
+        Option#[&Int]::None => println(0),
+    };
+}
+
+fn main() {
+    let values: [Int] = [10, 20, 30];
+    let iter = values&.iter();
+    let iter_copy = iter;
+
+    // Slice iterators advance independently when copied.
+    print_next(iter&);       // 10
+    print_next(iter&);       // 20
+    print_next(iter_copy&);  // 10
+    print_next(iter_copy&);  // 20
+    print_next(iter&);       // 30
+    print_next(iter&);       // None
+    print_next(iter_copy&);  // 30
+    print_next(iter_copy&);  // None
+
+    let empty: [Int] = []#[Int];
+    let empty_iter = empty&.iter();
+    print_next(empty_iter&); // None
+}

@@ -1,0 +1,84 @@
+import intrinsics from "@intrinsics";
+import { Option } from "lib.solar";
+
+/// An iterator over borrowed slice elements.
+pub struct Iter#[T] {
+  remaining: &[T],
+}
+
+/// Number of elements in a slice.
+pub method len#[T](self: &[T]) -> Uint {
+  intrinsics::array_len(self@)
+}
+
+/// Returns whether the slice contains an element equal to `value`.
+pub method contains#[T](self: &[T], value: &T) -> Bool {
+  let i = 0u;
+  let n = self.len();
+  while i < n {
+    if self@[i] == value@ {
+      return true;
+    }
+    i = i + 1u;
+  }
+  false
+}
+
+/// Returns whether the slice contains a contiguous slice equal to `value`.
+pub method contains#[T](self: &[T], value: &[T]) -> Bool {
+  let n = self.len();
+  let m = value.len();
+  if m == 0u {
+    return true;
+  }
+  if m > n {
+    return false;
+  }
+  let i = 0u;
+  while i <= n - m {
+    let j = 0u;
+    while j < m {
+      if self@[i + j] == value@[j] {
+        j = j + 1u;
+      } else {
+        break;
+      }
+    }
+    if j == m {
+      return true;
+    }
+    i = i + 1u;
+  }
+  false
+}
+
+/// Returns an iterator over the slice's elements.
+pub method iter#[T](self: &[T]) -> Iter#[T] {
+  Iter#[T] { remaining: self, }
+}
+
+/// Advances the iterator and returns the next element.
+pub method next#[T](self: &Iter#[T]) -> Option#[&T] {
+  if self@.remaining.len() == 0u {
+    return Option#[&T]::None;
+  }
+  let item = self@.remaining@[0u]&;
+  self@.remaining = self@.remaining@[1u..self@.remaining.len()]&;
+  Option#[&T]::Some(item)
+}
+
+/// Content equality for byte slices.
+pub method operator_eq(self: &[Uint8], other: &[Uint8]) -> Bool {
+  let n = self.len();
+  if n != other.len() {
+    return false;
+  }
+  let i = 0u;
+  while i < n {
+    if self@[i] != other@[i] {
+      return false;
+    }
+    i = i + 1u;
+  }
+  true
+}

@@ -1,4 +1,6 @@
 import intrinsics from "@intrinsics";
+/// Slice utilities and iteration.
+pub import slice from "slice.solar";
 /// Growable vectors.
 pub import vec from "vec.solar";
 /// Synchronization primitives.
@@ -13,8 +15,6 @@ pub import net from "net.solar";
 pub import math from "math.solar";
 /// Process arguments and environment.
 pub import process from "process.solar";
-/// Iterator support.
-pub import iter from "iter.solar";
 /// SIMD helpers.
 pub import simd from "simd.solar";
 /// Hash maps.
@@ -60,52 +60,6 @@ pub method to_string(self: Uint) -> &[Uint8] {
     n = n / 10u;
   }
   buf[i..20u]&
-}
-
-/// Number of elements in an array.
-pub method len#[T](self: &[T]) -> Uint {
-  intrinsics::array_len(self@)
-}
-
-/// Returns whether the slice contains an element equal to `value`.
-pub method contains#[T](self: &[T], value: &T) -> Bool {
-  let i = 0u;
-  let n = self.len();
-  while i < n {
-    if self@[i] == value@ {
-      return true;
-    }
-    i = i + 1u;
-  }
-  false
-}
-
-/// Returns whether the slice contains a contiguous slice equal to `value`.
-pub method contains#[T](self: &[T], value: &[T]) -> Bool {
-  let n = self.len();
-  let m = value.len();
-  if m == 0u {
-    return true;
-  }
-  if m > n {
-    return false;
-  }
-  let i = 0u;
-  while i <= n - m {
-    let j = 0u;
-    while j < m {
-      if self@[i + j] == value@[j] {
-        j = j + 1u;
-      } else {
-        break;
-      }
-    }
-    if j == m {
-      return true;
-    }
-    i = i + 1u;
-  }
-  false
 }
 
 /// Counts trailing zero bits.
@@ -170,22 +124,6 @@ pub method operator_eq#[T](self: &T, other: &T) -> Bool {
       throw("operator_eq: type is not a struct or enum"&);
     },
   };
-  true
-}
-
-/// Content equality for byte slices.
-pub method operator_eq(self: &[Uint8], other: &[Uint8]) -> Bool {
-  let n = self.len();
-  if n != other.len() {
-    return false;
-  }
-  let i = 0u;
-  while i < n {
-    if self@[i] != other@[i] {
-      return false;
-    }
-    i = i + 1u;
-  }
   true
 }
 
