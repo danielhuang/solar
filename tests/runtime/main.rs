@@ -408,6 +408,12 @@ fn array_slice() {
 }
 
 #[test]
+fn slice_contains() {
+    let output = run(&fixture("slice_contains.solar"), "slice_contains");
+    assert_eq!(output, "1\n0\n1\n1\n0\n0\n1\n1\n1\n0\n1\n");
+}
+
+#[test]
 fn place_if_match() {
     let output = run(&fixture("place_if_match.solar"), "place_if_match");
     assert_eq!(output, "5\n0\n0\n10\n42\n0\n0\n77\n0\n99\n0\n");

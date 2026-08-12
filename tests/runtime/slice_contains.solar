@@ -1,0 +1,40 @@
+pub struct LastDigit {
+  pub value: Int,
+}
+
+method operator_eq(self: &LastDigit, other: &LastDigit) -> Bool {
+  self@.value % 10 == other@.value % 10
+}
+
+fn print_bool(value: Bool) {
+  if value { println(1); } else { println(0); }
+}
+
+fn main() {
+  let values: [Int] = [1, 2, 3, 2, 4];
+  let two = 2;
+  let five = 5;
+  print_bool(values&.contains(two&));
+  print_bool(values&.contains(five&));
+
+  let middle: [Int] = [2, 3, 2];
+  let tail: [Int] = [2, 4];
+  let missing: [Int] = [3, 4];
+  let too_long: [Int] = [1, 2, 3, 2, 4, 5];
+  let empty: [Int] = []#[Int];
+  print_bool(values&.contains(middle&));
+  print_bool(values&.contains(tail&));
+  print_bool(values&.contains(missing&));
+  print_bool(values&.contains(too_long&));
+  print_bool(values&.contains(empty&));
+  print_bool(empty&.contains(empty&));
+
+  // Both overloads must dispatch equality through `operator_eq`.
+  let digit_values: [LastDigit] = [LastDigit { value: 12, }, LastDigit { value: 25, }];
+  let equal_element = LastDigit { value: 35, };
+  let unequal_element = LastDigit { value: 18, };
+  let equal_slice: [LastDigit] = [LastDigit { value: 2, }, LastDigit { value: 15, }];
+  print_bool(digit_values&.contains(equal_element&));
+  print_bool(digit_values&.contains(unequal_element&));
+  print_bool(digit_values&.contains(equal_slice&));
+}

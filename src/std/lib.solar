@@ -67,6 +67,46 @@ pub method len#[T](self: &[T]) -> Uint {
   intrinsics::array_len(self@)
 }
 
+/// Returns whether the slice contains an element equal to `value`.
+pub method contains#[T](self: &[T], value: &T) -> Bool {
+  let found = false;
+  let i = 0u;
+  let n = self.len();
+  while !found && i < n {
+    if self@[i] == value@ {
+      found = true;
+    } else {
+      i = i + 1u;
+    }
+  }
+  found
+}
+
+/// Returns whether the slice contains a contiguous slice equal to `value`.
+pub method contains#[T](self: &[T], value: &[T]) -> Bool {
+  let found = value.len() == 0u;
+  let i = 0u;
+  let n = self.len();
+  let m = value.len();
+  while !found && m <= n && i <= n - m {
+    let equal = true;
+    let j = 0u;
+    while equal && j < m {
+      if self@[i + j] == value@[j] {
+        j = j + 1u;
+      } else {
+        equal = false;
+      }
+    }
+    if equal {
+      found = true;
+    } else {
+      i = i + 1u;
+    }
+  }
+  found
+}
+
 /// Counts trailing zero bits.
 pub method count_trailing_zeros#[T](self: T) -> Uint {
   intrinsics::count_trailing_zeros(self)
