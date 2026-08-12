@@ -34,18 +34,40 @@ pub method contains#[T](self: &[T], value: &[T]) -> Bool {
   if m > n {
     return false;
   }
-  let i = 0u;
-  while i <= n - m {
-    let j = 0u;
-    while j < m {
-      if self@[i + j] == value@[j] {
-        j = j + 1u;
-      } else {
-        break;
-      }
+
+  // Knuth-Morris-Pratt prefix table: prefix[i] is the length of the longest
+  // proper prefix of value[0..=i] that is also its suffix.
+  let prefix: [Uint] = [0u; m];
+  let i = 1u;
+  let matched = 0u;
+  while i < m {
+    let equal = value@[i] == value@[matched];
+    while !equal && matched > 0u {
+      matched = prefix[matched - 1u];
+      equal = value@[i] == value@[matched];
     }
-    if j == m {
-      return true;
+    if equal {
+      matched = matched + 1u;
+    }
+    prefix[i] = matched;
+    i = i + 1u;
+  }
+
+  // Each mismatch either advances through self or shortens matched, so the
+  // scan is linear even for highly repetitive inputs.
+  i = 0u;
+  matched = 0u;
+  while i < n {
+    let equal = self@[i] == value@[matched];
+    while !equal && matched > 0u {
+      matched = prefix[matched - 1u];
+      equal = self@[i] == value@[matched];
+    }
+    if equal {
+      matched = matched + 1u;
+      if matched == m {
+        return true;
+      }
     }
     i = i + 1u;
   }

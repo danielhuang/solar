@@ -410,7 +410,7 @@ fn array_slice() {
 #[test]
 fn slice_contains() {
     let output = run(&fixture("slice_contains.solar"), "slice_contains");
-    assert_eq!(output, "1\n0\n1\n1\n0\n0\n1\n1\n1\n0\n1\n");
+    assert_eq!(output, "1\n0\n1\n1\n0\n0\n1\n1\n1\n0\n1\n1\n0\n1\n");
 }
 
 #[test]
