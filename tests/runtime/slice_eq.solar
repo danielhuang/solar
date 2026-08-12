@@ -15,21 +15,18 @@ fn main() {
   let b: [Int] = [1, 2, 3];
   let different: [Int] = [1, 2, 4];
   let shorter: [Int] = [1, 2];
-  let a_slice: &[Int] = a&;
-  let b_slice: &[Int] = b&;
-  let different_slice: &[Int] = different&;
-  let shorter_slice: &[Int] = shorter&;
-  print_bool(a_slice@ == b_slice@);
-  print_bool(a_slice@ == different_slice@);
-  print_bool(a_slice@ == shorter_slice@);
 
-  // Slice equality dispatches element comparison through `operator_eq`.
+  // Slice equality works for primitive elements.
+  print_bool(a == b);
+  print_bool(a == different);
+  print_bool(a == shorter);
+
+  // Element comparison uses the element type's equality implementation.
   let digits: [LastDigit] = [LastDigit { value: 12, }, LastDigit { value: 25, }];
   let equal_digits: [LastDigit] = [LastDigit { value: 2, }, LastDigit { value: 15, }];
   let unequal_digits: [LastDigit] = [LastDigit { value: 2, }, LastDigit { value: 18, }];
-  let digit_slice: &[LastDigit] = digits&;
-  let equal_digit_slice: &[LastDigit] = equal_digits&;
-  let unequal_digit_slice: &[LastDigit] = unequal_digits&;
-  print_bool(digit_slice@ == equal_digit_slice@);
-  print_bool(digit_slice@ == unequal_digit_slice@);
+  let short_digits: [LastDigit] = [LastDigit { value: 2, }];
+  print_bool(digits == equal_digits);
+  print_bool(digits == unequal_digits);
+  print_bool(digits == short_digits);
 }

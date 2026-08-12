@@ -422,7 +422,7 @@ fn slice_iter() {
 #[test]
 fn slice_eq() {
     let output = run(&fixture("slice_eq.solar"), "slice_eq");
-    assert_eq!(output, "1\n0\n0\n1\n0\n");
+    assert_eq!(output, "1\n0\n0\n1\n0\n0\n");
 }
 
 #[test]
