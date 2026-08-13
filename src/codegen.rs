@@ -633,7 +633,9 @@ impl<'a> Codegen<'a> {
 
         self.emit_mark_functions();
 
-        // Static slots are aligned for tear-free wide copies and registered as roots.
+        // Ordinary static slots live inline. A thread-local name holds a pointer
+        // to a stable runtime cell, so references remain valid after the owning
+        // thread exits.
         let statics_meta: Vec<(usize, String)> = self
             .module
             .statics
@@ -644,14 +646,21 @@ impl<'a> Codegen<'a> {
         for (i, st) in self.module.statics.iter().enumerate() {
             let size = self.type_size(&st.ty).max(1);
             let align = self.type_align(&st.ty);
-            self.linef(format!(
-                "static _Alignas({align}) uint8_t _gs{i}[{size}]; // static {}",
-                st.name
-            ));
+            if st.thread_local {
+                self.linef(format!(
+                    "static _Thread_local uint8_t* _gs{i}; // thread-local static {} ({size} bytes, align {align})",
+                    st.name
+                ));
+            } else {
+                self.linef(format!(
+                    "static _Alignas({align}) uint8_t _gs{i}[{size}]; // static {}",
+                    st.name
+                ));
+            }
         }
         let gc_statics: Vec<&(usize, String)> = statics_meta
             .iter()
-            .filter(|(_, mark)| mark != "_mark_noop")
+            .filter(|(i, mark)| !self.module.statics[*i].thread_local && mark != "_mark_noop")
             .collect();
         if !gc_statics.is_empty() {
             let entries: Vec<String> = gc_statics
@@ -667,6 +676,34 @@ impl<'a> Codegen<'a> {
             ));
         }
         self.static_root_count = gc_statics.len();
+        let tls_statics: Vec<&(usize, String)> = statics_meta
+            .iter()
+            .filter(|(i, _)| self.module.statics[*i].thread_local)
+            .collect();
+        if !tls_statics.is_empty() {
+            self.linef(format!(
+                "static _Thread_local sol_static_entry _sol_tls_statics[{}];",
+                tls_statics.len()
+            ));
+            self.line("static void _sol_register_thread_locals(void) {");
+            self.indent += 1;
+            for (entry, (i, mark)) in tls_statics.iter().enumerate() {
+                let size = self.type_size(&self.module.statics[*i].ty).max(1);
+                let align = self.type_align(&self.module.statics[*i].ty);
+                self.linef(format!(
+                    "_gs{i} = sol_thread_static_alloc({size}, {align});"
+                ));
+                self.linef(format!(
+                    "_sol_tls_statics[{entry}] = (sol_static_entry){{ _gs{i}, {size}, {mark} }};"
+                ));
+            }
+            self.linef(format!(
+                "sol_thread_register_statics(_sol_tls_statics, {});",
+                tls_statics.len()
+            ));
+            self.indent -= 1;
+            self.line("}");
+        }
         if !self.module.statics.is_empty() {
             self.line("");
         }
@@ -696,14 +733,17 @@ impl<'a> Codegen<'a> {
         self.raw_line("#ifdef SOLAR_DEBUG_DISABLE_GC");
         self.raw_line("sol_disable_gc();");
         self.raw_line("#endif");
-        if self.static_root_count > 0 {
-            self.linef(format!(
-                "sol_start(solar_main, _sol_statics, {});",
-                self.static_root_count
-            ));
+        let statics = if self.static_root_count > 0 {
+            format!("_sol_statics, {}", self.static_root_count)
         } else {
-            self.line("sol_start(solar_main, 0, 0);");
-        }
+            "0, 0".to_string()
+        };
+        let register_tls = if tls_statics.is_empty() {
+            "0"
+        } else {
+            "_sol_register_thread_locals"
+        };
+        self.linef(format!("sol_start(solar_main, {statics}, {register_tls});"));
         self.line("return 0;");
         self.indent -= 1;
         self.line("}");
@@ -786,10 +826,12 @@ impl<'a> Codegen<'a> {
             "typedef struct { uint8_t* addr; uint64_t size; sol_mark_fn_t mark_fn; } sol_static_entry;",
         );
         self.line(
-            "extern void sol_start(void (*solar_main)(void*), const sol_static_entry* statics, size_t statics_len);",
+            "extern void sol_start(void (*solar_main)(void*), const sol_static_entry* statics, size_t statics_len, void (*register_tls)(void));",
         );
         self.line("extern void sol_disable_gc(void);");
-        self.line("extern void sol_thread_spawn(void* fn_ptr, void* env);");
+        self.line("extern uint8_t* sol_thread_static_alloc(size_t size, size_t align);");
+        self.line("extern void sol_thread_register_statics(const sol_static_entry* statics, size_t statics_len);");
+        self.line("extern void sol_thread_spawn(void* fn_ptr, void* env, void (*register_tls)(void), void (*init_tls)(void*));");
         self.line("extern void sol_throw(const uint8_t* ptr, size_t len);");
         self.line(
             "extern void sol_try(void* body_fn, void* body_env, void* handler_fn, void* handler_env);",
@@ -3100,7 +3142,20 @@ impl<'a> Codegen<'a> {
                 let env_ptr = self.fresh_tmp();
                 self.linef(format!("void* {fn_ptr} = *(void**){fn_place};"));
                 self.linef(format!("void* {env_ptr} = *(void**)({fn_place} + 8);"));
-                self.linef(format!("sol_thread_spawn({fn_ptr}, {env_ptr});"));
+                let register_tls = if self.module.statics.iter().any(|st| st.thread_local) {
+                    "_sol_register_thread_locals"
+                } else {
+                    "0"
+                };
+                let init_tls = self
+                    .module
+                    .thread_local_init
+                    .as_deref()
+                    .map(|name| self.func_name(name))
+                    .unwrap_or_else(|| "0".to_string());
+                self.linef(format!(
+                    "sol_thread_spawn({fn_ptr}, {env_ptr}, {register_tls}, {init_tls});"
+                ));
             }
             Intrinsic::AtomicLoad => {
                 // arg is &T — a pointer. Load the pointee atomically with acquire.

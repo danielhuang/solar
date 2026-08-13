@@ -35,6 +35,9 @@ AST, while `ir_interp` and native codegen consume IR.
 - Surface `for binding in value` is duck-typed: desugaring evaluates `value`
   once, calls `iter`, then drives `next` inside a `loop` until it returns
   `Option::None`.
+- `static(thread_local)` gives each native thread an independently initialized
+  stable cell. Its literal initializer is replayed when a spawned Solar thread
+  starts; references to the cell may cross threads and outlive the owner.
 - Solar copies may alias. Every backend must implement memmove semantics,
   including aggregate and slice-range copies.
 - Pointer-bearing values must reach LLVM with pointer-typed pointer words so

@@ -29,6 +29,8 @@ fn register_thread(stack_base: *mut usize) {
         stack_base,
         stack_top: AtomicPtr::new(std::ptr::null_mut()),
         saved_regs: std::array::from_fn(|_| AtomicU64::new(0)),
+        tls_statics: std::ptr::null(),
+        tls_statics_len: 0,
         alloc: UnsafeCell::new(ThreadAllocState::new()),
         // Pre-reserve so the write barrier never reallocates on its hot path.
         gray_buf: UnsafeCell::new(Vec::with_capacity(crate::gc::GRAY_BUF_CAP)),
@@ -52,6 +54,16 @@ fn unregister_thread() {
     let _gc_guard = GC_LOCK.read();
     block_gc_signal();
     if let Some(slot) = THREAD_REGISTRY.write().unwrap().remove(&tid) {
+        if slot.tls_statics_len != 0 {
+            let entries =
+                unsafe { std::slice::from_raw_parts(slot.tls_statics, slot.tls_statics_len) };
+            let mut retired = crate::gc::RETIRED_TLS_STATICS.lock().unwrap();
+            retired.extend(entries.iter().map(|entry| crate::StaticEntry {
+                addr: entry.addr,
+                size: entry.size,
+                mark_fn: entry.mark_fn,
+            }));
+        }
         // Flush any pointers this thread shaded but didn't yet publish to GRAY.
         // (Objects reachable only from its stack and never stored to the heap
         // are legitimately dead; anything published went through the barrier.)
@@ -90,6 +102,8 @@ fn unregister_thread() {
 pub unsafe fn sol_thread_start(
     entry_fn: unsafe extern "C" fn(*mut c_void),
     env: *mut c_void,
+    register_tls: Option<unsafe extern "C" fn()>,
+    init_tls: Option<unsafe extern "C" fn(*mut c_void)>,
     gc_guard: Option<
         rustix_futex_sync::lock_api::RwLockReadGuard<'static, rustix_futex_sync::RawRwLock, ()>,
     >,
@@ -108,9 +122,19 @@ pub unsafe fn sol_thread_start(
         asm!("mov {}, rsp", out(reg) rsp);
         register_thread(rsp);
 
+        // The spawner's GC read guard keeps the collector from observing this
+        // slot until its immutable TLS root descriptors have been installed.
+        if let Some(register_tls) = register_tls {
+            register_tls();
+        }
+
         // Thread is now registered and visible to the GC.
         // Drop the read guard so the GC can acquire its write lock.
         drop(gc_guard);
+
+        if let Some(init_tls) = init_tls {
+            init_tls(std::ptr::null_mut());
+        }
 
         asm!(
             "call {func}",
@@ -129,10 +153,14 @@ pub unsafe fn sol_thread_start(
 pub unsafe extern "C" fn sol_thread_spawn(
     fn_ptr: unsafe extern "C" fn(*mut c_void),
     env: *mut c_void,
+    register_tls: Option<unsafe extern "C" fn()>,
+    init_tls: Option<unsafe extern "C" fn(*mut c_void)>,
 ) {
     struct SendArgs {
         fn_ptr: unsafe extern "C" fn(*mut c_void),
         env: *mut c_void,
+        register_tls: Option<unsafe extern "C" fn()>,
+        init_tls: Option<unsafe extern "C" fn(*mut c_void)>,
         gc_guard: Option<
             rustix_futex_sync::lock_api::RwLockReadGuard<'static, rustix_futex_sync::RawRwLock, ()>,
         >,
@@ -143,10 +171,45 @@ pub unsafe extern "C" fn sol_thread_spawn(
     let args = SendArgs {
         fn_ptr,
         env,
+        register_tls,
+        init_tls,
         gc_guard: Some(gc_guard),
     };
     std::thread::spawn(move || {
         let args = args;
-        unsafe { sol_thread_start(args.fn_ptr, args.env, args.gc_guard) };
+        unsafe {
+            sol_thread_start(
+                args.fn_ptr,
+                args.env,
+                args.register_tls,
+                args.init_tls,
+                args.gc_guard,
+            )
+        };
     });
+}
+
+/// Attaches generated TLS root descriptors to the current registered thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sol_thread_register_statics(
+    statics: *const crate::StaticEntry,
+    statics_len: usize,
+) {
+    let slot = crate::gc::MY_SLOT.get();
+    assert!(!slot.is_null(), "TLS statics require a registered thread");
+    // SAFETY: called once by the owning thread while its registration GC read
+    // guard is held. The descriptors and their TLS slots live until exit.
+    let slot = unsafe { &mut *(slot.cast_mut()) };
+    slot.tls_statics = statics;
+    slot.tls_statics_len = statics_len;
+}
+
+/// Allocates a stable cell for one thread-local static. Cells intentionally
+/// live until process exit because a Solar reference may outlive its owner.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sol_thread_static_alloc(size: usize, align: usize) -> *mut u8 {
+    let layout = std::alloc::Layout::from_size_align(size.max(1), align.max(1)).unwrap();
+    let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+    assert!(!ptr.is_null(), "failed to allocate thread-local static");
+    ptr
 }

@@ -297,6 +297,7 @@ fn convert_static_def(node: tree_sitter::Node, source: &str) -> StaticDef {
         name,
         ty,
         value,
+        thread_local: node.child_by_field_name("attr").is_some(),
         is_pub,
         doc: leading_doc(node, source),
         span: source_span(node),

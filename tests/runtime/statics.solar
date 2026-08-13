@@ -7,6 +7,7 @@ static SCALE: Int = 3;
 static BUF: &[Uint8] = "initial"&;
 static LATE: &?Int = null#[Int];
 static FLAG = false;
+static(thread_local) LOCAL = 17;
 
 fn bump() {
     COUNTER = COUNTER + 1;
@@ -17,6 +18,10 @@ fn scaled(x: Int) -> Int {
 }
 
 fn main() {
+    println(LOCAL);
+    LOCAL = 18;
+    println(LOCAL);
+
     bump();
     bump();
     bump();

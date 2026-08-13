@@ -172,6 +172,7 @@
 ] @keyword
 
 (inline_attr "inline" @attribute)
+(static_attr "thread_local" @attribute)
 
 ; ── Operators & punctuation ────────────────────────────────────────────────
 (binary_expression operator: _ @operator)

@@ -49,12 +49,16 @@ module.exports = grammar({
       seq(
         optional("pub"),
         "static",
+        optional(field("attr", $.static_attr)),
         field("name", $.identifier),
         optional(seq(":", field("type", $._type))),
         "=",
         field("value", $._expression),
         ";",
       ),
+
+    // Optional per-thread storage: `static(thread_local) NAME = value;`.
+    static_attr: ($) => seq("(", "thread_local", ")"),
 
     // A `///` doc comment. It stays an `extra` (so it can never break a parse)
     // but is a distinct node so the CST-to-AST converter can attach it to the

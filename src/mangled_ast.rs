@@ -206,6 +206,8 @@ pub struct StaticItem {
     pub ty: Type,
     /// Initial value.
     pub init: Expr,
+    /// Whether each thread receives an independent instance of this static.
+    pub thread_local: bool,
 }
 
 /// A struct definition.
@@ -669,6 +671,7 @@ impl Renderer<'_> {
             name: self.base_name(&s.id),
             ty: self.conv_type(&s.ty),
             init: self.conv_expr(&s.init),
+            thread_local: s.thread_local,
         }
     }
 

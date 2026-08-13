@@ -125,6 +125,8 @@ pub struct StaticDef {
     pub ty: Option<Type>,
     /// The initial value — must be a literal, stored before `main` runs.
     pub value: Box<Expr>,
+    /// Whether each thread receives an independent instance of this static.
+    pub thread_local: bool,
     /// Whether the declaration is exported.
     pub is_pub: bool,
     /// Attached documentation.

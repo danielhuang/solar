@@ -1020,6 +1020,8 @@ pub struct StaticItem {
     pub ty: Type,
     /// Initial value.
     pub init: Expr,
+    /// Whether each thread receives an independent instance of this static.
+    pub thread_local: bool,
 }
 
 /// A concrete struct definition.
@@ -3355,6 +3357,7 @@ impl<'a> Lowerer<'a> {
                 id: st_def,
                 ty: init.ty.clone(),
                 init,
+                thread_local: st.thread_local,
             });
         }
 

@@ -18,6 +18,10 @@ STW root scan -> concurrent mark -> STW remark -> concurrent arena sweep
   barriers.
 - Arena sweeping and mutator allocation must operate on disjoint bitmap words.
 - A mutator may only call `sol_alloc` after thread registration.
+- Generated descriptors for thread-local static cells are attached during
+  thread registration and scanned with that thread's stack roots.
+- Thread-local static cells have process lifetime: their descriptors move to a
+  retired root list when the owning thread exits, preserving escaped references.
 - Runtime code that constructs GC objects manually must initialize pointer
   storage before the object can be traced, pass the correct mark function, and
   preserve roots across further allocations.

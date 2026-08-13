@@ -53,7 +53,7 @@ pub extern "C" fn sol_disable_gc() {
     unsafe { gc::DISABLE_GC.set(true) };
 }
 
-/// A mutable global registered as a GC root.
+/// A mutable global or thread-local slot registered as a GC root.
 #[repr(C)]
 pub struct StaticEntry {
     /// Address of the global slot.
@@ -63,9 +63,9 @@ pub struct StaticEntry {
     /// Function that traces pointers stored in the slot.
     pub mark_fn: mem::MarkFn,
 }
-// SAFETY: entries live in the program's immutable static data and point at
-// global slots valid for the process lifetime. The GC thread only reads the
-// slots during stop-the-world pauses (no mutator is running).
+// SAFETY: entries live in generated static or thread-local data and point at
+// slots valid for the owning registration's lifetime. The GC thread only reads
+// the slots during stop-the-world pauses (no mutator is running).
 unsafe impl Send for StaticEntry {}
 unsafe impl Sync for StaticEntry {}
 
@@ -75,6 +75,7 @@ pub unsafe extern "C" fn sol_start(
     solar_main: unsafe extern "C" fn(*mut c_void),
     statics: *const StaticEntry,
     statics_len: usize,
+    register_tls: Option<unsafe extern "C" fn()>,
 ) {
     let start = Instant::now();
     panic::install_panic_hook();
@@ -100,7 +101,8 @@ pub unsafe extern "C" fn sol_start(
     let gc_handle = gc::spawn_gc_thread(statics);
 
     unsafe {
-        thread::sol_thread_start(solar_main, null_mut(), None);
+        let gc_guard = thread::GC_LOCK.read();
+        thread::sol_thread_start(solar_main, null_mut(), register_tls, None, Some(gc_guard));
     }
 
     gc::shutdown_gc_thread(gc_handle);

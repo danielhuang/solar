@@ -41,6 +41,18 @@ fn thread_join() {
 }
 
 #[test]
+fn thread_local_static() {
+    let output = run_codegen_file(
+        &fixture("thread_local_static.solar"),
+        "compile_only_thread_local_static",
+    );
+    assert_eq!(
+        output,
+        "7\ninitial\n7\ninitial\n22\nworker\n11\nmain\n40\n41\n50\n51\n"
+    );
+}
+
+#[test]
 fn channel() {
     let output = run_codegen_file(&fixture("channel.solar"), "compile_only_channel");
     assert_eq!(output, "42\n");

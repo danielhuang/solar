@@ -4,6 +4,25 @@ fn parse(source: &str) -> SourceFile {
     solar::parser::parse(source).unwrap()
 }
 
+#[test]
+fn thread_local_static_attribute() {
+    let ast = parse("static(thread_local) COUNT: Int = 1;");
+    let TopLevelItem::Static(item) = &ast.items[0] else {
+        panic!("expected static");
+    };
+    assert_eq!(item.name, "COUNT");
+    assert!(item.thread_local);
+}
+
+#[test]
+fn ordinary_static_is_not_thread_local() {
+    let ast = parse("static COUNT = 1;");
+    let TopLevelItem::Static(item) = &ast.items[0] else {
+        panic!("expected static");
+    };
+    assert!(!item.thread_local);
+}
+
 /// Helper to check a span matches expected 0-indexed positions.
 fn check(span: SourceSpan, start_line: u32, start_col: u32, end_line: u32, end_col: u32) {
     assert_eq!(

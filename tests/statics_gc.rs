@@ -93,3 +93,48 @@ fn statics_root_heap_objects_across_gc() {
         "expected at least one GC cycle; stderr: {stderr}"
     );
 }
+
+const TLS_GC_SRC: &str = r#"
+static(thread_local) KEEP: &?[Uint8] = null#[[Uint8]];
+static SCRATCH: &?[Uint8] = null#[[Uint8]];
+
+fn worker() {
+    let buf = [7u8; 4096u];
+    buf[0u] = 42u8;
+    buf[4095u] = 9u8;
+    KEEP = buf[0u..4096u]&;
+
+    for i in 0..800000 {
+        SCRATCH = [Uint8(i & 255); 4096u]&;
+    }
+
+    println(Int(KEEP@[0u]));
+    println(Int(KEEP@[4095u]));
+    println(Int(KEEP@[1u]));
+}
+
+fn main() {
+    let t = thread::spawn(worker);
+    t.join();
+}
+"#;
+
+#[test]
+fn thread_local_statics_root_heap_objects_across_gc() {
+    let bin = build(TLS_GC_SRC, "thread_local_statics_gc", CompileMode::Release);
+    let out = Command::new(bin.canonicalize().unwrap())
+        .env("SOLAR_PRINT_GC_STATS", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "thread-local statics must root heap objects across GC; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n9\n7\n");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("running gc"),
+        "expected at least one GC cycle; stderr: {stderr}"
+    );
+}

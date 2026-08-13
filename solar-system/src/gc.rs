@@ -307,6 +307,10 @@ pub(crate) struct ThreadSlot {
     pub(crate) stack_base: *mut usize,
     pub(crate) stack_top: AtomicPtr<usize>,
     pub(crate) saved_regs: [AtomicU64; 6], // rbx, rbp, r12-r15 from ucontext
+    /// Generated descriptors for this thread's pointer-bearing TLS statics.
+    /// Set once during registration, then read only while the thread is stopped.
+    pub(crate) tls_statics: *const crate::StaticEntry,
+    pub(crate) tls_statics_len: usize,
     pub(crate) alloc: UnsafeCell<ThreadAllocState>,
     /// Per-thread gray buffer (single-producer: this thread's barrier /
     /// `sol_memcpy`). Flushed to `GRAY` at capacity by the owner, and drained
@@ -335,6 +339,10 @@ unsafe impl Sync for ThreadSlot {}
 
 pub(crate) static THREAD_REGISTRY: LazyLock<RwLock<HashMap<i32, Box<ThreadSlot>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// TLS cells outlive their owning threads because Solar references may escape
+/// across a spawn. The descriptors are therefore process roots until shutdown.
+pub(crate) static RETIRED_TLS_STATICS: Mutex<Vec<crate::StaticEntry>> = Mutex::new(Vec::new());
 
 // ---------------------------------------------------------------------------
 // Signal-handler-accessible globals.
@@ -1001,8 +1009,14 @@ unsafe fn run_gc_cycle(statics: &[crate::StaticEntry]) {
         let mut roots: Vec<usize> = Vec::new();
         for slot in registry.values() {
             unsafe { scan_thread_roots(slot, arena_base, big_len, &mut roots) };
+            if slot.tls_statics_len != 0 {
+                let tls =
+                    unsafe { std::slice::from_raw_parts(slot.tls_statics, slot.tls_statics_len) };
+                unsafe { scan_static_roots(tls, &mut roots) };
+            }
         }
         unsafe { scan_static_roots(statics, &mut roots) };
+        unsafe { scan_static_roots(&RETIRED_TLS_STATICS.lock().unwrap(), &mut roots) };
         gray_seed(&roots);
 
         MARKING_HAS_BIG.store(big_len != 0, Ordering::Release);
@@ -1057,10 +1071,16 @@ unsafe fn run_gc_cycle(statics: &[crate::StaticEntry]) {
             let buf = unsafe { &mut *slot.gray_buf.get() };
             remark.append(buf);
             unsafe { scan_thread_roots(slot, arena_base, big_snapshot.len(), &mut remark) };
+            if slot.tls_statics_len != 0 {
+                let tls =
+                    unsafe { std::slice::from_raw_parts(slot.tls_statics, slot.tls_statics_len) };
+                unsafe { scan_static_roots(tls, &mut remark) };
+            }
         }
         // Statics take no write barrier (like stacks); this re-scan is what
         // catches pointers stored into them during the concurrent mark.
         unsafe { scan_static_roots(statics, &mut remark) };
+        unsafe { scan_static_roots(&RETIRED_TLS_STATICS.lock().unwrap(), &mut remark) };
         gray_seed(&remark);
         p2_scan = remark_start.elapsed();
         remark_roots = remark.len();

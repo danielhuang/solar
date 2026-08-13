@@ -55,6 +55,8 @@ pub struct Module {
     pub functions: Vec<Function>,
     /// Mutable globals in source order.
     pub statics: Vec<IrStatic>,
+    /// Synthetic function that restores thread-local statics to their literals.
+    pub thread_local_init: Option<String>,
 }
 
 /// A mutable global slot.
@@ -64,7 +66,12 @@ pub struct IrStatic {
     pub name: String,
     /// Stored type.
     pub ty: Type,
+    /// Whether the slot uses per-thread storage.
+    pub thread_local: bool,
 }
+
+/// Reserved mangled name for the synthetic per-thread static initializer.
+const THREAD_LOCAL_INIT: &str = "$synthetic$__thread_local_init";
 
 /// A closure environment entry.
 #[derive(Debug)]
@@ -277,6 +284,7 @@ pub fn lower(source: &mangled_ast::SourceFile) -> Module {
         .map(|s| IrStatic {
             name: s.name.clone(),
             ty: s.ty.clone(),
+            thread_local: s.thread_local,
         })
         .collect();
     let static_idx: HashMap<String, usize> = source
@@ -286,7 +294,7 @@ pub fn lower(source: &mangled_ast::SourceFile) -> Module {
         .map(|(i, s)| (s.name.clone(), i))
         .collect();
 
-    let functions = source
+    let mut functions: Vec<Function> = source
         .functions
         .values()
         // Skip orphan synthetic closures: a `$synthetic$__closure_N` no surviving
@@ -338,10 +346,47 @@ pub fn lower(source: &mangled_ast::SourceFile) -> Module {
             }
         })
         .collect();
+    let thread_local_init = source
+        .statics
+        .iter()
+        .any(|st| st.thread_local)
+        .then(|| THREAD_LOCAL_INIT.to_string());
+    if thread_local_init.is_some() {
+        let init_fn = mangled_ast::FunctionDef {
+            name: THREAD_LOCAL_INIT.to_string(),
+            parameters: Vec::new(),
+            return_type: Type::Unit,
+            body: source
+                .statics
+                .iter()
+                .filter(|st| st.thread_local)
+                .map(|st| mangled_ast::Statement {
+                    kind: mangled_ast::StatementKind::Assignment {
+                        target: mangled_ast::Expr {
+                            ty: st.ty.clone(),
+                            kind: mangled_ast::ExprKind::Global(st.name.clone()),
+                            span: st.init.span,
+                        },
+                        value: st.init.clone(),
+                    },
+                    span: st.init.span,
+                })
+                .collect(),
+            inline_hint: false,
+        };
+        functions.push(lower_function(
+            &init_fn,
+            &mut next_var,
+            None,
+            &datatypes,
+            &static_idx,
+        ));
+    }
     Module {
         datatypes,
         functions,
         statics,
+        thread_local_init,
     }
 }
 
