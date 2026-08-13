@@ -2757,6 +2757,25 @@ fn main() { use_value(1); }
     }
 
     #[test]
+    fn definition_resolves_std_method_called_from_another_file() {
+        let (_, source, document) = fixture_document("src/std/hashbrown/group.solar");
+        let (line, character) = occurrence_position(&source, "eq_mask", 0);
+        assert!(document.analysis.is_some(), "group.solar must type-check");
+
+        let location =
+            definition(&source, line, character, &document).expect("eq_mask method definition");
+
+        assert!(
+            location["uri"]
+                .as_str()
+                .unwrap()
+                .ends_with("/src/std/simd.solar"),
+            "{location}"
+        );
+        assert_eq!(location["range"]["start"]["line"], 17, "{location}");
+    }
+
+    #[test]
     fn hover_and_definition_resolve_the_same_overload() {
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/runtime/methods.solar");

@@ -30,6 +30,9 @@ AST, while `ir_interp` and native codegen consume IR.
   structural built-in types.
 - `ast::PRIMITIVE_TYPES` is the single registry of primitive type names; name
   parsing, numeric-constructor generation, and coherence checks derive from it.
+- Eagerly lower concrete top-level functions and methods so their bodies are
+  validated and typed tooling can inspect them without requiring a call site.
+  Generic declarations remain demand-monomorphized.
 - Keep user-written and compiler-generated local identifiers as distinct
   `Ident` variants until `mangled_ast` renders them into disjoint strings.
 - Keep mangling and `solar-system/src/panic.rs` demangling in sync.

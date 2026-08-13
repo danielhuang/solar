@@ -3416,8 +3416,42 @@ impl<'a> Lowerer<'a> {
             func_to_lower.push((fid, ast_def));
         }
 
-        // NOTE: concrete methods are NOT pre-registered here.
-        // They are lowered on demand via ensure_concrete_lowered at call sites.
+        // Register and lower concrete methods too. Besides validating every
+        // concrete method body, this keeps typed tooling facts available for
+        // methods that currently have no call site (for example while editing
+        // a library module). Generic methods remain demand-monomorphized.
+        let concrete_method_defs: Vec<Rc<ast::FunctionDef>> = self
+            .method_defs
+            .values()
+            .flat_map(|entries| {
+                entries
+                    .iter()
+                    .filter(|entry| entry.type_params.is_empty())
+                    .map(|entry| entry.ast_def.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let concrete_methods: Vec<(FuncId, Rc<ast::FunctionDef>)> = concrete_method_defs
+            .into_iter()
+            .map(|ast_def| {
+                let param_types = ast_def
+                    .parameters
+                    .iter()
+                    .map(|parameter| self.resolve_ast_type(&parameter.ty))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let fid = FuncId {
+                    def: def_id_of_def(&ast_def.name, ast_def.span),
+                    args: param_types,
+                    overload: None,
+                    method: true,
+                };
+                Ok((fid, ast_def))
+            })
+            .collect::<Result<Vec<_>, CompileError>>()?;
+        for (fid, ast_def) in concrete_methods {
+            self.concrete_ast_defs.insert(fid.clone(), ast_def.clone());
+            func_to_lower.push((fid, ast_def));
+        }
 
         let mut functions = HashMap::new();
         for (fid, ast_def) in &func_to_lower {
@@ -3459,9 +3493,9 @@ impl<'a> Lowerer<'a> {
         })
     }
 
-    /// Ensure a concrete function/method is fully lowered and stored in monomorphized_functions.
-    /// For eagerly-lowered functions this is a no-op (they're already in the functions HashMap).
-    /// For methods, this lazily lowers the method on first use.
+    /// Ensure a concrete function/method is fully lowered and stored in
+    /// `monomorphized_functions`. For eagerly-lowered top-level declarations
+    /// this is a no-op; nested declarations can still be discovered on demand.
     fn ensure_concrete_lowered(
         &mut self,
         mangled: &FuncId,
