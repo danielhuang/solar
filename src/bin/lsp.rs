@@ -2681,7 +2681,7 @@ fn main() {
     fn definition_distinguishes_free_function_from_same_named_method() {
         let (_, source, document) = fixture_document("tests/runtime/methods.solar");
 
-        for (occurrence, target_line) in [(5, 41), (7, 8)] {
+        for (occurrence, target_line) in [(5, 43), (7, 10)] {
             let (line, character) = occurrence_position(&source, "double", occurrence);
             let location =
                 definition(&source, line, character, &document).expect("double definition");
@@ -2761,22 +2761,24 @@ fn main() { use_value(1); }
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/runtime/methods.solar");
         let uri = format!("file://{}", path.display());
-        let source = r#"/// Method documentation.
-method ping(self: Int) -> Int { self }
+        let source = r#"struct Number { value: Int, }
+
+/// Method documentation.
+method ping(self: Number) -> Int { self.value }
 
 /// Free documentation.
 fn ping(x: Int) -> Int { x }
 
 fn main() {
-    println(1.ping());
+    println((Number { value: 1 }).ping());
     println(ping(1));
 }
 "#;
         let document = compute(&uri, source);
 
         for (occurrence, target_line, expected_doc, rejected_doc) in [
-            (2, 1, "Method documentation.", "Free documentation."),
-            (3, 4, "Free documentation.", "Method documentation."),
+            (2, 3, "Method documentation.", "Free documentation."),
+            (3, 6, "Free documentation.", "Method documentation."),
         ] {
             let (line, character) = occurrence_position(source, "ping", occurrence);
             let target = definition(source, line, character, &document).expect("definition target");

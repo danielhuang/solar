@@ -308,27 +308,29 @@ fn from_ast_type_with_subst(ty: &ast::Type, subst: &HashMap<String, Type>) -> Ty
             if let Some(concrete) = subst.get(&name.name) {
                 return concrete.clone();
             }
-            match name.name.as_str() {
-                "Int8" => Type::Int8,
-                "Int16" => Type::Int16,
-                "Int32" => Type::Int32,
-                "Int64" => Type::Int64,
-                "Int" => Type::Int,
-                "Uint8" => Type::Uint8,
-                "Uint16" => Type::Uint16,
-                "Uint32" => Type::Uint32,
-                "Uint64" => Type::Uint64,
-                "Uint" => Type::Uint,
-                "Float32" => Type::Float32,
-                "Float64" => Type::Float64,
-                "Bool" => Type::Bool,
-                "FileDesc" => Type::FileDesc,
-                // `Unit` names the unit type — the type printer already emits it
-                // (e.g. as a function's inferred return), so it must round-trip.
-                "Unit" => Type::Unit,
+            if let Some(primitive) = ast::PrimitiveType::from_name(&name.name) {
+                match primitive {
+                    ast::PrimitiveType::Int8 => Type::Int8,
+                    ast::PrimitiveType::Int16 => Type::Int16,
+                    ast::PrimitiveType::Int32 => Type::Int32,
+                    ast::PrimitiveType::Int64 => Type::Int64,
+                    ast::PrimitiveType::Int => Type::Int,
+                    ast::PrimitiveType::Uint8 => Type::Uint8,
+                    ast::PrimitiveType::Uint16 => Type::Uint16,
+                    ast::PrimitiveType::Uint32 => Type::Uint32,
+                    ast::PrimitiveType::Uint64 => Type::Uint64,
+                    ast::PrimitiveType::Uint => Type::Uint,
+                    ast::PrimitiveType::Float32 => Type::Float32,
+                    ast::PrimitiveType::Float64 => Type::Float64,
+                    ast::PrimitiveType::Bool => Type::Bool,
+                    ast::PrimitiveType::FileDesc => Type::FileDesc,
+                    ast::PrimitiveType::Unit => Type::Unit,
+                    ast::PrimitiveType::Never => Type::Never,
+                }
+            } else {
                 // Otherwise a struct/enum reference — its real provenance `DefId`
                 // was resolved by `resolve` and carried on the AST node directly.
-                _ => Type::Struct(TypeId::plain(name.clone())),
+                Type::Struct(TypeId::plain(name.clone()))
             }
         }
         ast::Type::Generic { name, type_args } => {

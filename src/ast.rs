@@ -554,7 +554,7 @@ pub enum ExprKind {
 }
 
 /// A numeric primitive type.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NumericType {
     Int8,
     Int16,
@@ -570,24 +570,90 @@ pub enum NumericType {
     Float64,
 }
 
+/// A compiler-defined primitive type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrimitiveType {
+    Int8,
+    Int16,
+    Int32,
+    Int64,
+    Int,
+    Uint8,
+    Uint16,
+    Uint32,
+    Uint64,
+    Uint,
+    Float32,
+    Float64,
+    Bool,
+    FileDesc,
+    Unit,
+    Never,
+}
+
+/// The single registry of compiler-defined primitive type names.
+pub const PRIMITIVE_TYPES: &[(PrimitiveType, &str)] = &[
+    (PrimitiveType::Int8, "Int8"),
+    (PrimitiveType::Int16, "Int16"),
+    (PrimitiveType::Int32, "Int32"),
+    (PrimitiveType::Int64, "Int64"),
+    (PrimitiveType::Int, "Int"),
+    (PrimitiveType::Uint8, "Uint8"),
+    (PrimitiveType::Uint16, "Uint16"),
+    (PrimitiveType::Uint32, "Uint32"),
+    (PrimitiveType::Uint64, "Uint64"),
+    (PrimitiveType::Uint, "Uint"),
+    (PrimitiveType::Float32, "Float32"),
+    (PrimitiveType::Float64, "Float64"),
+    (PrimitiveType::Bool, "Bool"),
+    (PrimitiveType::FileDesc, "FileDesc"),
+    (PrimitiveType::Unit, "Unit"),
+    (PrimitiveType::Never, "Never"),
+];
+
+impl PrimitiveType {
+    /// Parses a primitive type name.
+    pub fn from_name(name: &str) -> Option<Self> {
+        PRIMITIVE_TYPES
+            .iter()
+            .find_map(|(primitive, candidate)| (*candidate == name).then_some(*primitive))
+    }
+
+    /// Returns the source spelling of this primitive type.
+    pub fn name(self) -> &'static str {
+        PRIMITIVE_TYPES
+            .iter()
+            .find_map(|(primitive, name)| (*primitive == self).then_some(*name))
+            .unwrap()
+    }
+
+    /// Returns the numeric kind, if this primitive is numeric.
+    pub fn numeric(self) -> Option<NumericType> {
+        match self {
+            PrimitiveType::Int8 => Some(NumericType::Int8),
+            PrimitiveType::Int16 => Some(NumericType::Int16),
+            PrimitiveType::Int32 => Some(NumericType::Int32),
+            PrimitiveType::Int64 => Some(NumericType::Int64),
+            PrimitiveType::Int => Some(NumericType::Int),
+            PrimitiveType::Uint8 => Some(NumericType::Uint8),
+            PrimitiveType::Uint16 => Some(NumericType::Uint16),
+            PrimitiveType::Uint32 => Some(NumericType::Uint32),
+            PrimitiveType::Uint64 => Some(NumericType::Uint64),
+            PrimitiveType::Uint => Some(NumericType::Uint),
+            PrimitiveType::Float32 => Some(NumericType::Float32),
+            PrimitiveType::Float64 => Some(NumericType::Float64),
+            PrimitiveType::Bool
+            | PrimitiveType::FileDesc
+            | PrimitiveType::Unit
+            | PrimitiveType::Never => None,
+        }
+    }
+}
+
 impl NumericType {
     /// Parses a numeric type name.
     pub fn from_name(name: &str) -> Option<NumericType> {
-        match name {
-            "Int8" => Some(NumericType::Int8),
-            "Int16" => Some(NumericType::Int16),
-            "Int32" => Some(NumericType::Int32),
-            "Int64" => Some(NumericType::Int64),
-            "Int" => Some(NumericType::Int),
-            "Uint8" => Some(NumericType::Uint8),
-            "Uint16" => Some(NumericType::Uint16),
-            "Uint32" => Some(NumericType::Uint32),
-            "Uint64" => Some(NumericType::Uint64),
-            "Uint" => Some(NumericType::Uint),
-            "Float32" => Some(NumericType::Float32),
-            "Float64" => Some(NumericType::Float64),
-            _ => None,
-        }
+        PrimitiveType::from_name(name)?.numeric()
     }
 
     /// Returns whether this is a floating-point type.

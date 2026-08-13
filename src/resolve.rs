@@ -248,7 +248,7 @@ impl Resolver {
     fn resolve_file(
         &self,
         file_id: FileId,
-        _root_id: FileId,
+        std_file_count: usize,
         all_module_aliases: &AllModuleAliases,
     ) -> Result<Vec<TopLevelItem>, Vec<CompileError>> {
         let file = &self.files[file_id as usize];
@@ -516,6 +516,18 @@ impl Resolver {
                     let mut m = m.clone();
                     rewrite_function_body(&mut m, &rewrite_ctx);
                     set_file_id_span(&mut m.span, file_id);
+                    let is_std = (file_id as usize) < std_file_count;
+                    if !m.parameters.iter().any(|parameter| {
+                        method_type_has_local_anchor(&parameter.ty, file_id, &m.type_params, is_std)
+                    }) {
+                        rewrite_errors.borrow_mut().push(CompileError::new(
+                            format!(
+                                "method `{}` must use a type defined in the same file in at least one parameter",
+                                m.display_name
+                            ),
+                            m.span,
+                        ));
+                    }
                     rewritten.push(TopLevelItem::Method(m));
                 }
                 TopLevelItem::TypeAlias(ta) => {
@@ -698,6 +710,60 @@ fn rewrite_type(
                 .collect(),
         ),
         Type::Infer => Type::Infer,
+    }
+}
+
+/// Whether a method parameter supplies a coherence anchor owned by its file.
+/// The standard library is additionally allowed to define the canonical
+/// extensions for primitive, structural built-in, and primitive-constrained
+/// generic types.
+fn method_type_has_local_anchor(
+    ty: &Type,
+    file_id: FileId,
+    type_params: &[String],
+    is_std: bool,
+) -> bool {
+    match ty {
+        Type::Named(name) => {
+            name.file == file_id
+                || (is_std
+                    && (PrimitiveType::from_name(&name.name).is_some()
+                        || type_params.contains(&name.name)))
+        }
+        Type::Generic { name, type_args } => {
+            name.file == file_id
+                || (is_std
+                    && (PrimitiveType::from_name(&name.name).is_some()
+                        || type_params.contains(&name.name)))
+                || type_args
+                    .iter()
+                    .any(|ty| method_type_has_local_anchor(ty, file_id, type_params, is_std))
+        }
+        Type::Reference(inner) | Type::NullableReference(inner) | Type::Unique(inner) => {
+            method_type_has_local_anchor(inner, file_id, type_params, is_std)
+        }
+        Type::Slice(inner) | Type::FixedArray(inner, _) => {
+            is_std || method_type_has_local_anchor(inner, file_id, type_params, is_std)
+        }
+        Type::Function {
+            params,
+            return_type,
+        } => {
+            is_std
+                || params
+                    .iter()
+                    .any(|(_, ty)| method_type_has_local_anchor(ty, file_id, type_params, is_std))
+                || return_type.as_deref().is_some_and(|ty| {
+                    method_type_has_local_anchor(ty, file_id, type_params, is_std)
+                })
+        }
+        Type::Tuple(types) => {
+            is_std
+                || types
+                    .iter()
+                    .any(|ty| method_type_has_local_anchor(ty, file_id, type_params, is_std))
+        }
+        Type::Infer => false,
     }
 }
 
@@ -1322,7 +1388,7 @@ fn resolve_impl(
             continue;
         }
         processed.insert(fid);
-        let items = resolver.resolve_file(fid, root_id, &all_module_aliases)?;
+        let items = resolver.resolve_file(fid, std_file_count, &all_module_aliases)?;
         all_items.extend(items);
     }
 

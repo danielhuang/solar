@@ -1,0 +1,14 @@
+import foreign from "foreign.solar";
+
+struct Local {
+    offset: Int,
+}
+
+method add(self: foreign::Foreign, local: Local) -> Int {
+    self.value + local.offset
+}
+
+fn main() {
+    let foreign_value = foreign::Foreign { value: 40 };
+    println(foreign_value.add(Local { offset: 2 }));
+}

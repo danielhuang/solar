@@ -201,3 +201,31 @@ fn type_alias_generic_arg() {
     );
     assert_eq!(output, "2\n4\n6\n");
 }
+
+#[test]
+#[should_panic(
+    expected = "method `value` must use a type defined in the same file in at least one parameter"
+)]
+fn orphan_method() {
+    run(&fixture("orphan_method/main.solar"), "orphan_method");
+}
+
+#[test]
+#[should_panic(
+    expected = "method `doubled` must use a type defined in the same file in at least one parameter"
+)]
+fn user_primitive_method_is_not_allowed() {
+    run(
+        &fixture("orphan_primitive_method/main.solar"),
+        "orphan_primitive_method",
+    );
+}
+
+#[test]
+fn method_with_local_anchor() {
+    let output = run(
+        &fixture("method_local_anchor/main.solar"),
+        "method_local_anchor",
+    );
+    assert_eq!(output, "42\n");
+}

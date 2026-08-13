@@ -15,20 +15,3 @@ pub fn load(ctrl: &[Uint8], pos: Uint) -> simd::SimdUint8x16 {
 pub method match_tag(self: simd::SimdUint8x16, t: Uint8) -> bitmask::BitMask {
   bitmask::BitMask { mask: self.eq_mask(t) }
 }
-
-/// Lanes that are EMPTY (all bits set).
-pub method match_empty(self: simd::SimdUint8x16) -> bitmask::BitMask {
-  bitmask::BitMask { mask: self.eq_mask(tag::EMPTY) }
-}
-
-/// Lanes that are EMPTY or DELETED (high bit set) — a bare move-mask.
-pub method match_empty_or_deleted(self: simd::SimdUint8x16) -> bitmask::BitMask {
-  bitmask::BitMask { mask: self.high_bit_mask() }
-}
-
-/// Lanes that are full (high bit clear) — the complement within the group width.
-pub method match_full(self: simd::SimdUint8x16) -> bitmask::BitMask {
-  let eod = self.high_bit_mask();
-  let all = (1u << WIDTH) -- 1u;
-  bitmask::BitMask { mask: (!eod) & all }
-}

@@ -307,7 +307,7 @@ fn main() {
   println(second#[Bool, Int](true, 7)); // 7
 
   // methods
-  let doubled = 21.double();
+  let doubled = (Box#[Int] { value: 21 }).double();
   println(doubled);                    // 42
 
   // generic method
@@ -486,9 +486,9 @@ fn second#[A, B](a: A, b: B) -> B {
   b
 }
 
-// method on Int (with an `(inline)` hint)
-method(inline) double(self: Int) -> Int {
-  self * 2
+// method on a locally defined type (with an `(inline)` hint)
+method(inline) double(self: Box#[Int]) -> Int {
+  self.value * 2
 }
 
 // operator overloading: `a + b` desugars to `a&.operator_add(b&)` when no

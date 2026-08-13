@@ -17,24 +17,21 @@ pub(crate) fn from_items(mut items: Vec<ast::TopLevelItem>) -> SourceFile {
 
 /// Generates overloaded constructor functions for each numeric type.
 fn generate_numeric_constructors(items: &mut Vec<ast::TopLevelItem>) {
-    const TYPES: &[&str] = &[
-        "Int", "Uint", "Int8", "Int16", "Int32", "Int64", "Uint8", "Uint16", "Uint32", "Uint64",
-        "Float32", "Float64",
-    ];
+    let types: Vec<(ast::NumericType, &str)> = ast::PRIMITIVE_TYPES
+        .iter()
+        .filter_map(|(primitive, name)| primitive.numeric().map(|numeric| (numeric, *name)))
+        .collect();
     let span = ast::SourceSpan {
         file_id: ast::SYNTHETIC_FILE,
         ..ast::SourceSpan::default()
     };
 
-    for &target_name in TYPES {
-        for &from_name in TYPES {
+    for &(target, target_name) in &types {
+        for &(from, from_name) in &types {
             if target_name == from_name {
                 continue;
             }
-            let intrinsic = ast::Intrinsic::Cast(
-                ast::NumericType::from_name(from_name).unwrap(),
-                ast::NumericType::from_name(target_name).unwrap(),
-            );
+            let intrinsic = ast::Intrinsic::Cast(from, target);
             items.push(ast::TopLevelItem::Function(ast::FunctionDef {
                 name: target_name.to_string(),
                 display_name: target_name.to_string(),
