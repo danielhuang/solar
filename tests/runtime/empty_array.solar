@@ -31,7 +31,7 @@ fn main() {
 
   // iterating an empty array runs zero times
   for x in xs {
-    println(x);
+    println(x@);
   }
 
   // annotation with a substituted type parameter

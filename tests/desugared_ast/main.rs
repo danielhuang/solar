@@ -125,7 +125,7 @@ fn numeric_constructor_syntax_remains_a_normal_call() {
 }
 
 #[test]
-fn for_in_becomes_indexed_while_loop() {
+fn for_in_becomes_duck_typed_iterator_loop() {
     let surface =
         parse("fn main() { let values = [1, 2]; for value in values { println(value); } }");
     assert!(matches!(
@@ -135,46 +135,61 @@ fn for_in_becomes_indexed_while_loop() {
 
     let desugared = solar::desugared_ast::lower(&surface);
     let body = &function(&desugared.items, 0).body;
-    assert_eq!(body.len(), 5);
+    assert_eq!(body.len(), 3);
     assert!(matches!(
         &body[1].kind,
         StatementKind::Let {
             pattern: ast::DestructurePattern::Name(name),
-            ..
-        } if matches!(name, ast::Ident::Synthetic(name) if name == "__for_arr_0")
-    ));
-    assert!(matches!(
-        &body[2].kind,
-        StatementKind::Let {
             value: ast::Expr {
-                kind: ExprKind::IntrinsicCall {
-                    intrinsic: ast::Intrinsic::ArrayLen,
+                kind: ExprKind::MethodCall {
+                    method,
+                    receiver,
                     ..
                 },
                 ..
             },
             ..
-        }
+        } if matches!(name, ast::Ident::Synthetic(name) if name == "__for_iter_0")
+            && method == "iter"
+            && matches!(receiver.kind, ExprKind::Reference(_))
     ));
-    let StatementKind::While {
-        body: loop_body, ..
-    } = &body[4].kind
+    let StatementKind::Expression(ast::Expr {
+        kind: ExprKind::Loop(loop_body),
+        ..
+    }) = &body[2].kind
     else {
-        panic!("expected while loop");
+        panic!("expected loop expression");
+    };
+    let StatementKind::Expression(ast::Expr {
+        kind: ExprKind::Match { scrutinee, arms },
+        ..
+    }) = &loop_body[0].kind
+    else {
+        panic!("expected match expression");
     };
     assert!(matches!(
-        &loop_body[0].kind,
-        StatementKind::Let {
-            pattern: ast::DestructurePattern::Name(name),
-            value: ast::Expr {
-                kind: ExprKind::Index { .. },
-                ..
-            },
+        &scrutinee.kind,
+        ExprKind::MethodCall {
+            method,
+            receiver,
             ..
-        } if matches!(name, ast::Ident::User(name) if name == "value")
+        } if method == "next" && matches!(receiver.kind, ExprKind::Reference(_))
+    ));
+    assert_eq!(arms.len(), 2);
+    assert!(matches!(
+        &arms[0].pattern,
+        ast::Pattern::Variant {
+            variant_name,
+            binding: Some(ast::Ident::User(name)),
+            ..
+        } if variant_name == "Some" && name == "value"
     ));
     assert!(matches!(
-        loop_body[1].kind,
-        StatementKind::Assignment { .. }
+        &arms[1].pattern,
+        ast::Pattern::Variant {
+            variant_name,
+            binding: None,
+            ..
+        } if variant_name == "None"
     ));
 }

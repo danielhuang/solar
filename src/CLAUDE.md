@@ -32,6 +32,9 @@ AST, while `ir_interp` and native codegen consume IR.
   `error.rs`; malformed input must not panic the compiler or LSP.
 - Escape analysis is conservative: uncertainty means the value may escape.
 - Compile-time field reflection evaluates its object once.
+- Surface `for binding in value` is duck-typed: desugaring evaluates `value`
+  once, calls `iter`, then drives `next` inside a `loop` until it returns
+  `Option::None`.
 - Solar copies may alias. Every backend must implement memmove semantics,
   including aggregate and slice-range copies.
 - Pointer-bearing values must reach LLVM with pointer-typed pointer words so

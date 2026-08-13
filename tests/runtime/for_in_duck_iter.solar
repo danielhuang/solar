@@ -1,0 +1,32 @@
+struct Counter {
+  first: Int,
+  last: Int,
+}
+
+struct CounterIter {
+  current: Int,
+  last: Int,
+}
+
+method iter(self: &Counter) -> CounterIter {
+  println(90);
+  CounterIter { current: self@.first, last: self@.last, }
+}
+
+method next(self: &CounterIter) -> Option#[Int] {
+  if self@.current >= self@.last {
+    return Option#[Int]::None;
+  }
+  let value = self@.current;
+  self@.current = self@.current + 1;
+  Option#[Int]::Some(value)
+}
+
+fn main() {
+  let counter = Counter { first: 3, last: 7, };
+  for value in counter {
+    if value == 4 { continue; }
+    println(value);
+    if value == 5 { break; }
+  }
+}

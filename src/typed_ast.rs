@@ -2229,6 +2229,50 @@ impl<'a> Lowerer<'a> {
             return expr;
         }
         match (&expr.ty, target) {
+            // &[T; N] -> &[T]: preserve the data pointer and attach N as the
+            // slice metadata. This lets fixed arrays use slice methods such as
+            // iter without requiring an overload for every array length.
+            (Type::Ref(source), Type::RefUnsized(target_ref))
+                if matches!(
+                    (source.as_ref(), target_ref.as_ref()),
+                    (Type::FixedArray(source_inner, _), Type::Array(target_inner))
+                        if source_inner == target_inner
+                ) =>
+            {
+                let Type::FixedArray(inner, size) = source.as_ref() else {
+                    unreachable!();
+                };
+                let inner = inner.clone();
+                let size = *size;
+                let span = expr.span;
+                let deref = Expr {
+                    ty: Type::FixedArray(inner.clone(), size),
+                    kind: ExprKind::Deref(Box::new(expr)),
+                    span,
+                };
+                let slice = Expr {
+                    ty: Type::Array(inner.clone()),
+                    kind: ExprKind::Slice {
+                        object: Box::new(deref),
+                        start: Box::new(Expr {
+                            ty: Type::Uint,
+                            kind: ExprKind::IntegerLiteral(0),
+                            span,
+                        }),
+                        end: Box::new(Expr {
+                            ty: Type::Uint,
+                            kind: ExprKind::IntegerLiteral(size as i64),
+                            span,
+                        }),
+                    },
+                    span,
+                };
+                Expr {
+                    ty: target.clone(),
+                    kind: ExprKind::Reference(Box::new(slice)),
+                    span,
+                }
+            }
             // Array(T) → FixedArray(T, N): wrap in ArraySizeCoerce
             (Type::Array(inner), Type::FixedArray(target_inner, n))
                 if **inner == **target_inner =>
@@ -2956,7 +3000,7 @@ impl<'a> Lowerer<'a> {
                 }
             }
             ast::Type::Slice(inner) => {
-                if let Type::Array(c_inner) = concrete
+                if let Type::Array(c_inner) | Type::FixedArray(c_inner, _) = concrete
                     && !self.try_unify_type(inner, c_inner, type_params, bindings)
                 {
                     return false;
@@ -6104,7 +6148,17 @@ impl<'a> Lowerer<'a> {
                     binding,
                 } => {
                     // Resolve enum name (handles aliases and generics)
-                    let resolved_pname = self.resolve_enum_name(pname, type_args)?;
+                    let resolved_pname = if pname == &enum_name.def
+                        && !type_args.is_empty()
+                        && type_args.iter().all(|ty| matches!(ty, ast::Type::Infer))
+                    {
+                        // Compiler-generated for-in patterns spell
+                        // `Option#[inferred]`; next() has already selected the
+                        // concrete Option instance, so reuse that identity.
+                        enum_name.clone()
+                    } else {
+                        self.resolve_enum_name(pname, type_args)?
+                    };
                     if resolved_pname != enum_name {
                         return Err(CompileError::new(
                             format!(

@@ -350,7 +350,7 @@ fn main() {
 
   let items = [10, 20, 30];
   for x in items {
-    println(x);                         // 10, 20, 30
+    println(x@);                        // 10, 20, 30
   }
 
   // break and continue (target the innermost loop)

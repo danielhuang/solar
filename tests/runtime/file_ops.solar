@@ -54,7 +54,7 @@ fn main() {
     println(Int(entries.len()));
     let found_a = false;
     for e in entries@ {
-        if e.name@ == "a.txt" && e.kind == 0u { found_a = true; }
+        if e@.name@ == "a.txt" && e@.kind == 0u { found_a = true; }
     }
     if found_a { println("a.txt listed"&); }
 

@@ -405,94 +405,88 @@ impl Desugarer {
         span: ast::SourceSpan,
         variable: ast::Ident,
         iterable: ast::Expr,
-        mut body: Vec<ast::Statement>,
+        body: Vec<ast::Statement>,
     ) -> Vec<ast::Statement> {
         let index = self.for_counter;
         self.for_counter += 1;
-        let array = ast::Ident::synthetic(format!("__for_arr_{index}"));
-        let length = ast::Ident::synthetic(format!("__for_len_{index}"));
-        let counter = ast::Ident::synthetic(format!("__for_idx_{index}"));
+        let iterator = ast::Ident::synthetic(format!("__for_iter_{index}"));
 
         let identifier = |name: &ast::Ident| ast::Expr {
             kind: ast::ExprKind::Identifier(name.clone()),
             span,
         };
-        let binding = |name: ast::Ident, value: ast::Expr| ast::Statement {
-            kind: ast::StatementKind::Let {
-                pattern: ast::DestructurePattern::Name(name),
-                ty: None,
-                value,
+        let reference = |value: ast::Expr| ast::Expr {
+            kind: ast::ExprKind::Reference(Box::new(value)),
+            span,
+        };
+        let method_call = |receiver: ast::Expr, method: &str| ast::Expr {
+            kind: ast::ExprKind::MethodCall {
+                receiver: Box::new(receiver),
+                method: method.to_string(),
+                type_args: Vec::new(),
+                arguments: Vec::new(),
+                kwargs: Vec::new(),
             },
             span,
         };
+        let statement = |kind| ast::Statement { kind, span };
 
-        let array_binding = binding(array.clone(), iterable);
-        let length_binding = binding(
-            length.clone(),
-            ast::Expr {
-                kind: ast::ExprKind::IntrinsicCall {
-                    intrinsic: ast::Intrinsic::ArrayLen,
-                    arguments: vec![identifier(&array)],
-                },
-                span,
-            },
-        );
-        let counter_binding = binding(
-            counter.clone(),
-            ast::Expr {
-                kind: ast::ExprKind::IntegerLiteral(0, ast::IntegerType::Uint),
-                span,
-            },
-        );
-        let value_binding = binding(
-            variable,
-            ast::Expr {
-                kind: ast::ExprKind::Index {
-                    object: Box::new(identifier(&array)),
-                    index: Box::new(identifier(&counter)),
-                },
-                span,
-            },
-        );
-        let increment = ast::Statement {
-            kind: ast::StatementKind::Assignment {
-                target: identifier(&counter),
-                value: ast::Expr {
-                    kind: ast::ExprKind::BinaryOp {
-                        op: ast::BinOp::Add,
-                        left: Box::new(identifier(&counter)),
-                        right: Box::new(ast::Expr {
-                            kind: ast::ExprKind::IntegerLiteral(1, ast::IntegerType::Uint),
+        // Evaluate the iterable once and use ordinary method lookup for both
+        // operations. The synthetic references match Solar's mutable iterator
+        // convention (`iter(self: &T)`, `next(self: &Iter)`) without imposing a
+        // nominal iterator type.
+        let iterator_binding = statement(ast::StatementKind::Let {
+            pattern: ast::DestructurePattern::Name(iterator.clone()),
+            ty: None,
+            value: method_call(reference(iterable), "iter"),
+        });
+
+        // The payload type is inferred from next()'s concrete Option instance
+        // during typed-AST lowering. Keeping this as normal match/loop syntax
+        // means break and continue need no special for-in handling downstream.
+        let option_type_args = vec![ast::Type::Infer];
+        let next = method_call(reference(identifier(&iterator)), "next");
+        let match_next = ast::Expr {
+            kind: ast::ExprKind::Match {
+                scrutinee: Box::new(next),
+                arms: vec![
+                    ast::MatchArm {
+                        pattern: ast::Pattern::Variant {
+                            module_path: Vec::new(),
+                            enum_name: ast::DefId::new(0, "Option"),
+                            type_args: option_type_args.clone(),
+                            variant_name: "Some".to_string(),
+                            binding: Some(variable),
+                        },
+                        body: ast::Expr {
+                            kind: ast::ExprKind::Block(body),
                             span,
-                        }),
+                        },
                     },
-                    span,
-                },
+                    ast::MatchArm {
+                        pattern: ast::Pattern::Variant {
+                            module_path: Vec::new(),
+                            enum_name: ast::DefId::new(0, "Option"),
+                            type_args: option_type_args,
+                            variant_name: "None".to_string(),
+                            binding: None,
+                        },
+                        body: ast::Expr {
+                            kind: ast::ExprKind::Block(vec![statement(ast::StatementKind::Break(
+                                None,
+                            ))]),
+                            span,
+                        },
+                    },
+                ],
             },
             span,
         };
-        body.insert(0, increment);
-        body.insert(0, value_binding);
-        let loop_statement = ast::Statement {
-            kind: ast::StatementKind::While {
-                condition: ast::Expr {
-                    kind: ast::ExprKind::BinaryOp {
-                        op: ast::BinOp::Lt,
-                        left: Box::new(identifier(&counter)),
-                        right: Box::new(identifier(&length)),
-                    },
-                    span,
-                },
-                body,
-            },
+        let loop_statement = statement(ast::StatementKind::Expression(ast::Expr {
+            kind: ast::ExprKind::Loop(vec![statement(ast::StatementKind::Expression(match_next))]),
             span,
-        };
+        }));
 
-        vec![
-            array_binding,
-            length_binding,
-            counter_binding,
-            loop_statement,
-        ]
+        vec![iterator_binding, loop_statement]
     }
 }

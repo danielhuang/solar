@@ -219,7 +219,8 @@ pub method read_entries(self: FileDesc) -> &[DirEntry] {
             let n = out@&.len();
             return out@[0u..n]&;
         }
-        for raw in batch@ {
+        for raw_ref in batch@ {
+            let raw = raw_ref@;
             let name = raw@[1u..raw.len()]&;
             if name@ == "." || name@ == ".." { continue; }
             out = (out@ + [DirEntry { kind: Uint(raw@[0u]), name: name }])^;

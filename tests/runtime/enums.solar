@@ -107,7 +107,7 @@ fn main() {
 
   let directions = all_directions();
   for direction in directions {
-    println(match direction {
+    println(match direction@ {
       Direction::Down => 0,
       Direction::Up => 1,
       Direction::North => 2,

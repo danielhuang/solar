@@ -3,7 +3,7 @@ fn print_next(split: &slice::Split#[Int]) {
     Option#[&[Int]]::Some(part) => {
       println(part.len());
       for value in part@ {
-        println(value);
+        println(value@);
       }
     },
     Option#[&[Int]]::None => println(99),

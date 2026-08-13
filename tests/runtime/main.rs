@@ -522,6 +522,12 @@ fn for_loops() {
 }
 
 #[test]
+fn for_in_duck_iter() {
+    let output = run(&fixture("for_in_duck_iter.solar"), "for_in_duck_iter");
+    assert_eq!(output, "90\n3\n5\n");
+}
+
+#[test]
 fn array_init() {
     let output = run(&fixture("array_init.solar"), "array_init");
     assert_eq!(output, "0\n1\n4\n0\n1\n4\n9\n10\n11\n12\n0\n2\n");

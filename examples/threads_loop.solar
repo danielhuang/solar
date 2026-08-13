@@ -7,6 +7,6 @@ fn test() {
 fn main() {
   let threads = [32u; \i thread::spawn(test)];
   for t in threads {
-    t.join();
+    t@.join();
   }
 }

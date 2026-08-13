@@ -33,9 +33,9 @@ fn main() {
   // continue + break in for-in
   let arr: [Int] = [10, 20, 30, 40, 50];
   for v in arr {
-    if v == 20 { continue; }
-    if v == 40 { break; }
-    println(v);                   // 10 30
+    if v@ == 20 { continue; }
+    if v@ == 40 { break; }
+    println(v@);                  // 10 30
   }
 
   // nested loops: break/continue target the innermost loop only
