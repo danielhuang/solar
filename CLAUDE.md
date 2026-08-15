@@ -52,6 +52,10 @@ Read the guide for the component being changed:
 - [Native runtime](solar-system/CLAUDE.md)
 - [Tests](tests/CLAUDE.md)
 
+## Performance
+
+Performance benchmarks are in `bench/` and contain comparisons with other languages.
+
 ## Repository conventions
 
 - Prefer `unwrap()` and `assert!()` to manually printing an error and exiting.
