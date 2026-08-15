@@ -1,0 +1,4 @@
+interface:
+  display_name: "Commit Messages"
+  short_description: "Write commits with decision-rich conversation summaries"
+  default_prompt: "Use $commit-messages to commit the current changes with a concise subject and a body covering attempts, decisions, reasoning, validation, and results."
