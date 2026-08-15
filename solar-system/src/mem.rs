@@ -2,8 +2,8 @@ use std::alloc::Layout;
 use std::sync::atomic::Ordering;
 
 use crate::gc::{
-    BigAllocLocal, ENABLE_ALLOC_PRINTS, MY_SLOT, SOL_CONCURRENT_MARKING, ThreadAllocState,
-    note_claimed, with_signal_deferred,
+    BigAllocLocal, ENABLE_ALLOC_PRINTS, SOL_CONCURRENT_MARKING, ThreadAllocState, note_claimed,
+    with_signal_deferred,
 };
 use crate::heap;
 
@@ -13,33 +13,83 @@ pub type MarkFn = unsafe extern "C" fn(*mut u8, *mut u8, u64);
 /// Allocates uninitialized GC-managed memory.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -> *mut u8 {
-    let slot_ptr = MY_SLOT.get();
-    assert!(
-        !slot_ptr.is_null(),
-        "sol_alloc called on unregistered thread"
-    );
-    let slot = unsafe { &*slot_ptr };
+    unsafe { alloc_in_class::<-1>(size, align, mark_fn) }
+}
 
-    // Avoid holding a mutable reference across a GC suspension.
-    let alloc_ptr = slot.alloc.get();
-
+#[inline(always)]
+unsafe fn alloc_in_class<const CLASS: isize>(
+    size: usize,
+    align: usize,
+    mark_fn: MarkFn,
+) -> *mut u8 {
+    debug_assert!(CLASS == -1 || heap::size_class(size, align) == Some(CLASS as usize));
     if ENABLE_ALLOC_PRINTS.get() {
         eprintln!("allocating new object: {size} bytes (align={align})");
     }
 
-    let addr = unsafe {
-        with_signal_deferred(slot, || match heap::size_class(size, align) {
-            Some(class) => arena_allocate(&mut *alloc_ptr, class, size, mark_fn),
-            None => big_allocate(&mut *alloc_ptr, size, align, mark_fn),
-        })
-    };
-
     unsafe {
-        account_alloc(&mut *alloc_ptr);
+        with_signal_deferred(|slot| {
+            let state = &mut *slot.alloc.get();
+            let addr = if CLASS == -1 {
+                match heap::size_class(size, align) {
+                    Some(class) => arena_allocate(state, class, size, mark_fn),
+                    None => big_allocate(state, size, align, mark_fn),
+                }
+            } else {
+                arena_allocate(state, CLASS as usize, size, mark_fn)
+            };
+            account_alloc(state);
+            addr
+        })
     }
-
-    addr
 }
+
+macro_rules! class_allocators {
+    ($(($name:ident, $class:literal)),* $(,)?) => {$(
+        #[doc = "Compiler-only allocation entry point for a fixed arena class."]
+        #[doc(hidden)]
+        #[unsafe(no_mangle)]
+        #[inline(never)]
+        pub unsafe extern "C" fn $name(
+            size: usize,
+            align: usize,
+            mark_fn: MarkFn,
+        ) -> *mut u8 {
+            unsafe { alloc_in_class::<$class>(size, align, mark_fn) }
+        }
+    )*};
+}
+
+class_allocators!(
+    (sol_alloc_class_0, 0),
+    (sol_alloc_class_1, 1),
+    (sol_alloc_class_2, 2),
+    (sol_alloc_class_3, 3),
+    (sol_alloc_class_4, 4),
+    (sol_alloc_class_5, 5),
+    (sol_alloc_class_6, 6),
+    (sol_alloc_class_7, 7),
+    (sol_alloc_class_8, 8),
+    (sol_alloc_class_9, 9),
+    (sol_alloc_class_10, 10),
+    (sol_alloc_class_11, 11),
+    (sol_alloc_class_12, 12),
+    (sol_alloc_class_13, 13),
+    (sol_alloc_class_14, 14),
+    (sol_alloc_class_15, 15),
+    (sol_alloc_class_16, 16),
+    (sol_alloc_class_17, 17),
+    (sol_alloc_class_18, 18),
+    (sol_alloc_class_19, 19),
+    (sol_alloc_class_20, 20),
+    (sol_alloc_class_21, 21),
+    (sol_alloc_class_22, 22),
+    (sol_alloc_class_23, 23),
+    (sol_alloc_class_24, 24),
+    (sol_alloc_class_25, 25),
+    (sol_alloc_class_26, 26),
+    (sol_alloc_class_27, 27),
+);
 
 /// Allocate `size` bytes (rounded up to a power-of-2 size class) from the
 /// arena. Returns a correctly-aligned pointer to **uninitialized** memory; the

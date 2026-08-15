@@ -263,9 +263,15 @@ pub(crate) unsafe fn end_critical_section(slot: &ThreadSlot) {
 /// `sol_alloc` and the barrier / `sol_memcpy` gray-buffer updates — anything
 /// that touches per-thread GC structures (and may lock `GRAY`).
 #[inline]
-pub(crate) unsafe fn with_signal_deferred<R>(slot: &ThreadSlot, f: impl FnOnce() -> R) -> R {
+pub(crate) unsafe fn with_signal_deferred<R>(f: impl FnOnce(&ThreadSlot) -> R) -> R {
+    let slot = MY_SLOT.get();
+    assert!(
+        !slot.is_null(),
+        "GC critical section on unregistered thread"
+    );
+    let slot = unsafe { &*slot };
     unsafe { begin_critical_section(slot) };
-    let r = f();
+    let r = f(slot);
     unsafe { end_critical_section(slot) };
     r
 }
@@ -1268,10 +1274,7 @@ unsafe fn write_barrier_slow(_dst: *mut u8, val: *mut u8) {
     } else if !MARKING_HAS_BIG.load(Ordering::Relaxed) {
         return;
     }
-    let slot = MY_SLOT.get();
-    assert!(!slot.is_null(), "write barrier on unregistered thread");
-    let slot = unsafe { &*slot };
-    unsafe { with_signal_deferred(slot, || gray_enqueue_raw(slot, v)) };
+    unsafe { with_signal_deferred(|slot| gray_enqueue_raw(slot, v)) };
 }
 
 /// Bulk write barrier for optimizer-generated `llvm.memcpy`/`memmove` (and any
@@ -1291,13 +1294,10 @@ pub unsafe extern "C" fn sol_gc_memcpy_barrier(dst: *mut u8, size: usize) {
 /// pass inserts a `sol_gc_memcpy_barrier` call after each instrumented copy.
 #[inline]
 pub(crate) unsafe fn memcpy_barrier(dst: *mut u8, size: usize) {
-    let slot = MY_SLOT.get();
-    assert!(!slot.is_null(), "memcpy barrier on unregistered thread");
-    let slot = unsafe { &*slot };
     let arena_base = heap::arena_base();
     let has_big = MARKING_HAS_BIG.load(Ordering::Relaxed);
     unsafe {
-        with_signal_deferred(slot, || {
+        with_signal_deferred(|slot| {
             let mut w = dst as *const usize;
             let end = (dst as *const u8).add(size & !7) as *const usize;
             while w < end {

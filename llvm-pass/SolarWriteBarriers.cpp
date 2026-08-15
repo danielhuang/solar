@@ -1,8 +1,8 @@
 // LLVM passes for Solar GC allocation lowering and write barriers.
 //
-// `solar-lower-gc-alloc` exposes allocations and pointer-free copies to LLVM
-// while retaining the metadata needed to restore surviving allocations.
-// `solar-write-barriers` restores them and instruments heap pointer writes.
+// `solar-specialize-gc-alloc` selects fixed-class allocators for constant
+// request sizes and exposes pointer-free copies to LLVM. `solar-write-barriers`
+// instruments heap pointer writes after optimization.
 
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/Constants.h"
@@ -17,7 +17,9 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Plugins/PassPlugin.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Transforms/Utils/ModuleUtils.h"
+#include "llvm/Support/MathExtras.h"
+#include <algorithm>
+#include <set>
 
 using namespace llvm;
 
@@ -45,34 +47,31 @@ bool isStackOrGlobalDest(Value *Dst) {
   return isa<AllocaInst>(Base) || isa<GlobalValue>(Base);
 }
 
-// Exposes GC allocations to LLVM without losing their collector metadata.
-struct SolarLowerGcAlloc : PassInfoMixin<SolarLowerGcAlloc> {
+// Redirect constant-size sol_alloc calls to a fixed-size-class runtime entry
+// point. Those entry points are const-generic Rust monomorphizations, so their
+// bitmap and arena address calculations are optimized for a constant class.
+struct SolarSpecializeGcAlloc : PassInfoMixin<SolarSpecializeGcAlloc> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
     Function *SolAlloc = M.getFunction("sol_alloc");
     if (!SolAlloc)
       return PreservedAnalyses::all();
 
     LLVMContext &Ctx = M.getContext();
-    Type *I64 = Type::getInt64Ty(Ctx);
-    PointerType *PtrTy = PointerType::getUnqual(Ctx);
-    // `aligned_alloc` is recognized by LLVM, while its separate zeroing memset
-    // remains removable and its call metadata survives allocation folding.
-    FunctionCallee AlignedAlloc = M.getOrInsertFunction(
-        "aligned_alloc", FunctionType::get(PtrTy, {I64, I64}, false));
-
-    // Generated `sol_memcpy` calls are overlap-safe and pointer-free. Lower
-    // them to tagged memmoves so LLVM can optimize them without adding barriers.
     Function *SolMemcpy = M.getFunction("sol_memcpy");
 
-    SmallVector<GlobalValue *, 8> MarkFns;
-    SmallPtrSet<GlobalValue *, 8> SeenMarkFns;
-    unsigned N = 0, Skipped = 0, NMemcpy = 0;
+    // These are compiler/runtime ABI helpers, not public runtime symbols.
+    // Internalizing all of them lets global DCE discard unused classes.
+    for (unsigned Class = 0; Class != 28; ++Class)
+      if (Function *F =
+              M.getFunction(("sol_alloc_class_" + Twine(Class)).str()))
+        F->setLinkage(GlobalValue::InternalLinkage);
+
+    SmallVector<CallInst *, 32> AllocCalls;
+    SmallVector<CallInst *, 32> MemcpyCalls;
 
     for (Function &F : M) {
       if (F.isDeclaration() || !isGeneratedFunc(F))
         continue;
-      SmallVector<CallInst *, 16> AllocCalls;
-      SmallVector<CallInst *, 16> MemcpyCalls;
       for (Instruction &I : instructions(F))
         if (auto *CI = dyn_cast<CallInst>(&I)) {
           Function *Callee = CI->getCalledFunction();
@@ -82,121 +81,62 @@ struct SolarLowerGcAlloc : PassInfoMixin<SolarLowerGcAlloc> {
             MemcpyCalls.push_back(CI);
         }
 
-      for (CallInst *CI : AllocCalls) {
-        Value *Size = CI->getArgOperand(0);
-        auto *AlignC = dyn_cast<ConstantInt>(CI->getArgOperand(1));
-        auto *MarkC = dyn_cast<Constant>(CI->getArgOperand(2));
-        // Calls with dynamic collector metadata remain valid but non-elidable.
-        if (!AlignC || !MarkC) {
-          ++Skipped;
-          continue;
-        }
-        IRBuilder<> B(CI);
-        CallInst *NC = B.CreateCall(AlignedAlloc, {AlignC, Size});
-        // Tail merging may discard the collector metadata.
-        NC->addFnAttr(Attribute::NoMerge);
-        NC->setDebugLoc(CI->getDebugLoc());
-        Metadata *Ops[] = {ConstantAsMetadata::get(AlignC),
-                           ConstantAsMetadata::get(MarkC)};
-        NC->setMetadata("solar.alloc", MDNode::get(Ctx, Ops));
-        CI->replaceAllUsesWith(NC);
-        CI->eraseFromParent();
-        if (auto *MF = dyn_cast<Function>(MarkC))
-          if (SeenMarkFns.insert(MF).second)
-            MarkFns.push_back(MF);
-        ++N;
-      }
-
-      for (CallInst *CI : MemcpyCalls) {
-        Value *Dst = CI->getArgOperand(0);
-        Value *Src = CI->getArgOperand(1);
-        Value *Size = CI->getArgOperand(2);
-        IRBuilder<> B(CI);
-        // Solar copies may alias, so this must remain a memmove.
-        CallInst *MC =
-            B.CreateMemMove(Dst, MaybeAlign(), Src, MaybeAlign(), Size);
-        MC->setDebugLoc(CI->getDebugLoc());
-        MC->setMetadata("solar.nobarrier", MDNode::get(Ctx, {}));
-        CI->eraseFromParent();
-        ++NMemcpy;
-      }
     }
 
-    // Keep the mark functions alive through opt's globaldce: after lowering
-    // their only references are in metadata, which does not count as a use.
-    if (!MarkFns.empty())
-      appendToCompilerUsed(M, MarkFns);
+    std::set<uint64_t> Classes;
+    unsigned NSpecialized = 0, NDynamic = 0;
+    for (CallInst *CI : AllocCalls) {
+      auto *Size = dyn_cast<ConstantInt>(CI->getArgOperand(0));
+      auto *Align = dyn_cast<ConstantInt>(CI->getArgOperand(1));
+      if (!Size || !Align || Size->getValue().getActiveBits() > 64 ||
+          Align->getValue().getActiveBits() > 64) {
+        ++NDynamic;
+        continue;
+      }
+      uint64_t Bytes = Size->getZExtValue();
+      uint64_t Alignment = Align->getZExtValue();
+      uint64_t Need = std::max<uint64_t>({Bytes, Alignment, 8});
+      if (Need > (UINT64_C(1) << 30)) {
+        ++NDynamic;
+        continue;
+      }
+      uint64_t Class = Log2_64_Ceil(Need) - 3;
+      Function *ClassAlloc =
+          M.getFunction(("sol_alloc_class_" + Twine(Class)).str());
+      if (!ClassAlloc)
+        report_fatal_error("missing fixed-class allocator entry point");
+      CI->setCalledFunction(ClassAlloc);
+      Classes.insert(Class);
+      ++NSpecialized;
+    }
 
-    if (N || Skipped || NMemcpy)
-      errs() << "solar-lower-gc-alloc: " << N << " sol_alloc -> aligned_alloc, "
-             << Skipped << " left (non-constant align/mark), " << NMemcpy
+    // Generated sol_memcpy calls are overlap-safe and pointer-free. Lower them
+    // to tagged memmoves so LLVM can optimize them without adding barriers.
+    unsigned NMemcpy = 0;
+    for (CallInst *CI : MemcpyCalls) {
+      Value *Dst = CI->getArgOperand(0);
+      Value *Src = CI->getArgOperand(1);
+      Value *Size = CI->getArgOperand(2);
+      IRBuilder<> B(CI);
+      CallInst *MC =
+          B.CreateMemMove(Dst, MaybeAlign(), Src, MaybeAlign(), Size);
+      MC->setDebugLoc(CI->getDebugLoc());
+      MC->setMetadata("solar.nobarrier", MDNode::get(Ctx, {}));
+      CI->eraseFromParent();
+      ++NMemcpy;
+    }
+
+    if (NSpecialized || NDynamic || NMemcpy)
+      errs() << "solar-specialize-gc-alloc: " << NSpecialized
+             << " constant-size calls across " << Classes.size() << " classes, "
+             << NDynamic << " dynamic-size calls, " << NMemcpy
              << " sol_memcpy -> llvm.memmove\n";
-    return (N || NMemcpy) ? PreservedAnalyses::none() : PreservedAnalyses::all();
+    return (NSpecialized || NMemcpy) ? PreservedAnalyses::none()
+                                     : PreservedAnalyses::all();
   }
 
   static bool isRequired() { return true; }
 };
-
-// Restores tagged allocator calls to `sol_alloc`, including folded zeroing.
-unsigned raiseGcAlloc(Module &M) {
-  LLVMContext &Ctx = M.getContext();
-  Type *I8 = Type::getInt8Ty(Ctx);
-  Type *I64 = Type::getInt64Ty(Ctx);
-  PointerType *PtrTy = PointerType::getUnqual(Ctx);
-  FunctionCallee SolAlloc = M.getOrInsertFunction(
-      "sol_alloc", FunctionType::get(PtrTy, {I64, I64, PtrTy}, false));
-
-  unsigned N = 0;
-  for (Function &F : M) {
-    if (F.isDeclaration() || !isGeneratedFunc(F))
-      continue;
-    SmallVector<CallInst *, 16> Calls;
-    for (Instruction &I : instructions(F))
-      if (auto *CI = dyn_cast<CallInst>(&I))
-        if (CI->getMetadata("solar.alloc"))
-          Calls.push_back(CI);
-
-    for (CallInst *CI : Calls) {
-      MDNode *MD = CI->getMetadata("solar.alloc");
-      auto *Align = mdconst::extract<ConstantInt>(MD->getOperand(0));
-      auto *Mark = mdconst::extract<Constant>(MD->getOperand(1));
-      Function *Callee = CI->getCalledFunction();
-      StringRef CN = Callee ? Callee->getName() : "";
-      bool IsCalloc = CN == "calloc";
-      // malloc(size) -> arg0; aligned_alloc(align,size)/calloc(1,size) -> arg1.
-      Value *Size = CI->getArgOperand(CN == "malloc" ? 0 : 1);
-      IRBuilder<> B(CI);
-      CallInst *NA = B.CreateCall(SolAlloc, {Size, Align, Mark});
-      NA->setDebugLoc(CI->getDebugLoc());
-      if (IsCalloc) {
-        // Restore zeroing consumed by a calloc fold.
-        B.CreateMemSet(NA, ConstantInt::get(I8, 0), Size, MaybeAlign());
-      }
-      CI->replaceAllUsesWith(NA);
-      CI->eraseFromParent();
-      ++N;
-    }
-  }
-
-  // A surviving libc allocator would silently bypass the collector.
-  for (Function &F : M) {
-    if (F.isDeclaration() || !isGeneratedFunc(F))
-      continue;
-    for (Instruction &I : instructions(F))
-      if (auto *CI = dyn_cast<CallInst>(&I))
-        if (Function *C = CI->getCalledFunction()) {
-          StringRef NM = C->getName();
-          if (NM == "malloc" || NM == "calloc" || NM == "aligned_alloc")
-            report_fatal_error("solar-write-barriers: un-raised allocator call "
-                               "in generated code (lost !solar.alloc metadata)");
-        }
-  }
-
-  if (N)
-    errs() << "solar-write-barriers: raised " << N
-           << " malloc/calloc -> sol_alloc\n";
-  return N;
-}
 
 struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
@@ -212,9 +152,6 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
     FunctionCallee MemB = M.getOrInsertFunction(
         "sol_gc_memcpy_barrier",
         FunctionType::get(VoidTy, {PtrTy, I64}, false));
-
-    // Restore surviving allocations before instrumenting stores.
-    unsigned NRaised = raiseGcAlloc(M);
 
     unsigned NStore = 0, NVec = 0, NMem = 0, NSkipStack = 0, NSkipPlain = 0;
 
@@ -285,8 +222,8 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
     }
     (void)NSkipPlain;
 
-    return (NRaised || NStore || NVec || NMem) ? PreservedAnalyses::none()
-                                               : PreservedAnalyses::all();
+    return (NStore || NVec || NMem) ? PreservedAnalyses::none()
+                                     : PreservedAnalyses::all();
   }
 
   // Barriers remain mandatory for `optnone` functions.
@@ -306,8 +243,8 @@ llvmGetPassPluginInfo() {
                     MPM.addPass(SolarWriteBarriers());
                     return true;
                   }
-                  if (Name == "solar-lower-gc-alloc") {
-                    MPM.addPass(SolarLowerGcAlloc());
+                  if (Name == "solar-specialize-gc-alloc") {
+                    MPM.addPass(SolarSpecializeGcAlloc());
                     return true;
                   }
                   return false;

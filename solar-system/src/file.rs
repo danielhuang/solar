@@ -147,14 +147,8 @@ pub unsafe extern "C-unwind" fn sol_file_open(
 /// the fd-producing syscall and this call can't close it.) The caller must be
 /// a registered mutator thread.
 pub(crate) unsafe fn register_new_fd(fd: usize) -> *mut u8 {
-    let slot_ptr = crate::gc::MY_SLOT.get();
-    assert!(
-        !slot_ptr.is_null(),
-        "register_new_fd called on unregistered thread"
-    );
-    let slot = unsafe { &*slot_ptr };
     unsafe {
-        crate::gc::with_signal_deferred(slot, || {
+        crate::gc::with_signal_deferred(|_| {
             (*alloc_word(fd)).fetch_or(bit_mask(fd), Ordering::Relaxed);
             FD_HWM.fetch_max(fd as u64 + 1, Ordering::Relaxed);
             if crate::gc::SOL_CONCURRENT_MARKING.load(Ordering::Relaxed) {

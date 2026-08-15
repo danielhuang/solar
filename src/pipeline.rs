@@ -175,18 +175,16 @@ fn run_solar_pass(pass: &str, in_bc: &Path, out_bc: &Path) {
     );
 }
 
-/// Run the `solar-write-barriers` pass (also raises any calloc placeholders left
-/// by `solar-lower-gc-alloc` back to sol_alloc). Debug locations and
-/// stack/global provenance are handled structurally by the pass.
+/// Run the `solar-write-barriers` pass. Debug locations and stack/global
+/// provenance are handled structurally by the pass.
 fn insert_write_barriers(in_bc: &Path, out_bc: &Path) {
     run_solar_pass("solar-write-barriers", in_bc, out_bc);
 }
 
-/// Rewrite generated `sol_alloc` calls into recognized `calloc` placeholders so
-/// opt -O3 can elide non-escaping/dead allocations; survivors are raised back to
-/// `sol_alloc` by `insert_write_barriers` after optimization.
-fn lower_gc_alloc(in_bc: &Path, out_bc: &Path) {
-    run_solar_pass("solar-lower-gc-alloc", in_bc, out_bc);
+/// Redirect constant-size allocations to fixed-class runtime entry points and
+/// lower pointer-free Solar copies to optimizer-visible memmoves.
+fn specialize_gc_alloc(in_bc: &Path, out_bc: &Path) {
+    run_solar_pass("solar-specialize-gc-alloc", in_bc, out_bc);
 }
 
 fn compile_debug(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
@@ -404,12 +402,9 @@ fn compile_release(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
         &[full_ll.to_str().unwrap(), "-o", full_bc.to_str().unwrap()],
     );
 
-    // Lower generated sol_alloc calls to recognized calloc placeholders so the
-    // optimizer can promote/elide non-escaping allocations (it won't do this for
-    // our custom sol_alloc, even fully malloc-attributed). Raised back after opt.
-    eprintln!("=== Lowering GC allocations to calloc placeholders ===");
-    let full_lowered_bc = dir.join("full_lowered.bc");
-    lower_gc_alloc(&full_bc, &full_lowered_bc);
+    eprintln!("=== Specializing constant-size GC allocations ===");
+    let full_specialized_bc = dir.join("full_specialized.bc");
+    specialize_gc_alloc(&full_bc, &full_specialized_bc);
 
     // Optimize
     eprintln!("=== Optimizing (cross-language inlining) ===");
@@ -420,7 +415,7 @@ fn compile_release(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
             opt_args.push("-attributor-enable=all");
         }
         opt_args.extend([
-            full_lowered_bc.to_str().unwrap(),
+            full_specialized_bc.to_str().unwrap(),
             "-o",
             full_opt_bc.to_str().unwrap(),
         ]);
