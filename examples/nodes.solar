@@ -1,63 +1,64 @@
-enum NodeRef {
-    Some(&Node),
-    None,
-}
+enum NodeRef { Some(&Node), None }
 
-struct Node {
-    value: Int,
-    left: NodeRef,
-    right: NodeRef,
-}
+struct Node { value: Int, left: NodeRef, right: NodeRef }
 
 fn add(x: &Int, dx: Int) {
-    x@ = x@ + dx;
+	x@ = x@ + dx;
 }
 
 fn left(node: &Node) -> &Node {
-    match node@.left {
-        NodeRef::Some(left) => left,
-        NodeRef::None => {
-            let new_node = Node { value: 0, left: NodeRef::None, right: NodeRef::Some(node) };
-            node@.left = NodeRef::Some(new_node&);
-            new_node&
-        }
-    }
+	match node@.left {
+		NodeRef::Some(left) => left,
+		NodeRef::None => {
+			let new_node = Node {
+				value: 0,
+				left: NodeRef::None,
+				right: NodeRef::Some(node),
+			};
+			node@.left = NodeRef::Some(new_node&);
+			new_node&
+		},
+	}
 }
 
 fn right(node: &Node) -> &Node {
-    match node@.right {
-        NodeRef::Some(right) => right,
-        NodeRef::None => {
-            let new_node = Node { value: 0, left: NodeRef::Some(node), right: NodeRef::None };
-            node@.right = NodeRef::Some(new_node&);
-            new_node&
-        }
-    }
+	match node@.right {
+		NodeRef::Some(right) => right,
+		NodeRef::None => {
+			let new_node = Node {
+				value: 0,
+				left: NodeRef::Some(node),
+				right: NodeRef::None,
+			};
+			node@.right = NodeRef::Some(new_node&);
+			new_node&
+		},
+	}
 }
 
 fn main() {
-    let node = (Node { value: 6, left: NodeRef::None, right: NodeRef::None })&;
-    println(node@.value);
-    node = left(node);
-    node = left(node);
-    node = left(node);
-    node = left(node);
-    node = left(node);
-    node = left(node);
-    node@.value = 1;
-    println(node@.value);
-    node = right(node);
-    println(node@.value);
-    node = right(node);
-    println(node@.value);
-    node = right(node);
-    println(node@.value);
-    node = right(node);
-    println(node@.value);
-    node = right(node);
-    println(node@.value);
-    node = right(node);
-    println(node@.value);
-    node = right(node);
-    println(node@.value);
+	let node = (Node { value: 6, left: NodeRef::None, right: NodeRef::None })&;
+	println(node@.value);
+	node = left(node);
+	node = left(node);
+	node = left(node);
+	node = left(node);
+	node = left(node);
+	node = left(node);
+	node@.value = 1;
+	println(node@.value);
+	node = right(node);
+	println(node@.value);
+	node = right(node);
+	println(node@.value);
+	node = right(node);
+	println(node@.value);
+	node = right(node);
+	println(node@.value);
+	node = right(node);
+	println(node@.value);
+	node = right(node);
+	println(node@.value);
+	node = right(node);
+	println(node@.value);
 }

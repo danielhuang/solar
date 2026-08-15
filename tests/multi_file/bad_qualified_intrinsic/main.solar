@@ -1,5 +1,5 @@
 import intrinsics from "@intrinsics";
 
 fn main() {
-    intrinsics::does_not_exist();
+	intrinsics::does_not_exist();
 }

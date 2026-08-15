@@ -1,8 +1,8 @@
-import { VERSION } from "config.solar";
+import {VERSION} from "config.solar";
 import config from "config.solar";
 
 fn main() {
-    println(VERSION);            // 42 (named import)
-    println(config::VERSION);    // 42 (module-qualified)
-    println(Int(config::PADDING)); // 4
+	println(VERSION); // 42 (named import)
+	println(config::VERSION); // 42 (module-qualified)
+	println(Int(config::PADDING)); // 4
 }

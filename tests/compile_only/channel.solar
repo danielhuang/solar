@@ -1,10 +1,12 @@
 fn main() {
-    let ch = sync::Channel#[Int]();
+	let ch = sync::Channel#[Int]();
 
-    thread::spawn(\ {
-        ch&.send(42);
-    });
+	thread::spawn(
+		\ {
+			ch&.send(42);
+		},
+	);
 
-    let val = ch&.recv();
-    println(val);
+	let val = ch&.recv();
+	println(val);
 }

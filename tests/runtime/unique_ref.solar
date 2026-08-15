@@ -1,64 +1,60 @@
 // Basic unique reference: deep-copy on copy
 fn main() {
-  // Simple unique reference
-  let a: ^Int = 42^;
-  println(a@);                  // 42
+	// Simple unique reference
+	let a: ^Int = 42^;
+	println(a@); // 42
 
-  // Copy creates independent value
-  let b = a;
-  a@ = 100;
-  println(a@);                  // 100
-  println(b@);                  // 42 — not aliased
+	// Copy creates independent value
+	let b = a;
+	a@ = 100;
+	println(a@); // 100
+	println(b@); // 42 — not aliased
 
-  // Struct containing a unique reference
-  let s1 = Wrapper { data: 10^ };
-  let s2 = s1;                    // deep copy: s2.data is a separate ^Int
-  s1.data@ = 999;
-  println(s1.data@);            // 999
-  println(s2.data@);            // 10 — independent
+	// Struct containing a unique reference
+	let s1 = Wrapper { data: 10^ };
+	let s2 = s1; // deep copy: s2.data is a separate ^Int
+	s1.data@ = 999;
+	println(s1.data@); // 999
+	println(s2.data@); // 10 — independent
 
-  // Unique reference to array (unsized)
-  let arr: ^[Int] = [1, 2, 3]^;
-  let arr2 = arr;                 // deep copy
-  arr@[0u] = 99;
-  println(arr@[0u]);            // 99
-  println(arr2@[0u]);           // 1 — independent
+	// Unique reference to array (unsized)
+	let arr: ^[Int] = [1, 2, 3]^;
+	let arr2 = arr; // deep copy
+	arr@[0u] = 99;
+	println(arr@[0u]); // 99
+	println(arr2@[0u]); // 1 — independent
 
-  // Nested unique references: ^(struct with ^[Int])
-  let inner: ^[Int] = [10, 20, 30]^;
-  let outer = Container { items: inner };
-  let outer2 = outer;             // deep copy of entire tree
-  outer.items@[1u] = 999;
-  println(outer.items@[1u]);    // 999
-  println(outer2.items@[1u]);   // 20 — fully independent
+	// Nested unique references: ^(struct with ^[Int])
+	let inner: ^[Int] = [10, 20, 30]^;
+	let outer = Container { items: inner };
+	let outer2 = outer; // deep copy of entire tree
+	outer.items@[1u] = 999;
+	println(outer.items@[1u]); // 999
+	println(outer2.items@[1u]); // 20 — fully independent
 
-  // Unique reference to a place: does not alias the original variable
-  let original = 77;
-  let uref: ^Int = original^;
-  uref@ = 0;
-  println(original);            // 77 — original unchanged
-  println(uref@);               // 0
+	// Unique reference to a place: does not alias the original variable
+	let original = 77;
+	let uref: ^Int = original^;
+	uref@ = 0;
+	println(original); // 77 — original unchanged
+	println(uref@); // 0
 
-  // Contrast with &T: shared reference copies alias
-  let shared: &Int = 42&;
-  let shared2 = shared;
-  shared@ = 100;
-  println(shared2@);            // 100 — aliased (as expected for &T)
+	// Contrast with &T: shared reference copies alias
+	let shared: &Int = 42&;
+	let shared2 = shared;
+	shared@ = 100;
+	println(shared2@); // 100 — aliased (as expected for &T)
 
-  // Passing a unique ref by value deep-copies it, so `identity(u)` returns a
-  // temporary owning a fresh pointee: writing through its deref is a no-op on
-  // the original.
-  let u: ^Int = 5^;
-  identity(u)@ = 1;
-  println(u@);                  // 5 — original unchanged
+	// Passing a unique ref by value deep-copies it, so `identity(u)` returns a
+	// temporary owning a fresh pointee: writing through its deref is a no-op on
+	// the original.
+	let u: ^Int = 5^;
+	identity(u)@ = 1;
+	println(u@); // 5 — original unchanged
 }
 
 fn identity#[T](x: T) -> T { x }
 
-struct Wrapper {
-  data: ^Int,
-}
+struct Wrapper { data: ^Int }
 
-struct Container {
-  items: ^[Int],
-}
+struct Container { items: ^[Int] }

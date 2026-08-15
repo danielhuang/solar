@@ -1,4 +1,4 @@
 fn main() {
-  let a: [Int] = [10, 20, 30];
-  println(a[5u]);
+	let a: [Int] = [10, 20, 30];
+	println(a[5u]);
 }

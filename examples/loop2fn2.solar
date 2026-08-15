@@ -1,17 +1,23 @@
 fn for_range(start: Int, end: Int, body: fn(Int)) {
-    let i: Int = 0;
-    while i < 1000000000 {
-        if i % 10000 == 0 {
-            println(i);
-        }
-        i = i + 1;
-    }
+	let i: Int = 0;
+
+	while i < 1000000000 {
+		if i % 10000 == 0 {
+			println(i);
+		}
+
+		i = i + 1;
+	}
 }
 
 fn main() {
-    for_range(0, 1000000000, \i: Int {
-        if i % 10000 == 0 {
-            println(i);
-        }
-    });
+	for_range(
+		0,
+		1000000000,
+		\i: Int {
+			if i % 10000 == 0 {
+				println(i);
+			}
+		},
+	);
 }

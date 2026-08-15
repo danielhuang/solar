@@ -2,26 +2,30 @@
 // and close. Reads zero bytes from /dev/zero (an endless stream of 0x00) and
 // writes them to a file in /tmp.
 fn main() {
-  let zero = file::open("/dev/zero"&);
+	let zero = file::open("/dev/zero"&);
 
-  // read(max_size): allocate a buffer and read up to 32 bytes into it. The
-  // result is a &[Uint8] whose length is the number of bytes actually read.
-  // (read=true is the default, so /dev/zero opens fine.)
-  let chunk = zero.read(32u);
+	// read(max_size): allocate a buffer and read up to 32 bytes into it. The
+	// result is a &[Uint8] whose length is the number of bytes actually read.
+	// (read=true is the default, so /dev/zero opens fine.)
+	let chunk = zero.read(32u);
 
-  // read(buf): read up to buf's length bytes into a caller-provided buffer,
-  // returning the count read.
-  let buf: [Uint8] = [0u8; 32u];
-  let n = zero.read(buf&);
-  println(n);                // 32
-  zero.close();
+	// read(buf): read up to buf's length bytes into a caller-provided buffer,
+	// returning the count read.
+	let buf: [Uint8] = [0u8; 32u];
+	let n = zero.read(buf&);
+	println(n); // 32
+	zero.close();
 
-  // Open a file in /tmp, creating and truncating it, and write both chunks.
-  // write() loops over partial writes until the whole buffer is flushed.
-  let out = file::open("/tmp/solar_file_example.out"&, create=true, truncate=true);
-  out.write(chunk);
-  out.write(buf&);
-  out.close();
+	// Open a file in /tmp, creating and truncating it, and write both chunks.
+	// write() loops over partial writes until the whole buffer is flushed.
+	let out = file::open(
+		"/tmp/solar_file_example.out"&,
+		create = true,
+		truncate = true,
+	);
+	out.write(chunk);
+	out.write(buf&);
+	out.close();
 
-  println("wrote 64 zero bytes to /tmp/solar_file_example.out"&);
+	println("wrote 64 zero bytes to /tmp/solar_file_example.out"&);
 }

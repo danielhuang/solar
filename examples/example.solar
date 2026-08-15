@@ -24,34 +24,31 @@
 //     same behavior as rust's `x as T`
 
 pub struct String {
-  // the struct owns a non-resizable slice of bytes
-  pub utf8: [Uint8],
+	// the struct owns a non-resizable slice of bytes
+	pub utf8: [Uint8],
 }
 
-struct TestStruct {
-  a: Int,
-  c: &Int,
-  b: String,
-}
+struct TestStruct { a: Int, c: &Int, b: String }
 
 // unlike rust, references always have mutable access
 fn print_test_struct(x: &TestStruct) {
-  // print impl is todo
+	// print impl is todo
 }
 
 // return type can be inferred from the tail expression. The optional `(inline)`
 // attribute (also valid on `method`) hints codegen to mark it for inlining; the
 // interpreters ignore it.
 pub fn(inline) add(a: Int, b: Int) {
-  a + b
+	a + b
 }
 
 /// Returns the absolute value of `x`.
 fn abs(x: Int) -> Int {
-  if x < 0 {
-    return 0 - x;
-  }
-  x
+	if x < 0 {
+		return 0 - x;
+	}
+
+	x
 }
 
 // Const declarations hold a literal value and are substituted at each use site.
@@ -64,28 +61,23 @@ const RAMP_STEP: Int = 2;
 // has its type (Uint) inferred from its default. Both must follow the normal
 // parameters and are passed by name at call sites (e.g. `ramp(1, step=5)`).
 fn ramp(start: Int, step: Int = 1, times = 3u) -> Int {
-  let total = start;
-  let i = 0u;
-  while i < times {
-    total = total + step;
-    i = i + 1u;
-  }
-  total
+	let total = start;
+	let i = 0u;
+
+	while i < times {
+		total = total + step;
+		i = i + 1u;
+	}
+
+	total
 }
 
 /// A colour, either one of the three primaries or a `Custom` packed integer.
 /// The second line of this doc comment demonstrates multi-line docstrings.
-enum Color {
-  Red,
-  Green,
-  Blue,
-  Custom(Int),
-}
+enum Color { Red, Green, Blue, Custom(Int) }
 
 /// A generic box holding a single value of type `T`.
-struct Box#[T] {
-  value: T,
-}
+struct Box#[T] { value: T }
 
 // type aliases
 type Num = Int;
@@ -98,416 +90,419 @@ static CALL_COUNT: Int = 0;
 static LATE_INIT: &?Int = null#[Int];
 
 fn count_call() {
-  CALL_COUNT = CALL_COUNT + 1;
+	CALL_COUNT = CALL_COUNT + 1;
 }
 
 fn main() {
-  // comments look like this
+	// comments look like this
 
-  let test_struct: TestStruct = TestStruct {
-    a: 1,
-    c: 5&,
-    b: String {
-      utf8: [1u8, 2u8, 3u8],
-    },
-  };
+	let test_struct: TestStruct = TestStruct {
+		a: 1,
+		c: 5&,
+		b: String { utf8: [1u8, 2u8, 3u8] },
+	};
 
-  // deep copy
-  let test_struct_2: TestStruct = test_struct;
+	// deep copy
+	let test_struct_2: TestStruct = test_struct;
 
-  test_struct.a = 3;
+	test_struct.a = 3;
 
-  if true {
-    // postfix @ for dereferencing
-    test_struct.c@ = 2;
-  }
+	if true {
+		// postfix @ for dereferencing
+		test_struct.c@ = 2;
+	}
 
-  println(test_struct.c@);    // 2
-  println(test_struct_2.c@);  // also 2 — deep copy shares &T references
-  println(test_struct_2.a);   // 1 — non-reference fields are copied by value
+	println(test_struct.c@); // 2
+	println(test_struct_2.c@); // also 2 — deep copy shares &T references
+	println(test_struct_2.a); // 1 — non-reference fields are copied by value
 
-  while false {
-    // do nothing
-  }
+	while false {
+		// do nothing
+	}
 
-  // type annotations on let bindings are optional
-  let x = 2 + 3 * 4;            // 14 (inferred as Int)
-  println(x);
+	// type annotations on let bindings are optional
+	let x = 2 + 3 * 4; // 14 (inferred as Int)
+	println(x);
 
-  let sum = x + 6;              // 20 (inferred as Int)
-  println(sum);
+	let sum = x + 6; // 20 (inferred as Int)
+	println(sum);
 
-  let cmp = x > 10 && x < 20;   // inferred as Bool
-  if cmp {
-    println(1);                // 1
-  }
+	let cmp = x > 10 && x < 20; // inferred as Bool
 
-  // bitwise operators (Rust precedence; operands must share a type)
-  println(0b1100 & 0b1010);    // 8
-  println(0b1100 | 0b1010);    // 14
-  println(0b1100 ^ 0b1010);    // 6
-  println(1 << 4);             // 16 (shift count reaching the width gives 0)
-  println(256 >> 4);           // 16
-  println(!0u);                // 18446744073709551615 (bitwise complement)
+	if cmp {
+		println(1); // 1
+	}
 
-  // wrapping arithmetic: doubled operators never panic on overflow
-  println(!0u ++ 1u);          // 0 (u64::MAX ++ 1 wraps)
-  println(!0u ** 2u);          // 18446744073709551614 (wraps mod 2^64)
+	// bitwise operators (Rust precedence; operands must share a type)
+	println(0b1100 & 0b1010); // 8
+	println(0b1100 | 0b1010); // 14
+	println(0b1100 ^ 0b1010); // 6
+	println(1 << 4); // 16 (shift count reaching the width gives 0)
+	println(256 >> 4); // 16
+	println(!0u); // 18446744073709551615 (bitwise complement)
 
-  // array indexing
-  let arr: [Int] = [10, 20, 30];
-  println(arr[0u]);            // 10
-  println(arr[2u]);            // 30
-  arr[1u] = 99;
-  println(arr[1u]);            // 99
+	// wrapping arithmetic: doubled operators never panic on overflow
+	println(!0u ++ 1u); // 0 (u64::MAX ++ 1 wraps)
+	println(!0u ** 2u); // 18446744073709551614 (wraps mod 2^64)
 
-  // return values
-  println(add(10, 20));        // 30
-  println(abs(0 - 5));         // 5
-  println(abs(7));             // 7
+	// array indexing
+	let arr: [Int] = [10, 20, 30];
+	println(arr[0u]); // 10
+	println(arr[2u]); // 30
+	arr[1u] = 99;
+	println(arr[1u]); // 99
 
-  println(ramp(0));                    // 0 + 1*3 = 3
-  println(ramp(0, step=10));           // 0 + 10*3 = 30
-  println(ramp(0, times=5u));          // 0 + 1*5 = 5
-  println(ramp(0, step=2, times=4u));  // 0 + 2*4 = 8
-  // consts substitute to their literal value at the use site
-  println(ramp(RAMP_START, step=RAMP_STEP));  // 0 + 2*3 = 6
+	// return values
+	println(add(10, 20)); // 30
+	println(abs(0 - 5)); // 5
+	println(abs(7)); // 7
 
-  // binary, octal and hex integer literals (suffixes work too)
-  println(0b101);            // 5
-  println(0o17);             // 15
-  println(0xFF);             // 255
-  println(Int(0x10u8));      // 16
-  println(Int(0b100u32));    // 4
+	println(ramp(0)); // 0 + 1*3 = 3
+	println(ramp(0, step = 10)); // 0 + 10*3 = 30
+	println(ramp(0, times = 5u)); // 0 + 1*5 = 5
+	println(ramp(0, step = 2, times = 4u)); // 0 + 2*4 = 8
 
-  // character literals are Uint8 byte values, e.g. 'A' == 65, '\n' == 10
-  println(Int('A'));         // 65
-  println(Int('0' + 5u8));   // 53 ('5')
-  println(['H', 'i', '!']&); // Hi!
+	// consts substitute to their literal value at the use site
+	println(ramp(RAMP_START, step = RAMP_STEP)); // 0 + 2*3 = 6
 
-  // if-else statement
-  if x > 100 {
-    println(0);
-  } else {
-    println(1);                // 1
-  }
+	// binary, octal and hex integer literals (suffixes work too)
+	println(0b101); // 5
+	println(0o17); // 15
+	println(0xFF); // 255
+	println(Int(0x10u8)); // 16
+	println(Int(0b100u32)); // 4
 
-  // if-expression (both branches required)
-  let val = if x > 10 { 100 } else { 200 };
-  println(val);                // 100
+	// character literals are Uint8 byte values, e.g. 'A' == 65, '\n' == 10
+	println(Int('A')); // 65
+	println(Int('0' + 5u8)); // 53 ('5')
+	println(['H', 'i', '!']&); // Hi!
 
-  // string literals desugar to [Uint8]
-  let msg = "Hello";
+	// if-else statement
+	if x > 100 {
+		println(0);
+	} else {
+		println(1); // 1
+	}
 
-  // block expressions
-  let block_val = {
-    let tmp = 10;
-    tmp + 5
-  };
-  println(block_val);              // 15
+	// if-expression (both branches required)
+	let val = if x > 10 { 100 } else { 200 };
+	println(val); // 100
 
-  // array repeat: [value; count]
-  let zeros: [Int] = [0; 5u];
-  println(zeros[3u]);              // 0
+	// string literals desugar to [Uint8]
+	let msg = "Hello";
 
-  // element-type annotation: [...]#[T] — required for an empty array literal
-  // (nothing to infer from), checked against the elements otherwise
-  let empty = []#[Int];
-  println(empty&.len());           // 0
-  let annotated = [1, 2]#[Int];
-  if empty + annotated == annotated {
-    println(1);                    // 1
-  }
+	// block expressions
+	let block_val = {
+		let tmp = 10;
+		tmp + 5
+	};
 
-  // fixed-size array type: [T; N]
-  let fixed: [Int; 3] = [1, 2, 3];
-  println(fixed[1u]);              // 2
+	println(block_val); // 15
 
-  // fixed arrays can be concatenated (result is [T])
-  let a: [Int; 2] = [10, 20];
-  let b: [Int; 2] = [30, 40];
-  let c: [Int; 4] = a + b;
-  println(c[2u]);                  // 30
+	// array repeat: [value; count]
+	let zeros: [Int] = [0; 5u];
+	println(zeros[3u]); // 0
 
-  // first-class functions
-  let f: fn(Int, Int) -> Int = add;
-  println(f(3, 4));               // 7
+	// element-type annotation: [...]#[T] — required for an empty array literal
+	// (nothing to infer from), checked against the elements otherwise
+	let empty = []#[Int];
+	println(empty&.len()); // 0
+	let annotated = [1, 2]#[Int];
 
-  // closures
-  let offset = 10;
-  let add_offset = \x: Int offset + x;
-  println(add_offset(5));          // 15
-  println(add_offset(20));         // 30
+	if empty + annotated == annotated {
+		println(1); // 1
+	}
 
-  // closure parameter type inference — types inferred from context
-  let typed_fn: fn(Int) -> Int = \x x + 1;
-  println(typed_fn(9));            // 10
-  let b2 = Box#[Int] { value: 7 };
-  println(b2.map(\x x * 3));      // 21
+	// fixed-size array type: [T; N]
+	let fixed: [Int; 3] = [1, 2, 3];
+	println(fixed[1u]); // 2
 
-  // slice syntax: a[i..j]
-  let s: [Int] = [10, 20, 30, 40, 50];
-  println(s[1u..3u][0u]);          // 20
-  println(s[1u..3u][1u]);          // 30
-  s[1u..3u] = s[3u..5u];             // copy [40,50] into positions [1,2]
-  println(s[1u]);                   // 40
-  let r: &[Int] = s[0u..2u]&;
-  r@[0u] = 99;
-  println(s[0u]);                   // 99
+	// fixed arrays can be concatenated (result is [T])
+	let a: [Int; 2] = [10, 20];
+	let b: [Int; 2] = [30, 40];
+	let c: [Int; 4] = a + b;
+	println(c[2u]); // 30
 
-  // enums
-  let c: Color = Color::Custom(42);
-  let result = match c {
-    Color::Red => 0,
-    Color::Green => 1,
-    Color::Blue => 2,
-    Color::Custom(n) => n,
-  };
-  println(result);                  // 42
+	// first-class functions
+	let f: fn(Int, Int) -> Int = add;
+	println(f(3, 4)); // 7
 
-  let d: Color = Color::Red;
-  let name = match d {
-    Color::Red => 10,
-    other => 0,
-  };
-  println(name);                    // 10
+	// closures
+	let offset = 10;
+	let add_offset = \x: Int offset + x;
+	println(add_offset(5)); // 15
+	println(add_offset(20)); // 30
 
-  // if/match as place (lvalue)
-  let lhs_a = 0;
-  let lhs_b = 0;
-  (if true { lhs_a } else { lhs_b }) = 42;
-  println(lhs_a);                   // 42
-  println(lhs_b);                   // 0
+	// closure parameter type inference — types inferred from context
+	let typed_fn: fn(Int) -> Int = \x x + 1;
+	println(typed_fn(9)); // 10
+	let b2 = Box#[Int] { value: 7 };
+	println(b2.map(\x x * 3)); // 21
 
-  // generic struct
-  let b: Box#[Int] = Box#[Int] { value: 77 };
-  println(b.value);                  // 77
+	// slice syntax: a[i..j]
+	let s: [Int] = [10, 20, 30, 40, 50];
+	println(s[1u..3u][0u]); // 20
+	println(s[1u..3u][1u]); // 30
+	s[1u..3u] = s[3u..5u]; // copy [40,50] into positions [1,2]
+	println(s[1u]); // 40
+	let r: &[Int] = s[0u..2u]&;
+	r@[0u] = 99;
+	println(s[0u]); // 99
 
-  // generic enum
-  let some_val: Option#[Int] = Option#[Int]::Some(99);
-  let none_val: Option#[Int] = Option#[Int]::None;
-  let r1 = match some_val {
-    Option#[Int]::Some(v) => v,
-    Option#[Int]::None => 0,
-  };
-  println(r1);                       // 99
+	// enums
+	let c: Color = Color::Custom(42);
+	let result = match c {
+		Color::Red => 0,
+		Color::Green => 1,
+		Color::Blue => 2,
+		Color::Custom(n) => n,
+	};
+	println(result); // 42
 
-  let r2 = match none_val {
-    Option#[Int]::Some(v) => v,
-    Option#[Int]::None => 0,
-  };
-  println(r2);                       // 0
+	let d: Color = Color::Red;
+	let name = match d { Color::Red => 10, other => 0 };
+	println(name); // 10
 
-  // different monomorphization
-  let b2: Box#[Bool] = Box#[Bool] { value: true };
+	// if/match as place (lvalue)
+	let lhs_a = 0;
+	let lhs_b = 0;
+	(if true { lhs_a } else { lhs_b }) = 42;
+	println(lhs_a); // 42
+	println(lhs_b); // 0
 
-  // generic functions
-  let id_val = identity#[Int](42);
-  println(id_val);                   // 42
-  println(second#[Bool, Int](true, 7)); // 7
+	// generic struct
+	let b: Box#[Int] = Box#[Int] { value: 77 };
+	println(b.value); // 77
 
-  // methods
-  let doubled = (Box#[Int] { value: 21 }).double();
-  println(doubled);                    // 42
+	// generic enum
+	let some_val: Option#[Int] = Option#[Int]::Some(99);
+	let none_val: Option#[Int] = Option#[Int]::None;
+	let r1 = match some_val {
+		Option#[Int]::Some(v) => v,
+		Option#[Int]::None => 0,
+	};
+	println(r1); // 99
 
-  // generic method
-  let bm: Box#[Int] = Box#[Int] { value: 10 };
-  println(bm.map#[Int](abs));          // 10
+	let r2 = match none_val {
+		Option#[Int]::Some(v) => v,
+		Option#[Int]::None => 0,
+	};
+	println(r2); // 0
 
-  // operator overloading via `operator_add`
-  let sum_box = (Box#[Int] { value: 4 }) + (Box#[Int] { value: 5 });
-  println(sum_box.value);               // 9
+	// different monomorphization
+	let b2: Box#[Bool] = Box#[Bool] { value: true };
 
-  // tuples
-  let t: (Int, Bool) = (42, true);
-  println(t.0);                         // 42
-  let t2 = (1, 2, 3);
-  println(t2.1);                        // 2
+	// generic functions
+	let id_val = identity#[Int](42);
+	println(id_val); // 42
+	println(second#[Bool, Int](true, 7)); // 7
 
-  // destructuring
-  let (da, db) = (100, 200);
-  println(da);                          // 100
-  println(db);                          // 200
+	// methods
+	let doubled = (Box#[Int] { value: 21 }).double();
+	println(doubled); // 42
 
-  let TestStruct { a: sa, c: sc, b: sb } = test_struct;
-  println(sa);                          // 3
+	// generic method
+	let bm: Box#[Int] = Box#[Int] { value: 10 };
+	println(bm.map#[Int](abs)); // 10
 
-  let [ea, eb, ec]: [Int; 3] = [7, 8, 9];
-  println(ea);                          // 7
+	// operator overloading via `operator_add`
+	let sum_box = (Box#[Int] { value: 4 }) + (Box#[Int] { value: 5 });
+	println(sum_box.value); // 9
 
-  // nested destructuring
-  let ((na, nb), nc) = ((10, 20), 30);
-  println(nc);                          // 30
+	// tuples
+	let t: (Int, Bool) = (42, true);
+	println(t.0); // 42
+	let t2 = (1, 2, 3);
+	println(t2.1); // 2
 
-  // function overloading
-  println(negate(5));                   // -5
-  println(negate(true));                // 0
+	// destructuring
+	let (da, db) = (100, 200);
+	println(da); // 100
+	println(db); // 200
 
-  // for loops
-  for i in 0..3 {
-    println(i);                         // 0, 1, 2
-  }
+	let TestStruct { a: sa, c: sc, b: sb } = test_struct;
+	println(sa); // 3
 
-  let items = [10, 20, 30];
-  for x in items {
-    println(x@);                        // 10, 20, 30
-  }
+	let [ea, eb, ec]: [Int; 3] = [7, 8, 9];
+	println(ea); // 7
 
-  // break and continue (target the innermost loop)
-  for n in 0..10 {
-    if n == 1 { continue; }             // skip 1
-    if n == 4 { break; }                // stop before 4
-    println(n);                         // 0, 2, 3
-  }
+	// nested destructuring
+	let ((na, nb), nc) = ((10, 20), 30);
+	println(nc); // 30
 
-  // `loop {}` is an expression — `break <v>` yields its value
-  let doubled_until = loop {
-    let v = 3;
-    break v * 2;
-  };
-  println(doubled_until);               // 6
+	// function overloading
+	println(negate(5)); // -5
+	println(negate(true)); // 0
 
-  // array init: [count; fn(Uint) -> T]
-  let indices = [5u; \i: Uint i];
-  println(indices[2u]);                 // 2
-  println(indices[4u]);                 // 4
+	// for loops
+	for i in 0..3 {
+		println(i); // 0, 1, 2
+	}
 
-  // unique references (^T): deep-copy on copy
-  let uref: ^Int = 42^;
-  println(uref@);                      // 42
-  let uref2 = uref;                      // deep copy: uref2 points to separate memory
-  uref@  = 100;
-  println(uref@);                      // 100
-  println(uref2@);                     // 42 — not aliased
+	let items = [10, 20, 30];
 
-  // nested functions (closures with fn syntax)
-  let base = 1000;
-  fn add_base(x: Int) -> Int { base + x }
-  println(add_base(23));                // 1023
+	for x in items {
+		println(x@); // 10, 20, 30
+	}
 
-  // Vec (from stdlib via vec module)
-  let v = vec::Vec#[Int]([10, 20]&);
-  v&.push(30);
-  println(v&.at(0u)@);                 // 10
-  println(v&.at(2u)@);                 // 30
+	// break and continue (target the innermost loop)
+	for n in 0..10 {
+		if n == 1 { continue; } // skip 1
+		if n == 4 { break; } // stop before 4
+		println(n); // 0, 2, 3
+	}
 
-  // compile-time reflection: the type kind is resolved during type checking
-  // and only the taken branch is compiled — the others are erased unchecked
-  println(match.reflect TestStruct { "struct" => 1, "enum" => 2, _ => 0 }); // 1
-  println(kind_of(Color::Red));         // 2
-  println(kind_of(42));                  // 0
+	// `loop {}` is an expression — `break <v>` yields its value
+	let doubled_until = loop {
+		let v = 3;
+		break v * 2;
+	};
+	println(doubled_until); // 6
 
-  // compile-time field iteration: unrolls per field of the struct behind
-  // the reference; f is (&[Uint8], &F) — field name and value reference
-  let boxed = Box#[Int] { value: 5 };
-  for.reflect_fields f in boxed& {
-    println(f.0);                          // value
-    println(f.1@);                       // 5
-  }
+	// array init: [count; fn(Uint) -> T]
+	let indices = [5u; \i: Uint i];
+	println(indices[2u]); // 2
+	println(indices[4u]); // 4
 
-  // paired field iteration over two values of the same struct: binds
-  // (&[Uint8], &F, &F) per field — the name and both objects' field refs
-  let boxed2 = Box#[Int] { value: 5 };
-  for.reflect_fields_pair (name, p, q) in (boxed&, boxed2&) {
-    if p@ == q@ { println(1); }           // 1 — the `value` fields are equal
-  }
+	// unique references (^T): deep-copy on copy
+	let uref: ^Int = 42^;
+	println(uref@); // 42
+	let uref2 = uref; // deep copy: uref2 points to separate memory
+	uref@ = 100;
+	println(uref@); // 100
+	println(uref2@); // 42 — not aliased
 
-  // compile-time variant dispatch: desugars to a match over the enum with
-  // the body duplicated per arm; variant is the &[Uint8] name, index the
-  // 0-based Uint discriminant, val the payload (only bound in data arms)
-  let col = Color::Blue;
-  match.reflect_variant (variant, index, val) in col& {
-    println(variant);                      // Blue
-    println(index);                        // discriminant index of Blue
-  }
+	// nested functions (closures with fn syntax)
+	let base = 1000;
+	fn add_base(x: Int) -> Int { base + x }
+	println(add_base(23)); // 1023
 
-  // paired variant reflection over two enums: the body runs only when both
-  // hold the same variant; binds name, index, and both payloads
-  let col2 = Color::Blue;
-  match.reflect_variant_pair (variant, index, a, b) in (col&, col2&) {
-    println(variant);                      // Blue (both are Blue)
-  }
+	// Vec (from stdlib via vec module)
+	let v = vec::Vec#[Int]([10, 20]&);
+	v&.push(30);
+	println(v&.at(0u)@); // 10
+	println(v&.at(2u)@); // 30
 
-  // nullable references: `&?T` may be null. `null#[T]` is the null value.
-  // A normal `&T` coerces to `&?T`, but not the reverse.
-  let num = 7;
-  let maybe: &?Int = num&;                 // &Int coerces to &?Int
-  if maybe != null#[Int] {
-    println(maybe@);                     // 7 — `@` null-checks then loads
-  }
-  let nothing: &?Int = null#[Int];
-  if nothing == null#[Int] {
-    println(0);                          // 0
-  }
+	// compile-time reflection: the type kind is resolved during type checking
+	// and only the taken branch is compiled — the others are erased unchecked
+	println(match.reflect TestStruct { "struct" => 1, "enum" => 2, _ => 0 }); // 1
+	println(kind_of(Color::Red)); // 2
+	println(kind_of(42)); // 0
 
-  // exceptions: `try { … } catch (e) { … }`. A `throw` (carrying a `&[Uint8]`
-  // message) unwinds to the nearest enclosing `catch`; `e` binds the message
-  // (a `&[Uint8]`; an explicit annotation is optional and must be `&[Uint8]`).
-  // Desugars to the `try` intrinsic called with a body and handler closure.
-  try {
-    throw("caught exception"&);
-  } catch (e) {
-    println(e);                          // caught exception
-  }
+	// compile-time field iteration: unrolls per field of the struct behind
+	// the reference; f is (&[Uint8], &F) — field name and value reference
+	let boxed = Box#[Int] { value: 5 };
 
-  // float literals require an f/f32/f64 suffix (1f, 2.5f64; a bare `1.0` is
-  // not a float and `1.f` is field access on the integer 1). Arithmetic and
-  // comparisons are IEEE-754; math functions live in the std math module.
-  let radius = 2.5f;
-  let area = math::PI * radius * radius;
-  println(Int(area));                    // 19
-  println(Int(math::sqrt(2f) * 100f));   // 141
+	for.reflect_fields f in boxed& {
+		println(f.0); // value
+		println(f.1@); // 5
+	}
 
-  // statics: read/assign like any place; populate a nullable-ref static here
-  count_call();
-  count_call();
-  println(CALL_COUNT);                   // 2
-  let late = 7;
-  LATE_INIT = late&;
-  println(LATE_INIT@);                   // 7
+	// paired field iteration over two values of the same struct: binds
+	// (&[Uint8], &F, &F) per field — the name and both objects' field refs
+	let boxed2 = Box#[Int] { value: 5 };
+
+	for.reflect_fields_pair (name, p, q) in (boxed&, boxed2&) {
+		if p@ == q@ { println(1); } // 1 — the `value` fields are equal
+	}
+
+	// compile-time variant dispatch: desugars to a match over the enum with
+	// the body duplicated per arm; variant is the &[Uint8] name, index the
+	// 0-based Uint discriminant, val the payload (only bound in data arms)
+	let col = Color::Blue;
+
+	match.reflect_variant (variant, index, val) in col& {
+		println(variant); // Blue
+		println(index); // discriminant index of Blue
+	}
+
+	// paired variant reflection over two enums: the body runs only when both
+	// hold the same variant; binds name, index, and both payloads
+	let col2 = Color::Blue;
+
+	match.reflect_variant_pair (variant, index, a, b) in (col&, col2&) {
+		println(variant); // Blue (both are Blue)
+	}
+
+	// nullable references: `&?T` may be null. `null#[T]` is the null value.
+	// A normal `&T` coerces to `&?T`, but not the reverse.
+	let num = 7;
+	let maybe: &?Int = num&; // &Int coerces to &?Int
+
+	if maybe != null#[Int] {
+		println(maybe@); // 7 — `@` null-checks then loads
+	}
+
+	let nothing: &?Int = null#[Int];
+
+	if nothing == null#[Int] {
+		println(0); // 0
+	}
+
+	// exceptions: `try { … } catch (e) { … }`. A `throw` (carrying a `&[Uint8]`
+	// message) unwinds to the nearest enclosing `catch`; `e` binds the message
+	// (a `&[Uint8]`; an explicit annotation is optional and must be `&[Uint8]`).
+	// Desugars to the `try` intrinsic called with a body and handler closure.
+	try {
+		throw("caught exception"&);
+	} catch (e) {
+		println(e); // caught exception
+	}
+
+	// float literals require an f/f32/f64 suffix (1f, 2.5f64; a bare `1.0` is
+	// not a float and `1.f` is field access on the integer 1). Arithmetic and
+	// comparisons are IEEE-754; math functions live in the std math module.
+	let radius = 2.5f;
+	let area = math::PI * radius * radius;
+	println(Int(area)); // 19
+	println(Int(math::sqrt(2f) * 100f)); // 141
+
+	// statics: read/assign like any place; populate a nullable-ref static here
+	count_call();
+	count_call();
+	println(CALL_COUNT); // 2
+	let late = 7;
+	LATE_INIT = late&;
+	println(LATE_INIT@); // 7
 }
 
 // works with generics: each instantiation takes its own branch
 fn kind_of#[T](value: T) -> Int {
-  match.reflect T {
-    "struct" => 1,
-    "enum" => 2,
-    _ => 0,
-  }
+	match.reflect T { "struct" => 1, "enum" => 2, _ => 0 }
 }
 
 // generic function: identity
 fn identity#[T](x: T) -> T {
-  x
+	x
 }
 
 // generic function: return second argument
 fn second#[A, B](a: A, b: B) -> B {
-  b
+	b
 }
 
 // method on a locally defined type (with an `(inline)` hint)
 method(inline) double(self: Box#[Int]) -> Int {
-  self.value * 2
+	self.value * 2
 }
 
 // operator overloading: `a + b` desugars to `a&.operator_add(b&)` when no
 // primitive `+` applies to the operands (integers still use the built-in `+`).
 method operator_add(self: &Box#[Int], other: &Box#[Int]) -> Box#[Int] {
-  Box#[Int] { value: self@.value + other@.value }
+	Box#[Int] { value: self@.value + other@.value }
 }
 
 // generic method
 method map#[R](self: Box#[Int], f: fn(Int) -> R) -> R {
-  f(self.value)
+	f(self.value)
 }
 
 // function overloading: same name, different param types
 fn negate(x: Int) -> Int {
-  0 - x
+	0 - x
 }
 
 fn negate(x: Bool) -> Int {
-  if x { return 0; }
-  1
+	if x { return 0; }
+	1
 }

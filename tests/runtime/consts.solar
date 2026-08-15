@@ -6,23 +6,25 @@ const STEP = 10;
 const BANNER = "go\n"&;
 
 fn main() {
-  write_stdout(BANNER);          // go
+	write_stdout(BANNER); // go
 
-  // local const, shadowing-free use in a loop
-  const START = 100;
-  let total = START;
-  let i = 0u;
-  while i < LIMIT {
-    total = total + STEP;
-    i = i + 1u;
-  }
-  println(total);              // 100 + 10*3 = 130
+	// local const, shadowing-free use in a loop
+	const START = 100;
+	let total = START;
+	let i = 0u;
 
-  // block-scoped local const
-  if total > 0 {
-    const INNER = 7;
-    println(INNER);            // 7
-  }
+	while i < LIMIT {
+		total = total + STEP;
+		i = i + 1u;
+	}
 
-  println(Int(LIMIT));         // 3
+	println(total); // 100 + 10*3 = 130
+
+	// block-scoped local const
+	if total > 0 {
+		const INNER = 7;
+		println(INNER); // 7
+	}
+
+	println(Int(LIMIT)); // 3
 }

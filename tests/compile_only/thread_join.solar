@@ -1,8 +1,10 @@
 fn main() {
-    let x = 0;
-    let t = thread::spawn(\ {
-        x&.atomic_store(42);
-    });
-    t.join();
-    println(x&.atomic_load());
+	let x = 0;
+	let t = thread::spawn(
+		\ {
+			x&.atomic_store(42);
+		},
+	);
+	t.join();
+	println(x&.atomic_load());
 }

@@ -1,21 +1,22 @@
-pub struct Owner#[T] { pub v: Int32, }
-pub struct Key { pub k: Int32, }
-pub struct Named#[T] { pub tag: Int32, }
+pub struct Owner#[T] { pub v: Int32 }
+pub struct Key { pub k: Int32 }
+pub struct Named#[T] { pub tag: Int32 }
 
 // Two generic overloads with the same type-parameter count and arity, told
 // apart only by their first parameter's type.
 pub fn make#[T](owner: &Owner#[T], tag: Int32) -> &Named#[T] {
-  let n = Named#[T] { tag: tag };
-  n&
+	let n = Named#[T] { tag: tag };
+	n&
 }
 
 pub fn make#[T](key: Key, tag: Int32) -> &Named#[T] {
-  let n = Named#[T] { tag: tag + 100i32 };
-  n&
+	let n = Named#[T] { tag: tag + 100i32 };
+	n&
 }
 
 // Overloads that differ by parameter *shape* rather than by named type: a base
 // `DefId` comparison cannot separate a function from a slice-of-functions, so
 // an explicit-type-argument call used to fall back to the first-declared one.
 pub fn pick#[T](c1: fn(&T) -> Bool) -> Int32 { 1i32 }
+
 pub fn pick#[T](conditions: &[fn(&T) -> Bool]) -> Int32 { 2i32 }

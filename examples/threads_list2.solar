@@ -1,25 +1,29 @@
-struct Node {
-    value: Int,
-    next: &?Node,
-}
+struct Node { value: Int, next: &?Node }
 
 fn main() {
-    let sentinel = (Node { value: 0, next: null#[Node] })&;
-    let root = sentinel;
-    let is_done = false;
-    for _ in 0..16 {
-        thread::spawn(\ {
-            for iter in 0..1000 {
-                let head = sentinel;
-                for j in 0..100000 {
-                    head = (Node { value: j, next: head })&;
-                }
-                root&.atomic_store(head);
-            }
-            is_done&.atomic_store(true);
-        });
-    }
-    while is_done&.atomic_load() == false {}
-    println(root@.value);
-    println("done"&);
+	let sentinel = (Node { value: 0, next: null#[Node] })&;
+	let root = sentinel;
+	let is_done = false;
+
+	for _ in 0..16 {
+		thread::spawn(
+			\ {
+				for iter in 0..1000 {
+					let head = sentinel;
+
+					for j in 0..100000 {
+						head = (Node { value: j, next: head })&;
+					}
+
+					root&.atomic_store(head);
+				}
+
+				is_done&.atomic_store(true);
+			},
+		);
+	}
+
+	while is_done&.atomic_load() == false {}
+	println(root@.value);
+	println("done"&);
 }

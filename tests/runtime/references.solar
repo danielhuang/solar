@@ -1,28 +1,22 @@
-struct Test {
-  a: Int,
-  b: &Int,
-}
+struct Test { a: Int, b: &Int }
 
 fn main() {
-  let c: Int = 1;
-  let test: Test = Test {
-    a: 5,
-    b: c&,
-  };
-  c = 2;
-  println(test.b@); // 2
-  test.b@ = 3;
-  println(c); // 3
-  
-  test.b = test.a&;
-  println(test.b@); // 5
-  println(test.a); // 5
-  
-  test.a = 6;
-  println(test.b@); // 6
-  println(test.a); // 6
-  
-  test.b@ = 7;
-  println(test.b@); // 7
-  println(test.a); // 7
+	let c: Int = 1;
+	let test: Test = Test { a: 5, b: c& };
+	c = 2;
+	println(test.b@); // 2
+	test.b@ = 3;
+	println(c); // 3
+
+	test.b = test.a&;
+	println(test.b@); // 5
+	println(test.a); // 5
+
+	test.a = 6;
+	println(test.b@); // 6
+	println(test.a); // 6
+
+	test.b@ = 7;
+	println(test.b@); // 7
+	println(test.a); // 7
 }

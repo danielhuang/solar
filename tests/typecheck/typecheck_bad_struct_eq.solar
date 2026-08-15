@@ -1,9 +1,7 @@
-struct Foo {
-  x: Int,
-}
+struct Foo { x: Int }
 
 fn main() {
-  let a: Foo = Foo { x: 1, };
-  let b: Foo = Foo { x: 1, };
-  let eq: Bool = a == b;
+	let a: Foo = Foo { x: 1 };
+	let b: Foo = Foo { x: 1 };
+	let eq: Bool = a == b;
 }

@@ -1,15 +1,19 @@
 fn while_fn(cond: fn() -> Bool, body: fn()) {
-    while cond() {
-        body();
-    }
+	while cond() {
+		body();
+	}
 }
 
 fn main() {
-    let i: Int = 0;
-    while_fn(\ i < 1000000000, \ {
-        if i % 10000 == 0 {
-            println(i);
-        }
-        i = i + 1;
-    });
+	let i: Int = 0;
+	while_fn(
+		\ i < 1000000000,
+		\ {
+			if i % 10000 == 0 {
+				println(i);
+			}
+
+			i = i + 1;
+		},
+	);
 }

@@ -1,6 +1,6 @@
-import { array_len } from "@intrinsics";
+import {array_len} from "@intrinsics";
 
 fn main() {
-    let a: [Int] = [10, 20, 30];
-    println(array_len(a));
+	let a: [Int] = [10, 20, 30];
+	println(array_len(a));
 }

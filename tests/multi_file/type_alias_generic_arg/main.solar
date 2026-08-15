@@ -5,16 +5,16 @@
 import * from "lib.solar";
 
 fn main() {
-  let via_alias = Holder#[Alias] { v: Boxed { n: 1i32 } };
-  via_alias&.put(Boxed { n: 2i32 });
-  println(Int(via_alias&.get().n).to_string());
+	let via_alias = Holder#[Alias] { v: Boxed { n: 1i32 } };
+	via_alias&.put(Boxed { n: 2i32 });
+	println(Int(via_alias&.get().n).to_string());
 
-  let via_target = Holder#[Boxed] { v: Boxed { n: 3i32 } };
-  via_target&.put(Boxed { n: 4i32 });
-  println(Int(via_target&.get().n).to_string());
+	let via_target = Holder#[Boxed] { v: Boxed { n: 3i32 } };
+	via_target&.put(Boxed { n: 4i32 });
+	println(Int(via_target&.get().n).to_string());
 
-  // A chained alias resolves to the same instantiation.
-  let chained = Holder#[AliasOfAlias] { v: Boxed { n: 5i32 } };
-  chained&.put(Boxed { n: 6i32 });
-  println(Int(chained&.get().n).to_string());
+	// A chained alias resolves to the same instantiation.
+	let chained = Holder#[AliasOfAlias] { v: Boxed { n: 5i32 } };
+	chained&.put(Boxed { n: 6i32 });
+	println(Int(chained&.get().n).to_string());
 }

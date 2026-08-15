@@ -1,5 +1,5 @@
-import { Value, make_value } from "shared.solar";
+import {Value, make_value} from "shared.solar";
 
 pub fn from_b() -> Value {
-    make_value(20)
+	make_value(20)
 }

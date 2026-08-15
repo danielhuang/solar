@@ -1,10 +1,10 @@
 fn main() {
-  let x: &Int = 5&;
-  println(x@); // 5
+	let x: &Int = 5&;
+	println(x@); // 5
 
-  let y: &Int = 10&;
-  println(y@); // 10
+	let y: &Int = 10&;
+	println(y@); // 10
 
-  y@ = 20;
-  println(y@); // 20
+	y@ = 20;
+	println(y@); // 20
 }

@@ -1,10 +1,5 @@
-struct Foo {
-  x: Int,
-}
+struct Foo { x: Int }
 
 fn main() {
-  let f: Foo = Foo {
-    x: 1,
-    z: 2,
-  };
+	let f: Foo = Foo { x: 1, z: 2 };
 }

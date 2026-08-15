@@ -1,19 +1,17 @@
 // Reference `==` compares contents through the `&&T` stdlib overload, while
 // `ref_eq` explicitly compares identity.
-pub struct Pair {
-    pub a: Int,
-    pub b: Int,
-}
+pub struct Pair { pub a: Int, pub b: Int }
 
 fn main() {
-    let a = "abc"&;
-    let b = "abc"&;
-    if a == b { println("contents equal through refs"&); }
-    if ref_eq(a, a) { println("same ref"&); }
-    if !ref_eq(a, b) { println("distinct refs"&); }
-    if a@ == b@ { println("contents equal"&); }
-    // Struct equality via the blanket still works.
-    let p1 = Pair { a: 1, b: 2 };
-    let p2 = Pair { a: 1, b: 2 };
-    if p1 == p2 { println("structs equal"&); }
+	let a = "abc"&;
+	let b = "abc"&;
+	if a == b { println("contents equal through refs"&); }
+	if ref_eq(a, a) { println("same ref"&); }
+	if !ref_eq(a, b) { println("distinct refs"&); }
+	if a@ == b@ { println("contents equal"&); }
+
+	// Struct equality via the blanket still works.
+	let p1 = Pair { a: 1, b: 2 };
+	let p2 = Pair { a: 1, b: 2 };
+	if p1 == p2 { println("structs equal"&); }
 }

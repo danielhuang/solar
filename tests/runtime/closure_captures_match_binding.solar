@@ -16,65 +16,63 @@
 // present the dangling read can land on still-valid stack. This test forces the
 // frame to be reused before the closure is called.
 
-struct Payload {
-  a: Int,
-  b: Int,
-}
+struct Payload { a: Int, b: Int }
 
-enum Shape {
-  Multipoint(&Payload),
-  Empty,
-}
+enum Shape { Multipoint(&Payload), Empty }
 
 fn sample(p: &Payload, c: Int) -> Int {
-  p@.a * 100 + p@.b * 10 + c
+	p@.a * 100 + p@.b * 10 + c
 }
 
 // The scrutinee is a by-value parameter; the returned closure captures the
 // match binding, so the parameter's storage must outlive this frame.
 fn as_sampler(s: Shape) -> fn(Int) -> Int {
-  match s {
-    Shape::Multipoint(m) => \c: Int { sample(m, c) },
-    Shape::Empty => \c: Int { c },
-  }
+	match s {
+		Shape::Multipoint(m) => \c: Int { sample(m, c) },
+		Shape::Empty => \c: Int { c },
+	}
 }
 
 // Called between building and invoking the sampler, to dirty any stack slot the
 // parameter might wrongly have been placed in.
 fn churn(n: Int) -> Int {
-  let acc = 0;
-  let i = 0;
-  while i < n {
-    let junk = [i, i + 1, i + 2, i + 3, i + 4, i + 5, i + 6, i + 7];
-    acc = acc + junk[Uint(i % 8)];
-    i = i + 1;
-  }
-  acc
+	let acc = 0;
+	let i = 0;
+
+	while i < n {
+		let junk = [i, i + 1, i + 2, i + 3, i + 4, i + 5, i + 6, i + 7];
+		acc = acc + junk[Uint(i % 8)];
+		i = i + 1;
+	}
+
+	acc
 }
 
 fn main() {
-  let p = Payload { a: 7, b: 3 };
-  let f = as_sampler(Shape::Multipoint(p&));
-  let d = churn(64);
-  if d < 0 { println("unreachable"&); }
-  println(int_to_str(f(5)));      // 7*100 + 3*10 + 5 = 735
+	let p = Payload { a: 7, b: 3 };
+	let f = as_sampler(Shape::Multipoint(p&));
+	let d = churn(64);
+	if d < 0 { println("unreachable"&); }
+	println(int_to_str(f(5))); // 7*100 + 3*10 + 5 = 735
 
-  // A second sampler built from a fresh frame, to catch slot reuse across calls.
-  let q = Payload { a: 1, b: 2 };
-  let g = as_sampler(Shape::Multipoint(q&));
-  let d2 = churn(64);
-  if d2 < 0 { println("unreachable"&); }
-  println(int_to_str(g(4)));      // 1*100 + 2*10 + 4 = 124
-  println(int_to_str(f(1)));      // 7*100 + 3*10 + 1 = 731  (first still valid)
+	// A second sampler built from a fresh frame, to catch slot reuse across calls.
+	let q = Payload { a: 1, b: 2 };
+	let g = as_sampler(Shape::Multipoint(q&));
+	let d2 = churn(64);
+	if d2 < 0 { println("unreachable"&); }
+	println(int_to_str(g(4))); // 1*100 + 2*10 + 4 = 124
+	println(int_to_str(f(1))); // 7*100 + 3*10 + 1 = 731  (first still valid)
 }
 
 fn int_to_str(v: Int) -> &[Uint8] {
-  if v == 0 { return "0"&; }
-  let buf = ([]#[Uint8])^;
-  let n = v;
-  while n > 0 {
-    buf = ([Uint8(48 + (n % 10))] + buf@)^;
-    n = n / 10;
-  }
-  buf@&
+	if v == 0 { return "0"&; }
+	let buf = ([]#[Uint8])^;
+	let n = v;
+
+	while n > 0 {
+		buf = ([Uint8(48 + (n % 10))] + buf@)^;
+		n = n / 10;
+	}
+
+	buf@&
 }

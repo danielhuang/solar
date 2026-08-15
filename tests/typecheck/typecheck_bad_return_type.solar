@@ -1,6 +1,5 @@
 fn bad() -> Int {
-  true
+	true
 }
 
-fn main() {
-}
+fn main() {}

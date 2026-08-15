@@ -3,24 +3,24 @@
 static CALLS: Int = 0;
 
 fn select_second() -> Bool {
-    CALLS = CALLS + 1;
-    false
+	CALLS = CALLS + 1;
+	false
 }
 
 fn main() {
-    let short: [Uint8] = [10u8];
-    let long: [Uint8] = [20u8, 21u8, 22u8];
-    let selected = if select_second() { short } else { long };
+	let short: [Uint8] = [10u8];
+	let long: [Uint8] = [20u8, 21u8, 22u8];
+	let selected = if select_second() { short } else { long };
 
-    println(selected&.len());
-    println(Int(selected[0u]));
-    println(Int(selected[2u]));
-    println(CALLS);
+	println(selected&.len());
+	println(Int(selected[0u]));
+	println(Int(selected[2u]));
+	println(CALLS);
 
-    // More than two machine words ensures codegen copies the slice contents,
-    // rather than mistaking the data pointer for a fat-pointer value.
-    let short_text = "short"&;
-    let long_text = "abcdefghijklmnopqrstuvwx"&;
-    let selected_text = if true { long_text@ } else { short_text@ };
-    println(selected_text&);
+	// More than two machine words ensures codegen copies the slice contents,
+	// rather than mistaking the data pointer for a fat-pointer value.
+	let short_text = "short"&;
+	let long_text = "abcdefghijklmnopqrstuvwx"&;
+	let selected_text = if true { long_text@ } else { short_text@ };
+	println(selected_text&);
 }

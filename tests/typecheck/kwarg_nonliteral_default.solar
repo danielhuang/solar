@@ -1,2 +1,2 @@
-fn f(a: Int, b: Int = a) { }
+fn f(a: Int, b: Int = a) {}
 fn main() { f(1); }

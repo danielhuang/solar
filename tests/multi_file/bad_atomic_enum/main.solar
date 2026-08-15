@@ -1,9 +1,6 @@
-enum Color {
-    Red,
-    Blue,
-}
+enum Color { Red, Blue }
 
 fn main() {
-    let c = Color::Red;
-    c&.atomic_store(Color::Blue);
+	let c = Color::Red;
+	c&.atomic_store(Color::Blue);
 }

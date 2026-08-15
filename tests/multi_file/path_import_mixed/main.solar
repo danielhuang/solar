@@ -1,6 +1,6 @@
-import { inner::Point, add } from "mid.solar";
+import {inner::Point, add} from "mid.solar";
 
 fn main() {
-    let p: Point = Point { x: 3, y: 7 };
-    println(add(p.x, p.y));
+	let p: Point = Point { x: 3, y: 7 };
+	println(add(p.x, p.y));
 }

@@ -1,29 +1,26 @@
-struct Pair {
-  y: Int,
-  xs: [Int],
-}
+struct Pair { y: Int, xs: [Int] }
 
 fn main() {
-  // basic read
-  let a: [Int] = [10, 20, 30];
-  println(a[0u]);   // 10
-  println(a[1u]);   // 20
-  println(a[2u]);   // 30
+	// basic read
+	let a: [Int] = [10, 20, 30];
+	println(a[0u]); // 10
+	println(a[1u]); // 20
+	println(a[2u]); // 30
 
-  // write through index
-  a[1u] = 99;
-  println(a[1u]);   // 99
+	// write through index
+	a[1u] = 99;
+	println(a[1u]); // 99
 
-  // index with expression
-  let i: Uint = 1u + 1u;
-  println(a[i]);   // 30
+	// index with expression
+	let i: Uint = 1u + 1u;
+	println(a[i]); // 30
 
-  // indexing a struct field that is an array
-  let p: Pair = Pair { y: 7, xs: [100, 200, 300], };
-  println(p.xs[0u]);  // 100
-  println(p.xs[2u]);  // 300
+	// indexing a struct field that is an array
+	let p: Pair = Pair { y: 7, xs: [100, 200, 300] };
+	println(p.xs[0u]); // 100
+	println(p.xs[2u]); // 300
 
-  // write through struct field array index
-  p.xs[1u] = 999;
-  println(p.xs[1u]);  // 999
+	// write through struct field array index
+	p.xs[1u] = 999;
+	println(p.xs[1u]); // 999
 }

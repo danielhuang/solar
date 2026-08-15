@@ -1,10 +1,10 @@
 fn add(x: Int) -> fn(Int) -> Int {
-    \y: Int x + y
+	\y: Int x + y
 }
 
 fn main() {
-    println(add(1)(2)); // 3
-    
-    let adder5 = add(5);
-    println(adder5(4)); // 9
+	println(add(1)(2)); // 3
+
+	let adder5 = add(5);
+	println(adder5(4)); // 9
 }

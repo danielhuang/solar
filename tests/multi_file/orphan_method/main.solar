@@ -1,7 +1,7 @@
 import foreign from "foreign.solar";
 
 method value(self: foreign::Foreign) -> Int {
-    self.value
+	self.value
 }
 
 fn main() {}

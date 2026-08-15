@@ -1,8 +1,5 @@
-pub struct Point {
-    pub x: Int,
-    pub y: Int,
-}
+pub struct Point { pub x: Int, pub y: Int }
 
 pub fn make_point(x: Int, y: Int) -> Point {
-    Point { x: x, y: y }
+	Point { x: x, y: y }
 }

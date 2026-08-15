@@ -1,25 +1,26 @@
 // A tail expression must accept the same coercions as an explicit `return`.
 // `&T` -> `&?T` applied in `return x;` but not in tail position, so
 // `fn f(p: &P) -> &?P { p }` was an error while the `return` form compiled.
-pub struct P { pub v: Int32, }
+pub struct P { pub v: Int32 }
 
 fn tail(p: &P) -> &?P { p }
 fn ret(p: &P) -> &?P { return p; }
 
 // The other coercion in try_coerce: [T] -> [T; N].
 fn tail_fixed(a: [Int; 3]) -> [Int; 3] { a }
+
 fn slice_tail() -> [Int; 3] {
-  let xs = [1, 2, 3];
-  xs
+	let xs = [1, 2, 3];
+	xs
 }
 
 fn main() {
-  let p = P { v: 3i32 };
-  println(if tail(p&) == null#[P] { 0 } else { 1 });
-  println(if ret(p&) == null#[P] { 0 } else { 1 });
-  let got = tail(p&);
-  println(Int(got@.v).to_string());
-  let f = slice_tail();
-  let fixed = tail_fixed(f);
-  println(fixed[2u].to_string());
+	let p = P { v: 3i32 };
+	println(if tail(p&) == null#[P] { 0 } else { 1 });
+	println(if ret(p&) == null#[P] { 0 } else { 1 });
+	let got = tail(p&);
+	println(Int(got@.v).to_string());
+	let f = slice_tail();
+	let fixed = tail_fixed(f);
+	println(fixed[2u].to_string());
 }

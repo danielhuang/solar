@@ -1,8 +1,6 @@
-struct Bad {
-    x: ^Int,
-}
+struct Bad { x: ^Int }
 
 fn main() {
-    let s = Bad { x: 42^ };
-    s&.atomic_store(Bad { x: 99^ });
+	let s = Bad { x: 42^ };
+	s&.atomic_store(Bad { x: 99^ });
 }

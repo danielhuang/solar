@@ -10,6 +10,8 @@ pub mod codegen;
 pub mod desugared_ast;
 /// Compiler diagnostics and source mapping.
 pub mod error;
+/// Solar source formatter.
+pub mod fmt;
 /// Interpreter file and directory support.
 pub mod interp_io;
 /// Lowered intermediate representation.

@@ -1,3 +1,1 @@
-pub struct Foreign {
-    pub value: Int,
-}
+pub struct Foreign { pub value: Int }

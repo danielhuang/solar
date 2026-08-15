@@ -1,22 +1,22 @@
 // Overloaded functions: same name, different param types
 
 fn describe(x: Int) -> Int {
-  1
+	1
 }
 
 fn describe(x: Bool) -> Int {
-  2
+	2
 }
 
 fn describe(x: Int, y: Int) -> Int {
-  3
+	3
 }
 
 fn main() {
-  // Different types
-  println(describe(42));       // 1
-  println(describe(true));     // 2
+	// Different types
+	println(describe(42)); // 1
+	println(describe(true)); // 2
 
-  // Different arity
-  println(describe(10, 20));   // 3
+	// Different arity
+	println(describe(10, 20)); // 3
 }

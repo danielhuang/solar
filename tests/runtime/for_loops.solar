@@ -1,10 +1,11 @@
 fn main() {
-    for i in 0..5 {
-        println(i);
-    }
-    
-    let list = [1, 2, 3, 4];
-    for x in list {
-        println(x@);
-    }
+	for i in 0..5 {
+		println(i);
+	}
+
+	let list = [1, 2, 3, 4];
+
+	for x in list {
+		println(x@);
+	}
 }

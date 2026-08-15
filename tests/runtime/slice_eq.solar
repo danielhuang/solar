@@ -1,32 +1,39 @@
-pub struct LastDigit {
-  pub value: Int,
-}
+pub struct LastDigit { pub value: Int }
 
 method operator_eq(self: &LastDigit, other: &LastDigit) -> Bool {
-  self@.value % 10 == other@.value % 10
+	self@.value % 10 == other@.value % 10
 }
 
 fn print_bool(value: Bool) {
-  if value { println(1); } else { println(0); }
+	if value { println(1); } else { println(0); }
 }
 
 fn main() {
-  let a: [Int] = [1, 2, 3];
-  let b: [Int] = [1, 2, 3];
-  let different: [Int] = [1, 2, 4];
-  let shorter: [Int] = [1, 2];
+	let a: [Int] = [1, 2, 3];
+	let b: [Int] = [1, 2, 3];
+	let different: [Int] = [1, 2, 4];
+	let shorter: [Int] = [1, 2];
 
-  // Slice equality works for primitive elements.
-  print_bool(a == b);
-  print_bool(a == different);
-  print_bool(a == shorter);
+	// Slice equality works for primitive elements.
+	print_bool(a == b);
+	print_bool(a == different);
+	print_bool(a == shorter);
 
-  // Element comparison uses the element type's equality implementation.
-  let digits: [LastDigit] = [LastDigit { value: 12, }, LastDigit { value: 25, }];
-  let equal_digits: [LastDigit] = [LastDigit { value: 2, }, LastDigit { value: 15, }];
-  let unequal_digits: [LastDigit] = [LastDigit { value: 2, }, LastDigit { value: 18, }];
-  let short_digits: [LastDigit] = [LastDigit { value: 2, }];
-  print_bool(digits == equal_digits);
-  print_bool(digits == unequal_digits);
-  print_bool(digits == short_digits);
+	// Element comparison uses the element type's equality implementation.
+	let digits: [LastDigit] = [
+		LastDigit { value: 12 },
+		LastDigit { value: 25 },
+	];
+	let equal_digits: [LastDigit] = [
+		LastDigit { value: 2 },
+		LastDigit { value: 15 },
+	];
+	let unequal_digits: [LastDigit] = [
+		LastDigit { value: 2 },
+		LastDigit { value: 18 },
+	];
+	let short_digits: [LastDigit] = [LastDigit { value: 2 }];
+	print_bool(digits == equal_digits);
+	print_bool(digits == unequal_digits);
+	print_bool(digits == short_digits);
 }

@@ -1,14 +1,14 @@
-struct A { value: Int, }
-struct B { value: Int, }
+struct A { value: Int }
+struct B { value: Int }
 
 fn choose(x: A) -> Int { x.value }
 fn choose(x: B) -> Int { x.value }
 
 fn relay#[T](x: T) -> Int {
-    choose(x)
+	choose(x)
 }
 
 fn main() {
-    println(relay(A { value: 1 }).to_string());
-    println(relay(B { value: 2 }).to_string());
+	println(relay(A { value: 1 }).to_string());
+	println(relay(B { value: 2 }).to_string());
 }

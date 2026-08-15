@@ -2,64 +2,59 @@
 // Reuses the same generic definitions as generic_functions.solar
 
 fn identity#[T](x: T) -> T {
-  x
+	x
 }
 
 fn second#[A, B](a: A, b: B) -> B {
-  b
+	b
 }
 
-struct Box#[T] {
-  value: T,
-}
+struct Box#[T] { value: T }
 
 fn make_box#[T](v: T) -> Box#[T] {
-  Box#[T] { value: v }
+	Box#[T] { value: v }
 }
 
 fn apply#[T, R](f: fn(T) -> R, x: T) -> R {
-  f(x)
+	f(x)
 }
 
 fn double(x: Int) -> Int {
-  x * 2
+	x * 2
 }
 
 fn unwrap_or#[T](opt: Option#[T], default: T) -> T {
-  match opt {
-    Option#[T]::Some(v) => v,
-    Option#[T]::None => default,
-  }
+	match opt { Option#[T]::Some(v) => v, Option#[T]::None => default }
 }
 
 fn wrap_ref#[T](x: &T) -> &T {
-  x
+	x
 }
 
 fn main() {
-  // simple identity — infer T = Int
-  println(identity(42));                        // 42
+	// simple identity — infer T = Int
+	println(identity(42)); // 42
 
-  // identity with Bool — infer T = Bool
-  let b = identity(true);
-  println(if b { 1 } else { 0 });              // 1
+	// identity with Bool — infer T = Bool
+	let b = identity(true);
+	println(if b { 1 } else { 0 }); // 1
 
-  // multi-param generic — infer A = Bool, B = Int
-  println(second(true, 99));                    // 99
+	// multi-param generic — infer A = Bool, B = Int
+	println(second(true, 99)); // 99
 
-  // generic function returning struct — infer T = Int
-  let bx = make_box(77);
-  println(bx.value);                           // 77
+	// generic function returning struct — infer T = Int
+	let bx = make_box(77);
+	println(bx.value); // 77
 
-  // higher-order generic — infer T = Int, R = Int
-  println(apply(double, 5));                    // 10
+	// higher-order generic — infer T = Int, R = Int
+	println(apply(double, 5)); // 10
 
-  // generic function with enum — infer T = Int
-  println(unwrap_or(Option#[Int]::Some(123), 0));  // 123
-  println(unwrap_or(Option#[Int]::None, 55));      // 55
+	// generic function with enum — infer T = Int
+	println(unwrap_or(Option#[Int]::Some(123), 0)); // 123
+	println(unwrap_or(Option#[Int]::None, 55)); // 55
 
-  // reference parameter — infer T = Int
-  let v = 42;
-  let r = wrap_ref(v&);
-  println(r@);                                  // 42
+	// reference parameter — infer T = Int
+	let v = 42;
+	let r = wrap_ref(v&);
+	println(r@); // 42
 }

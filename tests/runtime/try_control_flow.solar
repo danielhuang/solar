@@ -1,88 +1,94 @@
 fn return_from_body() -> Int {
-    try {
-        return 10;
-    } catch (e) {}
-    99
+	try {
+		return 10;
+	} catch (e) {}
+
+	99
 }
 
 fn return_from_handler() -> Int {
-    try {
-        throw("handled"&);
-    } catch (e) {
-        return 20;
-    }
-    99
+	try {
+		throw("handled"&);
+	} catch (e) {
+		return 20;
+	}
+
+	99
 }
 
 fn return_from_nested_try() -> Int {
-    try {
-        try {
-            return 30;
-        } catch (inner) {}
-    } catch (outer) {}
-    99
+	try {
+		try {
+			return 30;
+		} catch (inner) {}
+	} catch (outer) {}
+
+	99
 }
 
 fn main() {
-    println(return_from_body());
-    println(return_from_handler());
-    println(return_from_nested_try());
+	println(return_from_body());
+	println(return_from_handler());
+	println(return_from_nested_try());
 
-    let i = 0;
-    while i < 5 {
-        i = i + 1;
-        try {
-            if i == 2 { continue; }
-            if i == 4 { break; }
-            println(i);
-        } catch (e) {}
-    }
-    println(i);
+	let i = 0;
 
-    let j = 0;
-    while j < 5 {
-        j = j + 1;
-        try {
-            throw("loop"&);
-        } catch (e) {
-            if j == 2 { continue; }
-            if j == 4 { break; }
-            println(10 + j);
-        }
-    }
-    println(j);
+	while i < 5 {
+		i = i + 1;
 
-    let body_value = loop {
-        try {
-            break 40;
-        } catch (e) {}
-    };
-    println(body_value);
+		try {
+			if i == 2 { continue; }
+			if i == 4 { break; }
+			println(i);
+		} catch (e) {}
+	}
 
-    let handler_value = loop {
-        try {
-            throw("value"&);
-        } catch (e) {
-            break 50;
-        }
-    };
-    println(handler_value);
+	println(i);
 
-    try {
-        let local_value = loop { break 60 };
-        println(local_value);
-    } catch (e) {}
+	let j = 0;
 
-    try {
-        let local_return = \ { return 70; };
-        println(local_return());
-    } catch (e) {}
+	while j < 5 {
+		j = j + 1;
 
-    let user_result = TryBlockResult_0::User;
-    match user_result {
-        TryBlockResult_0::User => println(80),
-    };
+		try {
+			throw("loop"&);
+		} catch (e) {
+			if j == 2 { continue; }
+			if j == 4 { break; }
+			println(10 + j);
+		}
+	}
+
+	println(j);
+
+	let body_value = loop {
+		try {
+			break 40;
+		} catch (e) {}
+	};
+	println(body_value);
+
+	let handler_value = loop {
+		try {
+			throw("value"&);
+		} catch (e) {
+			break 50;
+		}
+	};
+	println(handler_value);
+
+	try {
+		let local_value = loop { break 60 };
+		println(local_value);
+	} catch (e) {}
+
+	try {
+		let local_return = \ { return 70; };
+		println(local_return());
+	} catch (e) {}
+
+	let user_result = TryBlockResult_0::User;
+	match user_result { TryBlockResult_0::User => println(80) };
 }
-enum TryBlockResult_0 {
-    User,
-}
+
+enum TryBlockResult_0 { User }

@@ -1,11 +1,10 @@
-struct Node {
-    next: &?Node,
-}
+struct Node { next: &?Node }
 
 fn main() {
-    let node = Node { next: null#[Node] };
-    for _ in 0..100000000 {
-        let prev = node;
-        node = Node { next: prev& };
-    }
+	let node = Node { next: null#[Node] };
+
+	for _ in 0..100000000 {
+		let prev = node;
+		node = Node { next: prev& };
+	}
 }

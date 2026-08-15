@@ -5,22 +5,23 @@
 fn call(f: fn()) { f(); }
 
 fn main() {
-    let a = 10;
-    let b = 20;
-    // Two closure layers: the inner one captures a/b from main, forcing the
-    // outer to capture them too.
-    let outer = \ {
-        call(\ { println(a + b); });
-    };
-    outer();
+	let a = 10;
+	let b = 20;
 
-    // Three layers.
-    let deep = \ { call(\ { call(\ { println(a * b); }); }); };
-    deep();
+	// Two closure layers: the inner one captures a/b from main, forcing the
+	// outer to capture them too.
+	let outer = \ {
+		call(\ { println(a + b); });
+	};
+	outer();
 
-    // Capture across a try block nested inside a closure.
-    let guarded = \ {
-        try { println(a - b); } catch (e) { println(e); }
-    };
-    guarded();
+	// Three layers.
+	let deep = \ { call(\ { call(\ { println(a * b); }); }); };
+	deep();
+
+	// Capture across a try block nested inside a closure.
+	let guarded = \ {
+		try { println(a - b); } catch (e) { println(e); }
+	};
+	guarded();
 }

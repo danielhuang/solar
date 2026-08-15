@@ -1,13 +1,12 @@
-struct Node {
-    next: Option#[&Node],
-}
+struct Node { next: Option#[&Node] }
 
 fn main() {
-    let node = Node { next: Option#[&Node]::None };
-    for _ in 0..100000000 {
-        let wrapped = Option#[&Node]::Some(node&);
-        let old_node = node&;
-        node = Node { next: wrapped };
-        old_node@.next = Option#[&Node]::None;
-    }
+	let node = Node { next: Option#[&Node]::None };
+
+	for _ in 0..100000000 {
+		let wrapped = Option#[&Node]::Some(node&);
+		let old_node = node&;
+		node = Node { next: wrapped };
+		old_node@.next = Option#[&Node]::None;
+	}
 }

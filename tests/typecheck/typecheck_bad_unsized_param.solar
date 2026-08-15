@@ -1,5 +1,3 @@
-fn bad(x: [Int]) {
-}
+fn bad(x: [Int]) {}
 
-fn main() {
-}
+fn main() {}

@@ -3,14 +3,14 @@
 // arbitrarily at EOF), dropping the function body value ("body does not end
 // with an expression"). No trailing item after pick() — that is the point.
 fn main() {
-    println(pick(2));
-    println(pick(3));
+	println(pick(2));
+	println(pick(3));
 }
 
 fn pick(x: Int) -> Int {
-    if x == 2 {
-        10
-    } else {
-        20
-    }
+	if x == 2 {
+		10
+	} else {
+		20
+	}
 }

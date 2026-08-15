@@ -1,5 +1,5 @@
 fn main() {
-  while true {
-    break 5;
-  }
+	while true {
+		break 5;
+	}
 }

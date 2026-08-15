@@ -1,10 +1,10 @@
 fn make_ref#[T](x: T) -> &T {
-    x&
+	x&
 }
 
 fn main() {
-    let a = make_ref(3);
-    println(a@); // 3
-    
-    println(make_ref(make_ref(5))@@); // 5
+	let a = make_ref(3);
+	println(a@); // 3
+
+	println(make_ref(make_ref(5))@@); // 5
 }

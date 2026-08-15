@@ -1,151 +1,164 @@
 import intrinsics from "@intrinsics";
-import { Option } from "lib.solar";
+import {Option} from "lib.solar";
 
 /// An iterator over borrowed slice elements.
-pub struct Iter#[T] {
-  remaining: &[T],
-}
+pub struct Iter#[T] { remaining: &[T] }
 
 /// An iterator over subslices separated by an element.
-pub struct Split#[T] {
-  remaining: &[T],
-  separator: &T,
-  finished: Bool,
-}
+pub struct Split#[T] { remaining: &[T], separator: &T, finished: Bool }
 
 /// Number of elements in a slice.
 pub method len#[T](self: &[T]) -> Uint {
-  intrinsics::array_len(self@)
+	intrinsics::array_len(self@)
 }
 
 /// Returns the index of the first element equal to `value`.
 pub method find#[T](self: &[T], value: &T) -> Option#[Uint] {
-  let i = 0u;
-  let n = self.len();
-  while i < n {
-    if self@[i] == value@ {
-      return Option#[Uint]::Some(i);
-    }
-    i = i + 1u;
-  }
-  Option#[Uint]::None
+	let i = 0u;
+	let n = self.len();
+
+	while i < n {
+		if self@[i] == value@ {
+			return Option#[Uint]::Some(i);
+		}
+
+		i = i + 1u;
+	}
+
+	Option#[Uint]::None
 }
 
 /// Returns whether the slice contains an element equal to `value`.
 pub method contains#[T](self: &[T], value: &T) -> Bool {
-  self.find(value).is_some()
+	self.find(value).is_some()
 }
 
 /// Returns the start index of the first contiguous slice equal to `value`.
 pub method find#[T](self: &[T], value: &[T]) -> Option#[Uint] {
-  let n = self.len();
-  let m = value.len();
-  if m == 0u {
-    return Option#[Uint]::Some(0u);
-  }
-  if m > n {
-    return Option#[Uint]::None;
-  }
+	let n = self.len();
+	let m = value.len();
 
-  // Knuth-Morris-Pratt prefix table: prefix[i] is the length of the longest
-  // proper prefix of value[0..=i] that is also its suffix.
-  let prefix: [Uint] = [0u; m];
-  let i = 1u;
-  let matched = 0u;
-  while i < m {
-    let equal = value@[i] == value@[matched];
-    while !equal && matched > 0u {
-      matched = prefix[matched - 1u];
-      equal = value@[i] == value@[matched];
-    }
-    if equal {
-      matched = matched + 1u;
-    }
-    prefix[i] = matched;
-    i = i + 1u;
-  }
+	if m == 0u {
+		return Option#[Uint]::Some(0u);
+	}
 
-  // Each mismatch either advances through self or shortens matched, so the
-  // scan is linear even for highly repetitive inputs.
-  i = 0u;
-  matched = 0u;
-  while i < n {
-    let equal = self@[i] == value@[matched];
-    while !equal && matched > 0u {
-      matched = prefix[matched - 1u];
-      equal = self@[i] == value@[matched];
-    }
-    if equal {
-      matched = matched + 1u;
-      if matched == m {
-        return Option#[Uint]::Some(i + 1u - m);
-      }
-    }
-    i = i + 1u;
-  }
-  Option#[Uint]::None
+	if m > n {
+		return Option#[Uint]::None;
+	}
+
+	// Knuth-Morris-Pratt prefix table: prefix[i] is the length of the longest
+	// proper prefix of value[0..=i] that is also its suffix.
+	let prefix: [Uint] = [0u; m];
+	let i = 1u;
+	let matched = 0u;
+
+	while i < m {
+		let equal = value@[i] == value@[matched];
+
+		while !equal && matched > 0u {
+			matched = prefix[matched - 1u];
+			equal = value@[i] == value@[matched];
+		}
+
+		if equal {
+			matched = matched + 1u;
+		}
+
+		prefix[i] = matched;
+		i = i + 1u;
+	}
+
+	// Each mismatch either advances through self or shortens matched, so the
+	// scan is linear even for highly repetitive inputs.
+	i = 0u;
+	matched = 0u;
+
+	while i < n {
+		let equal = self@[i] == value@[matched];
+
+		while !equal && matched > 0u {
+			matched = prefix[matched - 1u];
+			equal = self@[i] == value@[matched];
+		}
+
+		if equal {
+			matched = matched + 1u;
+
+			if matched == m {
+				return Option#[Uint]::Some(i + 1u - m);
+			}
+		}
+
+		i = i + 1u;
+	}
+
+	Option#[Uint]::None
 }
 
 /// Returns whether the slice contains a contiguous slice equal to `value`.
 pub method contains#[T](self: &[T], value: &[T]) -> Bool {
-  self.find(value).is_some()
+	self.find(value).is_some()
 }
 
 /// Returns an iterator over subslices separated by `separator`.
 pub method split#[T](self: &[T], separator: &T) -> Split#[T] {
-  Split#[T] {
-    remaining: self,
-    separator: separator,
-    finished: false,
-  }
+	Split#[T] { remaining: self, separator: separator, finished: false }
 }
 
 /// Advances the split iterator and returns the next subslice.
 pub method next#[T](self: &Split#[T]) -> Option#[&[T]] {
-  if self@.finished {
-    return Option#[&[T]]::None;
-  }
-  let remaining = self@.remaining;
-  match remaining.find(self@.separator) {
-    Option#[Uint]::Some(index) => {
-      let item = remaining@[0u..index]&;
-      self@.remaining = remaining@[index + 1u..remaining.len()]&;
-      Option#[&[T]]::Some(item)
-    },
-    Option#[Uint]::None => {
-      self@.finished = true;
-      Option#[&[T]]::Some(remaining)
-    },
-  }
+	if self@.finished {
+		return Option#[&[T]]::None;
+	}
+
+	let remaining = self@.remaining;
+
+	match remaining.find(self@.separator) {
+		Option#[Uint]::Some(index) => {
+			let item = remaining@[0u..index]&;
+			self@.remaining = remaining@[index + 1u..remaining.len()]&;
+			Option#[&[T]]::Some(item)
+		},
+		Option#[Uint]::None => {
+			self@.finished = true;
+			Option#[&[T]]::Some(remaining)
+		},
+	}
 }
 
 /// Returns an iterator over the slice's elements.
 pub method iter#[T](self: &[T]) -> Iter#[T] {
-  Iter#[T] { remaining: self, }
+	Iter#[T] { remaining: self }
 }
 
 /// Advances the iterator and returns the next element.
 pub method next#[T](self: &Iter#[T]) -> Option#[&T] {
-  if self@.remaining.len() == 0u {
-    return Option#[&T]::None;
-  }
-  let item = self@.remaining@[0u]&;
-  self@.remaining = self@.remaining@[1u..self@.remaining.len()]&;
-  Option#[&T]::Some(item)
+	if self@.remaining.len() == 0u {
+		return Option#[&T]::None;
+	}
+
+	let item = self@.remaining@[0u]&;
+	self@.remaining = self@.remaining@[1u..self@.remaining.len()]&;
+	Option#[&T]::Some(item)
 }
 
 /// Compares slices element by element.
 pub method operator_eq#[T](self: &[T], other: &[T]) -> Bool {
-  let n = self.len();
-  if n != other.len() {
-    return false;
-  }
-  let i = 0u;
-  while i < n {
-    if self@[i] != other@[i] {
-      return false;
-    }
-    i = i + 1u;
-  }
-  true
+	let n = self.len();
+
+	if n != other.len() {
+		return false;
+	}
+
+	let i = 0u;
+
+	while i < n {
+		if self@[i] != other@[i] {
+			return false;
+		}
+
+		i = i + 1u;
+	}
+
+	true
 }

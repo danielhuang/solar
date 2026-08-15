@@ -1,9 +1,9 @@
 fn main() {
-  println(2 + 3);       // 5
-  println(10 - 4);      // 6
-  println(3 * 7);       // 21
-  println(20 / 4);      // 5
-  println(17 % 5);      // 2
-  println(2 + 3 * 4);   // 14 (precedence)
-  println((2 + 3) * 4); // 20 (parens)
+	println(2 + 3); // 5
+	println(10 - 4); // 6
+	println(3 * 7); // 21
+	println(20 / 4); // 5
+	println(17 % 5); // 2
+	println(2 + 3 * 4); // 14 (precedence)
+	println((2 + 3) * 4); // 20 (parens)
 }

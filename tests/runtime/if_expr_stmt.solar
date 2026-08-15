@@ -1,18 +1,19 @@
 fn main() {
-    // if-else as tail expression in for-loop body (no semicolon)
-    for i in 0..5 {
-        if i % 2 == 0 {
-            println(i);
-        } else {
-            println(i + 100);
-        }
-    }
+	// if-else as tail expression in for-loop body (no semicolon)
+	for i in 0..5 {
+		if i % 2 == 0 {
+			println(i);
+		} else {
+			println(i + 100);
+		}
+	}
 
-    // if-else chain as tail expression in block
-    let x = 10;
-    if x == 10 {
-        println(99);
-    } else {
-        println(0);
-    }
+	// if-else chain as tail expression in block
+	let x = 10;
+
+	if x == 10 {
+		println(99);
+	} else {
+		println(0);
+	}
 }

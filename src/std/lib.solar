@@ -1,162 +1,177 @@
 import intrinsics from "@intrinsics";
+
 /// Slice utilities and iteration.
 pub import slice from "slice.solar";
+
 /// Growable vectors.
 pub import vec from "vec.solar";
+
 /// Synchronization primitives.
 pub import sync from "sync.solar";
+
 /// Thread creation and joining.
 pub import thread from "thread.solar";
+
 /// Filesystem and stream I/O.
 pub import file from "file.solar";
+
 /// TCP networking.
 pub import net from "net.solar";
+
 /// Floating-point mathematics.
 pub import math from "math.solar";
+
 /// Process arguments and environment.
 pub import process from "process.solar";
+
 /// SIMD helpers.
 pub import simd from "simd.solar";
+
 /// Hash maps.
 pub import hashbrown from "hashbrown/map.solar";
 
 /// A value that may be absent.
-pub enum Option#[T] {
-  Some(T),
-  None,
-}
+pub enum Option#[T] { Some(T), None }
 
 /// Returns whether the option contains a value.
 pub method is_some#[T](self: Option#[T]) -> Bool {
-  match self {
-    Option#[T]::Some(value) => true,
-    Option#[T]::None => false,
-  }
+	match self { Option#[T]::Some(value) => true, Option#[T]::None => false }
 }
 
 /// Returns the decimal representation of an integer.
 pub method to_string(self: Int) -> &[Uint8] {
-  let buf: [Uint8] = [0u8; 20u];
-  let i = 20u;
-  let n = if self > 0 { 0 - self } else { self };
-  i = i - 1u;
-  buf[i] = Uint8(48 - n % 10);
-  n = n / 10;
-  while n != 0 {
-    i = i - 1u;
-    buf[i] = Uint8(48 - n % 10);
-    n = n / 10;
-  }
-  if self < 0 {
-    i = i - 1u;
-    buf[i] = '-';
-  }
-  buf[i..20u]&
+	let buf: [Uint8] = [0u8; 20u];
+	let i = 20u;
+	let n = if self > 0 { 0 - self } else { self };
+	i = i - 1u;
+	buf[i] = Uint8(48 - n % 10);
+	n = n / 10;
+
+	while n != 0 {
+		i = i - 1u;
+		buf[i] = Uint8(48 - n % 10);
+		n = n / 10;
+	}
+
+	if self < 0 {
+		i = i - 1u;
+		buf[i] = '-';
+	}
+
+	buf[i..20u]&
 }
 
 /// Returns the decimal representation of an unsigned integer.
 pub method to_string(self: Uint) -> &[Uint8] {
-  let buf: [Uint8] = [0u8; 20u];
-  let i = 20u;
-  let n = self;
-  i = i - 1u;
-  buf[i] = Uint8(48u + n % 10u);
-  n = n / 10u;
-  while n != 0u {
-    i = i - 1u;
-    buf[i] = Uint8(48u + n % 10u);
-    n = n / 10u;
-  }
-  buf[i..20u]&
+	let buf: [Uint8] = [0u8; 20u];
+	let i = 20u;
+	let n = self;
+	i = i - 1u;
+	buf[i] = Uint8(48u + n % 10u);
+	n = n / 10u;
+
+	while n != 0u {
+		i = i - 1u;
+		buf[i] = Uint8(48u + n % 10u);
+		n = n / 10u;
+	}
+
+	buf[i..20u]&
 }
 
 /// Counts trailing zero bits.
 pub method count_trailing_zeros#[T](self: T) -> Uint {
-  intrinsics::count_trailing_zeros(self)
+	intrinsics::count_trailing_zeros(self)
 }
 
 /// Counts leading zero bits.
 pub method count_leading_zeros#[T](self: T) -> Uint {
-  intrinsics::count_leading_zeros(self)
+	intrinsics::count_leading_zeros(self)
 }
 
 /// Counts set bits.
 pub method count_ones#[T](self: T) -> Uint {
-  intrinsics::count_ones(self)
+	intrinsics::count_ones(self)
 }
 
 /// Returns the low and high halves of `self * rhs + carry + add`.
-pub method carrying_mul_add(self: Uint64, rhs: Uint64, carry: Uint64, add: Uint64) -> (Uint64, Uint64) {
-  let lo = 0u64;
-  let hi = 0u64;
-  intrinsics::carrying_mul_add(self, rhs, carry, add, lo&, hi&);
-  (lo, hi)
+pub method carrying_mul_add(
+	self: Uint64,
+	rhs: Uint64,
+	carry: Uint64,
+	add: Uint64,
+) -> (Uint64, Uint64) {
+	let lo = 0u64;
+	let hi = 0u64;
+	intrinsics::carrying_mul_add(self, rhs, carry, add, lo&, hi&);
+	(lo, hi)
 }
 
 /// Whether two references point to the same object.
 pub fn ref_eq#[T](a: &T, b: &T) -> Bool {
-  intrinsics::ref_eq(a, b)
+	intrinsics::ref_eq(a, b)
 }
 
 /// Compares the values behind two references.
 pub method operator_eq#[T](self: &&T, other: &&T) -> Bool {
-  self@@ == other@@
+	self@@ == other@@
 }
 
 /// Compares structs and enums by value.
 pub method operator_eq#[T](self: &T, other: &T) -> Bool {
-  match.reflect T {
-    "struct" => {
-      for.reflect_fields_pair (_, a, b) in (self, other) {
-        if a@ != b@ {
-          return false;
-        }
-      }
-    },
-    "enum" => {
-      let si = 0u;
-      let oi = 0u;
-      match.reflect_variant (n, idx, v) in self { si = idx; }
-      match.reflect_variant (n, idx, v) in other { oi = idx; }
-      if si != oi {
-        return false;
-      } else {
-        match.reflect_variant_pair (n, idx, sval, oval) in (self, other) {
-          if sval != oval {
-            return false;
-          }
-        }
-      }
-    },
-    _ => {
-      throw("operator_eq: type is not a struct or enum"&);
-    },
-  };
-  true
+	match.reflect T {
+		"struct" => {
+			for.reflect_fields_pair (_, a, b) in (self, other) {
+				if a@ != b@ {
+					return false;
+				}
+			}
+		},
+		"enum" => {
+			let si = 0u;
+			let oi = 0u;
+			match.reflect_variant (n, idx, v) in self { si = idx; }
+			match.reflect_variant (n, idx, v) in other { oi = idx; }
+
+			if si != oi {
+				return false;
+			} else {
+				match.reflect_variant_pair (n, idx, sval, oval) in (self, other) {
+					if sval != oval {
+						return false;
+					}
+				}
+			}
+		},
+		_ => {
+			throw("operator_eq: type is not a struct or enum"&);
+		},
+	};
+	true
 }
 
 /// Returns the negation of structural equality.
 pub method operator_ne#[T](self: &T, other: &T) -> Bool {
-  let e = self.operator_eq(other);
-  !e
+	let e = self.operator_eq(other);
+	!e
 }
 
 /// Writes bytes to standard output.
 pub fn write_stdout(s: &[Uint8]) {
-  file::stdout().write(s);
+	file::stdout().write(s);
 }
 
 /// Writes bytes followed by a newline.
 pub fn println(s: &[Uint8]) {
-    write_stdout((s@ + ['\n'])&);
+	write_stdout((s@ + ['\n'])&);
 }
 
 /// Writes a value's string representation followed by a newline.
 pub fn println#[T](x: T) {
-    println(x.to_string());
+	println(x.to_string());
 }
 
 /// Throws a recoverable exception.
 pub fn throw(s: &[Uint8]) {
-    intrinsics::throw(s);
+	intrinsics::throw(s);
 }

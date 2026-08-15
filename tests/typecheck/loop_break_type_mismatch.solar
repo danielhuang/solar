@@ -1,5 +1,5 @@
 fn main() {
-  let x = loop {
-    if true { break 5; } else { break true; }
-  };
+	let x = loop {
+		if true { break 5; } else { break true; }
+	};
 }

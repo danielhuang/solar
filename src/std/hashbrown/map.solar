@@ -1,118 +1,121 @@
-import { Option } from "../lib.solar";
+import {Option} from "../lib.solar";
 import raw from "raw.solar";
 import tag from "tag.solar";
 
 /// A hash map using deterministic foldhash.
-pub struct HashMap#[K, V] {
-  table: raw::RawTable#[K, V],
-}
+pub struct HashMap#[K, V] { table: raw::RawTable#[K, V] }
 
 /// Creates an empty hash map.
 pub fn HashMap#[K, V]() -> HashMap#[K, V] {
-  HashMap#[K, V] { table: raw::RawTable#[K, V](), }
+	HashMap#[K, V] { table: raw::RawTable#[K, V]() }
 }
 
 /// Returns the number of entries.
 pub method len#[K, V](self: &HashMap#[K, V]) -> Uint {
-  self@.table.items
+	self@.table.items
 }
 
 /// Returns whether the map contains no entries.
 pub method is_empty#[K, V](self: &HashMap#[K, V]) -> Bool {
-  self@.table.items == 0u
+	self@.table.items == 0u
 }
 
 /// Inserts a key and returns its previous value.
 pub method insert#[K, V](self: &HashMap#[K, V], key: K, val: V) -> Option#[V] {
-  let t = self@.table&;
-  let h = raw::key_hash(key&);
-  let location = t.find_or_find_insert(h, key&);
-  let result = match location {
-    raw::FindInsert::Found(idx) => {
-      let s = t@.slots;
-      let old = s@[idx].val;
-      s@[idx].val = val;
-      Option#[V]::Some(old)
-    },
-    raw::FindInsert::Vacant(slot) => {
-      let e = raw::Entry#[K, V] { key: key, val: val, };
-      if t@.growth_left == 0u {
-        let need = t@.items + 1u;
-        t.resize(need, e&);
-        t.insert_in_slot(h, e);
-      } else {
-        t.insert_at_slot(h, slot, e);
-      }
-      Option#[V]::None
-    },
-  };
-  result
+	let t = self@.table&;
+	let h = raw::key_hash(key&);
+	let location = t.find_or_find_insert(h, key&);
+	let result = match location {
+		raw::FindInsert::Found(idx) => {
+			let s = t@.slots;
+			let old = s@[idx].val;
+			s@[idx].val = val;
+			Option#[V]::Some(old)
+		},
+		raw::FindInsert::Vacant(slot) => {
+			let e = raw::Entry#[K, V] { key: key, val: val };
+
+			if t@.growth_left == 0u {
+				let need = t@.items + 1u;
+				t.resize(need, e&);
+				t.insert_in_slot(h, e);
+			} else {
+				t.insert_at_slot(h, slot, e);
+			}
+
+			Option#[V]::None
+		},
+	};
+	result
 }
 
 /// Returns the value for a key.
 pub method get#[K, V](self: &HashMap#[K, V], key: &K) -> Option#[&V] {
-  let t = self@.table&;
-  let h = raw::key_hash(key);
-  let result = match t.find(h, key) {
-    Option#[Uint]::Some(idx) => {
-      let s = t@.slots;
-      Option#[&V]::Some(s@[idx].val&)
-    },
-    Option#[Uint]::None => Option#[&V]::None,
-  };
-  result
+	let t = self@.table&;
+	let h = raw::key_hash(key);
+	let result = match t.find(h, key) {
+		Option#[Uint]::Some(idx) => {
+			let s = t@.slots;
+			Option#[&V]::Some(s@[idx].val&)
+		},
+		Option#[Uint]::None => Option#[&V]::None,
+	};
+	result
 }
 
 /// Returns whether a key is present.
 pub method contains_key#[K, V](self: &HashMap#[K, V], key: &K) -> Bool {
-  let t = self@.table&;
-  let h = raw::key_hash(key);
-  let result = match t.find(h, key) {
-    Option#[Uint]::Some(idx) => true,
-    Option#[Uint]::None => false,
-  };
-  result
+	let t = self@.table&;
+	let h = raw::key_hash(key);
+	let result = match t.find(h, key) {
+		Option#[Uint]::Some(idx) => true,
+		Option#[Uint]::None => false,
+	};
+	result
 }
 
 /// Returns the value for a key.
 pub method get_mut#[K, V](self: &HashMap#[K, V], key: &K) -> Option#[&V] {
-  self.get(key)
+	self.get(key)
 }
 
 /// Removes a key and returns its value.
 pub method remove#[K, V](self: &HashMap#[K, V], key: &K) -> Option#[V] {
-  let t = self@.table&;
-  let h = raw::key_hash(key);
-  let result = match t.find(h, key) {
-    Option#[Uint]::Some(idx) => {
-      let s = t@.slots;
-      let v = s@[idx].val;
-      t.erase(idx);
-      Option#[V]::Some(v)
-    },
-    Option#[Uint]::None => Option#[V]::None,
-  };
-  result
+	let t = self@.table&;
+	let h = raw::key_hash(key);
+	let result = match t.find(h, key) {
+		Option#[Uint]::Some(idx) => {
+			let s = t@.slots;
+			let v = s@[idx].val;
+			t.erase(idx);
+			Option#[V]::Some(v)
+		},
+		Option#[Uint]::None => Option#[V]::None,
+	};
+	result
 }
 
 /// Removes all entries while retaining capacity.
 pub method clear#[K, V](self: &HashMap#[K, V]) {
-  let t = self@.table&;
-  t.clear();
+	let t = self@.table&;
+	t.clear();
 }
 
 /// Calls `f` for each entry in unspecified order.
 pub method for_each#[K, V](self: &HashMap#[K, V], f: fn(&K, &V)) {
-  let t = self@.table&;
-  if t@.bucket_mask != 0u {
-    let buckets = t@.bucket_mask + 1u;
-    let s = t@.slots;
-    let i = 0u;
-    while i < buckets {
-      if tag::is_full(t@.ctrl@[i]) {
-        f(s@[i].key&, s@[i].val&);
-      }
-      i = i + 1u;
-    }
-  }
+	let t = self@.table&;
+
+	if t@.bucket_mask != 0u {
+		let buckets = t@.bucket_mask + 1u;
+		let s = t@.slots;
+		let i = 0u;
+
+		while i < buckets {
+			if tag::is_full(t@.ctrl@[i]) {
+				f(s@[i].key&, s@[i].val&);
+			}
+
+			i = i + 1u;
+		}
+	}
 }

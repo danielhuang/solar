@@ -1,97 +1,114 @@
 fn takes_int(x: Int) -> Int {
-  x + 1
+	x + 1
 }
 
 fn main() {
-  // basic block expression in let binding
-  let a: Int = {
-    let tmp: Int = 10;
-    tmp + 5
-  };
-  println(a);  // 15
+	// basic block expression in let binding
+	let a: Int = {
+		let tmp: Int = 10;
+		tmp + 5
+	};
 
-  // block expression as function argument
-  println({
-    let x: Int = 3;
-    x * 7
-  });  // 21
+	println(a); // 15
 
-  // shadowing: outer variable retains value after block
-  let outer: Int = 42;
-  let b: Int = {
-    let outer: Int = 99;
-    outer
-  };
-  println(b);      // 99
-  println(outer);  // 42
+	// block expression as function argument
+	println(
+		{
+			let x: Int = 3;
+			x * 7
+		},
+	); // 21
 
-  // nested blocks
-  let c: Int = {
-    let x: Int = {
-      let y: Int = 2;
-      y + 3
-    };
-    x * 10
-  };
-  println(c);  // 50
+	// shadowing: outer variable retains value after block
+	let outer: Int = 42;
 
-  // block in assignment
-  let d: Int = 0;
-  d = {
-    let tmp: Int = 7;
-    tmp + 3
-  };
-  println(d);  // 10
+	let b: Int = {
+		let outer: Int = 99;
+		outer
+	};
 
-  // block in if condition value position
-  let e: Int = if true {
-    {
-      let x: Int = 100;
-      x
-    }
-  } else { 0 };
-  println(e);  // 100
+	println(b); // 99
+	println(outer); // 42
 
-  // block expression wrapped in parens for use in binary expr
-  let i: Int = 0;
-  let sum: Int = 0;
-  while i < 3 {
-    sum = sum + ({
-      let inc: Int = i + 1;
-      inc
-    });
-    i = i + 1;
-  }
-  println(sum);  // 6 (1+2+3)
+	// nested blocks
+	let c: Int = {
+		let x: Int = {
+			let y: Int = 2;
+			y + 3
+		};
 
-  // block in while loop condition (via parens)
-  let j: Int = 0;
-  while ({
-    let limit: Int = 3;
-    j < limit
-  }) {
-    j = j + 1;
-  }
-  println(j);  // 3
+		x * 10
+	};
 
-  // block in if statement condition (via parens)
-  let val: Int = 10;
-  if ({
-    let threshold: Int = 5;
-    val > threshold
-  }) {
-    println(1);  // 1
-  } else {
-    println(0);
-  }
+	println(c); // 50
 
-  // block in if statement condition — false branch
-  if ({
-    let threshold: Int = 20;
-    val > threshold
-  }) {
-    println(0);
-  } else {
-    println(2);  // 2
-  }
+	// block in assignment
+	let d: Int = 0;
+
+	d = {
+		let tmp: Int = 7;
+		tmp + 3
+	};
+
+	println(d); // 10
+
+	// block in if condition value position
+	let e: Int = if true {
+		{
+			let x: Int = 100;
+			x
+		}
+	} else {
+		0
+	};
+	println(e); // 100
+
+	// block expression wrapped in parens for use in binary expr
+	let i: Int = 0;
+	let sum: Int = 0;
+
+	while i < 3 {
+		sum = sum +
+			({
+				let inc: Int = i + 1;
+				inc
+			});
+		i = i + 1;
+	}
+
+	println(sum); // 6 (1+2+3)
+
+	// block in while loop condition (via parens)
+	let j: Int = 0;
+
+	while ({
+		let limit: Int = 3;
+		j < limit
+	}) {
+		j = j + 1;
+	}
+
+	println(j); // 3
+
+	// block in if statement condition (via parens)
+	let val: Int = 10;
+
+	if ({
+		let threshold: Int = 5;
+		val > threshold
+	}) {
+		println(1); // 1
+	} else {
+		println(0);
+	}
+
+	// block in if statement condition — false branch
+	if ({
+		let threshold: Int = 20;
+		val > threshold
+	}) {
+		println(0);
+	} else {
+		println(2); // 2
+	}
 }

@@ -1,6 +1,3 @@
 fn main() {
-    let x = match.reflect Int {
-        "primitive" => 1,
-        _ => 0,
-    };
+	let x = match.reflect Int { "primitive" => 1, _ => 0 };
 }

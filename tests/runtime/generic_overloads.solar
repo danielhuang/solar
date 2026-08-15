@@ -1,56 +1,55 @@
-struct Wrapper#[T] {
-  value: T,
-}
+struct Wrapper#[T] { value: T }
 
 // Generic + concrete same name: concrete wins for exact type
 fn process(x: Int) -> Int {
-  x * 10
+	x * 10
 }
 
 fn process#[T](x: T) -> T {
-  x
+	x
 }
 
 // Two generic overloads with different specificity:
 // Wrapper#[T] is partially generic, T is fully generic
 fn handle#[T](x: Wrapper#[T]) -> Int {
-  1
+	1
 }
 
 fn handle#[T](x: T) -> Int {
-  0
+	0
 }
 
 // Lexicographic param ordering
 fn pick#[T](a: Int, b: T) -> Int {
-  a + 1
+	a + 1
 }
 
 fn pick#[T](a: T, b: Int) -> Int {
-  b + 2
+	b + 2
 }
 
 fn main() {
-  // concrete wins for exact Int arg
-  println(process(5));
+	// concrete wins for exact Int arg
+	println(process(5));
 
-  // generic handles Bool
-  let b: Bool = process(true);
-  if b {
-    println(1);
-  }
+	// generic handles Bool
+	let b: Bool = process(true);
 
-  // Wrapper-specific overload wins over fully generic
-  let w: Wrapper#[Int] = Wrapper#[Int] { value: 42 };
-  println(handle(w));
+	if b {
+		println(1);
+	}
 
-  // fully generic handles Int
-  println(handle(99));
+	// Wrapper-specific overload wins over fully generic
+	let w: Wrapper#[Int] = Wrapper#[Int] { value: 42 };
+	println(handle(w));
 
-  // lexicographic: first param wins
-  // pick(Int, Bool) -> matches first overload (a: Int, b: T)
-  println(pick(10, true));
+	// fully generic handles Int
+	println(handle(99));
 
-  // pick(Bool, Int) -> matches second overload (a: T, b: Int)
-  println(pick(true, 20));
+	// lexicographic: first param wins
+	// pick(Int, Bool) -> matches first overload (a: Int, b: T)
+	println(pick(10, true));
+
+	// pick(Bool, Int) -> matches second overload (a: T, b: Int)
+	println(pick(true, 20));
 }

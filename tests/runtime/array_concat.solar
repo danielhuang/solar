@@ -1,23 +1,24 @@
 fn main() {
-  let a: [Int] = [1, 2, 3];
-  let b: [Int] = [4, 5];
-  let c: [Int] = a + b;
+	let a: [Int] = [1, 2, 3];
+	let b: [Int] = [4, 5];
+	let c: [Int] = a + b;
 
-  println(c[0u]);
-  println(c[1u]);
-  println(c[2u]);
-  println(c[3u]);
-  println(c[4u]);
+	println(c[0u]);
+	println(c[1u]);
+	println(c[2u]);
+	println(c[3u]);
+	println(c[4u]);
 
-  // concat with literals
-  let d: [Int] = [10] + [20, 30];
-  println(d[0u]);
-  println(d[1u]);
-  println(d[2u]);
+	// concat with literals
+	let d: [Int] = [10] + [20, 30];
+	println(d[0u]);
+	println(d[1u]);
+	println(d[2u]);
 
-  // equality on concatenated result
-  let e: [Int] = [1, 2, 3, 4, 5];
-  if c == e {
-    println(99);
-  }
+	// equality on concatenated result
+	let e: [Int] = [1, 2, 3, 4, 5];
+
+	if c == e {
+		println(99);
+	}
 }

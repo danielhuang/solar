@@ -64,6 +64,35 @@ Diagnostics and language features share one resolved and type-checked analysis
 per document revision; do not compile the same buffer independently for each
 request.
 
+## Formatter
+
+Run `cargo run --bin fmt -- path/to/file.solar` to rewrite Solar source files.
+The formatter uses an 80-column layout, tabs for indentation, compact blocks
+when written compact and they fit, and trailing commas only for multiline
+lists. It preserves comments, collapses consecutive blank lines, and refuses to
+modify files with parse errors. Files end with exactly one newline. Formatting
+uses the compiler's semantic AST for declarations and expressions while
+`fmt/syntax.rs` retains comments, blank lines, redundant grouping, and exact
+brace spans needed only for source layout. Semantic spans recover literal
+spellings from the source.
+Blank lines immediately inside braces, parentheses, and brackets are removed.
+Elsewhere, blank lines are retained only between items at the top level, between
+statements in blocks, or between list elements. List separators remain trailing
+before a retained blank line.
+Only multiline block items require surrounding blank lines; compact block items
+can remain adjacent to other items. Nonempty executable blocks remain multiline
+when written multiline, even with only one code item, while short declaration
+and parameter lists still collapse.
+Nested parentheses containing a single multiline block value hug that value at
+every layer, leaving the block's contents to begin on the following line.
+Zero-parameter closures have a space after `\`; parameterized closures keep the
+first parameter adjacent to it.
+Range operators have no surrounding spaces (`a..b`).
+Binary `&` and `^` have surrounding spaces, while their postfix reference and
+unique forms remain attached to their operands.
+The language server advertises whole-document formatting so editors can use the
+same formatter for format-on-save.
+
 ## Validation
 
 Use focused tests while iterating, then run:

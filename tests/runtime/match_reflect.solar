@@ -1,60 +1,44 @@
-struct Point {
-    x: Int,
-    y: Int,
-}
+struct Point { x: Int, y: Int }
 
-enum Shape {
-    Circle,
-    Square,
-}
+enum Shape { Circle, Square }
 
 type Alias = Point;
 
 fn classify#[T](value: T) -> Int {
-    match.reflect T {
-        "struct" => { 1 },
-        "enum" => { 2 },
-        _ => { 0 },
-    }
+	match.reflect T { "struct" => { 1 }, "enum" => { 2 }, _ => { 0 } }
 }
 
 // Non-taken branches are erased before type checking: `value.x` is only
 // checked when T is instantiated with a struct that has field `x`.
 fn get_x#[T](value: T) -> Int {
-    match.reflect T {
-        "struct" => value.x,
-        _ => 0 - 1,
-    }
+	match.reflect T { "struct" => value.x, _ => 0 - 1 }
 }
 
 fn main() {
-    let p = Point { x: 42, y: 7 };
-    println(classify(p));
-    println(classify(Shape::Circle));
-    println(classify(5));
-    println(classify(true));
-    println(classify(p&));
-    println(classify(p^));
-    let arr = [1, 2, 3];
-    println(classify(arr&));
-    println(classify#[Alias](p));
+	let p = Point { x: 42, y: 7 };
+	println(classify(p));
+	println(classify(Shape::Circle));
+	println(classify(5));
+	println(classify(true));
+	println(classify(p&));
+	println(classify(p^));
+	let arr = [1, 2, 3];
+	println(classify(arr&));
+	println(classify#[Alias](p));
 
-    // Module-qualified generic type from the stdlib
-    println(match.reflect vec::Vec#[Int] { "struct" => 8, _ => 9 });
+	// Module-qualified generic type from the stdlib
+	println(match.reflect vec::Vec#[Int] { "struct" => 8, _ => 9 });
 
-    println(get_x(p));
-    println(get_x(7));
+	println(get_x(p));
+	println(get_x(7));
 
-    // Concrete types directly, in expression position
-    println(match.reflect Point { "struct" => 10, _ => 20 });
-    println(match.reflect Int { "struct" => 10, _ => 20 });
+	// Concrete types directly, in expression position
+	println(match.reflect Point { "struct" => 10, _ => 20 });
+	println(match.reflect Int { "struct" => 10, _ => 20 });
 
-    // First matching arm wins: wildcard before "struct" shadows it
-    println(match.reflect Point { _ => 30, "struct" => 40 });
+	// First matching arm wins: wildcard before "struct" shadows it
+	println(match.reflect Point { _ => 30, "struct" => 40 });
 
-    // Statement position
-    match.reflect Shape {
-        "enum" => { println(100); },
-        _ => { },
-    };
+	// Statement position
+	match.reflect Shape { "enum" => { println(100); }, _ => {} };
 }

@@ -7,11 +7,11 @@ pub const WIDTH: Uint = 16u;
 
 /// Loads a control-byte group.
 pub fn load(ctrl: &[Uint8], pos: Uint) -> simd::SimdUint8x16 {
-  simd::u8x16_load(ctrl, pos)
+	simd::u8x16_load(ctrl, pos)
 }
 
 /// Lanes that hold exactly the given tag (full buckets only — EMPTY/DELETED have
 /// the high bit set and a full tag never does, so they can't match).
 pub method match_tag(self: simd::SimdUint8x16, t: Uint8) -> bitmask::BitMask {
-  bitmask::BitMask { mask: self.eq_mask(t) }
+	bitmask::BitMask { mask: self.eq_mask(t) }
 }

@@ -23,6 +23,19 @@ fn ordinary_static_is_not_thread_local() {
     assert!(!item.thread_local);
 }
 
+#[test]
+fn struct_fields_and_enum_variants_do_not_require_trailing_commas() {
+    let ast = parse("struct Pair { left: Int, right: Int }\nenum Maybe { None, Some(Int) }");
+    let TopLevelItem::Struct(pair) = &ast.items[0] else {
+        panic!("expected struct");
+    };
+    assert_eq!(pair.fields.len(), 2);
+    let TopLevelItem::Enum(maybe) = &ast.items[1] else {
+        panic!("expected enum");
+    };
+    assert_eq!(maybe.variants.len(), 2);
+}
+
 /// Helper to check a span matches expected 0-indexed positions.
 fn check(span: SourceSpan, start_line: u32, start_col: u32, end_line: u32, end_col: u32) {
     assert_eq!(
@@ -481,20 +494,20 @@ fn fixture_file_spans() {
     };
     assert_eq!(add_fn.name, "add");
 
-    // Body: "let x: Int = a + b;" at line 1
+    // Body: "let x: Int = a + b;" on the second line
     let let_stmt = &add_fn.body[0];
-    check(let_stmt.span, 1, 4, 1, 23);
+    check(let_stmt.span, 1, 1, 1, 20);
 
     // The value expr "a + b" inside the let
     let let_value = match &let_stmt.kind {
         StatementKind::Let { value, .. } => value,
         _ => panic!("expected let"),
     };
-    check(let_value.span, 1, 17, 1, 22);
+    check(let_value.span, 1, 14, 1, 19);
 
-    // "return x;" at line 2
+    // "return x;" on the third line
     let ret_stmt = &add_fn.body[1];
-    check(ret_stmt.span, 2, 4, 2, 13);
+    check(ret_stmt.span, 2, 1, 2, 10);
 
     // Second item: fn main() { ... }
     let main_fn = match &ast.items[1] {
@@ -503,20 +516,20 @@ fn fixture_file_spans() {
     };
     assert_eq!(main_fn.name, "main");
 
-    // "let y: Int = add(1, 2);" at line 6
+    // "let y: Int = add(1, 2);" on the seventh line
     let let_stmt2 = &main_fn.body[0];
-    check(let_stmt2.span, 6, 4, 6, 27);
+    check(let_stmt2.span, 6, 1, 6, 24);
 
     // The call expr "add(1, 2)"
     let call_expr = match &let_stmt2.kind {
         StatementKind::Let { value, .. } => value,
         _ => panic!("expected let"),
     };
-    check(call_expr.span, 6, 17, 6, 26);
+    check(call_expr.span, 6, 14, 6, 23);
 
-    // "print(y);" at line 7
+    // "print(y);" on the eighth line
     let print_stmt = &main_fn.body[1];
-    check(print_stmt.span, 7, 4, 7, 13);
+    check(print_stmt.span, 7, 1, 7, 10);
 }
 
 // ---------- Doc comments (`///`) ----------

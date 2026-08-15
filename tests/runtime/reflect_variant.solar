@@ -1,82 +1,84 @@
-enum Color {
-    Red,
-    Green,
-    Custom(Int),
-}
+enum Color { Red, Green, Custom(Int) }
 
-enum Num {
-    Small(Int),
-    Big(Int),
-}
+enum Num { Small(Int), Big(Int) }
 
 // Generic use: the dispatch sits inside match.reflect's "enum" branch, so
 // this compiles for every instantiation — erased for non-enums.
 fn variant_name#[T](o: &T) {
-    match.reflect T {
-        "enum" => {
-            match.reflect_variant (variant, index, val) in o {
-                println(variant);
-                println(index);
-            }
-        },
-        _ => { println("not an enum"&); },
-    };
+	match.reflect T {
+		"enum" => {
+			match.reflect_variant (variant, index, val) in o {
+				println(variant);
+				println(index);
+			}
+		},
+		_ => { println("not an enum"&); },
+	};
 }
 
 fn main() {
-    // bare use, mixed unit/data variants — val unused so all arms compile
-    let c = Color::Custom(42);
-    match.reflect_variant (variant, index, val) in c& {
-        println(variant);
-        println(index);
-    }
-    let r = Color::Red;
-    match.reflect_variant (variant, index, val) in r& {
-        println(variant);
-        println(index);
-    }
+	// bare use, mixed unit/data variants — val unused so all arms compile
+	let c = Color::Custom(42);
 
-    // all-data enum: val is the payload by value, body duplicated per arm
-    let n = Num::Big(99);
-    match.reflect_variant (variant, index, val) in n& {
-        println(variant);
-        println(index);
-        println(val);
-    }
-    let s = Num::Small(3);
-    match.reflect_variant (variant, index, val) in s& {
-        println(variant);
-        println(index);
-        println(val);
-    }
+	match.reflect_variant (variant, index, val) in c& {
+		println(variant);
+		println(index);
+	}
 
-    // a bare name binds the whole (name, index, payload) tuple in data arms
-    match.reflect_variant v in n& {
-        println(v.0);
-        println(v.1);
-        println(v.2);
-    }
+	let r = Color::Red;
 
-    // with unit variants nothing is bound for a bare name — the body just
-    // can't use v in that case
-    match.reflect_variant v in r& {
-        println(123);
-    }
+	match.reflect_variant (variant, index, val) in r& {
+		println(variant);
+		println(index);
+	}
 
-    // generic use via match.reflect guard
-    variant_name(c&);
-    variant_name(r&);
-    variant_name(5&);
+	// all-data enum: val is the payload by value, body duplicated per arm
+	let n = Num::Big(99);
 
-    // generic (monomorphized) enum
-    let o = Option#[Int]::Some(7);
-    match.reflect_variant (variant, index, val) in o& {
-        println(variant);
-        println(index);
-    }
-    let e = Option#[Int]::None;
-    match.reflect_variant (variant, index, val) in e& {
-        println(variant);
-        println(index);
-    }
+	match.reflect_variant (variant, index, val) in n& {
+		println(variant);
+		println(index);
+		println(val);
+	}
+
+	let s = Num::Small(3);
+
+	match.reflect_variant (variant, index, val) in s& {
+		println(variant);
+		println(index);
+		println(val);
+	}
+
+	// a bare name binds the whole (name, index, payload) tuple in data arms
+	match.reflect_variant v in n& {
+		println(v.0);
+		println(v.1);
+		println(v.2);
+	}
+
+	// with unit variants nothing is bound for a bare name — the body just
+	// can't use v in that case
+	match.reflect_variant v in r& {
+		println(123);
+	}
+
+	// generic use via match.reflect guard
+	variant_name(c&);
+	variant_name(r&);
+	variant_name(5&);
+
+	// generic (monomorphized) enum
+	let o = Option#[Int]::Some(7);
+
+	match.reflect_variant (variant, index, val) in o& {
+		println(variant);
+		println(index);
+	}
+
+	let e = Option#[Int]::None;
+
+	match.reflect_variant (variant, index, val) in e& {
+		println(variant);
+		println(index);
+	}
 }

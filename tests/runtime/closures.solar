@@ -1,48 +1,48 @@
 fn apply(f: fn(Int) -> Int, val: Int) -> Int { f(val) }
 
 fn main() {
-  // Basic closure capturing a variable
-  let offset = 10;
-  let add_offset = \x: Int offset + x;
-  println(add_offset(5));           // 15
+	// Basic closure capturing a variable
+	let offset = 10;
+	let add_offset = \x: Int offset + x;
+	println(add_offset(5)); // 15
 
-  // Zero-capture closure (equivalent to plain function)
-  let double = \x: Int x * 2;
-  println(double(7));               // 14
+	// Zero-capture closure (equivalent to plain function)
+	let double = \x: Int x * 2;
+	println(double(7)); // 14
 
-  // Closure passed to higher-order function
-  let scale = 3;
-  let mul_scale = \x: Int x * scale;
-  println(apply(mul_scale, 10));    // 30
+	// Closure passed to higher-order function
+	let scale = 3;
+	let mul_scale = \x: Int x * scale;
+	println(apply(mul_scale, 10)); // 30
 
-  // Multiple captures
-  let a = 100;
-  let b = 200;
-  let sum_ab = \x: Int a + b + x;
-  println(sum_ab(5));               // 305
+	// Multiple captures
+	let a = 100;
+	let b = 200;
+	let sum_ab = \x: Int a + b + x;
+	println(sum_ab(5)); // 305
 
-  // Closure with explicit return type
-  let negate = \x: Int -> Int { 0 - x };
-  println(negate(42));              // -42
+	// Closure with explicit return type
+	let negate = \x: Int -> Int { 0 - x };
+	println(negate(42)); // -42
 
-  // Closure with block body
-  let complex = \x: Int {
-    let tmp = x * 2;
-    tmp + offset
-  };
-  println(complex(5));              // 20
+	// Closure with block body
+	let complex = \x: Int {
+		let tmp = x * 2;
+		tmp + offset
+	};
+	println(complex(5)); // 20
 
-  // Mutation through captures (shared reference semantics)
-  let counter = 0&;
-  let inc = \ { counter@ = counter@ + 1; };
-  inc();
-  inc();
-  inc();
-  println(counter@);                // 3
+	// Mutation through captures (shared reference semantics)
+	let counter = 0&;
+	let inc = \ { counter@ = counter@ + 1; };
+	inc();
+	inc();
+	inc();
+	println(counter@); // 3
 
-  // Closure stored in variable, then reassigned
-  let f: fn(Int) -> Int = \x: Int x + 1;
-  println(f(10));                   // 11
-  f = \x: Int x + 2;
-  println(f(10));                   // 12
+	// Closure stored in variable, then reassigned
+	let f: fn(Int) -> Int = \x: Int x + 1;
+	println(f(10)); // 11
+	f = \x: Int x + 2;
+	println(f(10)); // 12
 }

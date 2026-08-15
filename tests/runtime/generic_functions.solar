@@ -1,58 +1,53 @@
 // generic identity function
 fn identity#[T](x: T) -> T {
-  x
+	x
 }
 
 // generic function with multiple type params
 fn second#[A, B](a: A, b: B) -> B {
-  b
+	b
 }
 
 // generic function returning a struct
-struct Box#[T] {
-  value: T,
-}
+struct Box#[T] { value: T }
 
 fn make_box#[T](v: T) -> Box#[T] {
-  Box#[T] { value: v }
+	Box#[T] { value: v }
 }
 
 // generic function taking a function parameter
 fn apply#[T, R](f: fn(T) -> R, x: T) -> R {
-  f(x)
+	f(x)
 }
 
 fn double(x: Int) -> Int {
-  x * 2
+	x * 2
 }
 
 // generic function with enum
 fn unwrap_or#[T](opt: Option#[T], default: T) -> T {
-  match opt {
-    Option#[T]::Some(v) => v,
-    Option#[T]::None => default,
-  }
+	match opt { Option#[T]::Some(v) => v, Option#[T]::None => default }
 }
 
 fn main() {
-  // identity with Int
-  println(identity#[Int](42));           // 42
+	// identity with Int
+	println(identity#[Int](42)); // 42
 
-  // identity with Bool (different monomorphization)
-  let b = identity#[Bool](true);
-  println(if b { 1 } else { 0 });       // 1
+	// identity with Bool (different monomorphization)
+	let b = identity#[Bool](true);
+	println(if b { 1 } else { 0 }); // 1
 
-  // multi-param generic
-  println(second#[Bool, Int](true, 99)); // 99
+	// multi-param generic
+	println(second#[Bool, Int](true, 99)); // 99
 
-  // generic function returning struct
-  let bx = make_box#[Int](77);
-  println(bx.value);                    // 77
+	// generic function returning struct
+	let bx = make_box#[Int](77);
+	println(bx.value); // 77
 
-  // higher-order generic function
-  println(apply#[Int, Int](double, 5)); // 10
+	// higher-order generic function
+	println(apply#[Int, Int](double, 5)); // 10
 
-  // generic function with enum
-  println(unwrap_or#[Int](Option#[Int]::Some(123), 0));  // 123
-  println(unwrap_or#[Int](Option#[Int]::None, 55));      // 55
+	// generic function with enum
+	println(unwrap_or#[Int](Option#[Int]::Some(123), 0)); // 123
+	println(unwrap_or#[Int](Option#[Int]::None, 55)); // 55
 }

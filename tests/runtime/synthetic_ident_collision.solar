@@ -1,62 +1,56 @@
-struct Point {
-    x: Int,
-    y: Int,
-}
+struct Point { x: Int, y: Int }
 
-enum Number {
-    Value(Int),
-}
+enum Number { Value(Int) }
 
 fn param_collision(__param_1: Int, (a, b): (Int, Int)) -> Int {
-    __param_1 + a + b
+	__param_1 + a + b
 }
 
 fn __closure_0() -> Int {
-    41
+	41
 }
 
 fn main() {
-    let __for_arr_0 = [91];
-    let __for_len_0 = 92u;
-    let __for_idx_0 = 93u;
-    for ignored in [1, 2] {}
-    println(__for_arr_0[0u]);
-    println(__for_len_0);
-    println(__for_idx_0);
+	let __for_arr_0 = [91];
+	let __for_len_0 = 92u;
+	let __for_idx_0 = 93u;
+	for ignored in [1, 2] {}
+	println(__for_arr_0[0u]);
+	println(__for_len_0);
+	println(__for_idx_0);
 
-    let __for_counter_0 = 94;
-    for ignored in 0..2 {}
-    println(__for_counter_0);
+	let __for_counter_0 = 94;
+	for ignored in 0..2 {}
+	println(__for_counter_0);
 
-    let __destructure_0 = 95;
-    let (left, right) = (3, 4);
-    println(__destructure_0);
-    println(left + right);
+	let __destructure_0 = 95;
+	let (left, right) = (3, 4);
+	println(__destructure_0);
+	println(left + right);
 
-    let __integer_match_1 = 96;
-    let matched = match 5 {
-        0 => 0,
-        ignored => __integer_match_1,
-    };
-    println(matched);
+	let __integer_match_1 = 96;
+	let matched = match 5 { 0 => 0, ignored => __integer_match_1 };
+	println(matched);
 
-    let __reflect_fields_2 = 97;
-    let point = Point { x: 1, y: 2 };
-    for.reflect_fields ignored in point& {
-        println(__reflect_fields_2);
-    }
+	let __reflect_fields_2 = 97;
+	let point = Point { x: 1, y: 2 };
 
-    let __reflect_variant_3 = 98;
-    let __reflect_variant_binding_3 = 99;
-    let number = Number::Value(1);
-    match.reflect_variant (name, index, value) in number& {
-        println(__reflect_variant_3);
-        println(__reflect_variant_binding_3);
-    }
+	for.reflect_fields ignored in point& {
+		println(__reflect_fields_2);
+	}
 
-    println(param_collision(10, (3, 4)));
+	let __reflect_variant_3 = 98;
+	let __reflect_variant_binding_3 = 99;
+	let number = Number::Value(1);
 
-    let closure = \ { 42 };
-    println(__closure_0());
-    println(closure());
+	match.reflect_variant (name, index, value) in number& {
+		println(__reflect_variant_3);
+		println(__reflect_variant_binding_3);
+	}
+
+	println(param_collision(10, (3, 4)));
+
+	let closure = \ { 42 };
+	println(__closure_0());
+	println(closure());
 }

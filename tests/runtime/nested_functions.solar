@@ -1,52 +1,59 @@
 fn apply(f: fn(Int) -> Int, val: Int) -> Int { f(val) }
 
 fn main() {
-  // Basic nested function with capture
-  let offset = 10;
-  fn add_offset(x: Int) -> Int { offset + x }
-  println(add_offset(5));           // 15
+	// Basic nested function with capture
+	let offset = 10;
+	fn add_offset(x: Int) -> Int { offset + x }
+	println(add_offset(5)); // 15
 
-  // Zero-capture nested function
-  fn double(x: Int) -> Int { x * 2 }
-  println(double(7));               // 14
+	// Zero-capture nested function
+	fn double(x: Int) -> Int { x * 2 }
 
-  // Nested function with explicit return type
-  fn negate(x: Int) -> Int { 0 - x }
-  println(negate(42));              // -42
+	println(double(7)); // 14
 
-  // Multiple captures
-  let a = 100;
-  let b = 200;
-  fn sum_ab(x: Int) -> Int { a + b + x }
-  println(sum_ab(5));               // 305
+	// Nested function with explicit return type
+	fn negate(x: Int) -> Int { 0 - x }
 
-  // Nested function passed to higher-order function
-  let scale = 3;
-  fn mul_scale(x: Int) -> Int { x * scale }
-  println(apply(mul_scale, 10));    // 30
+	println(negate(42)); // -42
 
-  // Nested functions calling other nested functions
-  fn inc(x: Int) -> Int { x + 1 }
-  fn double_inc(x: Int) -> Int { inc(inc(x)) }
-  println(double_inc(5));           // 7
+	// Multiple captures
+	let a = 100;
+	let b = 200;
+	fn sum_ab(x: Int) -> Int { a + b + x }
+	println(sum_ab(5)); // 305
 
-  // Multi-level nesting (nested inside nested)
-  fn outer(x: Int) -> Int {
-    let y = 10;
-    fn inner(z: Int) -> Int { z + y }
-    inner(x)
-  }
-  println(outer(5));                // 15
+	// Nested function passed to higher-order function
+	let scale = 3;
+	fn mul_scale(x: Int) -> Int { x * scale }
+	println(apply(mul_scale, 10)); // 30
 
-  // Generic nested function
-  fn identity#[T](x: T) -> T { x }
-  println(identity#[Int](42));      // 42
+	// Nested functions calling other nested functions
+	fn inc(x: Int) -> Int { x + 1 }
 
-  // Overloaded nested function
-  fn process(x: Int) -> Int { x + 1 }
-  fn process(x: Bool) -> Int {
-    if x { 100 } else { 0 }
-  }
-  println(process(9));              // 10
-  println(process(true));           // 100
+	fn double_inc(x: Int) -> Int { inc(inc(x)) }
+	println(double_inc(5)); // 7
+
+	// Multi-level nesting (nested inside nested)
+	fn outer(x: Int) -> Int {
+		let y = 10;
+		fn inner(z: Int) -> Int { z + y }
+		inner(x)
+	}
+
+	println(outer(5)); // 15
+
+	// Generic nested function
+	fn identity#[T](x: T) -> T { x }
+
+	println(identity#[Int](42)); // 42
+
+	// Overloaded nested function
+	fn process(x: Int) -> Int { x + 1 }
+
+	fn process(x: Bool) -> Int {
+		if x { 100 } else { 0 }
+	}
+
+	println(process(9)); // 10
+	println(process(true)); // 100
 }

@@ -1,143 +1,125 @@
-enum Shape {
-  Circle(Int),
-  Square(Int),
-  Point,
-}
+enum Shape { Circle(Int), Square(Int), Point }
 
-struct Wrapper {
-  shape: Shape,
-  tag: Int,
-}
+struct Wrapper { shape: Shape, tag: Int }
 
-enum Inner {
-  A,
-  B(Int),
-}
+enum Inner { A, B(Int) }
 
-enum Outer {
-  X(Inner),
-  Y,
-}
+enum Outer { X(Inner), Y }
 
 // Returning a fixed array of unit enums exercises discriminant copies into a
 // caller-owned aggregate. Those slots retain the enum's 8-byte alignment even
 // though generated C addresses them through byte pointers.
-enum Direction {
-  Down,
-  Up,
-  North,
-}
+enum Direction { Down, Up, North }
 
 fn all_directions() -> [Direction; 3] {
-  let result: [Direction; 3] = [Direction::Down, Direction::Up, Direction::North];
-  result
+	let result: [Direction; 3] = [
+		Direction::Down,
+		Direction::Up,
+		Direction::North,
+	];
+	result
 }
 
 fn describe_shape(s: Shape) -> Int {
-  match s {
-    Shape::Circle(r) => r,
-    Shape::Square(side) => side * side,
-    Shape::Point => 0,
-  }
+	match s {
+		Shape::Circle(r) => r,
+		Shape::Square(side) => side * side,
+		Shape::Point => 0,
+	}
 }
 
 fn main() {
-  // Basic unit variant
-  let p: Shape = Shape::Point;
-  println(describe_shape(p));           // 0
+	// Basic unit variant
+	let p: Shape = Shape::Point;
+	println(describe_shape(p)); // 0
 
-  // Data variant
-  let c: Shape = Shape::Circle(5);
-  println(describe_shape(c));           // 5
+	// Data variant
+	let c: Shape = Shape::Circle(5);
+	println(describe_shape(c)); // 5
 
-  // Another data variant
-  let sq: Shape = Shape::Square(4);
-  println(describe_shape(sq));          // 16
+	// Another data variant
+	let sq: Shape = Shape::Square(4);
+	println(describe_shape(sq)); // 16
 
-  // Match returning values
-  let x: Shape = Shape::Circle(10);
-  let val = match x {
-    Shape::Circle(r) => r + 1,
-    Shape::Square(s) => s,
-    Shape::Point => 0,
-  };
-  println(val);                         // 11
+	// Match returning values
+	let x: Shape = Shape::Circle(10);
+	let val = match x {
+		Shape::Circle(r) => r + 1,
+		Shape::Square(s) => s,
+		Shape::Point => 0,
+	};
+	println(val); // 11
 
-  // Wildcard pattern
-  let y: Shape = Shape::Square(7);
-  let w = match y {
-    Shape::Point => 0,
-    other => 1,
-  };
-  println(w);                           // 1
+	// Wildcard pattern
+	let y: Shape = Shape::Square(7);
+	let w = match y { Shape::Point => 0, other => 1 };
+	println(w); // 1
 
-  // Match bindings are places: assign to binding
-  let e: Shape = Shape::Circle(100);
-  match e {
-    Shape::Circle(r) => {
-      r = 200;
-    },
-    Shape::Square(s) => {},
-    Shape::Point => {},
-  };
-  // e should now have Circle(200) because binding was a place
-  let check = match e {
-    Shape::Circle(r) => r,
-    Shape::Square(s) => s,
-    Shape::Point => 0,
-  };
-  println(check);                       // 200
+	// Match bindings are places: assign to binding
+	let e: Shape = Shape::Circle(100);
+	match e {
+		Shape::Circle(r) => {
+			r = 200;
+		},
+		Shape::Square(s) => {},
+		Shape::Point => {},
+	};
 
-  // Match bindings are places: take reference to binding
-  let e2: Shape = Shape::Circle(50);
-  match e2 {
-    Shape::Circle(r) => {
-      let ref_r: &Int = r&;
-      ref_r@ = 99;
-    },
-    Shape::Square(s) => {},
-    Shape::Point => {},
-  };
-  let check2 = match e2 {
-    Shape::Circle(r) => r,
-    Shape::Square(s) => s,
-    Shape::Point => 0,
-  };
-  println(check2);                      // 99
+	// e should now have Circle(200) because binding was a place
+	let check = match e {
+		Shape::Circle(r) => r,
+		Shape::Square(s) => s,
+		Shape::Point => 0,
+	};
+	println(check); // 200
 
-  let directions = all_directions();
-  for direction in directions {
-    println(match direction@ {
-      Direction::Down => 0,
-      Direction::Up => 1,
-      Direction::North => 2,
-    });
-  }
+	// Match bindings are places: take reference to binding
+	let e2: Shape = Shape::Circle(50);
+	match e2 {
+		Shape::Circle(r) => {
+			let ref_r: &Int = r&;
+			ref_r@ = 99;
+		},
+		Shape::Square(s) => {},
+		Shape::Point => {},
+	};
+	let check2 = match e2 {
+		Shape::Circle(r) => r,
+		Shape::Square(s) => s,
+		Shape::Point => 0,
+	};
+	println(check2); // 99
 
-  // Enums inside structs
-  let wrapped = Wrapper {
-    shape: Shape::Circle(42),
-    tag: 7,
-  };
-  println(wrapped.tag);                 // 7
-  let inner_val = match wrapped.shape {
-    Shape::Circle(r) => r,
-    Shape::Square(s) => s,
-    Shape::Point => 0,
-  };
-  println(inner_val);                   // 42
+	let directions = all_directions();
 
-  // Structs inside enums (enum variant wraps a struct)
-  // Not directly — but we can nest enums
-  let nested: Outer = Outer::X(Inner::B(77));
-  let result = match nested {
-    Outer::X(inner) => {
-      match inner {
-        Inner::A => 0,
-        Inner::B(n) => n,
-      }
-    },
-    Outer::Y => 0,
-  };
-  println(result);                      // 77
+	for direction in directions {
+		println(
+			match direction@ {
+				Direction::Down => 0,
+				Direction::Up => 1,
+				Direction::North => 2,
+			},
+		);
+	}
+
+	// Enums inside structs
+	let wrapped = Wrapper { shape: Shape::Circle(42), tag: 7 };
+	println(wrapped.tag); // 7
+	let inner_val = match wrapped.shape {
+		Shape::Circle(r) => r,
+		Shape::Square(s) => s,
+		Shape::Point => 0,
+	};
+	println(inner_val); // 42
+
+	// Structs inside enums (enum variant wraps a struct)
+	// Not directly — but we can nest enums
+	let nested: Outer = Outer::X(Inner::B(77));
+	let result = match nested {
+		Outer::X(inner) => {
+			match inner { Inner::A => 0, Inner::B(n) => n }
+		},
+		Outer::Y => 0,
+	};
+	println(result); // 77
 }

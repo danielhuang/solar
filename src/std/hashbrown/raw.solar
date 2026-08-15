@@ -1,4 +1,4 @@
-import { Option } from "../lib.solar";
+import {Option} from "../lib.solar";
 import tag from "tag.solar";
 import group from "group.solar";
 import fh from "foldhash.solar";
@@ -6,100 +6,108 @@ import hash from "hash.solar";
 
 /// Hash a key with a fresh fixed-seed foldhash hasher.
 pub fn key_hash#[K](key: &K) -> Uint64 {
-  let h = fh::Hasher();
-  key.hash(h&);
-  h&.finish()
+	let h = fh::Hasher();
+	key.hash(h&);
+	h&.finish()
 }
 
 const GROUP_WIDTH: Uint = 16u;
 
 /// A key-value table entry.
 pub struct Entry#[K, V] {
-  /// Entry key.
-  pub key: K,
-  /// Entry value.
-  pub val: V,
+	/// Entry key.
+	pub key: K,
+
+	/// Entry value.
+	pub val: V,
 }
 
 /// Result of searching for a key and an insertion slot together.
 pub enum FindInsert {
-  /// The matching occupied bucket.
-  Found(Uint),
-  /// The first reusable bucket in the probe sequence.
-  Vacant(Uint),
+	/// The matching occupied bucket.
+	Found(Uint),
+
+	/// The first reusable bucket in the probe sequence.
+	Vacant(Uint),
 }
 
 /// SwissTable storage.
 pub struct RawTable#[K, V] {
-  /// Bucket count minus one.
-  pub bucket_mask: Uint,
-  /// Control bytes and trailing mirror group.
-  pub ctrl: &[Uint8],
-  /// Entry slots, empty before the first allocation.
-  pub slots: &[Entry#[K, V]],
-  /// Number of occupied buckets.
-  pub items: Uint,
-  /// Inserts available before resizing.
-  pub growth_left: Uint,
+	/// Bucket count minus one.
+	pub bucket_mask: Uint,
+
+	/// Control bytes and trailing mirror group.
+	pub ctrl: &[Uint8],
+
+	/// Entry slots, empty before the first allocation.
+	pub slots: &[Entry#[K, V]],
+
+	/// Number of occupied buckets.
+	pub items: Uint,
+
+	/// Inserts available before resizing.
+	pub growth_left: Uint,
 }
 
 /// Creates an empty table.
 pub fn RawTable#[K, V]() -> RawTable#[K, V] {
-  let empty_ctrl: [Uint8] = [tag::EMPTY; GROUP_WIDTH];
-  let empty_slots: [Entry#[K, V]] = []#[Entry#[K, V]];
-  RawTable#[K, V] {
-    bucket_mask: 0u,
-    ctrl: empty_ctrl&,
-    slots: empty_slots&,
-    items: 0u,
-    growth_left: 0u,
-  }
+	let empty_ctrl: [Uint8] = [tag::EMPTY; GROUP_WIDTH];
+	let empty_slots: [Entry#[K, V]] = []#[Entry#[K, V]];
+
+	RawTable#[K, V] {
+		bucket_mask: 0u,
+		ctrl: empty_ctrl&,
+		slots: empty_slots&,
+		items: 0u,
+		growth_left: 0u,
+	}
 }
 
 fn next_power_of_two(x: Uint) -> Uint {
-  let out = if x <= 1u {
-    1u
-  } else {
-    let xm1 = x - 1u;
-    let lz = xm1.count_leading_zeros();
-    let sh = 64u - lz;
-    1u << sh
-  };
-  out
+	let out = if x <= 1u {
+		1u
+	} else {
+		let xm1 = x - 1u;
+		let lz = xm1.count_leading_zeros();
+		let sh = 64u - lz;
+		1u << sh
+	};
+	out
 }
 
 fn capacity_to_buckets(cap: Uint) -> Uint {
-  let needed = if cap < 4u {
-    4u
-  } else if cap < 8u {
-    8u
-  } else {
-    // 7/8 max load factor.
-    let scaled = cap * 8u;
-    let adjusted = scaled / 7u;
-    next_power_of_two(adjusted)
-  };
-  // A group spans GROUP_WIDTH buckets, so the table must have at least that many:
-  // otherwise a group load would read past the real buckets into never-mirrored
-  // padding and the scan would consider stale lanes. (hashbrown's smaller
-  // minimums assume a group no wider than the smallest table.)
-  if needed < GROUP_WIDTH { GROUP_WIDTH } else { needed }
+	let needed = if cap < 4u {
+		4u
+	} else if cap < 8u {
+		8u
+	} else {
+		// 7/8 max load factor.
+		let scaled = cap * 8u;
+		let adjusted = scaled / 7u;
+		next_power_of_two(adjusted)
+	};
+
+	// A group spans GROUP_WIDTH buckets, so the table must have at least that many:
+	// otherwise a group load would read past the real buckets into never-mirrored
+	// padding and the scan would consider stale lanes. (hashbrown's smaller
+	// minimums assume a group no wider than the smallest table.)
+	if needed < GROUP_WIDTH { GROUP_WIDTH } else { needed }
 }
 
 fn bucket_mask_to_capacity(bucket_mask: Uint) -> Uint {
-  let out = if bucket_mask < 8u {
-    bucket_mask
-  } else {
-    let buckets = bucket_mask + 1u;
-    let eighths = buckets / 8u;
-    eighths * 7u
-  };
-  out
+	let out = if bucket_mask < 8u {
+		bucket_mask
+	} else {
+		let buckets = bucket_mask + 1u;
+		let eighths = buckets / 8u;
+		eighths * 7u
+	};
+	out
 }
 
 /// The low bits of the hash, used to pick the starting probe bucket.
 fn h1(hash: Uint64) -> Uint {
-  Uint(hash)
+	Uint(hash)
 }
 
 // ── Control bytes ──────────────────────────────────────────────────────────
@@ -107,197 +115,242 @@ fn h1(hash: Uint64) -> Uint {
 /// Write a control byte, mirroring the first GROUP_WIDTH bytes into the trailing
 /// group so unaligned group loads near the end stay consistent.
 method set_ctrl#[K, V](self: &RawTable#[K, V], index: Uint, t: Uint8) {
-  let dec = index -- GROUP_WIDTH;
-  let masked = dec & self@.bucket_mask;
-  let index2 = masked ++ GROUP_WIDTH;
-  self@.ctrl@[index] = t;
-  self@.ctrl@[index2] = t;
+	let dec = index -- GROUP_WIDTH;
+	let masked = dec & self@.bucket_mask;
+	let index2 = masked ++ GROUP_WIDTH;
+	self@.ctrl@[index] = t;
+	self@.ctrl@[index2] = t;
 }
 
 // ── Probing ────────────────────────────────────────────────────────────────
 
 /// Find the slot holding `key`, or None. `key` is compared with `==`.
-pub method find#[K, V](self: &RawTable#[K, V], hash: Uint64, key: &K) -> Option#[Uint] {
-  if self@.bucket_mask == 0u {
-    return Option#[Uint]::None;
-  }
-  let h2 = tag::full(hash);
-  let pos = h1(hash) & self@.bucket_mask;
-  let stride = 0u;
-  // Bind the slice reference (a cheap fat-pointer copy), then deref-index it
-  // via `s@[..]`. Binding `self@.slots@` would copy the whole array.
-  let s = self@.slots;
-  let ctrl = self@.ctrl;
-  loop {
-    let g = group::load(ctrl, pos);
-    let m = g.match_tag(h2);
-    while m.any_bit_set() {
-      let bit = m.lowest_set_bit_index();
-      let posbit = pos ++ bit;
-      let idx = posbit & self@.bucket_mask;
-      if s@[idx].key == key@ {
-        return Option#[Uint]::Some(idx);
-      }
-      m = m.remove_lowest_bit();
-    }
-    if g.match_empty().any_bit_set() {
-      return Option#[Uint]::None;
-    }
-    stride = stride ++ GROUP_WIDTH;
-    let nextpos = pos ++ stride;
-    pos = nextpos & self@.bucket_mask;
-  }
+pub method find#[K, V](self: &RawTable#[K, V], hash: Uint64, key: &K) -> Option#[
+	Uint,
+] {
+	if self@.bucket_mask == 0u {
+		return Option#[Uint]::None;
+	}
+
+	let h2 = tag::full(hash);
+	let pos = h1(hash) & self@.bucket_mask;
+	let stride = 0u;
+
+	// Bind the slice reference (a cheap fat-pointer copy), then deref-index it
+	// via `s@[..]`. Binding `self@.slots@` would copy the whole array.
+	let s = self@.slots;
+	let ctrl = self@.ctrl;
+
+	loop {
+		let g = group::load(ctrl, pos);
+		let m = g.match_tag(h2);
+
+		while m.any_bit_set() {
+			let bit = m.lowest_set_bit_index();
+			let posbit = pos ++ bit;
+			let idx = posbit & self@.bucket_mask;
+
+			if s@[idx].key == key@ {
+				return Option#[Uint]::Some(idx);
+			}
+
+			m = m.remove_lowest_bit();
+		}
+
+		if g.match_empty().any_bit_set() {
+			return Option#[Uint]::None;
+		}
+
+		stride = stride ++ GROUP_WIDTH;
+		let nextpos = pos ++ stride;
+		pos = nextpos & self@.bucket_mask;
+	}
 }
 
 /// Find an existing key or a slot where it can be inserted in one probe walk.
-pub method find_or_find_insert#[K, V](self: &RawTable#[K, V], hash: Uint64, key: &K) -> FindInsert {
-  if self@.bucket_mask == 0u {
-    return FindInsert::Vacant(0u);
-  }
-  let h2 = tag::full(hash);
-  let pos = h1(hash) & self@.bucket_mask;
-  let stride = 0u;
-  let insert_slot = 0u;
-  let have_insert_slot = false;
-  let s = self@.slots;
-  let ctrl = self@.ctrl;
-  loop {
-    let g = group::load(ctrl, pos);
-    let m = g.match_tag(h2);
-    while m.any_bit_set() {
-      let bit = m.lowest_set_bit_index();
-      let idx = (pos ++ bit) & self@.bucket_mask;
-      if s@[idx].key == key@ {
-        return FindInsert::Found(idx);
-      }
-      m = m.remove_lowest_bit();
-    }
+pub method find_or_find_insert#[K, V](
+	self: &RawTable#[K, V],
+	hash: Uint64,
+	key: &K,
+) -> FindInsert {
+	if self@.bucket_mask == 0u {
+		return FindInsert::Vacant(0u);
+	}
 
-    if !have_insert_slot {
-      let available = g.match_empty_or_deleted();
-      if available.any_bit_set() {
-        insert_slot = (pos ++ available.lowest_set_bit_index()) & self@.bucket_mask;
-        have_insert_slot = true;
-      }
-    }
-    if g.match_empty().any_bit_set() {
-      return FindInsert::Vacant(insert_slot);
-    }
+	let h2 = tag::full(hash);
+	let pos = h1(hash) & self@.bucket_mask;
+	let stride = 0u;
+	let insert_slot = 0u;
+	let have_insert_slot = false;
+	let s = self@.slots;
+	let ctrl = self@.ctrl;
 
-    stride = stride ++ GROUP_WIDTH;
-    pos = (pos ++ stride) & self@.bucket_mask;
-  }
+	loop {
+		let g = group::load(ctrl, pos);
+		let m = g.match_tag(h2);
+
+		while m.any_bit_set() {
+			let bit = m.lowest_set_bit_index();
+			let idx = (pos ++ bit) & self@.bucket_mask;
+
+			if s@[idx].key == key@ {
+				return FindInsert::Found(idx);
+			}
+
+			m = m.remove_lowest_bit();
+		}
+
+		if !have_insert_slot {
+			let available = g.match_empty_or_deleted();
+
+			if available.any_bit_set() {
+				insert_slot = (pos ++ available.lowest_set_bit_index()) &
+					self@.bucket_mask;
+				have_insert_slot = true;
+			}
+		}
+
+		if g.match_empty().any_bit_set() {
+			return FindInsert::Vacant(insert_slot);
+		}
+
+		stride = stride ++ GROUP_WIDTH;
+		pos = (pos ++ stride) & self@.bucket_mask;
+	}
 }
 
 /// First EMPTY-or-DELETED slot in the probe sequence. Terminates because the
 /// load factor keeps at least one empty bucket.
 method find_insert_slot#[K, V](self: &RawTable#[K, V], hash: Uint64) -> Uint {
-  let pos = h1(hash) & self@.bucket_mask;
-  let stride = 0u;
-  loop {
-    let g = group::load(self@.ctrl, pos);
-    let m = g.match_empty_or_deleted();
-    if m.any_bit_set() {
-      let bit = m.lowest_set_bit_index();
-      let posbit = pos ++ bit;
-      return posbit & self@.bucket_mask;
-    }
-    stride = stride ++ GROUP_WIDTH;
-    let nextpos = pos ++ stride;
-    pos = nextpos & self@.bucket_mask;
-  }
+	let pos = h1(hash) & self@.bucket_mask;
+	let stride = 0u;
+
+	loop {
+		let g = group::load(self@.ctrl, pos);
+		let m = g.match_empty_or_deleted();
+
+		if m.any_bit_set() {
+			let bit = m.lowest_set_bit_index();
+			let posbit = pos ++ bit;
+			return posbit & self@.bucket_mask;
+		}
+
+		stride = stride ++ GROUP_WIDTH;
+		let nextpos = pos ++ stride;
+		pos = nextpos & self@.bucket_mask;
+	}
 }
 
 /// Place an entry known to be absent into its insert slot (no growth check).
-pub method insert_in_slot#[K, V](self: &RawTable#[K, V], hash: Uint64, e: Entry#[K, V]) {
-  let slot = self.find_insert_slot(hash);
-  self.insert_at_slot(hash, slot, e);
+pub method insert_in_slot#[K, V](
+	self: &RawTable#[K, V],
+	hash: Uint64,
+	e: Entry#[K, V],
+) {
+	let slot = self.find_insert_slot(hash);
+	self.insert_at_slot(hash, slot, e);
 }
 
 /// Place an entry into a slot returned by `find_or_find_insert`.
-pub method insert_at_slot#[K, V](self: &RawTable#[K, V], hash: Uint64, slot: Uint, e: Entry#[K, V]) {
-  let old_ctrl = self@.ctrl@[slot];
-  let t = tag::full(hash);
-  self.set_ctrl(slot, t);
-  let s = self@.slots;
-  s@[slot] = e;
-  self@.items = self@.items + 1u;
-  if tag::special_is_empty(old_ctrl) {
-    self@.growth_left = self@.growth_left - 1u;
-  }
+pub method insert_at_slot#[K, V](
+	self: &RawTable#[K, V],
+	hash: Uint64,
+	slot: Uint,
+	e: Entry#[K, V],
+) {
+	let old_ctrl = self@.ctrl@[slot];
+	let t = tag::full(hash);
+	self.set_ctrl(slot, t);
+	let s = self@.slots;
+	s@[slot] = e;
+	self@.items = self@.items + 1u;
+
+	if tag::special_is_empty(old_ctrl) {
+		self@.growth_left = self@.growth_left - 1u;
+	}
 }
 
 /// Erase the entry at `index`. Sets the control byte to EMPTY when the slot sits
 /// in a short probe run (its group plus the preceding group together contain an
 /// empty bucket), otherwise DELETED — keeping probe chains intact.
 pub method erase#[K, V](self: &RawTable#[K, V], index: Uint) {
-  let dec = index -- GROUP_WIDTH;
-  let i_before = dec & self@.bucket_mask;
-  let gb = group::load(self@.ctrl, i_before);
-  let ga = group::load(self@.ctrl, index);
-  let lead = gb.match_empty().leading_zeros();
-  let trail = ga.match_empty().trailing_zeros();
-  let span = lead + trail;
-  let ctrl_byte = if span >= GROUP_WIDTH {
-    tag::DELETED
-  } else {
-    tag::EMPTY
-  };
-  self.set_ctrl(index, ctrl_byte);
-  self@.items = self@.items - 1u;
-  if ctrl_byte == tag::EMPTY {
-    self@.growth_left = self@.growth_left + 1u;
-  }
+	let dec = index -- GROUP_WIDTH;
+	let i_before = dec & self@.bucket_mask;
+	let gb = group::load(self@.ctrl, i_before);
+	let ga = group::load(self@.ctrl, index);
+	let lead = gb.match_empty().leading_zeros();
+	let trail = ga.match_empty().trailing_zeros();
+	let span = lead + trail;
+	let ctrl_byte = if span >= GROUP_WIDTH {
+		tag::DELETED
+	} else {
+		tag::EMPTY
+	};
+	self.set_ctrl(index, ctrl_byte);
+	self@.items = self@.items - 1u;
+
+	if ctrl_byte == tag::EMPTY {
+		self@.growth_left = self@.growth_left + 1u;
+	}
 }
 
 /// Reset every bucket to EMPTY, keeping the allocation.
 pub method clear#[K, V](self: &RawTable#[K, V]) {
-  if self@.bucket_mask != 0u {
-    let len = self@.bucket_mask + 1u + GROUP_WIDTH;
-    let i = 0u;
-    while i < len {
-      self@.ctrl@[i] = tag::EMPTY;
-      i = i + 1u;
-    }
-    self@.items = 0u;
-    self@.growth_left = bucket_mask_to_capacity(self@.bucket_mask);
-  }
+	if self@.bucket_mask != 0u {
+		let len = self@.bucket_mask + 1u + GROUP_WIDTH;
+		let i = 0u;
+
+		while i < len {
+			self@.ctrl@[i] = tag::EMPTY;
+			i = i + 1u;
+		}
+
+		self@.items = 0u;
+		self@.growth_left = bucket_mask_to_capacity(self@.bucket_mask);
+	}
 }
 
 // ── Resize ─────────────────────────────────────────────────────────────────
 
 /// Grow (or first-allocate) to hold at least `min_cap` items, filling the new
 /// slot array with copies of `sample`, then reinsert all live entries.
-pub method resize#[K, V](self: &RawTable#[K, V], min_cap: Uint, sample: &Entry#[K, V]) {
-  let new_buckets = capacity_to_buckets(min_cap);
-  let new_ctrl_len = new_buckets + GROUP_WIDTH;
-  let new_ctrl: [Uint8] = [tag::EMPTY; new_ctrl_len];
-  let new_slots: [Entry#[K, V]] = [sample@; new_buckets];
+pub method resize#[K, V](
+	self: &RawTable#[K, V],
+	min_cap: Uint,
+	sample: &Entry#[K, V],
+) {
+	let new_buckets = capacity_to_buckets(min_cap);
+	let new_ctrl_len = new_buckets + GROUP_WIDTH;
+	let new_ctrl: [Uint8] = [tag::EMPTY; new_ctrl_len];
+	let new_slots: [Entry#[K, V]] = [sample@; new_buckets];
 
-  // Stash the old table, then install the empty new one.
-  let old_bucket_mask = self@.bucket_mask;
-  let old_ctrl = self@.ctrl;
-  let old_slots = self@.slots;
-  let had_slots = old_bucket_mask != 0u;
+	// Stash the old table, then install the empty new one.
+	let old_bucket_mask = self@.bucket_mask;
+	let old_ctrl = self@.ctrl;
+	let old_slots = self@.slots;
+	let had_slots = old_bucket_mask != 0u;
 
-  self@.bucket_mask = new_buckets - 1u;
-  self@.ctrl = new_ctrl&;
-  self@.slots = new_slots&;
-  self@.items = 0u;
-  self@.growth_left = bucket_mask_to_capacity(new_buckets - 1u);
+	self@.bucket_mask = new_buckets - 1u;
+	self@.ctrl = new_ctrl&;
+	self@.slots = new_slots&;
+	self@.items = 0u;
+	self@.growth_left = bucket_mask_to_capacity(new_buckets - 1u);
 
-  // Reinsert every full bucket from the old table.
-  if had_slots {
-    let old_buckets = old_bucket_mask + 1u;
-    let i = 0u;
-    while i < old_buckets {
-      let c = old_ctrl@[i];
-      if tag::is_full(c) {
-        let e = old_slots@[i];
-        let h = key_hash(e.key&);
-        self.insert_in_slot(h, e);
-      }
-      i = i + 1u;
-    }
-  }
+	// Reinsert every full bucket from the old table.
+	if had_slots {
+		let old_buckets = old_bucket_mask + 1u;
+		let i = 0u;
+
+		while i < old_buckets {
+			let c = old_ctrl@[i];
+
+			if tag::is_full(c) {
+				let e = old_slots@[i];
+				let h = key_hash(e.key&);
+				self.insert_in_slot(h, e);
+			}
+
+			i = i + 1u;
+		}
+	}
 }

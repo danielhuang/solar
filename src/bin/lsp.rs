@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use solar::{
     ast::{self, SourceSpan},
     error::{CompileError, SourceMap},
+    fmt::format_source,
     resolve, typed_ast,
 };
 use std::{
@@ -52,6 +53,7 @@ fn main() {
                 json!({
                     "capabilities": {
                         "textDocumentSync": 1,
+                        "documentFormattingProvider": true,
                         "hoverProvider": true,
                         "definitionProvider": true,
                         "semanticTokensProvider": {
@@ -91,6 +93,13 @@ fn main() {
                     cache.remove(uri);
                     clear_check_diagnostics(&mut output, uri, &mut diagnostic_uris);
                 }
+            }
+            Some("textDocument/formatting") => {
+                let uri = params.pointer("/textDocument/uri").and_then(Value::as_str);
+                let edits = uri
+                    .and_then(|uri| documents.get(uri))
+                    .map_or_else(Vec::new, |text| formatting_edits(text));
+                respond(&mut output, id, json!(edits));
             }
             Some("textDocument/semanticTokens/full") => {
                 let uri = params.pointer("/textDocument/uri").and_then(Value::as_str);
@@ -155,6 +164,26 @@ fn document_and_text(params: &Value) -> Option<(String, String)> {
         params.pointer("/textDocument/uri")?.as_str()?.to_owned(),
         params.pointer("/textDocument/text")?.as_str()?.to_owned(),
     ))
+}
+
+fn formatting_edits(source: &str) -> Vec<Value> {
+    let Ok(formatted) = format_source(source) else {
+        return Vec::new();
+    };
+    if formatted == source {
+        return Vec::new();
+    }
+
+    let line = source.bytes().filter(|byte| *byte == b'\n').count();
+    let line_start = source.rfind('\n').map_or(0, |index| index + 1);
+    let character = source[line_start..].encode_utf16().count();
+    vec![json!({
+        "range": {
+            "start": { "line": 0, "character": 0 },
+            "end": { "line": line, "character": character },
+        },
+        "newText": formatted,
+    })]
 }
 
 fn publish_check_diagnostics(
@@ -2416,6 +2445,29 @@ mod tests {
     }
 
     #[test]
+    fn formatting_returns_a_full_document_utf16_edit() {
+        let source = "fn f(){println(\"😀\"&);}";
+        let edits = formatting_edits(source);
+
+        assert_eq!(edits.len(), 1);
+        assert_eq!(
+            edits[0]["range"]["start"],
+            json!({ "line": 0, "character": 0 })
+        );
+        assert_eq!(
+            edits[0]["range"]["end"],
+            json!({ "line": 0, "character": source.encode_utf16().count() })
+        );
+        assert_eq!(edits[0]["newText"], "fn f() { println(\"😀\"&); }\n");
+    }
+
+    #[test]
+    fn formatting_returns_no_edits_for_clean_or_invalid_source() {
+        assert!(formatting_edits("fn f() {}\n").is_empty());
+        assert!(formatting_edits("fn broken( {").is_empty());
+    }
+
+    #[test]
     fn semantic_tokens_leave_lexical_tokens_to_textmate() {
         let data = semantic_tokens("import intrinsics from \"@intrinsics\";\n", None);
 
@@ -2505,7 +2557,7 @@ fn main() {
                 .unwrap()
                 .ends_with("/src/std/sync.solar")
         );
-        assert_eq!(location["range"]["start"]["line"], 91);
+        assert_eq!(location["range"]["start"]["line"], 106);
     }
 
     #[test]
@@ -2529,7 +2581,7 @@ fn main() {
     fn definition_resolves_imported_function_type_and_field() {
         let (_, source, document) = fixture_document("tests/multi_file/module_import/main.solar");
 
-        for (needle, occurrence, target_line) in [("origin", 0, 5), ("Point", 0, 0), ("x", 0, 1)] {
+        for (needle, occurrence, target_line) in [("origin", 0, 2), ("Point", 0, 0), ("x", 0, 0)] {
             let (line, character) = occurrence_position(&source, needle, occurrence);
             let locations =
                 definition(&source, line, character, &document).expect("definition location");
@@ -2681,7 +2733,7 @@ fn main() {
     fn definition_distinguishes_free_function_from_same_named_method() {
         let (_, source, document) = fixture_document("tests/runtime/methods.solar");
 
-        for (occurrence, target_line) in [(5, 43), (7, 10)] {
+        for (occurrence, target_line) in [(5, 38), (7, 7)] {
             let (line, character) = occurrence_position(&source, "double", occurrence);
             let location =
                 definition(&source, line, character, &document).expect("double definition");
@@ -2697,7 +2749,7 @@ fn main() {
 
         // `Shape::Circle` in the first match arm: Shape resolves to the enum and
         // Circle resolves to the variant declaration.
-        for (needle, occurrence, target_line) in [("Shape", 3, 0), ("Circle", 1, 1)] {
+        for (needle, occurrence, target_line) in [("Shape", 3, 0), ("Circle", 1, 0)] {
             let (line, character) = occurrence_position(&source, needle, occurrence);
             let location =
                 definition(&source, line, character, &document).expect("enum definition");
@@ -2752,8 +2804,8 @@ fn main() { use_value(1); }
                 .ends_with("/examples/example.solar"),
             "{location}"
         );
-        assert_eq!(location["range"]["start"]["line"], 80, "{location}");
-        assert_eq!(location["range"]["start"]["character"], 2, "{location}");
+        assert_eq!(location["range"]["start"]["line"], 76, "{location}");
+        assert_eq!(location["range"]["start"]["character"], 25, "{location}");
     }
 
     #[test]

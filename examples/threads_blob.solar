@@ -5,18 +5,23 @@
 // (Contrast: threads_list.solar, where each allocation holds a &Node and IS walked.)
 
 fn main() {
-    let blob = [0; 1u]&;
-    let is_done = false;
-    for _ in 0..16 {
-        thread::spawn(\ {
-            // 8388608 Ints * 8 bytes = 64 MiB per blob
-            for i in 0..64 {
-                blob&.atomic_store([i; 8388608u]&);
-            }
-            is_done&.atomic_store(true);
-        });
-    }
-    while is_done&.atomic_load() == false {}
-    println(blob&.atomic_load()@[0u]);
-    println("done"&);
+	let blob = [0; 1u]&;
+	let is_done = false;
+
+	for _ in 0..16 {
+		thread::spawn(
+			\ {
+				// 8388608 Ints * 8 bytes = 64 MiB per blob
+				for i in 0..64 {
+					blob&.atomic_store([i; 8388608u]&);
+				}
+
+				is_done&.atomic_store(true);
+			},
+		);
+	}
+
+	while is_done&.atomic_load() == false {}
+	println(blob&.atomic_load()@[0u]);
+	println("done"&);
 }

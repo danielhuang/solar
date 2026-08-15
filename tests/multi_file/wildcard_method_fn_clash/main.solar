@@ -2,7 +2,7 @@ import * from "funcs.solar";
 import * from "methods.solar";
 
 fn main() {
-  println(shared_name(1).to_string());
-  let h = Holder { v: 7 };
-  println(h&.shared_name().to_string());
+	println(shared_name(1).to_string());
+	let h = Holder { v: 7 };
+	println(h&.shared_name().to_string());
 }

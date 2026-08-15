@@ -1,24 +1,24 @@
 fn abs(x: Int) {
-    if x < 0 {
-        0 - x
-    } else {
-        x
-    }
+	if x < 0 {
+		0 - x
+	} else {
+		x
+	}
 }
 
 fn abs2(x: Int) {
-    if x < 0 {
-        0 - x
-    } else if x == 0 {
-        0
-    } else {
-        x
-    }
+	if x < 0 {
+		0 - x
+	} else if x == 0 {
+		0
+	} else {
+		x
+	}
 }
 
 fn main() {
-    println(abs(0 - 100)); // 100
-    println(abs(30)); // 30
-    println(abs2(0 - 100)); // 100
-    println(abs2(30)); // 30
+	println(abs(0 - 100)); // 100
+	println(abs(30)); // 30
+	println(abs2(0 - 100)); // 100
+	println(abs2(30)); // 30
 }

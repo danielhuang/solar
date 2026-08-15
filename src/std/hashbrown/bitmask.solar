@@ -3,33 +3,34 @@ const WIDTH: Uint = 16u;
 
 /// A compact mask with one bit per group lane.
 pub struct BitMask {
-  /// Mask bits.
-  pub mask: Uint,
+	/// Mask bits.
+	pub mask: Uint,
 }
 
 /// Whether any lane matched.
 pub method any_bit_set(self: BitMask) -> Bool {
-  self.mask != 0u
+	self.mask != 0u
 }
 
 /// Returns the lowest matching lane.
 pub method lowest_set_bit_index(self: BitMask) -> Uint {
-  self.mask.count_trailing_zeros()
+	self.mask.count_trailing_zeros()
 }
 
 /// Returns the mask with its lowest bit cleared.
 pub method remove_lowest_bit(self: BitMask) -> BitMask {
-  let dec = self.mask -- 1u;
-  BitMask { mask: self.mask & dec }
+	let dec = self.mask -- 1u;
+	BitMask { mask: self.mask & dec }
 }
 
 /// Counts leading zero lanes.
 pub method leading_zeros(self: BitMask) -> Uint {
-  self.mask.count_leading_zeros() - (64u - WIDTH)
+	self.mask.count_leading_zeros() - (64u - WIDTH)
 }
+
 /// Counts trailing zero lanes.
 pub method trailing_zeros(self: BitMask) -> Uint {
-  let tz = self.mask.count_trailing_zeros();
-  let out = if tz > WIDTH { WIDTH } else { tz };
-  out
+	let tz = self.mask.count_trailing_zeros();
+	let out = if tz > WIDTH { WIDTH } else { tz };
+	out
 }

@@ -1,37 +1,41 @@
 fn main() {
-  // if true executes
-  if true {
-    println(1);
-  }
+	// if true executes
+	if true {
+		println(1);
+	}
 
-  // if false does not execute
-  if false {
-    println(2);
-  }
+	// if false does not execute
+	if false {
+		println(2);
+	}
 
-  // while with flag set to false in body
-  let go: Bool = true;
-  while go {
-    println(3);
-    go = false;
-  }
+	// while with flag set to false in body
+	let go: Bool = true;
 
-  // nested if inside while
-  let go2: Bool = true;
-  while go2 {
-    if true {
-      println(4);
-    }
-    if false {
-      println(5);
-    }
-    go2 = false;
-  }
+	while go {
+		println(3);
+		go = false;
+	}
 
-  // while false never executes
-  while false {
-    println(6);
-  }
+	// nested if inside while
+	let go2: Bool = true;
 
-  println(7);
+	while go2 {
+		if true {
+			println(4);
+		}
+
+		if false {
+			println(5);
+		}
+
+		go2 = false;
+	}
+
+	// while false never executes
+	while false {
+		println(6);
+	}
+
+	println(7);
 }

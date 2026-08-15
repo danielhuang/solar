@@ -1,48 +1,49 @@
 fn print_bool(b: Bool) {
-  if b {
-    println(1);
-  }
-  if b == false {
-    println(0);
-  }
+	if b {
+		println(1);
+	}
+
+	if b == false {
+		println(0);
+	}
 }
 
 // Side-effecting functions that return Bool — used to test short-circuiting
 fn true_with_effect() -> Bool {
-  println(88);
-  true
+	println(88);
+	true
 }
 
 fn false_with_effect() -> Bool {
-  println(99);
-  false
+	println(99);
+	false
 }
 
 fn read_bool(value: &Bool) -> Bool { value@ }
 
 fn main() {
-  print_bool(true && true);    // 1
-  print_bool(true && false);   // 0
-  print_bool(false && true);   // 0
-  print_bool(false || true);   // 1
-  print_bool(false || false);  // 0
-  print_bool(true || false);   // 1
+	print_bool(true && true); // 1
+	print_bool(true && false); // 0
+	print_bool(false && true); // 0
+	print_bool(false || true); // 1
+	print_bool(false || false); // 0
+	print_bool(true || false); // 1
 
-  // short-circuit: false && X should NOT evaluate X
-  print_bool(false && true_with_effect());   // 0  (no 88)
+	// short-circuit: false && X should NOT evaluate X
+	print_bool(false && true_with_effect()); // 0  (no 88)
 
-  // short-circuit: true && X SHOULD evaluate X
-  print_bool(true && true_with_effect());    // 88 then 1
+	// short-circuit: true && X SHOULD evaluate X
+	print_bool(true && true_with_effect()); // 88 then 1
 
-  // short-circuit: true || X should NOT evaluate X
-  print_bool(true || false_with_effect());   // 1  (no 99)
+	// short-circuit: true || X should NOT evaluate X
+	print_bool(true || false_with_effect()); // 1  (no 99)
 
-  // short-circuit: false || X SHOULD evaluate X
-  print_bool(false || false_with_effect());  // 99 then 0
+	// short-circuit: false || X SHOULD evaluate X
+	print_bool(false || false_with_effect()); // 99 then 0
 
-  // RHS setup emitted by IR lowering (including this bounds check) must also
-  // stay inside the short-circuited branch.
-  let empty: [Bool] = []#[Bool];
-  print_bool(false && read_bool(empty[0u]&));
-  print_bool(true || read_bool(empty[0u]&));
+	// RHS setup emitted by IR lowering (including this bounds check) must also
+	// stay inside the short-circuited branch.
+	let empty: [Bool] = []#[Bool];
+	print_bool(false && read_bool(empty[0u]&));
+	print_bool(true || read_bool(empty[0u]&));
 }

@@ -1,4 +1,4 @@
 fn main() {
-    let x: ^Int = 42^;
-    x&.atomic_store(99^);
+	let x: ^Int = 42^;
+	x&.atomic_store(99^);
 }

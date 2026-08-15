@@ -1,5 +1,5 @@
 fn main() {
-    while true {
-        let i = 0;
-    }
+	while true {
+		let i = 0;
+	}
 }

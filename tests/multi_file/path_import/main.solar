@@ -1,7 +1,7 @@
-import { inner::Point, inner::make_point } from "mid.solar";
+import {inner::Point, inner::make_point} from "mid.solar";
 
 fn main() {
-    let p: Point = make_point(3, 7);
-    println(p.x);
-    println(p.y);
+	let p: Point = make_point(3, 7);
+	println(p.x);
+	println(p.y);
 }

@@ -1,22 +1,22 @@
 fn main() {
-  // Basic array repeat with literal count
-  let arr: [Int] = [42; 3u];
-  println(arr[0u]);   // 42
-  println(arr[1u]);   // 42
-  println(arr[2u]);   // 42
+	// Basic array repeat with literal count
+	let arr: [Int] = [42; 3u];
+	println(arr[0u]); // 42
+	println(arr[1u]); // 42
+	println(arr[2u]); // 42
 
-  // Array repeat with variable count
-  let n: Uint = 4u;
-  let zeros: [Int] = [0; n];
-  println(zeros[0u]);  // 0
-  println(zeros[3u]);  // 0
+	// Array repeat with variable count
+	let n: Uint = 4u;
+	let zeros: [Int] = [0; n];
+	println(zeros[0u]); // 0
+	println(zeros[3u]); // 0
 
-  // Mutation after repeat
-  zeros[1u] = 99;
-  println(zeros[1u]);  // 99
-  println(zeros[0u]);  // 0 (not affected)
+	// Mutation after repeat
+	zeros[1u] = 99;
+	println(zeros[1u]); // 99
+	println(zeros[0u]); // 0 (not affected)
 
-  // Array repeat with size 1
-  let single: [Int] = [7; 1u];
-  println(single[0u]); // 7
+	// Array repeat with size 1
+	let single: [Int] = [7; 1u];
+	println(single[0u]); // 7
 }

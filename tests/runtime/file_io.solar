@@ -3,18 +3,18 @@
 // stdout FileDesc. The data file holds "hello world\n" (12 bytes). All three
 // backends must agree.
 fn main() {
-  let f = file::open("tests/runtime/file_io_data.txt"&);
+	let f = file::open("tests/runtime/file_io_data.txt"&);
 
-  // Read the first 5 bytes into an explicit buffer.
-  let buf: [Uint8] = [0u8; 5u];
-  let n1 = f.read(buf&);
-  println(n1);               // 5
+	// Read the first 5 bytes into an explicit buffer.
+	let buf: [Uint8] = [0u8; 5u];
+	let n1 = f.read(buf&);
+	println(n1); // 5
 
-  // Read the remaining bytes via the allocating overload.
-  let rest = f.read(100u);
+	// Read the remaining bytes via the allocating overload.
+	let rest = f.read(100u);
 
-  let out = file::stdout();
-  out.write(buf&);             // "hello"
-  out.write(rest);             // " world\n"
-  f.close();
+	let out = file::stdout();
+	out.write(buf&); // "hello"
+	out.write(rest); // " world\n"
+	f.close();
 }

@@ -1,10 +1,9 @@
 fn foo#[T](x: T) -> T {
-  x
+	x
 }
 
 fn foo#[U](x: U) -> U {
-  x
+	x
 }
 
-fn main() {
-}
+fn main() {}

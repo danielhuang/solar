@@ -1,6 +1,5 @@
 fn bad() -> Int {
-  let x: Int = 1;
+	let x: Int = 1;
 }
 
-fn main() {
-}
+fn main() {}

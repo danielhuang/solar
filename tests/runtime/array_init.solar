@@ -1,30 +1,30 @@
 fn make_index(i: Uint) -> Uint {
-  i
+	i
 }
 
 fn main() {
-  // basic array init with closure: [5u; \i: Uint i]
-  let arr = [5u; \i: Uint i];
-  println(arr[0u]);  // 0
-  println(arr[1u]);  // 1
-  println(arr[4u]);  // 4
+	// basic array init with closure: [5u; \i: Uint i]
+	let arr = [5u; \i: Uint i];
+	println(arr[0u]); // 0
+	println(arr[1u]); // 1
+	println(arr[4u]); // 4
 
-  // array init with expression body
-  let squares = [4u; \i: Uint i * i];
-  println(squares[0u]);  // 0
-  println(squares[1u]);  // 1
-  println(squares[2u]);  // 4
-  println(squares[3u]);  // 9
+	// array init with expression body
+	let squares = [4u; \i: Uint i * i];
+	println(squares[0u]); // 0
+	println(squares[1u]); // 1
+	println(squares[2u]); // 4
+	println(squares[3u]); // 9
 
-  // array init with capture
-  let offset = 10u;
-  let arr2 = [3u; \i: Uint i + offset];
-  println(arr2[0u]);  // 10
-  println(arr2[1u]);  // 11
-  println(arr2[2u]);  // 12
+	// array init with capture
+	let offset = 10u;
+	let arr2 = [3u; \i: Uint i + offset];
+	println(arr2[0u]); // 10
+	println(arr2[1u]); // 11
+	println(arr2[2u]); // 12
 
-  // array init with a function reference
-  let arr3 = [3u; make_index];
-  println(arr3[0u]);  // 0
-  println(arr3[2u]);  // 2
+	// array init with a function reference
+	let arr3 = [3u; make_index];
+	println(arr3[0u]); // 0
+	println(arr3[2u]); // 2
 }

@@ -1,36 +1,37 @@
 fn main() {
-  // basic slice read
-  let a: [Int] = [10, 20, 30, 40, 50];
-  println(a[1u..3u][0u]);   // 20
-  println(a[1u..3u][1u]);   // 30
+	// basic slice read
+	let a: [Int] = [10, 20, 30, 40, 50];
+	println(a[1u..3u][0u]); // 20
+	println(a[1u..3u][1u]); // 30
 
-  // slice assignment copies elements
-  a[1u..3u] = a[3u..5u];
-  println(a[1u]);            // 40
-  println(a[2u]);            // 50
+	// slice assignment copies elements
+	a[1u..3u] = a[3u..5u];
+	println(a[1u]); // 40
+	println(a[2u]); // 50
 
-  // slice reference — writes propagate back
-  let r: &[Int] = a[0u..2u]&;
-  r@[0u] = 99;
-  println(a[0u]);            // 99
+	// slice reference — writes propagate back
+	let r: &[Int] = a[0u..2u]&;
+	r@[0u] = 99;
+	println(a[0u]); // 99
 
-  // empty slice
-  let e: [Int] = a[2u..2u];
-  // (nothing to print, but it shouldn't panic)
+	// empty slice
+	let e: [Int] = a[2u..2u];
 
-  // slice of fixed-size array
-  let f: [Int; 4] = [1, 2, 3, 4];
-  println(f[1u..3u][0u]);   // 2
-  println(f[1u..3u][1u]);   // 3
+	// (nothing to print, but it shouldn't panic)
 
-  // let binding from slice
-  let g: [Int] = a[1u..4u];
-  println(g[0u]);             // 40
-  println(g[1u]);             // 50
-  println(g[2u]);             // 40
+	// slice of fixed-size array
+	let f: [Int; 4] = [1, 2, 3, 4];
+	println(f[1u..3u][0u]); // 2
+	println(f[1u..3u][1u]); // 3
 
-  // nested slice
-  let b: [Int] = [100, 200, 300, 400, 500];
-  println(b[1u..4u][1u..3u][0u]); // 300
-  println(b[1u..4u][1u..3u][1u]); // 400
+	// let binding from slice
+	let g: [Int] = a[1u..4u];
+	println(g[0u]); // 40
+	println(g[1u]); // 50
+	println(g[2u]); // 40
+
+	// nested slice
+	let b: [Int] = [100, 200, 300, 400, 500];
+	println(b[1u..4u][1u..3u][0u]); // 300
+	println(b[1u..4u][1u..3u][1u]); // 400
 }

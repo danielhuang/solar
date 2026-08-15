@@ -1,10 +1,10 @@
 fn print_bool(value: Bool) {
-  if value { println(1); } else { println(0); }
+	if value { println(1); } else { println(0); }
 }
 
 fn main() {
-  let some = Option#[Int]::Some(42);
-  let none = Option#[Int]::None;
-  print_bool(some.is_some());
-  print_bool(none.is_some());
+	let some = Option#[Int]::Some(42);
+	let none = Option#[Int]::None;
+	print_bool(some.is_some());
+	print_bool(none.is_some());
 }

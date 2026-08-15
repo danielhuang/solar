@@ -1,4 +1,4 @@
-pub struct Holder { pub v: Int, }
+pub struct Holder { pub v: Int }
 
 // Same bare name as the free function in funcs.solar. Methods are resolved
 // globally as overload sets, so this must not displace the function.

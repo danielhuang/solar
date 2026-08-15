@@ -1,7 +1,3 @@
-struct Bad {
-  xs: [Int],
-  y: Int,
-}
+struct Bad { xs: [Int], y: Int }
 
-fn main() {
-}
+fn main() {}

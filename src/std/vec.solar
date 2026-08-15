@@ -1,44 +1,41 @@
-import { throw } from "@intrinsics";
+import {throw} from "@intrinsics";
 import slice from "slice.solar";
 
 /// A growable array.
-pub struct Vec#[T] {
-    len: Uint,
-    inner: ^[T],
-}
+pub struct Vec#[T] { len: Uint, inner: ^[T] }
 
 /// Creates a vector containing a copy of `src`.
 pub fn Vec#[T](src: &[T]) -> Vec#[T] {
-    Vec#[T] {
-        len: src.len(),
-        inner: src@^,
-    }
+	Vec#[T] { len: src.len(), inner: src@^ }
 }
 
 /// Borrows the initialized elements.
 pub method as_slice#[T](self: &Vec#[T]) -> &[T] {
-    self@.inner@[0u..self@.len]&
+	self@.inner@[0u..self@.len]&
 }
 
 /// Appends a value.
 pub method push#[T](self: &Vec#[T], value: T) {
-    let cap = self@.inner@&.len();
-    if self@.len >= cap {
-        self@.inner = (self@.inner@ + self@.inner@)^;
-    }
-    self@.inner@[self@.len] = value;
-    self@.len = self@.len + 1u;
+	let cap = self@.inner@&.len();
+
+	if self@.len >= cap {
+		self@.inner = (self@.inner@ + self@.inner@)^;
+	}
+
+	self@.inner@[self@.len] = value;
+	self@.len = self@.len + 1u;
 }
 
 /// Returns the element at `index`.
 pub method at#[T](self: &Vec#[T], index: Uint) -> &T {
-    if index >= self@.len {
-        throw("Vec.at: index out of bounds"&);
-    }
-    self@.inner@[index]&
+	if index >= self@.len {
+		throw("Vec.at: index out of bounds"&);
+	}
+
+	self@.inner@[index]&
 }
 
 /// Iterates over the vector's elements.
 pub method iter#[T](self: &Vec#[T]) -> slice::Iter#[T] {
-    self.as_slice().iter()
+	self.as_slice().iter()
 }

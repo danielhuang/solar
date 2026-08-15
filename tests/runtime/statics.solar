@@ -10,40 +10,41 @@ static FLAG = false;
 static(thread_local) LOCAL = 17;
 
 fn bump() {
-    COUNTER = COUNTER + 1;
+	COUNTER = COUNTER + 1;
 }
 
 fn scaled(x: Int) -> Int {
-    x * SCALE
+	x * SCALE
 }
 
 fn main() {
-    println(LOCAL);
-    LOCAL = 18;
-    println(LOCAL);
+	println(LOCAL);
+	LOCAL = 18;
+	println(LOCAL);
 
-    bump();
-    bump();
-    bump();
-    println(COUNTER);
-    println(scaled(COUNTER));
+	bump();
+	bump();
+	bump();
+	println(COUNTER);
+	println(scaled(COUNTER));
 
-    // Wide (16-byte fat pointer) static: read, swap, read.
-    println(BUF);
-    BUF = "swapped"&;
-    println(BUF);
+	// Wide (16-byte fat pointer) static: read, swap, read.
+	println(BUF);
+	BUF = "swapped"&;
+	println(BUF);
 
-    // Nullable-ref static populated in main.
-    if LATE == null#[Int] { println("late is null"&); }
-    let x = 42;
-    LATE = x&;
-    println(LATE@);
+	// Nullable-ref static populated in main.
+	if LATE == null#[Int] { println("late is null"&); }
 
-    if !FLAG { FLAG = true; }
-    if FLAG { println("flag set"&); }
+	let x = 42;
+	LATE = x&;
+	println(LATE@);
 
-    // A reference to a static's storage works like any place.
-    let r = COUNTER&;
-    r@ = r@ + 10;
-    println(COUNTER);
+	if !FLAG { FLAG = true; }
+	if FLAG { println("flag set"&); }
+
+	// A reference to a static's storage works like any place.
+	let r = COUNTER&;
+	r@ = r@ + 10;
+	println(COUNTER);
 }

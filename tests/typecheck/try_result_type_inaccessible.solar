@@ -1,4 +1,4 @@
 fn main() {
-    try {} catch (e) {}
-    TryBlockResult_0::Default;
+	try {} catch (e) {}
+	TryBlockResult_0::Default;
 }

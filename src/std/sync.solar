@@ -1,148 +1,165 @@
-import { atomic_load, atomic_store, atomic_exchange, atomic_compare_exchange, futex_wait, futex_wake, throw } from "@intrinsics";
+import {
+	atomic_load,
+	atomic_store,
+	atomic_exchange,
+	atomic_compare_exchange,
+	futex_wait,
+	futex_wake,
+	throw,
+} from "@intrinsics";
 
 /// Atomically loads a value.
 pub method atomic_load#[T](self: &T) -> T {
-    atomic_load(self)
+	atomic_load(self)
 }
 
 /// Atomically stores a value.
 pub method atomic_store#[T](self: &T, val: T) {
-    atomic_store(self, val);
+	atomic_store(self, val);
 }
 
 /// Atomically replaces a value and returns the old value.
 pub method atomic_exchange#[T](self: &T, val: T) -> T {
-    atomic_exchange(self, val)
+	atomic_exchange(self, val)
 }
 
 /// Atomically replaces `expected` with `new` and returns the old value.
 pub method atomic_compare_exchange#[T](self: &T, expected: T, new: T) -> T {
-    atomic_compare_exchange(self, expected, new)
+	atomic_compare_exchange(self, expected, new)
 }
 
 /// Waits while the value equals `expected`; spurious wakes are allowed.
-pub method futex_wait(self: &Uint32, expected: Uint32, timeout: Uint64 = 18446744073709551615u64) {
-    futex_wait(self, expected, timeout);
+pub method futex_wait(
+	self: &Uint32,
+	expected: Uint32,
+	timeout: Uint64 = 18446744073709551615u64,
+) {
+	futex_wait(self, expected, timeout);
 }
 
 /// Wakes at most `count` waiters.
 pub method futex_wake(self: &Uint32, count: Uint32) {
-    futex_wake(self, count);
+	futex_wake(self, count);
 }
 
 /// Wakes all waiters.
 pub method futex_wake(self: &Uint32) {
-    futex_wake(self, 2147483647u32);
+	futex_wake(self, 2147483647u32);
 }
 
 /// A futex-backed mutual exclusion lock.
 pub struct Mutex {
-    /// Internal lock state.
-    pub futex: Uint32,
+	/// Internal lock state.
+	pub futex: Uint32,
 }
 
 /// Creates an unlocked mutex.
 pub fn Mutex() -> Mutex {
-    Mutex { futex: 0u32 }
+	Mutex { futex: 0u32 }
 }
 
 /// Attempts to acquire the mutex without blocking.
 pub method try_lock(self: &Mutex) -> Bool {
-    self@.futex&.atomic_compare_exchange(0u32, 1u32) == 0u32
+	self@.futex&.atomic_compare_exchange(0u32, 1u32) == 0u32
 }
 
 /// Acquires the mutex.
 pub method lock(self: &Mutex) {
-    if self@.futex&.atomic_compare_exchange(0u32, 1u32) != 0u32 {
-        self.lock_contended();
-    }
+	if self@.futex&.atomic_compare_exchange(0u32, 1u32) != 0u32 {
+		self.lock_contended();
+	}
 }
 
 method spin(self: &Mutex) -> Uint32 {
-    let spin = 100u32;
-    loop {
-        let state = self@.futex&.atomic_load();
-        if state != 1u32 || spin == 0u32 {
-            return state;
-        }
-        spin = spin - 1u32;
-    }
+	let spin = 100u32;
+
+	loop {
+		let state = self@.futex&.atomic_load();
+
+		if state != 1u32 || spin == 0u32 {
+			return state;
+		}
+
+		spin = spin - 1u32;
+	}
 }
 
 method lock_contended(self: &Mutex) {
-    let state = self.spin();
+	let state = self.spin();
 
-    if state == 0u32 {
-        state = self@.futex&.atomic_compare_exchange(0u32, 1u32);
-    }
+	if state == 0u32 {
+		state = self@.futex&.atomic_compare_exchange(0u32, 1u32);
+	}
 
-    if state != 0u32 {
-        loop {
-            if state != 2u32 && self@.futex&.atomic_exchange(2u32) == 0u32 {
-                break;
-            }
+	if state != 0u32 {
+		loop {
+			if state != 2u32 && self@.futex&.atomic_exchange(2u32) == 0u32 {
+				break;
+			}
 
-            self@.futex&.futex_wait(2u32);
-            state = self.spin();
-        }
-    }
+			self@.futex&.futex_wait(2u32);
+			state = self.spin();
+		}
+	}
 }
 
 /// Releases the mutex.
 pub method unlock(self: &Mutex) {
-    if self@.futex&.atomic_exchange(0u32) == 2u32 {
-        self@.futex&.futex_wake(1u32);
-    }
+	if self@.futex&.atomic_exchange(0u32) == 2u32 {
+		self@.futex&.futex_wake(1u32);
+	}
 }
 
-enum ChannelSlot#[T] {
-    Empty,
-    Full(T),
-}
+enum ChannelSlot#[T] { Empty, Full(T) }
 
 /// A synchronous multi-producer, multi-consumer channel.
 pub struct Channel#[T] {
-    send_lock: Mutex,
-    recv_lock: Mutex,
-    state: Uint32,
-    data: ChannelSlot#[T],
+	send_lock: Mutex,
+	recv_lock: Mutex,
+	state: Uint32,
+	data: ChannelSlot#[T],
 }
 
 /// Creates an empty channel.
 pub fn Channel#[T]() -> Channel#[T] {
-    Channel#[T] {
-        send_lock: Mutex(),
-        recv_lock: Mutex(),
-        state: 0u32,
-        data: ChannelSlot#[T]::Empty,
-    }
+	Channel#[T] {
+		send_lock: Mutex(),
+		recv_lock: Mutex(),
+		state: 0u32,
+		data: ChannelSlot#[T]::Empty,
+	}
 }
 
 /// Sends a value, blocking until it is received.
 pub method send#[T](self: &Channel#[T], value: T) {
-    self@.send_lock&.lock();
-    self@.data = ChannelSlot#[T]::Full(value);
-    self@.state&.atomic_store(1u32);
-    self@.state&.futex_wake(1u32);
-    while self@.state&.atomic_load() != 0u32 {
-        self@.state&.futex_wait(1u32);
-    }
-    self@.send_lock&.unlock();
+	self@.send_lock&.lock();
+	self@.data = ChannelSlot#[T]::Full(value);
+	self@.state&.atomic_store(1u32);
+	self@.state&.futex_wake(1u32);
+
+	while self@.state&.atomic_load() != 0u32 {
+		self@.state&.futex_wait(1u32);
+	}
+
+	self@.send_lock&.unlock();
 }
 
 /// Receives a value, blocking until one is available.
 pub method recv#[T](self: &Channel#[T]) -> T {
-    self@.recv_lock&.lock();
-    while self@.state&.atomic_load() == 0u32 {
-        self@.state&.futex_wait(0u32);
-    }
-    let slot = self@.data;
-    self@.data = ChannelSlot#[T]::Empty;
-    self@.state&.atomic_store(0u32);
-    self@.state&.futex_wake(1u32);
-    self@.recv_lock&.unlock();
-    match slot {
-        ChannelSlot#[T]::Full(v) => v,
-        ChannelSlot#[T]::Empty => throw("recv on empty channel"&),
-    }
+	self@.recv_lock&.lock();
+
+	while self@.state&.atomic_load() == 0u32 {
+		self@.state&.futex_wait(0u32);
+	}
+
+	let slot = self@.data;
+	self@.data = ChannelSlot#[T]::Empty;
+	self@.state&.atomic_store(0u32);
+	self@.state&.futex_wake(1u32);
+	self@.recv_lock&.unlock();
+
+	match slot {
+		ChannelSlot#[T]::Full(v) => v,
+		ChannelSlot#[T]::Empty => throw("recv on empty channel"&),
+	}
 }

@@ -1,9 +1,9 @@
 fn main() {
-    let a: [Int] = [0];
-    let b: [Int] = a;
-    
-    a[0u] = 1;
-    
-    println(a[0u]); // 1
-    println(b[0u]); // 0
+	let a: [Int] = [0];
+	let b: [Int] = a;
+
+	a[0u] = 1;
+
+	println(a[0u]); // 1
+	println(b[0u]); // 0
 }

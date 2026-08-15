@@ -1,5 +1,4 @@
 fn main() {
-    let x = 5;
-    for.reflect_fields f in x& {
-    }
+	let x = 5;
+	for.reflect_fields f in x& {}
 }

@@ -1,7 +1,7 @@
 pub fn add(a: Int, b: Int) -> Int {
-    a + b
+	a + b
 }
 
 pub fn mul(a: Int, b: Int) -> Int {
-    a * b
+	a * b
 }

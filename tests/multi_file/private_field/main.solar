@@ -1,6 +1,6 @@
-import { Secret, make_secret } from "lib.solar";
+import {Secret, make_secret} from "lib.solar";
 
 fn main() {
-    let s = make_secret(42);
-    println(s.hidden);
+	let s = make_secret(42);
+	println(s.hidden);
 }

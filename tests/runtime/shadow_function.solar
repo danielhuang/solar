@@ -1,12 +1,12 @@
 fn foo() -> Int {
-  42
+	42
 }
 
 fn main() {
-  // Call function before shadowing
-  println(foo());       // 42
+	// Call function before shadowing
+	println(foo()); // 42
 
-  // Declare variable with same name as function
-  let foo: Int = 99;
-  println(foo);         // 99 (variable shadows function)
+	// Declare variable with same name as function
+	let foo: Int = 99;
+	println(foo); // 99 (variable shadows function)
 }

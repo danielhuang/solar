@@ -5,14 +5,15 @@
 fn call(f: fn()) { f(); }
 
 fn run() {
-    let x = 7;
-    let running = true;
-    while running {
-        call(\ { println(x); });
-        running = false;
-    }
+	let x = 7;
+	let running = true;
+
+	while running {
+		call(\ { println(x); });
+		running = false;
+	}
 }
 
 fn main() {
-    run();
+	run();
 }

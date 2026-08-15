@@ -1,7 +1,5 @@
-pub struct Value {
-    pub n: Int,
-}
+pub struct Value { pub n: Int }
 
 pub fn make_value(x: Int) -> Value {
-    Value { n: x }
+	Value { n: x }
 }

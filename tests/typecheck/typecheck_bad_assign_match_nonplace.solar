@@ -1,12 +1,6 @@
-enum Color {
-  Red,
-  Green,
-}
+enum Color { Red, Green }
 
 fn main() {
-  let a = 0;
-  (match Color::Red {
-    Color::Red => a,
-    Color::Green => 5,
-  }) = 3;
+	let a = 0;
+	(match Color::Red { Color::Red => a, Color::Green => 5 }) = 3;
 }

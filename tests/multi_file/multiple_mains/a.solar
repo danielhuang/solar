@@ -1,11 +1,11 @@
-import { b } from "b.solar";
+import {b} from "b.solar";
 
 pub fn a() {
-    3
+	3
 }
 
 pub fn main() {
-    println(1);
-    println(a());
-    println(b());
+	println(1);
+	println(a());
+	println(b());
 }

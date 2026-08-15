@@ -2,7 +2,7 @@
 // stable across calls. All three backends share the same source of truth
 // (available_parallelism), so outputs agree.
 fn main() {
-    let n = thread::num_cpus();
-    if n >= 1u { println("at least one"&); }
-    if thread::num_cpus() == n { println("stable"&); }
+	let n = thread::num_cpus();
+	if n >= 1u { println("at least one"&); }
+	if thread::num_cpus() == n { println("stable"&); }
 }

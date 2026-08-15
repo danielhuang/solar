@@ -1,21 +1,21 @@
 fn print_next(iter: &slice::Iter#[Int]) {
-    match iter.next() {
-        Option#[&Int]::Some(value) => println(value@),
-        Option#[&Int]::None => println(0),
-    };
+	match iter.next() {
+		Option#[&Int]::Some(value) => println(value@),
+		Option#[&Int]::None => println(0),
+	};
 }
 
 fn main() {
-    let values = vec::Vec#[Int]([10, 20, 30]&);
-    let iter = values&.iter();
-    let iter_copy = iter;
+	let values = vec::Vec#[Int]([10, 20, 30]&);
+	let iter = values&.iter();
+	let iter_copy = iter;
 
-    // Copying an iterator copies its cursor. Advancing one does not advance
-    // the other, so both begin at the first element.
-    print_next(iter&);       // 10
-    print_next(iter&);       // 20
-    print_next(iter_copy&);  // 10
-    print_next(iter_copy&);  // 20
-    print_next(iter&);       // 30
-    print_next(iter_copy&);  // 30
+	// Copying an iterator copies its cursor. Advancing one does not advance
+	// the other, so both begin at the first element.
+	print_next(iter&); // 10
+	print_next(iter&); // 20
+	print_next(iter_copy&); // 10
+	print_next(iter_copy&); // 20
+	print_next(iter&); // 30
+	print_next(iter_copy&); // 30
 }

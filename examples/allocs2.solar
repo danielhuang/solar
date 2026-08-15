@@ -1,12 +1,11 @@
-struct Node {
-    next: &Option#[Node],
-}
+struct Node { next: &Option#[Node] }
 
 fn main() {
-    let none: Option#[Node] = Option#[Node]::None;
-    let node = Node { next: none& };
-    while true {
-        let wrapped: Option#[Node] = Option#[Node]::Some(node);
-        node = Node { next: wrapped& };
-    }
+	let none: Option#[Node] = Option#[Node]::None;
+	let node = Node { next: none& };
+
+	while true {
+		let wrapped: Option#[Node] = Option#[Node]::Some(node);
+		node = Node { next: wrapped& };
+	}
 }

@@ -108,7 +108,7 @@ module.exports = grammar({
         ),
       ),
 
-    field_list: ($) => repeat1(seq($.field_def, ",")),
+    field_list: ($) => seq($.field_def, repeat(seq(",", $.field_def)), optional(",")),
 
     field_def: ($) =>
       seq(optional("pub"), field("name", $.identifier), ":", field("type", $._type)),
@@ -126,7 +126,7 @@ module.exports = grammar({
     enum_def: ($) =>
       seq(optional("pub"), "enum", field("name", $.identifier), optional(field("type_params", $.type_params)), "{", optional($.variant_list), "}"),
 
-    variant_list: ($) => repeat1(seq($.variant_def, ",")),
+    variant_list: ($) => seq($.variant_def, repeat(seq(",", $.variant_def)), optional(",")),
 
     variant_def: ($) =>
       seq(field("name", $.identifier), optional(seq("(", field("inner_type", $._type), ")"))),
