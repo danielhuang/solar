@@ -2,9 +2,9 @@
 """Benchmark harness: times the Solar and Rust HashMap benchmarks per phase.
 
 Each phase is run as its own process (phase index fed on stdin) so wall time and
-peak RSS are isolated per datatype. Reports best-of-N wall time (min) and peak
-RSS (max RSS reported by the kernel for that child). Verifies the per-phase
-checksums match between the two implementations.
+peak RSS are isolated per datatype. Reports the minimum wall time and
+per-process peak RSS across runs. Verifies the per-phase checksums match between
+the two implementations.
 """
 import os
 import sys
@@ -55,12 +55,12 @@ def bench(binary):
     results = {}
     for idx, label in PHASES:
         best = None
-        rss = 0
+        rss = None
         checksum = None
         for _ in range(REPS):
             wall, peak, out = measure(binary, idx)
             best = wall if best is None else min(best, wall)
-            rss = max(rss, peak)
+            rss = peak if rss is None else min(rss, peak)
             checksum = out.split(":")[-1].strip()
         results[label] = (best, rss, checksum)
     return results

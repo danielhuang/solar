@@ -3,7 +3,7 @@
 collectors vs .NET vs JavaScript (Node.js/V8).
 
 Runs four benchmarks (allocs3, threads_list2, splay, allocs5), each ported to
-every runtime, and reports throughput (median wall-clock + peak RSS) and
+every runtime, and reports throughput (minimum wall-clock + peak RSS) and
 GC-pause latency (max/p50 STW stall). Contenders are **interleaved**: every
 round runs each language once before the next round begins, so background-load
 drift over the session is spread evenly across languages rather than
@@ -257,12 +257,12 @@ def main():
         results[cls] = {}
         for lbl, *_ in conts:
             results[cls][lbl] = {
-                "wall": statistics.median(walls[lbl]) if walls[lbl] else None,
-                "rss_mb": max(rss[lbl]) // 1024 if rss[lbl] else None,
-                # median across rounds of each run's max / p50 (robust to outliers)
-                "lat_max": statistics.median(lat_max[lbl]) if lat_max[lbl] else None,
-                "lat_p50": statistics.median(lat_p50[lbl]) if lat_p50[lbl] else None,
-                "stw": statistics.median(stw[lbl]) if stw[lbl] else None,
+                "wall": min(walls[lbl]) if walls[lbl] else None,
+                "rss_mb": min(rss[lbl]) // 1024 if rss[lbl] else None,
+                # Minimum across rounds of each run's max / p50.
+                "lat_max": min(lat_max[lbl]) if lat_max[lbl] else None,
+                "lat_p50": min(lat_p50[lbl]) if lat_p50[lbl] else None,
+                "stw": min(stw[lbl]) if stw[lbl] else None,
             }
 
         # Console summary for this benchmark
@@ -303,7 +303,7 @@ def print_markdown(results, do_tp, do_lat):
             print(f"| {lbl} | " + " | ".join(cells) + " |")
         print()
     if do_lat:
-        print("## GC pause latency — STW stall (ms, median of rounds)\n")
+        print("## GC pause latency — STW stall (ms, minimum of rounds)\n")
         print("| runtime | " + " | ".join(
             f"{b} max | {b} p50" for b in benches) + " |")
         print("|" + "---|" * (1 + 2 * len(benches)))
@@ -317,7 +317,7 @@ def print_markdown(results, do_tp, do_lat):
                     cells += [fmt(m["lat_max"]), fmt(m["lat_p50"])]
             print(f"| {lbl} | " + " | ".join(cells) + " |")
         print()
-        print("## Fraction of wall-clock spent in STW GC (median of rounds)\n")
+        print("## Fraction of wall-clock spent in STW GC (minimum of rounds)\n")
         print("| runtime | " + " | ".join(benches) + " |")
         print("|" + "---|" * (1 + len(benches)))
         for lbl in labels:

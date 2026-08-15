@@ -7,7 +7,6 @@ a command changes directory explicitly.
 ## Contents
 
 - [Requirements](#requirements)
-- [Recorded environment](#recorded-environment)
 - [Source layout](#source-layout)
 - [Build the complete suite](#build-the-complete-suite)
 - [Run the allocation and GC matrix](#run-the-allocation-and-gc-matrix)
@@ -49,27 +48,9 @@ The .NET projects target `net10.0`. The harnesses set `DOTNET_ROOT` to
 the harnesses if the runtime is installed elsewhere.
 
 Run benchmarks on an otherwise idle machine when comparing small differences.
-The full allocation/GC matrix can exceed 19 GiB RSS in one process. The no-free
-bump allocator exceeded 21 GiB in an individual run during the July 31, 2026
-session.
-
-## Recorded environment
-
-The July 31, 2026 results in `README.md` used:
-
-| Component | Version |
-| --- | --- |
-| Operating system | Linux 7.1.3 |
-| CPU | Intel Core Ultra 9 275HX, 24 cores |
-| Memory | 93 GiB |
-| Clang/LLVM | 22.1.6 |
-| GCC/G++ | 14.2.0 |
-| Rust | 1.98.0-nightly (2026-06-11) |
-| Go | 1.24.4 |
-| Allocation/GC Java | OpenJDK 21.0.11 |
-| Sieve Java | OpenJDK 25.0.3 |
-| .NET | 10.0.301 |
-| Node.js | 20.19.2 |
+Allow at least 22 GiB of memory for high-memory configurations: the full
+allocation/GC matrix and no-free bump allocator can exceed 19 GiB and 21 GiB
+RSS, respectively.
 
 ## Source layout
 
@@ -224,8 +205,8 @@ bench/run.sh
 ```
 
 The harness runs each key-type phase in a separate process seven times, checks
-the Solar and Rust checksums, and reports the best wall time and largest peak
-RSS.
+the Solar and Rust checksums, and reports the minimum wall time and per-process
+peak RSS across the runs.
 
 ## Run binary trees
 
@@ -270,8 +251,9 @@ diff -u /tmp/bt-solar-single /tmp/bt-c-malloc
 
 ### Allocation and GC
 
-- Throughput wall time is the median of the requested rounds.
-- Peak RSS is the largest `/proc/<pid>/status` `VmHWM` sample across rounds.
+- Throughput wall time is the minimum of the requested rounds.
+- Each run's peak RSS is its largest `/proc/<pid>/status` `VmHWM` sample; the
+  reported value is the minimum across rounds.
 - Solar pause samples are its three individual stop-the-world phases.
 - Go samples are sweep-termination and mark-termination pauses from
   `GODEBUG=gctrace=1`.
@@ -282,16 +264,16 @@ diff -u /tmp/bt-solar-single /tmp/bt-c-malloc
 - Node.js samples are main-JavaScript-thread pauses from `--trace-gc`. Each
   worker has an independent isolate, so summing isolate pauses can exceed
   process wall time.
-- The pause maximum and p50 are calculated per run, then the median of those
+- The pause maximum and p50 are calculated per run, then the minimum of those
   per-run values is reported.
-- The reported stop-the-world percentage is the median across rounds of
+- The reported stop-the-world percentage is the minimum across rounds of
   `sum(pause samples) / traced wall time`.
 
 ### Other groups
 
-- The C allocator and sieve harnesses report the median wall time and median
+- The C allocator and sieve harnesses report the minimum wall time and minimum
   `wait4` peak RSS across interleaved rounds.
-- The HashMap harness reports the best wall time and largest `wait4` peak RSS
-  across seven runs of each isolated phase.
-- The binary-trees table in `README.md` uses the median wall time, median
-  `user + system` CPU time, and median peak RSS from three rounds.
+- The HashMap harness reports the minimum wall time and minimum `wait4` peak
+  RSS across seven runs of each isolated phase.
+- The binary-trees table in `README.md` uses the minimum wall time, minimum
+  `user + system` CPU time, and minimum peak RSS from three rounds.

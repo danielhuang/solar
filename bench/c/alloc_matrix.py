@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Run the C benchmarks under several malloc implementations.
 
-For each (benchmark, allocator) pair: median wall-clock and peak RSS over N
+For each (benchmark, allocator) pair: minimum wall-clock and peak RSS over N
 interleaved rounds (every combo runs once per round, so background drift is
 spread evenly). Allocators are swapped in via LD_PRELOAD; the binaries are
 unchanged from `make`.
 """
-import os, statistics, subprocess, sys, time
+import os, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIB = "/usr/lib/x86_64-linux-gnu"
@@ -70,7 +70,7 @@ def main():
                       f"{wall:6.2f}s  rss={rss/1024:7.0f} MB", flush=True)
 
     print("\n## C benchmark: allocator comparison "
-          f"(median of {ROUNDS} rounds, interleaved)\n")
+          f"(minimum of {ROUNDS} rounds, interleaved)\n")
     hdr = "| allocator | " + " | ".join(
         f"{LABEL[b]} wall | {LABEL[b]} RSS" for b in BENCHES) + " |"
     print(hdr)
@@ -80,8 +80,8 @@ def main():
         for bench in BENCHES:
             w = results[(bench, alloc)]["wall"]
             m = results[(bench, alloc)]["rss"]
-            wall = statistics.median(w)
-            rss = statistics.median(m) / 1024 if m else float("nan")
+            wall = min(w)
+            rss = min(m) / 1024 if m else float("nan")
             cells.append(f"{wall:9.2f} s | {rss:7.0f} MB")
         print(f"| {alloc:9s} | " + " | ".join(cells) + " |")
 

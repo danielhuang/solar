@@ -3,7 +3,7 @@
 
 For each (contender) per round: wall-clock, peak RSS (wait4 rusage), and an
 output check (every port must print 5761455, the prime count below 10^8).
-Median over ROUNDS interleaved rounds. Unlike bench.py there is nothing for a
+Minimum over ROUNDS interleaved rounds. Unlike bench.py there is nothing for a
 collector to do here, so each runtime appears once with its default GC.
 
 Prereqs:
@@ -13,7 +13,7 @@ Prereqs:
   Java   bench/java/Sieve.class   (javac)
   C#     bench/csharp/sieve/bin/Release/net10.0/sieve   (dotnet build -c Release)
 """
-import os, statistics, sys, tempfile, time
+import os, sys, tempfile, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -57,12 +57,12 @@ def main():
             print(f"  round {r+1} {lbl:6s} {wall:6.2f}s  rss={rss/1024:6.0f} MB",
                   flush=True)
 
-    print(f"\n## sieve (median of {ROUNDS} rounds, interleaved)\n")
+    print(f"\n## sieve (minimum of {ROUNDS} rounds, interleaved)\n")
     print("| runtime | wall | peak RSS |")
     print("|---------|-----:|---------:|")
     for lbl, *_ in CONTENDERS:
-        w = statistics.median(results[lbl]["wall"])
-        m = statistics.median(results[lbl]["rss"]) / 1024
+        w = min(results[lbl]["wall"])
+        m = min(results[lbl]["rss"]) / 1024
         print(f"| {lbl:7s} | {w:.2f} s | {m:.0f} MB |")
 
 

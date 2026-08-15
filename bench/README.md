@@ -2,6 +2,7 @@
 
 ## Table of contents
 
+- [Recorded environment](#recorded-environment)
 - [Allocation and GC](#allocation-and-gc)
 - [C allocator comparison](#c-allocator-comparison)
 - [Sieve](#sieve)
@@ -10,9 +11,28 @@
 - [Build and run guide](guide.md)
 
 The results below were measured on an Intel Core Ultra 9 275HX with 24 cores
-and 93 GiB of RAM, running Linux 7.1.3. See the [benchmark guide](guide.md) for
+and 93 GiB of RAM, running Linux 7.1.6. See the [benchmark guide](guide.md) for
 the source layout, prerequisites, build commands, measurement definitions, and
 commands used to reproduce each group.
+
+## Recorded environment
+
+The August 15, 2026 results used:
+
+| Component | Version |
+| --- | --- |
+| Operating system | Linux 7.1.6 |
+| CPU | Intel Core Ultra 9 275HX, 24 cores |
+| Intel P-state EPP | `power` |
+| Memory | 93 GiB |
+| Clang/LLVM | 22.1.6 |
+| GCC/G++ | 14.2.0 |
+| Rust | 1.98.0-nightly (2026-06-11) |
+| Go | 1.24.4 |
+| Allocation/GC Java | OpenJDK 21.0.11 |
+| Sieve Java | OpenJDK 25.0.3 |
+| .NET | 10.0.301 |
+| Node.js | 20.19.2 |
 
 ## Allocation and GC
 
@@ -26,9 +46,9 @@ a shared heap, so their pause samples are per-isolate rather than process-wide.
 
 ### Results
 
-`bench.py` ran three interleaved rounds. Wall time is the median and peak RSS is
-the largest observed value. The run began with load average 12.14 and ended at
-8.41.
+`bench.py` ran three interleaved rounds. Each value is the minimum across the
+rounds, including per-run peak RSS and pause summaries. The run began with load
+average 4.77 and ended at 9.06.
 
 #### Throughput and peak memory
 
@@ -36,70 +56,69 @@ Lower is better.
 
 | Runtime | allocs3 wall | allocs3 RSS | threads wall | threads RSS | splay wall | splay RSS | allocs5 wall | allocs5 RSS |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Solar | **0.91 s** | **778 MB** | **1.98 s** | 2,498 MB | 4.76 s | 1,639 MB | **2.41 s** | 3,403 MB |
-| C (`malloc`/`free`) | 2.49 s | 3,052 MB | 5.09 s | 99 MB | 8.49 s | **48 MB** | 5.81 s | **3,151 MB** |
-| Go | 2.39 s | 824 MB | 11.35 s | **87 MB** | 5.69 s | 95 MB | 21.34 s | 7,341 MB |
-| JavaScript (Node/V8) | 10.58 s | 3,205 MB | 3.84 s | 759 MB | 11.38 s | 358 MB | 11.99 s | 3,906 MB |
-| Java G1 | 3.58 s | 1,943 MB | 2.79 s | 3,552 MB | 5.67 s | 5,245 MB | 5.72 s | 5,666 MB |
-| Java Parallel | 3.97 s | 2,340 MB | 2.47 s | 2,775 MB | **3.66 s** | 2,779 MB | 6.12 s | 3,616 MB |
-| Java ZGC, generational | 2.34 s | 2,350 MB | 5.43 s | 4,488 MB | 8.23 s | 7,684 MB | 17.18 s | 8,450 MB |
-| Java ZGC, non-generational | 2.39 s | 3,151 MB | 5.76 s | 9,847 MB | 5.75 s | 5,443 MB | 29.36 s | 17,250 MB |
-| Java Shenandoah | 1.17 s | 1,567 MB | 3.52 s | 7,372 MB | 3.95 s | 2,173 MB | 14.66 s | 8,248 MB |
-| C# Workstation | 7.05 s | 2,341 MB | 75.99 s | 10,142 MB | 53.60 s | 443 MB | 71.03 s | 19,588 MB |
-| C# Server | 4.24 s | 2,347 MB | 22.81 s | 450 MB | 12.74 s | 3,874 MB | 7.91 s | 4,777 MB |
+| Solar | **1.06 s** | **769 MB** | **1.27 s** | 2,681 MB | 7.29 s | 1,361 MB | **2.95 s** | 3,710 MB |
+| C (`malloc`/`free`) | 2.97 s | 3,042 MB | 3.69 s | 99 MB | 25.83 s | **48 MB** | 7.50 s | **3,151 MB** |
+| Go | 3.87 s | 822 MB | 17.90 s | **61 MB** | 17.40 s | 88 MB | 21.74 s | 7,302 MB |
+| JavaScript (Node/V8) | 12.32 s | 3,204 MB | 3.20 s | 739 MB | 27.00 s | 356 MB | 18.19 s | 3,890 MB |
+| Java G1 | 5.63 s | 1,943 MB | 2.11 s | 3,432 MB | 9.32 s | 4,226 MB | 9.51 s | 5,662 MB |
+| Java Parallel | 5.91 s | 2,340 MB | 2.02 s | 2,770 MB | **7.16 s** | 2,778 MB | 9.05 s | 3,459 MB |
+| Java ZGC, generational | 2.68 s | 2,347 MB | 4.16 s | 3,147 MB | 16.43 s | 7,441 MB | 28.01 s | 8,428 MB |
+| Java ZGC, non-generational | 2.60 s | 2,916 MB | 5.32 s | 8,750 MB | 11.07 s | 5,279 MB | 43.81 s | 13,635 MB |
+| Java Shenandoah | 1.43 s | 1,567 MB | 3.19 s | 7,066 MB | 7.45 s | 2,169 MB | 23.98 s | 8,382 MB |
+| C# Workstation | 8.24 s | 2,335 MB | 121.29 s | 5,495 MB | 109.86 s | 385 MB | 145.37 s | 15,532 MB |
+| C# Server | 5.14 s | 2,338 MB | 23.92 s | 362 MB | 28.49 s | 6,282 MB | 11.30 s | 4,723 MB |
 
 #### Stop-the-world pause latency
 
-Values are milliseconds. Each cell is the median across rounds of that run's
+Values are milliseconds. Each cell is the minimum across rounds of that run's
 worst or median individual pause. `none` means no pause sample was produced;
 C performs reclamation inline and has no GC pauses.
 
 | Runtime | allocs3 max | allocs3 p50 | threads max | threads p50 | splay max | splay p50 | allocs5 max | allocs5 p50 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Solar | none | none | 3.46 | 0.24 | 36.86 | 0.03 | 2.98 | 0.17 |
+| Solar | none | none | 2.51 | 0.17 | 0.86 | 0.05 | 1.64 | 0.21 |
 | C (`malloc`/`free`) | none | none | none | none | none | none | none | none |
-| Go | 0.12 | 0.03 | 18.00 | 0.05 | 0.77 | 0.02 | 0.97 | 0.03 |
-| JavaScript (Node/V8) | 1,228.82 | 19.04 | 62.60 | 1.65 | 18.09 | 3.86 | 1,110.52 | 1.35 |
-| Java G1 | 568.06 | 267.70 | 11.97 | 6.22 | 125.59 | 31.08 | 511.47 | 118.83 |
-| Java Parallel | 1,528.74 | 847.48 | 11.00 | 5.45 | 6.66 | 5.72 | 1,435.25 | 5.95 |
-| Java ZGC, generational | 0.03 | 0.03 | 0.40 | 0.05 | 0.04 | 0.02 | 0.07 | 0.03 |
-| Java ZGC, non-generational | 0.02 | 0.02 | 0.08 | 0.03 | 0.03 | 0.01 | 0.05 | 0.02 |
-| Java Shenandoah | 0.00 | 0.00 | 1.01 | 0.06 | 0.44 | 0.04 | 759.28 | 0.03 |
-| C# Workstation | 84.41 | 28.45 | 75.72 | 24.45 | 116.28 | 30.99 | 69.92 | 20.62 |
-| C# Server | 529.31 | 48.75 | 70.68 | 28.08 | 72.41 | 27.40 | 619.55 | 20.82 |
+| Go | 0.05 | 0.03 | 4.90 | 0.07 | 0.34 | 0.05 | 1.10 | 0.05 |
+| JavaScript (Node/V8) | 1,907.62 | 21.96 | 25.59 | 1.05 | 42.28 | 9.53 | 1,980.66 | 1.12 |
+| Java G1 | 917.63 | 441.28 | 17.43 | 7.87 | 106.76 | 35.05 | 942.19 | 214.71 |
+| Java Parallel | 2,432.89 | 1,321.32 | 10.99 | 7.06 | 13.66 | 10.21 | 2,544.10 | 8.69 |
+| Java ZGC, generational | 0.04 | 0.04 | 0.10 | 0.05 | 0.09 | 0.05 | 0.09 | 0.04 |
+| Java ZGC, non-generational | 0.02 | 0.02 | 0.08 | 0.04 | 0.05 | 0.03 | 0.06 | 0.04 |
+| Java Shenandoah | 0.00 | 0.00 | 0.70 | 0.05 | 1.01 | 0.06 | 1,399.36 | 0.10 |
+| C# Workstation | 83.92 | 32.04 | 85.62 | 40.40 | 235.50 | 75.07 | 114.21 | 41.32 |
+| C# Server | 464.20 | 51.33 | 57.82 | 27.75 | 101.09 | 34.74 | 545.63 | 21.16 |
 
 #### Time represented by stop-the-world samples
 
-Each value is the median of `sum(pause samples) / traced wall time`. Node.js
+Each value is the minimum of `sum(pause samples) / traced wall time`. Node.js
 values can exceed 100% because the numerator sums overlapping pauses from
 independent worker isolates.
 
 | Runtime | allocs3 | threads | splay | allocs5 |
 | --- | ---: | ---: | ---: | ---: |
-| Solar | 0.0% | 1.9% | 2.2% | 1.3% |
+| Solar | 0.0% | 2.1% | 0.1% | 0.9% |
 | C (`malloc`/`free`) | 0% | 0% | 0% | 0% |
-| Go | 0.0% | 4.3% | 0.3% | 0.0% |
-| JavaScript (Node/V8) | 88.6% | 171.3% | 55.9% | 106.0% |
-| Java G1 | 77.9% | 4.0% | 25.7% | 52.1% |
-| Java Parallel | 77.0% | 3.3% | 1.2% | 57.2% |
+| Go | 0.0% | 2.0% | 0.2% | 0.0% |
+| JavaScript (Node/V8) | 90.7% | 148.8% | 55.3% | 96.5% |
+| Java G1 | 82.7% | 6.0% | 16.1% | 60.6% |
+| Java Parallel | 81.6% | 4.8% | 1.2% | 65.7% |
 | Java ZGC, generational | 0.0% | 0.1% | 0.0% | 0.0% |
 | Java ZGC, non-generational | 0.0% | 0.0% | 0.0% | 0.0% |
-| Java Shenandoah | 0.0% | 0.1% | 0.0% | 5.8% |
-| C# Workstation | 54.9% | 86.2% | 67.0% | 81.8% |
-| C# Server | 54.1% | 86.1% | 47.3% | 47.8% |
+| Java Shenandoah | 0.0% | 0.1% | 0.1% | 21.5% |
+| C# Workstation | 54.8% | 85.9% | 71.9% | 81.9% |
+| C# Server | 48.2% | 82.0% | 38.4% | 41.6% |
 
 ### Conclusions
 
 1. Solar had the lowest wall time on `allocs3`, `threads_list2`, and `allocs5`.
-   Java Parallel had the lowest wall time on `splay`; Solar ranked third behind
-   Java Parallel and Shenandoah.
-2. Solar was 2.74×, 2.57×, 1.78×, and 2.41× faster than the glibc C ports on
+   Java Parallel had the lowest wall time on `splay`; Solar ranked second.
+2. Solar was 2.80×, 2.91×, 3.54×, and 2.54× faster than the glibc C ports on
    `allocs3`, `threads_list2`, `splay`, and `allocs5`, respectively.
 3. No runtime had the lowest RSS on every workload. Solar had the lowest RSS on
    `allocs3`, Go on `threads_list2`, and C on `splay` and `allocs5`.
-4. Both ZGC modes kept their measured worst pauses at or below 0.40 ms. Solar's
-   measured p50 pauses stayed at or below 0.24 ms, and its worst measured pause
-   was 36.86 ms on `splay`.
+4. Both ZGC modes kept their measured worst pauses at or below 0.10 ms. Solar's
+   measured p50 pauses stayed at or below 0.21 ms, and its worst measured pause
+   was 2.51 ms on `threads_list2`.
 
 ## C allocator comparison
 
@@ -111,40 +130,40 @@ allocation.
 
 ### Results
 
-The C allocator rows report median wall time and median peak RSS from three
-interleaved rounds. The Solar baseline comes from the three-round allocation/GC
-matrix above, which ran immediately before the allocator matrix on the same
-machine. Solar was not interleaved with the five C allocators. Lower is better.
+The C allocator rows report the minimum wall time and per-run peak RSS from
+three interleaved rounds. The Solar baseline comes from the allocation/GC
+matrix immediately above and was not interleaved with the five C allocators.
+Lower is better.
 
 | Runtime / allocator | allocs3 wall | allocs3 RSS | threads wall | threads RSS | splay wall | splay RSS | allocs5 wall | allocs5 RSS |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| **Solar baseline** | 0.91 s | 778 MB | 1.98 s | 2,498 MB | **4.76 s** | 1,639 MB | 2.41 s | 3,403 MB |
-| glibc | 2.13 s | 3,053 MB | 3.45 s | 97 MB | 13.18 s | 48 MB | 5.51 s | 3,149 MB |
-| jemalloc | 0.68 s | 794 MB | 1.04 s | 55 MB | 5.13 s | 133 MB | 1.74 s | 845 MB |
-| tcmalloc | 0.68 s | 775 MB | 63.95 s | **52 MB** | 4.80 s | 47 MB | 64.85 s | 819 MB |
-| mimalloc | **0.52 s** | 766 MB | **0.76 s** | 54 MB | 32.09 s | **43 MB** | **1.31 s** | **811 MB** |
-| bump, no free | 0.54 s | **764 MB** | 2.95 s | 19,089 MB | 10.83 s | 9,962 MB | 3.21 s | 19,565 MB |
+| **Solar baseline** | 1.06 s | 769 MB | 1.27 s | 2,681 MB | **7.29 s** | 1,361 MB | 2.95 s | 3,710 MB |
+| glibc | 3.92 s | 3,053 MB | 4.03 s | 97 MB | 27.89 s | 48 MB | 7.79 s | 3,149 MB |
+| jemalloc | 1.28 s | 794 MB | 1.41 s | 56 MB | 9.35 s | 112 MB | 2.66 s | 845 MB |
+| tcmalloc | 1.19 s | 775 MB | 108.98 s | **49 MB** | 7.91 s | 47 MB | 115.54 s | 818 MB |
+| mimalloc | **0.95 s** | 766 MB | **1.21 s** | 54 MB | 74.42 s | **44 MB** | **2.19 s** | **808 MB** |
+| bump, no free | 0.96 s | **764 MB** | 4.08 s | 19,390 MB | 19.48 s | 9,962 MB | 4.74 s | 18,402 MB |
 
 ### Conclusions
 
 1. Among the C allocators, mimalloc had the lowest wall time on `allocs3`,
    `threads_list2`, and `allocs5`; tcmalloc had the lowest wall time on
    `splay`.
-2. Jemalloc ranked third on `allocs3` and second on the other three workloads;
-   it was the only allocator whose wall time stayed at or below 5.13 s in all
-   four. Tcmalloc took 63.95 s and 64.85 s on the two threaded churn workloads,
-   while mimalloc took 32.09 s on `splay`.
-3. The no-free bump allocator was within 0.02 s of the fastest `allocs3` result,
+2. Jemalloc ranked fourth on `allocs3` and second on the other three workloads;
+   it was the only C allocator whose wall time stayed at or below 9.35 s in all
+   four. Tcmalloc took 108.98 s and 115.54 s on the two threaded churn
+   workloads, while mimalloc took 74.42 s on `splay`.
+3. The no-free bump allocator was within 0.01 s of the fastest `allocs3` result,
    where allocations remain live in every implementation. Its peak RSS reached
-   19,089 MB on `threads_list2`, 9,962 MB on `splay`, and 19,565 MB on
+   19,390 MB on `threads_list2`, 9,962 MB on `splay`, and 18,402 MB on
    `allocs5`.
 4. Glibc used about four times the memory of the other reclaiming allocators on
    the retained `allocs3` chain: 3,053 MB versus 766–794 MB.
-5. Against the displayed Solar baseline, every allocator except glibc was
-   faster on `allocs3`; jemalloc and mimalloc were faster on `threads_list2`
-   and `allocs5`. Solar had the lowest displayed wall time on `splay`, 0.04 s
-   below tcmalloc, and used more memory than every reclaiming C allocator on
-   `threads_list2`, `splay`, and `allocs5`.
+5. Against the displayed Solar baseline, mimalloc and the bump allocator were
+   faster on `allocs3`; only mimalloc was faster on `threads_list2`; and
+   jemalloc and mimalloc were faster on `allocs5`. Solar had the lowest
+   displayed wall time on `splay`, 0.62 s below tcmalloc. Solar used more memory
+   than every reclaiming C allocator on `threads_list2`, `splay`, and `allocs5`.
 
 ## Sieve
 
@@ -155,23 +174,23 @@ the prime count `5761455`.
 
 ### Results
 
-The table reports medians from five interleaved rounds. Every output check
+The table reports the minimum of five interleaved rounds. Every output check
 passed. Lower is better.
 
 | Runtime | Wall | Peak RSS |
 | --- | ---: | ---: |
-| Solar | **1.65 s** | 98 MB |
-| C | 1.67 s | **97 MB** |
-| Go | 1.68 s | **97 MB** |
-| Java | 1.69 s | 141 MB |
-| C# | 1.76 s | 131 MB |
+| Solar | **2.13 s** | 98 MB |
+| C | 2.16 s | **97 MB** |
+| Go | 2.15 s | **97 MB** |
+| Java | 2.28 s | 140 MB |
+| C# | 2.27 s | 131 MB |
 
 ### Conclusions
 
-1. Solar had the lowest median wall time at 1.65 s. The complete wall-time
-   range was 1.65–1.76 s, a 6.7% spread relative to Solar.
+1. Solar had the lowest wall time at 2.13 s, 0.02 s ahead of Go and 0.03 s
+   ahead of C. The range was 2.13–2.28 s, a 7.0% spread relative to Solar.
 2. C and Go had the lowest peak RSS at 97 MB. Solar used 98 MB, C# used
-   131 MB, and Java used 141 MB.
+   131 MB, and Java used 140 MB.
 
 ## HashMap
 
@@ -183,29 +202,29 @@ are measured separately from `point` and `mixed` struct keys.
 
 ### Results
 
-The results below report the best of seven independent process runs per phase;
-RSS is the largest peak reported for those runs. Lower is better.
+Both implementations ran as seven independent processes per phase. The table
+reports the minimum wall time and per-run peak RSS. Lower is better.
 
 | Phase | Solar | Rust | Solar/Rust | Solar RSS | Rust RSS | Checksum |
 | --- | ---: | ---: | ---: | ---: | ---: | :---: |
-| `u64` | 138.8 ms | 116.6 ms | 1.19× | 68.3 MB | 52.8 MB | match |
-| `u32` | 150.1 ms | 97.8 ms | 1.54× | 68.2 MB | 53.0 MB | match |
-| `point` | 219.9 ms | 131.8 ms | 1.67× | 99.9 MB | 76.8 MB | match |
-| `mixed` | 202.0 ms | 137.8 ms | 1.47× | 99.8 MB | 76.9 MB | match |
-| **Total** | **710.8 ms** | **484.0 ms** | **1.47×** |  |  |  |
+| `u64` | 735.8 ms | 255.5 ms | 2.88× | 178.3 MB | 52.6 MB | match |
+| `u32` | 808.2 ms | 248.1 ms | 3.26× | 178.5 MB | 52.5 MB | match |
+| `point` | 922.2 ms | 277.9 ms | 3.32× | 210.0 MB | 76.6 MB | match |
+| `mixed` | 905.6 ms | 297.4 ms | 3.05× | 209.8 MB | 76.6 MB | match |
+| **Total** | **3,371.7 ms** | **1,078.8 ms** | **3.13×** |  |  |  |
 
-With `SOLAR_PRINT_GC_STATS=1`, every phase performed 43 allocations. Reported
-live memory was 56,623,184 bytes for each primitive phase and 106,954,832 bytes
-for each struct phase.
+With `SOLAR_PRINT_GC_STATS=1`, the four diagnostic runs reported 17,972,257 to
+17,981,768 allocations. Reported memory use was approximately 172.4 MB for the
+primitive phases and 221.7 MB for the struct phases.
 
 ### Conclusions
 
-1. Rust was faster in every phase. Solar's summed best times were 1.47× Rust's,
-   with per-phase ratios from 1.19× to 1.67×.
-2. Solar's peak RSS was 1.29× Rust's for primitive keys and 1.30× for struct
-   keys.
-3. Solar's 43 allocations per phase do not scale with the three million map
-   operations in each phase.
+1. Rust was faster in every phase. Solar's summed best times were 3.13× Rust's,
+   with per-phase ratios from 2.88× to 3.32×.
+2. Solar's peak RSS was 3.39–3.40× Rust's for primitive keys and 2.74× for
+   struct keys.
+3. Solar performed approximately 18 million allocations per phase for three
+   million map operations.
 4. All four checksums matched, so both implementations produced the same lookup
    results for every measured key type.
 
@@ -219,21 +238,21 @@ produced identical normalized output.
 
 ### Results
 
-Each variant ran once per round for three rounds. The table reports median wall
-time, median total CPU time (`user + system`), and median peak RSS. Lower is
-better.
+Each variant ran once per round for three rounds. The table reports minimum
+wall time, minimum total CPU time (`user + system`), and minimum per-run peak
+RSS. Lower is better.
 
 | Variant | Execution | Wall | CPU | Peak RSS |
 | --- | --- | ---: | ---: | ---: |
-| C++ monotonic arena | 9 workers | **0.63 s** | **1.88 s** | **131 MB** |
-| Solar, threaded | 9 workers plus GC threads | 1.65 s | 9.23 s | 1,638 MB |
-| Solar, single | 1 mutator plus GC threads | **5.13 s** | **5.62 s** | 1,183 MB |
-| C `malloc`/`free` | 1 thread | 13.39 s | 13.34 s | **257 MB** |
+| C++ monotonic arena | 9 workers | **1.05 s** | **3.47 s** | **131 MB** |
+| Solar, threaded | 9 workers plus GC threads | 2.42 s | 13.27 s | 1,778 MB |
+| Solar, single | 1 mutator plus GC threads | **8.49 s** | **9.82 s** | 1,226 MB |
+| C `malloc`/`free` | 1 thread | 26.39 s | 26.29 s | **257 MB** |
 
 ### Conclusions
 
-1. In the threaded comparison, Solar took 2.62× the wall time, 4.91× the CPU
-   time, and 12.50× the peak RSS of the C++ monotonic-arena implementation.
-2. In the single-mutator comparison, Solar completed 2.61× faster and used
-   2.37× less total CPU time than the C `malloc`/`free` implementation.
-3. Single-mutator Solar used 4.60× the peak RSS of the C implementation.
+1. In the threaded comparison, Solar took 2.30× the wall time, 3.82× the CPU
+   time, and 13.57× the peak RSS of the C++ monotonic-arena implementation.
+2. In the single-mutator comparison, Solar completed 3.11× faster and used
+   2.68× less total CPU time than the C `malloc`/`free` implementation.
+3. Single-mutator Solar used 4.77× the peak RSS of the C implementation.
