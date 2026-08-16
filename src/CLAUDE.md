@@ -59,6 +59,9 @@ set. Calls in unresolved generic bodies may return every viable overload.
 Do not add spelling-based definition fallbacks.
 Go-to-definition on a binary operator follows the `operator_*` method selected
 by type checking; primitive operators have no definition target.
+Hover renders concrete signatures for compiler-provided intrinsics, numeric
+constructors, and primitive operators, marks them `built-in`, and does not
+manufacture source locations for them.
 
 The LSP treats the open file as the compilation root for diagnostics. Convert
 compiler failures into diagnostics rather than terminating the server.

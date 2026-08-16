@@ -404,33 +404,40 @@ fn hover(source: &str, line: u32, character: u32, document: &Document) -> Option
     let mut entries = Vec::new();
     let mut seen = HashSet::new();
     for target in symbol_targets(source, line, character, document) {
-        let target_key = span_key(target);
-        if !seen.insert(target_key) {
-            continue;
+        match target {
+            SymbolTarget::Source(target) => {
+                let target_key = span_key(target);
+                if !seen.insert(target_key) {
+                    continue;
+                }
+                if let Some(signatures) = document.binding_signatures.get(&target_key) {
+                    entries.extend(
+                        signatures
+                            .iter()
+                            .map(|signature| format!("```solar\n{signature}\n```")),
+                    );
+                    continue;
+                }
+                let signature = document
+                    .signatures
+                    .get(&target_key)
+                    .cloned()
+                    .or_else(|| span_source_text(target, &document.source_map));
+                let doc = document.docs.get(&target_key);
+                let Some(signature) = signature else {
+                    continue;
+                };
+                let mut entry = format!("```solar\n{signature}\n```");
+                if let Some(doc) = doc {
+                    entry.push_str("\n\n");
+                    entry.push_str(doc);
+                }
+                entries.push(entry);
+            }
+            SymbolTarget::BuiltIn(signature) => {
+                entries.push(format!("```solar\n{signature}\n```\n\nbuilt-in"));
+            }
         }
-        if let Some(signatures) = document.binding_signatures.get(&target_key) {
-            entries.extend(
-                signatures
-                    .iter()
-                    .map(|signature| format!("```solar\n{signature}\n```")),
-            );
-            continue;
-        }
-        let signature = document
-            .signatures
-            .get(&target_key)
-            .cloned()
-            .or_else(|| span_source_text(target, &document.source_map));
-        let doc = document.docs.get(&target_key);
-        let Some(signature) = signature else {
-            continue;
-        };
-        let mut entry = format!("```solar\n{signature}\n```");
-        if let Some(doc) = doc {
-            entry.push_str("\n\n");
-            entry.push_str(doc);
-        }
-        entries.push(entry);
     }
     if entries.is_empty() {
         return None;
@@ -615,8 +622,10 @@ fn position_to_byte(source: &str, line: u32, character: u32) -> Option<usize> {
 fn definition(source: &str, line: u32, character: u32, document: &Document) -> Option<Value> {
     let targets = symbol_targets(source, line, character, document);
     let mut locations = Vec::new();
-    for span in targets {
-        if let Some(location) = span_to_location(span, &document.source_map) {
+    for target in targets {
+        if let SymbolTarget::Source(span) = target
+            && let Some(location) = span_to_location(span, &document.source_map)
+        {
             locations.push(location);
         }
     }
@@ -627,8 +636,19 @@ fn definition(source: &str, line: u32, character: u32, document: &Document) -> O
     }
 }
 
-/// Resolves a cursor position to declaration spans.
-fn symbol_targets(source: &str, line: u32, character: u32, document: &Document) -> Vec<SourceSpan> {
+/// A source declaration or a compiler-provided signature resolved at a cursor.
+enum SymbolTarget {
+    Source(SourceSpan),
+    BuiltIn(String),
+}
+
+/// Resolves a cursor position to source declarations and compiler-provided items.
+fn symbol_targets(
+    source: &str,
+    line: u32,
+    character: u32,
+    document: &Document,
+) -> Vec<SymbolTarget> {
     let mut parser = Parser::new();
     parser
         .set_language(&tree_sitter_solar::LANGUAGE.into())
@@ -644,6 +664,7 @@ fn symbol_targets(source: &str, line: u32, character: u32, document: &Document) 
     };
     if node.kind() == "string_literal" {
         return import_path_definition(node, source, document)
+            .map(SymbolTarget::Source)
             .into_iter()
             .collect();
     }
@@ -667,22 +688,22 @@ fn symbol_targets(source: &str, line: u32, character: u32, document: &Document) 
         if let Some(parent) = declaration_parent(node)
             && let Some(file_id) = document.source_map.root_file_id()
         {
-            return vec![node_span(parent, file_id)];
+            return vec![SymbolTarget::Source(node_span(parent, file_id))];
         }
         if let Some(target) = import_fragment_definition(node, source, document) {
-            return vec![target];
+            return vec![SymbolTarget::Source(target)];
         }
         if let Some(binding) = local_definition(node, name, source)
             && let Some(file_id) = document.source_map.root_file_id()
         {
             let target = node_span(binding, file_id);
-            return vec![target];
+            return vec![SymbolTarget::Source(target)];
         }
         if let Some(target) = type_definition(node, name, source, document) {
-            return vec![target];
+            return vec![SymbolTarget::Source(target)];
         }
         if let Some(target) = path_definition(node, name, source, document) {
-            return vec![target];
+            return vec![SymbolTarget::Source(target)];
         }
     }
 
@@ -704,7 +725,7 @@ fn symbol_targets(source: &str, line: u32, character: u32, document: &Document) 
     // Precise pass: resolve the specific overload(s) via the typed AST. Only
     // calls in functions defined in this file can sit at the cursor, so the walk
     // is restricted to them (which also prunes the entire stdlib).
-    let mut targets: Vec<SourceSpan> = Vec::new();
+    let mut targets = Vec::new();
     if let Some(analysis) = &document.analysis {
         let mut finder = DefFinder {
             typed: &analysis.typed,
@@ -737,8 +758,12 @@ fn symbol_targets(source: &str, line: u32, character: u32, document: &Document) 
         }
     }
 
-    let mut seen = HashSet::new();
-    targets.retain(|span| seen.insert(span_key(*span)));
+    let mut source_seen = HashSet::new();
+    let mut built_in_seen = HashSet::new();
+    targets.retain(|target| match target {
+        SymbolTarget::Source(span) => source_seen.insert(span_key(*span)),
+        SymbolTarget::BuiltIn(signature) => built_in_seen.insert(signature.clone()),
+    });
     targets
 }
 
@@ -1158,7 +1183,40 @@ struct DefFinder<'a> {
     type_defs: &'a HashMap<ast::DefId, SourceSpan>,
     global_defs: &'a HashMap<ast::DefId, SourceSpan>,
     field_init: bool,
-    out: &'a mut Vec<SourceSpan>,
+    out: &'a mut Vec<SymbolTarget>,
+}
+
+fn function_signature(function: &typed_ast::FunctionDef) -> String {
+    let kind = if function.id.method { "method" } else { "fn" };
+    call_signature(
+        kind,
+        &function.id.def.name,
+        function.parameters.iter().map(|parameter| {
+            let name = match &parameter.name {
+                ast::Ident::User(name) | ast::Ident::Synthetic(name) => name.as_str(),
+            };
+            (name, &parameter.ty)
+        }),
+        &function.return_type,
+    )
+}
+
+fn call_signature<'a>(
+    kind: &str,
+    name: &str,
+    parameters: impl IntoIterator<Item = (&'a str, &'a typed_ast::Type)>,
+    return_type: &typed_ast::Type,
+) -> String {
+    let parameters = parameters
+        .into_iter()
+        .map(|(name, ty)| format!("{name}: {ty}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut signature = format!("{kind} {name}({parameters})");
+    if *return_type != typed_ast::Type::Unit {
+        signature.push_str(&format!(" -> {return_type}"));
+    }
+    signature
 }
 
 impl DefFinder<'_> {
@@ -1170,12 +1228,25 @@ impl DefFinder<'_> {
                 self.function_defs.get(&function.def)
             };
             if let Some(candidates) = candidates {
-                self.out.extend(candidates.iter().copied());
-                return;
+                let source_candidates = candidates
+                    .iter()
+                    .copied()
+                    .filter(|span| span.file_id != ast::SYNTHETIC_FILE)
+                    .map(SymbolTarget::Source)
+                    .collect::<Vec<_>>();
+                if !source_candidates.is_empty() {
+                    self.out.extend(source_candidates);
+                    return;
+                }
             }
         }
         if let Some(def) = self.typed.functions.get(function) {
-            self.out.push(def.def_span);
+            if def.def_span.file_id == ast::SYNTHETIC_FILE {
+                self.out
+                    .push(SymbolTarget::BuiltIn(function_signature(def)));
+            } else {
+                self.out.push(SymbolTarget::Source(def.def_span));
+            }
         }
     }
 
@@ -1253,7 +1324,7 @@ impl DefFinder<'_> {
                     && let Some(owner) = struct_owner(&object.ty)
                     && let Some(span) = self.field_defs.get(&(owner, field.clone()))
                 {
-                    self.out.push(*span);
+                    self.out.push(SymbolTarget::Source(*span));
                 }
                 self.walk_expr(object);
             }
@@ -1277,13 +1348,13 @@ impl DefFinder<'_> {
                     && span_contains(expr.span, Some(self.root_file), self.cursor)
                     && let Some(span) = self.field_defs.get(&(id.def.clone(), self.name.to_owned()))
                 {
-                    self.out.push(*span);
+                    self.out.push(SymbolTarget::Source(*span));
                 }
                 if id.def.name == self.name
                     && self.at(expr.span, self.anchor.unwrap_or(self.cursor))
                     && let Some(span) = self.type_defs.get(&id.def)
                 {
-                    self.out.push(*span);
+                    self.out.push(SymbolTarget::Source(*span));
                 }
                 for field in fields {
                     self.walk_expr(&field.value);
@@ -1307,7 +1378,19 @@ impl DefFinder<'_> {
                 self.walk_expr(element);
                 self.walk_expr(count);
             }
-            ExprKind::BinaryOp { left, right, .. } => {
+            ExprKind::BinaryOp { op, left, right } => {
+                if op.method_name() == self.name
+                    && self.at(expr.span, self.anchor.unwrap_or(self.cursor))
+                {
+                    let receiver = typed_ast::Type::Ref(Box::new(left.ty.clone()));
+                    let other = typed_ast::Type::Ref(Box::new(right.ty.clone()));
+                    self.out.push(SymbolTarget::BuiltIn(call_signature(
+                        "method",
+                        self.name,
+                        [("self", &receiver), ("other", &other)],
+                        &expr.ty,
+                    )));
+                }
                 self.walk_expr(left);
                 self.walk_expr(right);
             }
@@ -1333,11 +1416,11 @@ impl DefFinder<'_> {
                             .variant_defs
                             .get(&(enum_id.def.clone(), variant_name.clone()))
                     {
-                        self.out.push(*span);
+                        self.out.push(SymbolTarget::Source(*span));
                     } else if enum_id.def.name == self.name
                         && let Some(span) = self.type_defs.get(&enum_id.def)
                     {
-                        self.out.push(*span);
+                        self.out.push(SymbolTarget::Source(*span));
                     }
                 }
                 if let Some(value) = value {
@@ -1352,7 +1435,21 @@ impl DefFinder<'_> {
                     }
                 }
             }
-            ExprKind::IntrinsicCall { arguments, .. } => {
+            ExprKind::IntrinsicCall {
+                intrinsic,
+                arguments,
+            } => {
+                let name_matches = self.name == intrinsic.name()
+                    || matches!(intrinsic, ast::Intrinsic::Cast(..))
+                        && self.name.starts_with("cast_");
+                if name_matches && self.at(expr.span, self.anchor.unwrap_or(self.cursor)) {
+                    self.out.push(SymbolTarget::BuiltIn(call_signature(
+                        "fn",
+                        self.name,
+                        arguments.iter().map(|argument| ("_", &argument.ty)),
+                        &expr.ty,
+                    )));
+                }
                 for argument in arguments {
                     self.walk_expr(argument);
                 }
@@ -1362,7 +1459,7 @@ impl DefFinder<'_> {
                     && self.at(expr.span, self.anchor.unwrap_or(self.cursor))
                     && let Some(span) = self.global_defs.get(id)
                 {
-                    self.out.push(*span);
+                    self.out.push(SymbolTarget::Source(*span));
                 }
             }
             ExprKind::Identifier(_)
@@ -2807,11 +2904,22 @@ fn main() {
             let location = definition(&source, line, operator, &document)
                 .unwrap_or_else(|| panic!("definition for {expression}"));
             assert_eq!(location["range"]["start"]["line"], target_line);
+
+            let hover = hover(&source, line, operator, &document)
+                .unwrap_or_else(|| panic!("hover for {expression}"));
+            let contents = hover["contents"]["value"].as_str().unwrap();
+            assert!(!contents.contains("built-in"), "{expression}: {contents}");
         }
 
         let (line, start) = occurrence_position(&source, "1 + 2", 0);
         let operator = start + "1 ".encode_utf16().count() as u32;
         assert!(definition(&source, line, operator, &document).is_none());
+
+        let hover = hover(&source, line, operator, &document).expect("primitive operator hover");
+        assert_eq!(
+            hover["contents"]["value"],
+            "```solar\nmethod operator_add(self: &Int, other: &Int) -> Int\n```\n\nbuilt-in"
+        );
     }
 
     #[test]
@@ -3051,11 +3159,39 @@ fn main() {
     }
 
     #[test]
-    fn intrinsic_call_never_falls_back_to_same_named_wrapper() {
+    fn intrinsic_hover_shows_concrete_built_in_signatures() {
         let (_, source, document) = fixture_document("src/std/lib.solar");
         let (line, character) = occurrence_position(&source, "count_trailing_zeros(self)", 0);
 
         assert!(definition(&source, line, character, &document).is_none());
-        assert!(hover(&source, line, character, &document).is_none());
+        let hover = hover(&source, line, character, &document).expect("intrinsic hover");
+        let contents = hover["contents"]["value"].as_str().unwrap();
+        assert!(
+            contents.contains("fn count_trailing_zeros(_: "),
+            "{contents}"
+        );
+        assert!(contents.contains(" -> Uint"), "{contents}");
+        assert!(contents.contains("built-in"), "{contents}");
+        assert!(
+            !contents.contains("pub method count_trailing_zeros"),
+            "{contents}"
+        );
+    }
+
+    #[test]
+    fn numeric_constructor_hover_shows_generated_signature() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/runtime/methods.solar");
+        let uri = format!("file://{}", path.display());
+        let source = "fn convert#[T](x: T) -> Int64 { Int64(x) }\nfn main() { convert(1); }\n";
+        let document = compute(&uri, source);
+        let (line, character) = occurrence_position(source, "Int64(x)", 0);
+
+        assert!(definition(source, line, character, &document).is_none());
+        let hover = hover(source, line, character, &document).expect("constructor hover");
+        assert_eq!(
+            hover["contents"]["value"],
+            "```solar\nfn Int64(x: Int) -> Int64\n```\n\nbuilt-in"
+        );
     }
 }
