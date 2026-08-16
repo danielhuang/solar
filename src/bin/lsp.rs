@@ -647,35 +647,46 @@ fn symbol_targets(source: &str, line: u32, character: u32, document: &Document) 
             .into_iter()
             .collect();
     }
-    if node.kind() != "identifier" {
+    let operator = operator_definition_context(node, source);
+    if node.kind() != "identifier" && operator.is_none() {
         return Vec::new();
     }
-    let name = &source[node.byte_range()];
-    let start = node.start_position();
-    let cursor = (start.row as u32, start.column as u32);
+    let (name, cursor, operator_anchor) = if let Some((name, anchor)) = operator {
+        let start = node.start_position();
+        (name, (start.row as u32, start.column as u32), Some(anchor))
+    } else {
+        let start = node.start_position();
+        (
+            &source[node.byte_range()],
+            (start.row as u32, start.column as u32),
+            None,
+        )
+    };
 
-    if let Some(parent) = declaration_parent(node)
-        && let Some(file_id) = document.source_map.root_file_id()
-    {
-        return vec![node_span(parent, file_id)];
-    }
-    if let Some(target) = import_fragment_definition(node, source, document) {
-        return vec![target];
-    }
-    if let Some(binding) = local_definition(node, name, source)
-        && let Some(file_id) = document.source_map.root_file_id()
-    {
-        let target = node_span(binding, file_id);
-        return vec![target];
-    }
-    if let Some(target) = type_definition(node, name, source, document) {
-        return vec![target];
-    }
-    if let Some(target) = path_definition(node, name, source, document) {
-        return vec![target];
+    if operator_anchor.is_none() {
+        if let Some(parent) = declaration_parent(node)
+            && let Some(file_id) = document.source_map.root_file_id()
+        {
+            return vec![node_span(parent, file_id)];
+        }
+        if let Some(target) = import_fragment_definition(node, source, document) {
+            return vec![target];
+        }
+        if let Some(binding) = local_definition(node, name, source)
+            && let Some(file_id) = document.source_map.root_file_id()
+        {
+            let target = node_span(binding, file_id);
+            return vec![target];
+        }
+        if let Some(target) = type_definition(node, name, source, document) {
+            return vec![target];
+        }
+        if let Some(target) = path_definition(node, name, source, document) {
+            return vec![target];
+        }
     }
 
-    let anchor = definition_anchor(node);
+    let anchor = operator_anchor.or_else(|| definition_anchor(node));
     let field_access = document.source_map.root_file_id().and_then(|file_id| {
         node.parent()
             .filter(|parent| {
@@ -729,6 +740,43 @@ fn symbol_targets(source: &str, line: u32, character: u32, document: &Document) 
     let mut seen = HashSet::new();
     targets.retain(|span| seen.insert(span_key(*span)));
     targets
+}
+
+fn operator_definition_context(node: Node<'_>, source: &str) -> Option<(&'static str, (u32, u32))> {
+    let binary = node.parent()?;
+    if binary.kind() != "binary_expression" || binary.child_by_field_name("operator") != Some(node)
+    {
+        return None;
+    }
+    let operator = match &source[node.byte_range()] {
+        "+" => ast::BinOp::Add,
+        "-" => ast::BinOp::Sub,
+        "*" => ast::BinOp::Mul,
+        "/" => ast::BinOp::Div,
+        "%" => ast::BinOp::Mod,
+        "==" => ast::BinOp::Eq,
+        "!=" => ast::BinOp::Ne,
+        "<" => ast::BinOp::Lt,
+        "<=" => ast::BinOp::Le,
+        ">" => ast::BinOp::Gt,
+        ">=" => ast::BinOp::Ge,
+        "&&" => ast::BinOp::And,
+        "||" => ast::BinOp::Or,
+        "&" => ast::BinOp::BitAnd,
+        "|" => ast::BinOp::BitOr,
+        "^" => ast::BinOp::BitXor,
+        "<<" => ast::BinOp::Shl,
+        ">>" => ast::BinOp::Shr,
+        "++" => ast::BinOp::WrapAdd,
+        "--" => ast::BinOp::WrapSub,
+        "**" => ast::BinOp::WrapMul,
+        _ => return None,
+    };
+    let start = binary.start_position();
+    Some((
+        operator.method_name(),
+        (start.row as u32, start.column as u32),
+    ))
 }
 
 fn declaration_parent(node: Node<'_>) -> Option<Node<'_>> {
@@ -2741,6 +2789,29 @@ fn main() {
             assert_eq!(locations.len(), 1);
             assert_eq!(locations[0]["range"]["start"]["line"], target_line);
         }
+    }
+
+    #[test]
+    fn definition_resolves_overloaded_operator_method_only() {
+        let (_, source, document) = fixture_document("tests/runtime/operator_overload.solar");
+        assert!(document.analysis.is_some());
+
+        for (expression, prefix, target_line) in [
+            ("a + b", "a ", 6),
+            ("b - a", "b ", 10),
+            ("a * 3", "a ", 19),
+            ("sum == c", "sum ", 14),
+        ] {
+            let (line, start) = occurrence_position(&source, expression, 0);
+            let operator = start + prefix.encode_utf16().count() as u32;
+            let location = definition(&source, line, operator, &document)
+                .unwrap_or_else(|| panic!("definition for {expression}"));
+            assert_eq!(location["range"]["start"]["line"], target_line);
+        }
+
+        let (line, start) = occurrence_position(&source, "1 + 2", 0);
+        let operator = start + "1 ".encode_utf16().count() as u32;
+        assert!(definition(&source, line, operator, &document).is_none());
     }
 
     #[test]

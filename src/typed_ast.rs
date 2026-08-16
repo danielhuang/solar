@@ -2159,33 +2159,6 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// The overloadable method name for a binary operator (`+` → `operator_add`).
-    fn binop_method_name(op: ast::BinOp) -> &'static str {
-        match op {
-            ast::BinOp::Add => "operator_add",
-            ast::BinOp::Sub => "operator_sub",
-            ast::BinOp::Mul => "operator_mul",
-            ast::BinOp::Div => "operator_div",
-            ast::BinOp::Mod => "operator_mod",
-            ast::BinOp::Eq => "operator_eq",
-            ast::BinOp::Ne => "operator_ne",
-            ast::BinOp::Lt => "operator_lt",
-            ast::BinOp::Le => "operator_le",
-            ast::BinOp::Gt => "operator_gt",
-            ast::BinOp::Ge => "operator_ge",
-            ast::BinOp::And => "operator_and",
-            ast::BinOp::Or => "operator_or",
-            ast::BinOp::BitAnd => "operator_bitand",
-            ast::BinOp::BitOr => "operator_bitor",
-            ast::BinOp::BitXor => "operator_bitxor",
-            ast::BinOp::Shl => "operator_shl",
-            ast::BinOp::Shr => "operator_shr",
-            ast::BinOp::WrapAdd => "operator_wrapadd",
-            ast::BinOp::WrapSub => "operator_wrapsub",
-            ast::BinOp::WrapMul => "operator_wrapmul",
-        }
-    }
-
     /// Reference an operand for the `operator_*` desugar (`x` → `x&`).
     fn auto_reference(expr: &ast::Expr) -> ast::Expr {
         ast::Expr {
@@ -5822,7 +5795,7 @@ impl<'a> Lowerer<'a> {
                 // that through the ordinary method-call path. `1 + 2` keeps the
                 // primitive path; only non-primitive operands desugar.
                 if !Self::binop_primitive_applies(*op, &lhs.ty) {
-                    let method = Self::binop_method_name(*op);
+                    let method = op.method_name();
                     if self.method_defs.contains_key(method) {
                         let recv = Self::auto_reference(left);
                         let arg = Self::auto_reference(right);

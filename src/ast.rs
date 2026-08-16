@@ -435,6 +435,35 @@ pub enum BinOp {
     WrapMul,
 }
 
+impl BinOp {
+    /// Returns the overloadable method name corresponding to this operator.
+    pub fn method_name(self) -> &'static str {
+        match self {
+            Self::Add => "operator_add",
+            Self::Sub => "operator_sub",
+            Self::Mul => "operator_mul",
+            Self::Div => "operator_div",
+            Self::Mod => "operator_mod",
+            Self::Eq => "operator_eq",
+            Self::Ne => "operator_ne",
+            Self::Lt => "operator_lt",
+            Self::Le => "operator_le",
+            Self::Gt => "operator_gt",
+            Self::Ge => "operator_ge",
+            Self::And => "operator_and",
+            Self::Or => "operator_or",
+            Self::BitAnd => "operator_bitand",
+            Self::BitOr => "operator_bitor",
+            Self::BitXor => "operator_bitxor",
+            Self::Shl => "operator_shl",
+            Self::Shr => "operator_shr",
+            Self::WrapAdd => "operator_wrapadd",
+            Self::WrapSub => "operator_wrapsub",
+            Self::WrapMul => "operator_wrapmul",
+        }
+    }
+}
+
 /// An expression and its source span.
 #[derive(Debug, Clone)]
 pub struct Expr {
