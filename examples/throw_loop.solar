@@ -1,0 +1,26 @@
+struct Node { value: Int, next: &?Node }
+
+fn main() {
+	let sentinel = (Node { value: 0, next: null#[Node] })&;
+	let root = sentinel;
+
+	thread::spawn(
+		\ {
+			loop {
+				let head = sentinel;
+
+				for j in 0..100000 {
+					head = (Node { value: j, next: head })&;
+				}
+
+				root&.atomic_store(head);
+			}
+		},
+	);
+
+	loop {
+		try {
+			println(1 / 0);
+		} catch (e) {}
+	}
+}
