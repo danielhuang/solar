@@ -14,7 +14,7 @@ fn std_code_gets_std_line_directives() {
     // Uses @std's vec, which pulls in std code from src/std/*.solar.
     std::fs::write(
         &path,
-        "fn main() {\n  let v = vec::Vec#[Int]([1, 2]&);\n  v&.push(3);\n  println(v&.at(0u)@);\n}\n",
+        "fn main() {\n  let v = vec::Vec([1, 2]&);\n  v&.push(3);\n  println(v&.at(0u)@);\n}\n",
     )
     .unwrap();
 

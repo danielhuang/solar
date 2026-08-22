@@ -1,0 +1,3 @@
+fn output#[out T]() -> Uint { 0u }
+
+fn main() { output(); }

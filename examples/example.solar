@@ -293,9 +293,9 @@ fn main() {
 	let b2: Box#[Bool] = Box#[Bool] { value: true };
 
 	// generic functions
-	let id_val = identity#[Int](42);
+	let id_val = identity(42);
 	println(id_val); // 42
-	println(second#[Bool, Int](true, 7)); // 7
+	println(second(true, 7)); // 7
 
 	// methods
 	let doubled = (Box#[Int] { value: 21 }).double();
@@ -303,7 +303,7 @@ fn main() {
 
 	// generic method
 	let bm: Box#[Int] = Box#[Int] { value: 10 };
-	println(bm.map#[Int](abs)); // 10
+	println(bm.map(abs)); // 10
 
 	// operator overloading via `operator_add`
 	let sum_box = (Box#[Int] { value: 4 }) + (Box#[Int] { value: 5 });
@@ -378,7 +378,7 @@ fn main() {
 	println(add_base(23)); // 1023
 
 	// Vec (from stdlib via vec module)
-	let v = vec::Vec#[Int]([10, 20]&);
+	let v = vec::Vec([10, 20]&);
 	v&.push(30);
 	println(v&.at(0u)@); // 10
 	println(v&.at(2u)@); // 30

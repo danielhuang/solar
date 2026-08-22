@@ -8,6 +8,7 @@ there. Imports are resolved relative to `src/std`, including subdirectories.
 - Add `///` documentation to every public declaration.
 - Keep low-level operations in `@intrinsics`; expose user-facing wrappers from
   `@std`.
+- `size_of#[T]()` returns the packed byte size of a statically sized type.
 - `ref_eq(a, b)` compares reference identity.
 - The blanket `operator_eq(self: &&T, other: &&T)` compares referenced values.
 - Reflective equality and hashing for structs and enums require public fields.

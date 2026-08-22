@@ -2889,6 +2889,7 @@ impl<'a> Codegen<'a> {
                 let c_ty = self.c_int_type(result_ty);
                 self.linef(format!("*({c_ty}*){dst} = ({c_ty}){f}();"));
             }
+            Intrinsic::SizeOf => unreachable!("size_of is lowered before code generation"),
             Intrinsic::ArrayLen => {
                 let len = if let Type::FixedArray(_, n) = &nodes[args[0].0].ty {
                     format!("{n}")

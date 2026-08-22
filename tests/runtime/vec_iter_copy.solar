@@ -6,7 +6,7 @@ fn print_next(iter: &slice::Iter#[Int]) {
 }
 
 fn main() {
-	let values = vec::Vec#[Int]([10, 20, 30]&);
+	let values = vec::Vec([10, 20, 30]&);
 	let iter = values&.iter();
 	let iter_copy = iter;
 

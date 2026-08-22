@@ -2,7 +2,7 @@ struct Pair { a: Int, b: Int }
 
 // self-recursion, explicit type args
 fn f#[T](x: T, n: Int) -> Int {
-	if n == 0 { 0 } else { f#[T](x, n - 1) + 1 }
+	if n == 0 { 0 } else { f(x, n - 1) + 1 }
 }
 
 // self-recursion, inferred type args at the recursive call
@@ -25,7 +25,7 @@ method depth#[T](self: &Pair, x: T, n: Int) -> Int {
 }
 
 fn main() {
-	println(f#[Int](7, 4));
+	println(f(7, 4));
 	println(f(true, 2));
 	println(g(1u, 5));
 	if even(0, 10) { println("even"&); } else { println("odd"&); }

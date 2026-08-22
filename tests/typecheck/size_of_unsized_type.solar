@@ -1,0 +1,3 @@
+import {size_of} from "@intrinsics";
+
+fn main() { size_of#[[Int]](); }

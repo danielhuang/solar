@@ -15,7 +15,7 @@ unsafe method doubled(self: Number) -> Int {
 fn main() {
 	unsafe {
 		println(increment(1));
-		println(identity#[Int](4));
+		println(identity(4));
 		println((Number { value: 3 }).doubled());
 	}
 

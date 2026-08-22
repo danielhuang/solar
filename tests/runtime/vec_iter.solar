@@ -1,5 +1,5 @@
 fn main() {
-	let v = vec::Vec#[Int]([10, 20, 30]&);
+	let v = vec::Vec([10, 20, 30]&);
 
 	// as_slice exposes the backing storage as a &[T]
 	let s = v&.as_slice();
@@ -37,7 +37,7 @@ fn main() {
 	println(v&.at(0u)@); // 999
 
 	// Iterating an empty Vec yields None immediately.
-	let empty = vec::Vec#[Int]([0; 0u]&);
+	let empty = vec::Vec([0; 0u]&);
 	let ite = empty&.iter();
 	let any = 0;
 	match ite&.next() {
@@ -47,7 +47,7 @@ fn main() {
 	println(any); // 0
 
 	// iter is generic: works for another element type too.
-	let vb = vec::Vec#[Bool]([true, false, true]&);
+	let vb = vec::Vec([true, false, true]&);
 	let itb = vb&.iter();
 	let trues = 0;
 	let contb = true;

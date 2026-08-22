@@ -392,9 +392,11 @@ impl Desugarer {
             ),
             ast::ExprKind::IntrinsicCall {
                 intrinsic,
+                type_args,
                 arguments,
             } => ast::ExprKind::IntrinsicCall {
                 intrinsic,
+                type_args,
                 arguments: arguments
                     .into_iter()
                     .map(|argument| self.expr(argument))

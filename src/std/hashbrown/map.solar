@@ -6,7 +6,7 @@ import tag from "tag.solar";
 pub struct HashMap#[K, V] { table: raw::RawTable#[K, V] }
 
 /// Creates an empty hash map.
-pub fn HashMap#[K, V]() -> HashMap#[K, V] {
+pub fn HashMap#[out K, out V]() -> HashMap#[K, V] {
 	HashMap#[K, V] { table: raw::RawTable#[K, V]() }
 }
 

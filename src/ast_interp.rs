@@ -1152,6 +1152,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 // (the test harness) can only use this in spawned binaries.
                 std::process::exit(code);
             }
+            Intrinsic::SizeOf => unreachable!("size_of is lowered before interpretation"),
             Intrinsic::ArrayLen => {
                 let arr = self.eval_expr(&arguments[0])?;
                 match arr {

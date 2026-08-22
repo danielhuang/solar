@@ -272,6 +272,8 @@ pub struct FunctionDef {
     pub display_name: String,
     /// Generic type parameters.
     pub type_params: Vec<String>,
+    /// Caller-specified generic type parameters, declared after inferred ones.
+    pub out_type_params: Vec<String>,
     /// Function parameters.
     pub parameters: Vec<Parameter>,
     /// Explicit return type, if present.
@@ -584,6 +586,8 @@ pub enum ExprKind {
     TupleLiteral(Vec<Expr>),
     IntrinsicCall {
         intrinsic: Intrinsic,
+        /// Explicit type arguments written at the call site.
+        type_args: Vec<Type>,
         arguments: Vec<Expr>,
     },
 }

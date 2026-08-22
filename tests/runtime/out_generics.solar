@@ -1,0 +1,38 @@
+import intrinsics from "@intrinsics";
+
+struct Packed { low: Uint8, wide: Uint64, high: Uint8 }
+
+enum Payload { Empty, Byte(Uint8), Slice(&[Uint8]) }
+
+fn combined_size#[T, out U](value: T) -> Uint {
+	size_of#[T]() + size_of#[U]()
+}
+
+fn keep#[T, out U](value: T) -> T {
+	value
+}
+
+method with_size#[out U](self: Packed) -> Uint {
+	size_of#[Packed]() + size_of#[U]()
+}
+
+fn main() {
+	fn local_size#[T, out U](value: T) -> Uint {
+		size_of#[T]() + size_of#[U]()
+	}
+
+	println(Int(size_of#[Uint8]()));
+	println(Int(size_of#[Int16]()));
+	println(Int(size_of#[Int]()));
+	println(Int(size_of#[&[Uint8]]()));
+	println(Int(size_of#[[Int16; 3]]()));
+	println(Int(size_of#[Packed]()));
+	println(Int(size_of#[Payload]()));
+	println(Int(intrinsics::size_of#[Uint32]()));
+	println(Int(combined_size#[Bool](7i16)));
+	println(keep#[Bool](42));
+	println(
+		Int((Packed { low: 1u8, wide: 2u64, high: 3u8 }).with_size#[Bool]()),
+	);
+	println(Int(local_size#[Bool](9i16)));
+}

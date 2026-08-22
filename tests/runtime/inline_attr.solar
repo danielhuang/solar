@@ -15,5 +15,5 @@ fn main() {
 	println(square(5)); // 25
 	println(add3(1, 2, 3)); // 6
 	println((Number { value: 7 }).triple()); // 21
-	println(id#[Int](42)); // 42
+	println(id(42)); // 42
 }

@@ -24,7 +24,7 @@ fn main() {
 	println(classify(p^));
 	let arr = [1, 2, 3];
 	println(classify(arr&));
-	println(classify#[Alias](p));
+	println(classify(p));
 
 	// Module-qualified generic type from the stdlib
 	println(match.reflect vec::Vec#[Int] { "struct" => 8, _ => 9 });

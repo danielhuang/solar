@@ -56,7 +56,7 @@ fn main() {
 
 	// generic method
 	let b = Box#[Int] { value: 99 };
-	println(b.get#[Int]()); // 99
+	println(b.get()); // 99
 
 	// generic method with inference
 	let b2 = Box#[Int] { value: 77 };
@@ -64,7 +64,7 @@ fn main() {
 
 	// generic method with extra arg
 	let b3 = Box#[Int] { value: 5 };
-	println(b3.map#[Int](negate)); // -5
+	println(b3.map(negate)); // -5
 
 	// namespace separation: fn double != method double
 	println(double(10)); // 30 (fn double = x*3)

@@ -278,10 +278,36 @@ fn bad_for_range_types() {
 
 #[test]
 #[should_panic(
-    expected = "type parameter `T` is not used in function `foo` parameters or return type"
+    expected = "inferred type parameter `T` is not used in a parameter of function `foo`"
 )]
 fn bad_unused_type_param() {
     compile(&fixture("typecheck_bad_unused_type_param.solar"));
+}
+
+#[test]
+#[should_panic(
+    expected = "inferred type parameter `T` is not used in a parameter of function `foo`"
+)]
+fn inferred_type_param_used_only_in_return() {
+    compile(&fixture("inferred_type_param_used_only_in_return.solar"));
+}
+
+#[test]
+#[should_panic(expected = "requires output type arguments written with `#[...]`")]
+fn missing_output_type_args() {
+    compile(&fixture("missing_output_type_args.solar"));
+}
+
+#[test]
+#[should_panic(expected = "inferred type parameters of `identity` cannot be specified explicitly")]
+fn inferred_type_args_cannot_be_explicit() {
+    compile(&fixture("inferred_type_args_cannot_be_explicit.solar"));
+}
+
+#[test]
+#[should_panic(expected = "size_of: type [Int] is unsized")]
+fn size_of_unsized_type() {
+    compile_with_pipeline(&fixture("size_of_unsized_type.solar"));
 }
 
 #[test]

@@ -33,6 +33,11 @@ pub import hashbrown from "hashbrown/map.solar";
 /// A value that may be absent.
 pub enum Option#[T] { Some(T), None }
 
+/// Returns the byte size of a statically sized type.
+pub fn size_of#[out T]() -> Uint {
+	intrinsics::size_of#[T]()
+}
+
 /// Returns whether the option contains a value.
 pub method is_some#[T](self: Option#[T]) -> Bool {
 	match self { Option#[T]::Some(value) => true, Option#[T]::None => false }

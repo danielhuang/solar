@@ -45,7 +45,7 @@ fn main() {
 	// Generic nested function
 	fn identity#[T](x: T) -> T { x }
 
-	println(identity#[Int](42)); // 42
+	println(identity(42)); // 42
 
 	// Overloaded nested function
 	fn process(x: Int) -> Int { x + 1 }

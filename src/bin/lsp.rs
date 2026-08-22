@@ -2377,11 +2377,16 @@ fn collect_sequence_overlays(
 
 /// Collects declared type-parameter names.
 fn collect_type_params(node: Node<'_>, source: &str, names: &mut HashSet<String>) {
-    if node.kind() == "type_params" {
+    if matches!(node.kind(), "type_params" | "function_type_params") {
         let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "identifier" {
-                names.insert(source[child.byte_range()].to_owned());
+        for child in node.named_children(&mut cursor) {
+            let identifier = match child.kind() {
+                "identifier" => Some(child),
+                "out_type_param" => child.child_by_field_name("name"),
+                _ => None,
+            };
+            if let Some(identifier) = identifier {
+                names.insert(source[identifier.byte_range()].to_owned());
             }
         }
     }

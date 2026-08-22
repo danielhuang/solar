@@ -470,9 +470,14 @@ fn apply_subst_to_ast_expr(expr: &ast::Expr, subst: &HashMap<String, ast::Type>)
         ),
         ast::ExprKind::IntrinsicCall {
             intrinsic,
+            type_args,
             arguments,
         } => ast::ExprKind::IntrinsicCall {
             intrinsic: intrinsic.clone(),
+            type_args: type_args
+                .iter()
+                .map(|ty| apply_subst_to_ast_type(ty, subst))
+                .collect(),
             arguments: arguments
                 .iter()
                 .map(|a| apply_subst_to_ast_expr(a, subst))
@@ -618,6 +623,7 @@ fn apply_subst_to_ast_statement(
                 name: fdef.name.clone(),
                 display_name: fdef.display_name.clone(),
                 type_params: fdef.type_params.clone(),
+                out_type_params: fdef.out_type_params.clone(),
                 parameters: fdef
                     .parameters
                     .iter()
@@ -1121,7 +1127,10 @@ struct GenericEnumDef {
 
 #[derive(Clone)]
 struct FunctionEntry {
+    /// All type parameters in substitution order: inferred parameters first,
+    /// followed by caller-specified output parameters.
     type_params: Vec<String>,
+    out_type_param_count: usize,
     /// Shared, immutable AST definition. `Rc` so that cloning an entry (or a
     /// whole overload set) at a call site is a refcount bump, not a deep copy
     /// of the function body — overload sets can be large (every method of a
@@ -1129,6 +1138,24 @@ struct FunctionEntry {
     /// checking quadratic in program size.
     ast_def: Rc<ast::FunctionDef>,
     overload_index: usize,
+}
+
+impl FunctionEntry {
+    fn inferred_type_params(&self) -> &[String] {
+        &self.type_params[..self.type_params.len() - self.out_type_param_count]
+    }
+
+    fn out_type_params(&self) -> &[String] {
+        &self.type_params[self.type_params.len() - self.out_type_param_count..]
+    }
+}
+
+fn all_function_type_params(def: &ast::FunctionDef) -> Vec<String> {
+    def.type_params
+        .iter()
+        .chain(&def.out_type_params)
+        .cloned()
+        .collect()
 }
 
 /// Per-method-name index of the concrete overload set, keyed by the base
@@ -1605,7 +1632,8 @@ impl<'a> Lowerer<'a> {
                         .or_default();
                     let overload_index = entries.len();
                     entries.push(FunctionEntry {
-                        type_params: f.type_params.clone(),
+                        type_params: all_function_type_params(&f),
+                        out_type_param_count: f.out_type_params.len(),
                         ast_def: Rc::new(f),
                         overload_index,
                     });
@@ -1625,7 +1653,8 @@ impl<'a> Lowerer<'a> {
                     let entries = method_defs.entry(m.name.clone()).or_default();
                     let overload_index = entries.len();
                     entries.push(FunctionEntry {
-                        type_params: m.type_params.clone(),
+                        type_params: all_function_type_params(&m),
+                        out_type_param_count: m.out_type_params.len(),
                         ast_def: Rc::new(m),
                         overload_index,
                     });
@@ -1725,7 +1754,9 @@ impl<'a> Lowerer<'a> {
                     }
                 }
 
-                // Validate generic entries: unused type params
+                // Inferred type parameters must be recoverable from at least
+                // one argument. Output parameters are explicitly supplied and
+                // therefore need not occur in the signature at all.
                 let generic: Vec<&FunctionEntry> = entries
                     .iter()
                     .filter(|e| !e.type_params.is_empty())
@@ -1733,17 +1764,21 @@ impl<'a> Lowerer<'a> {
                 for gdef in &generic {
                     let param_types: Vec<&ast::Type> =
                         gdef.ast_def.parameters.iter().map(|p| &p.ty).collect();
+                    let mut seen = HashSet::new();
                     for tp in &gdef.type_params {
+                        if !seen.insert(tp) {
+                            return Err(CompileError::new(
+                                format!("duplicate type parameter `{tp}` in {kind} `{name}`"),
+                                gdef.ast_def.span,
+                            ));
+                        }
+                    }
+                    for tp in gdef.inferred_type_params() {
                         let in_params = param_types.iter().any(|t| type_param_appears_in(t, tp));
-                        let in_return = gdef
-                            .ast_def
-                            .return_type
-                            .as_ref()
-                            .is_some_and(|t| type_param_appears_in(t, tp));
-                        if !in_params && !in_return {
+                        if !in_params {
                             return Err(CompileError::new(
                                 format!(
-                                    "type parameter `{tp}` is not used in {kind} `{name}` parameters or return type"
+                                    "inferred type parameter `{tp}` is not used in a parameter of {kind} `{name}`"
                                 ),
                                 gdef.ast_def.span,
                             ));
@@ -1757,12 +1792,14 @@ impl<'a> Lowerer<'a> {
                     for b in generic.iter().skip(i + 1) {
                         let b_param_types: Vec<ast::Type> =
                             b.ast_def.parameters.iter().map(|p| p.ty.clone()).collect();
-                        if params_alpha_equivalent(
-                            &a_param_types,
-                            &a.type_params,
-                            &b_param_types,
-                            &b.type_params,
-                        ) {
+                        if a.out_type_param_count == b.out_type_param_count
+                            && params_alpha_equivalent(
+                                &a_param_types,
+                                &a.type_params,
+                                &b_param_types,
+                                &b.type_params,
+                            )
+                        {
                             return Err(CompileError::new(
                                 format!(
                                     "generic {kind} `{name}`: overloads have equivalent parameter patterns"
@@ -3017,6 +3054,7 @@ impl<'a> Lowerer<'a> {
         // un-mangled base — the lowered def's identity is the `FuncId` above).
         let mut ast_def = ast_def_clone;
         ast_def.type_params.clear();
+        ast_def.out_type_params.clear();
         for param in &mut ast_def.parameters {
             param.ty = apply_subst_to_ast_type(&param.ty, &subst);
         }
@@ -4453,19 +4491,50 @@ impl<'a> Lowerer<'a> {
                 let mut fdef_owned = fdef.clone();
                 prepare_keyword_params(&mut fdef_owned)?;
                 let fdef = &fdef_owned;
+                let mut seen_type_params = HashSet::new();
+                for type_param in fdef.type_params.iter().chain(&fdef.out_type_params) {
+                    if !seen_type_params.insert(type_param) {
+                        return Err(CompileError::new(
+                            format!(
+                                "duplicate type parameter `{type_param}` in function `{}`",
+                                fdef.display_name
+                            ),
+                            fdef.span,
+                        ));
+                    }
+                }
+                for type_param in &fdef.type_params {
+                    if !fdef
+                        .parameters
+                        .iter()
+                        .any(|parameter| type_param_appears_in(&parameter.ty, type_param))
+                    {
+                        return Err(CompileError::new(
+                            format!(
+                                "inferred type parameter `{type_param}` is not used in a parameter of function `{}`",
+                                fdef.display_name
+                            ),
+                            fdef.span,
+                        ));
+                    }
+                }
                 // Generic or overloaded nested function: store for later resolution at call sites
                 let has_prev_entries = self
                     .nested_function_defs
                     .last()
                     .is_some_and(|m| m.contains_key(&fdef.name));
 
-                if !fdef.type_params.is_empty() || has_prev_entries {
+                if !fdef.type_params.is_empty()
+                    || !fdef.out_type_params.is_empty()
+                    || has_prev_entries
+                {
                     // Store as a FunctionEntry in nested_function_defs
                     if let Some(registry) = self.nested_function_defs.last_mut() {
                         let entries = registry.entry(fdef.name.clone()).or_default();
                         let overload_index = entries.len();
                         entries.push(FunctionEntry {
-                            type_params: fdef.type_params.clone(),
+                            type_params: all_function_type_params(fdef),
+                            out_type_param_count: fdef.out_type_params.len(),
                             ast_def: Rc::new(fdef.clone()),
                             overload_index,
                         });
@@ -4479,6 +4548,7 @@ impl<'a> Lowerer<'a> {
                     let entries = registry.entry(fdef.name.clone()).or_default();
                     entries.push(FunctionEntry {
                         type_params: vec![],
+                        out_type_param_count: 0,
                         ast_def: Rc::new(fdef.clone()),
                         overload_index: 0,
                     });
@@ -5041,6 +5111,16 @@ impl<'a> Lowerer<'a> {
                         if !kwargs.is_empty() {
                             return Err(reject_kwargs(expr.span));
                         }
+                        if !type_args.is_empty()
+                            && entries.iter().all(|entry| entry.out_type_param_count == 0)
+                        {
+                            return Err(CompileError::new(
+                                format!(
+                                    "inferred type parameters of nested function `{name}` cannot be specified explicitly"
+                                ),
+                                expr.span,
+                            ));
+                        }
                         // Generic or overloaded nested function — resolve at call site
                         for entry in &entries {
                             let gdef = &entry.ast_def;
@@ -5104,12 +5184,24 @@ impl<'a> Lowerer<'a> {
                                     continue;
                                 }
                                 let type_params = &entry.type_params;
-                                let effective_type_args = if !type_args.is_empty() {
-                                    if type_args.len() != type_params.len() {
+                                let (effective_type_args, pre_lowered_args) = if !type_args
+                                    .is_empty()
+                                {
+                                    if entry.out_type_param_count == 0
+                                        || type_args.len() != entry.out_type_param_count
+                                    {
                                         continue;
                                     }
-                                    type_args.clone()
+                                    let Ok((effective, lowered)) = self.bind_output_generic_call(
+                                        name, entry, type_args, arguments,
+                                    ) else {
+                                        continue;
+                                    };
+                                    (effective, Some(lowered))
                                 } else {
+                                    if entry.out_type_param_count != 0 {
+                                        continue;
+                                    }
                                     let param_ast_types: Vec<ast::Type> =
                                         gdef.parameters.iter().map(|p| p.ty.clone()).collect();
                                     let lowered_args: Vec<Expr> = arguments
@@ -5124,7 +5216,7 @@ impl<'a> Lowerer<'a> {
                                         &param_ast_types,
                                         &arg_types,
                                     ) {
-                                        Ok(args) => args,
+                                        Ok(args) => (args, Some(lowered_args)),
                                         Err(_) => continue,
                                     }
                                 };
@@ -5179,8 +5271,14 @@ impl<'a> Lowerer<'a> {
 
                                 let mut lowered_args: Vec<Expr> = Vec::new();
                                 let mut all_ok = true;
-                                for (arg, pty) in arguments.iter().zip(param_types.iter()) {
-                                    let lowered = self.lower_expr(arg)?;
+                                for (index, (arg, pty)) in
+                                    arguments.iter().zip(param_types.iter()).enumerate()
+                                {
+                                    let lowered = if let Some(lowered) = &pre_lowered_args {
+                                        lowered[index].clone()
+                                    } else {
+                                        self.lower_expr(arg)?
+                                    };
                                     let coerced = self.try_coerce(lowered, pty);
                                     if coerced.ty != *pty {
                                         all_ok = false;
@@ -6011,8 +6109,9 @@ impl<'a> Lowerer<'a> {
             } => self.lower_method_call(expr.span, receiver, method, type_args, arguments, kwargs),
             ast::ExprKind::IntrinsicCall {
                 intrinsic,
+                type_args,
                 arguments,
-            } => self.lower_intrinsic_call(expr.span, intrinsic, arguments),
+            } => self.lower_intrinsic_call(expr.span, intrinsic, type_args, arguments),
             ast::ExprKind::StringLiteral(_) | ast::ExprKind::CharLiteral(_) => {
                 unreachable!("surface literal reached typed AST lowering")
             }
@@ -7658,6 +7757,87 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Bind a generic function's inferred prefix from its arguments and its
+    /// output suffix from the explicit call-site type arguments.
+    fn bind_output_generic_call(
+        &mut self,
+        name: &str,
+        gdef: &FunctionEntry,
+        output_type_args: &[ast::Type],
+        arguments: &[ast::Expr],
+    ) -> Result<(Vec<ast::Type>, Vec<Expr>), CompileError> {
+        assert_eq!(gdef.out_type_param_count, output_type_args.len());
+        let param_types: Vec<ast::Type> = gdef
+            .ast_def
+            .parameters
+            .iter()
+            .map(|parameter| parameter.ty.clone())
+            .collect();
+        let mut bindings: HashMap<String, ast::Type> = gdef
+            .out_type_params()
+            .iter()
+            .zip(output_type_args)
+            .map(|(parameter, argument)| (parameter.clone(), argument.clone()))
+            .collect();
+        let mut lowered: Vec<Option<Expr>> = Vec::with_capacity(arguments.len());
+
+        for (argument, parameter_type) in arguments.iter().zip(&param_types) {
+            if Self::has_infer_params(argument) {
+                lowered.push(None);
+                continue;
+            }
+            let argument = self.lower_expr(argument)?;
+            if !self.try_unify_type(
+                parameter_type,
+                &argument.ty,
+                &gdef.type_params,
+                &mut bindings,
+            ) {
+                return Err(CompileError::new(
+                    format!("no matching generic overload for `{name}`"),
+                    argument.span,
+                ));
+            }
+            lowered.push(Some(argument));
+        }
+
+        for (index, argument) in arguments.iter().enumerate() {
+            if lowered[index].is_some() {
+                continue;
+            }
+            let expected_ast = apply_subst_to_ast_type(&param_types[index], &bindings);
+            let expected = self.resolve_ast_type(&expected_ast)?;
+            let argument = self.lower_expr_with_expected(argument, &expected)?;
+            if !self.try_unify_type(
+                &param_types[index],
+                &argument.ty,
+                &gdef.type_params,
+                &mut bindings,
+            ) {
+                return Err(CompileError::new(
+                    format!("no matching generic overload for `{name}`"),
+                    argument.span,
+                ));
+            }
+            lowered[index] = Some(argument);
+        }
+
+        let mut type_args = Vec::with_capacity(gdef.type_params.len());
+        for parameter in gdef.inferred_type_params() {
+            type_args.push(bindings.get(parameter).cloned().ok_or_else(|| {
+                CompileError::new(
+                    format!(
+                        "could not infer type argument `{parameter}` for generic function `{}`",
+                        self.display_name(name)
+                    ),
+                    ast::SourceSpan::default(),
+                )
+            })?);
+        }
+        type_args.extend_from_slice(output_type_args);
+        Ok((type_args, lowered.into_iter().map(Option::unwrap).collect()))
+    }
+
     /// Shared overload resolution for both function calls and method calls.
     /// `mangle_prefix` is "" for functions, "__method_" for methods.
     #[allow(clippy::too_many_arguments)]
@@ -7684,9 +7864,21 @@ impl<'a> Lowerer<'a> {
         let num_generic_overloads = generic_entries.len();
 
         if !type_args.is_empty() {
+            if generic_entries
+                .iter()
+                .all(|entry| entry.out_type_param_count == 0)
+            {
+                return Err(CompileError::new(
+                    format!(
+                        "inferred type parameters of `{}` cannot be specified explicitly",
+                        self.display_name(name)
+                    ),
+                    span,
+                ));
+            }
             let mut viable: Vec<(FunctionEntry, Vec<ast::Expr>)> = Vec::new();
             for gdef in &generic_entries {
-                if gdef.type_params.len() != type_args.len() {
+                if gdef.out_type_param_count == 0 || gdef.out_type_param_count != type_args.len() {
                     continue;
                 }
                 if let Some(full) = Self::expand_kwargs(&gdef.ast_def.parameters, arguments, kwargs)
@@ -7733,10 +7925,12 @@ impl<'a> Lowerer<'a> {
                 )
             })?;
             self.require_unsafe_access(&gdef.ast_def, span)?;
+            let (effective_type_args, pre_lowered_args) =
+                self.bind_output_generic_call(name, &gdef, type_args, &full_args)?;
             let mangled = self.ensure_function_monomorphized_with_def(
                 name,
                 &gdef,
-                type_args,
+                &effective_type_args,
                 num_generic_overloads,
                 mangle_prefix,
             )?;
@@ -7753,12 +7947,8 @@ impl<'a> Lowerer<'a> {
                 ));
             }
             let mut lowered_args: Vec<Expr> = Vec::new();
-            for (arg, param) in full_args.iter().zip(mono_fn.parameters.iter()) {
-                let lowered = if Self::has_infer_params(arg) {
-                    self.lower_expr_with_expected(arg, &param.ty)?
-                } else {
-                    self.lower_expr(arg)?
-                };
+            for (index, param) in mono_fn.parameters.iter().enumerate() {
+                let lowered = pre_lowered_args[index].clone();
                 let coerced = self.try_coerce(lowered, &param.ty);
                 if coerced.ty != param.ty {
                     let param_name = match &param.name {
@@ -7790,6 +7980,25 @@ impl<'a> Lowerer<'a> {
         }
 
         // No explicit type args
+        let has_output_generics = generic_entries
+            .iter()
+            .any(|entry| entry.out_type_param_count != 0);
+        let generic_entries: Vec<FunctionEntry> = generic_entries
+            .into_iter()
+            .filter(|entry| entry.out_type_param_count == 0)
+            .collect();
+        if has_output_generics
+            && generic_entries.is_empty()
+            && self.total_concrete_count(&source, name) == 0
+        {
+            return Err(CompileError::new(
+                format!(
+                    "{} requires output type arguments written with `#[...]`",
+                    self.display_name(name)
+                ),
+                span,
+            ));
+        }
         if !has_infer_closures {
             // Lower the positional arguments once for diagnostics; each candidate
             // re-lowers its full (kwargs-expanded) argument list below.
@@ -8522,6 +8731,7 @@ impl<'a> Lowerer<'a> {
         &mut self,
         span: ast::SourceSpan,
         intrinsic: &Intrinsic,
+        type_args: &[ast::Type],
         arguments: &[ast::Expr],
     ) -> Result<Expr, CompileError> {
         let name = intrinsic.name();
@@ -8532,7 +8742,79 @@ impl<'a> Lowerer<'a> {
             ));
         }
         if matches!(intrinsic, Intrinsic::Syscall) {
+            if !type_args.is_empty() {
+                return Err(CompileError::new(
+                    "syscall does not accept type arguments".to_string(),
+                    span,
+                ));
+            }
             return self.lower_syscall_intrinsic(span, arguments);
+        }
+        if matches!(intrinsic, Intrinsic::SizeOf) {
+            if type_args.len() != 1 {
+                return Err(CompileError::new(
+                    format!("size_of: expected 1 type argument, got {}", type_args.len()),
+                    span,
+                ));
+            }
+            if !arguments.is_empty() {
+                return Err(CompileError::new(
+                    format!("size_of: expected 0 arguments, got {}", arguments.len()),
+                    span,
+                ));
+            }
+            let ty = self.resolve_ast_type(&type_args[0])?;
+            let Some((size, _)) = type_layout(&ty, &self.lowered_structs, &self.lowered_enums)
+            else {
+                return Err(CompileError::new(
+                    format!("size_of: type {ty} is unsized"),
+                    span,
+                ));
+            };
+            // A generic function is already being materialized as a concrete
+            // instance, so put the constant directly in that instance's body.
+            // A direct intrinsic call from concrete code instead targets the
+            // synthetic per-type function below, keeping its call site intact.
+            if self.mono_depth != 0 {
+                return Ok(Expr {
+                    ty: Type::Uint,
+                    kind: ExprKind::IntegerLiteral(size as i64),
+                    span,
+                });
+            }
+            let function = FuncId::free(ast::DefId::synthetic("size_of"), vec![ty]);
+            self.monomorphized_functions
+                .entry(function.clone())
+                .or_insert_with(|| FunctionDef {
+                    id: function.clone(),
+                    parameters: Vec::new(),
+                    return_type: Type::Uint,
+                    body: vec![Statement {
+                        kind: StatementKind::Expression(Expr {
+                            ty: Type::Uint,
+                            kind: ExprKind::IntegerLiteral(size as i64),
+                            span,
+                        }),
+                        span,
+                    }],
+                    is_unsafe: false,
+                    inline_hint: false,
+                    def_span: span,
+                });
+            return Ok(Expr {
+                ty: Type::Uint,
+                kind: ExprKind::Call {
+                    function,
+                    arguments: Vec::new(),
+                },
+                span,
+            });
+        }
+        if !type_args.is_empty() {
+            return Err(CompileError::new(
+                format!("{name} does not accept type arguments"),
+                span,
+            ));
         }
         let spec = intrinsic_spec(intrinsic);
 
@@ -8838,6 +9120,7 @@ fn intrinsic_spec(intrinsic: &Intrinsic) -> IntrinsicSpec {
             params: vec![IsArray],
             ret: Fixed(Type::Uint),
         },
+        Intrinsic::SizeOf => unreachable!("size_of is lowered to a monomorphized function"),
         Intrinsic::AssertArrayLen => IntrinsicSpec {
             params: vec![IsArray, Exact(Type::Uint)],
             ret: Fixed(Type::Unit),
@@ -9001,6 +9284,75 @@ fn is_atomic_compatible(ty: &Type, structs: &HashMap<TypeId, StructDef>) -> bool
         return false;
     }
     matches!(atomic_type_size(ty, structs), Some(1 | 2 | 4 | 8 | 16))
+}
+
+/// Computes the same packed `(size, alignment)` used by IR layout. Unsized
+/// types return `None`.
+fn type_layout(
+    ty: &Type,
+    structs: &HashMap<TypeId, StructDef>,
+    enums: &HashMap<TypeId, EnumDef>,
+) -> Option<(usize, usize)> {
+    match ty {
+        Type::Bool | Type::Int8 | Type::Uint8 => Some((1, 1)),
+        Type::Int16 | Type::Uint16 => Some((2, 2)),
+        Type::Int32 | Type::Uint32 | Type::Float32 => Some((4, 4)),
+        Type::Int64
+        | Type::Uint64
+        | Type::Int
+        | Type::Uint
+        | Type::Float64
+        | Type::Ref(_)
+        | Type::NullableRef(_)
+        | Type::Unique(_)
+        | Type::FileDesc => Some((8, 8)),
+        Type::RefUnsized(_)
+        | Type::NullableRefUnsized(_)
+        | Type::UniqueUnsized(_)
+        | Type::Function { .. } => Some((16, 16)),
+        Type::Unit | Type::Never => Some((0, 1)),
+        Type::Array(_) => None,
+        Type::FixedArray(inner, count) => {
+            let (size, align) = type_layout(inner, structs, enums)?;
+            Some((size * *count as usize, align))
+        }
+        Type::Struct(id) => {
+            let fields = structs
+                .get(id)?
+                .fields
+                .iter()
+                .map(|field| type_layout(&field.ty, structs, enums));
+            let fields = fields.collect::<Option<Vec<_>>>()?;
+            let align = fields
+                .iter()
+                .map(|(_, alignment)| *alignment)
+                .max()
+                .unwrap_or(1);
+            let (_, extent) = crate::types::pack_fields(&fields, 0);
+            Some((align_to(extent, align), align))
+        }
+        Type::Enum(id) => {
+            let payloads = enums.get(id)?.variants.iter().filter_map(|variant| {
+                variant
+                    .inner_type
+                    .as_ref()
+                    .map(|ty| type_layout(ty, structs, enums))
+            });
+            let payloads = payloads.collect::<Option<Vec<_>>>()?;
+            let align = payloads
+                .iter()
+                .map(|(_, alignment)| *alignment)
+                .max()
+                .unwrap_or(8)
+                .max(8);
+            let (_, extent) = crate::types::pack_fields(&payloads, 8);
+            Some((align_to(extent, align), align))
+        }
+    }
+}
+
+fn align_to(value: usize, alignment: usize) -> usize {
+    (value + alignment - 1) & !(alignment - 1)
 }
 
 fn is_atomic_shape_ok(ty: &Type, structs: &HashMap<TypeId, StructDef>) -> bool {

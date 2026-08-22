@@ -7,7 +7,7 @@ fn always(x: &Owner#[Int]) -> Bool { true }
 
 fn main() {
 	let o = Owner#[Int] { v: 0i32 };
-	let by_owner = make#[Int](o&, 7i32);
+	let by_owner = make(o&, 7i32);
 	println(Int(by_owner@.tag).to_string());
 
 	let k = Key { k: 1i32 };
@@ -19,6 +19,6 @@ fn main() {
 
 	// Shape-distinguished overloads: slice vs scalar function.
 	let conds = [always];
-	println(Int(pick#[Owner#[Int]](conds&)).to_string());
-	println(Int(pick#[Owner#[Int]](always)).to_string());
+	println(Int(pick(conds&)).to_string());
+	println(Int(pick(always)).to_string());
 }

@@ -193,6 +193,23 @@ fn convert_type_params(node: tree_sitter::Node, source: &str) -> Vec<String> {
     params
 }
 
+fn convert_function_type_params(
+    node: tree_sitter::Node,
+    source: &str,
+) -> (Vec<String>, Vec<String>) {
+    let mut inferred = Vec::new();
+    let mut output = Vec::new();
+    for child in code_children(node) {
+        match child.kind() {
+            "identifier" => inferred.push(node_text(child, source).to_string()),
+            "out_type_param" => output
+                .push(node_text(child.child_by_field_name("name").unwrap(), source).to_string()),
+            _ => {}
+        }
+    }
+    (inferred, output)
+}
+
 fn convert_type_args(node: tree_sitter::Node, source: &str) -> Vec<Type> {
     let mut args = Vec::new();
     for child in code_children(node) {
@@ -373,9 +390,9 @@ fn convert_function_def(node: tree_sitter::Node, source: &str) -> FunctionDef {
     let name = node_text(node.child_by_field_name("name").unwrap(), source).to_string();
     let is_pub = has_pub_keyword(node, source);
     let is_unsafe = node.child_by_field_name("unsafe").is_some();
-    let type_params = node
+    let (type_params, out_type_params) = node
         .child_by_field_name("type_params")
-        .map(|n| convert_type_params(n, source))
+        .map(|n| convert_function_type_params(n, source))
         .unwrap_or_default();
 
     let mut parameters = Vec::new();
@@ -401,6 +418,7 @@ fn convert_function_def(node: tree_sitter::Node, source: &str) -> FunctionDef {
         display_name: name.clone(),
         name,
         type_params,
+        out_type_params,
         parameters,
         return_type,
         return_type_span,

@@ -1502,6 +1502,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 // (the test harness) can only use this in spawned binaries.
                 std::process::exit(code);
             }
+            Intrinsic::SizeOf => unreachable!("size_of is lowered before IR generation"),
             Intrinsic::ArrayLen => {
                 let len = if let Type::FixedArray(_, n) = &nodes[args[0].0].ty {
                     *n as usize

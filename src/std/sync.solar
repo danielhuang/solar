@@ -121,7 +121,7 @@ pub struct Channel#[T] {
 }
 
 /// Creates an empty channel.
-pub fn Channel#[T]() -> Channel#[T] {
+pub fn Channel#[out T]() -> Channel#[T] {
 	Channel#[T] {
 		send_lock: Mutex(),
 		recv_lock: Mutex(),

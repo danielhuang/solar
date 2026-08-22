@@ -56,6 +56,45 @@ fn layout_packing() {
 }
 
 #[test]
+fn out_generics_and_size_of() {
+    let path = fixture("out_generics.solar");
+    let output = run(&path, "out_generics_and_size_of");
+    assert_eq!(output, "1\n2\n8\n16\n6\n16\n32\n4\n3\n42\n17\n3\n");
+
+    let typed = solar::pipeline::compile(&path).unwrap().typed;
+    let instances: Vec<_> = typed
+        .functions
+        .iter()
+        .filter(|(id, _)| id.def.name == "size_of")
+        .collect();
+    assert!(!instances.is_empty());
+    assert!(
+        instances
+            .iter()
+            .any(|(id, _)| id.def.file != solar::ast::SYNTHETIC_FILE)
+    );
+    assert!(
+        instances
+            .iter()
+            .any(|(id, _)| id.def.file == solar::ast::SYNTHETIC_FILE)
+    );
+    for (id, function) in instances {
+        assert_eq!(id.args.len(), 1);
+        assert!(function.parameters.is_empty());
+        assert!(matches!(
+            function.body.as_slice(),
+            [solar::typed_ast::Statement {
+                kind: solar::typed_ast::StatementKind::Expression(solar::typed_ast::Expr {
+                    kind: solar::typed_ast::ExprKind::IntegerLiteral(_),
+                    ..
+                }),
+                ..
+            }]
+        ));
+    }
+}
+
+#[test]
 fn hashbrown_bitmask() {
     let output = run(&fixture("hashbrown_bitmask.solar"), "hashbrown_bitmask");
     assert_eq!(output, "0\n2\n5\n0\n");

@@ -9,7 +9,7 @@ pub fn make#[T](owner: &Owner#[T], tag: Int32) -> &Named#[T] {
 	n&
 }
 
-pub fn make#[T](key: Key, tag: Int32) -> &Named#[T] {
+pub fn make#[out T](key: Key, tag: Int32) -> &Named#[T] {
 	let n = Named#[T] { tag: tag + 100i32 };
 	n&
 }

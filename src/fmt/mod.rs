@@ -344,6 +344,21 @@ fn type_parameters(parameters: &[String]) -> Doc {
     }
 }
 
+fn function_type_parameters(parameters: &[String], output_parameters: &[String]) -> Doc {
+    if parameters.is_empty() && output_parameters.is_empty() {
+        return Doc::Nil;
+    }
+    list(
+        parameters.iter().map(Doc::text).chain(
+            output_parameters
+                .iter()
+                .map(|name| Doc::concat([Doc::text("out "), Doc::text(name)])),
+        ),
+        "#[",
+        "]",
+    )
+}
+
 fn top_level_doc(item: &TopLevelItem, context: &SourceContext<'_>) -> Doc {
     match item {
         TopLevelItem::Struct(definition) => struct_doc(definition, context),
@@ -461,7 +476,7 @@ fn function_doc(definition: &FunctionDef, keyword: &str, context: &SourceContext
             Doc::text(" ")
         },
         Doc::text(&definition.display_name),
-        type_parameters(&definition.type_params),
+        function_type_parameters(&definition.type_params, &definition.out_type_params),
         delimited("(", parameter_docs, ")", false, false),
         definition.return_type.as_ref().map_or(Doc::Nil, |ty| {
             Doc::concat([Doc::text(" -> "), type_doc(ty)])
@@ -1013,9 +1028,11 @@ fn expr_doc(expression: &Expr, context: &SourceContext<'_>) -> Doc {
         ),
         ExprKind::IntrinsicCall {
             intrinsic,
+            type_args,
             arguments,
         } => Doc::concat([
             Doc::text(intrinsic.name()),
+            type_arguments(type_args),
             list(
                 arguments.iter().map(|value| expr_doc(value, context)),
                 "(",

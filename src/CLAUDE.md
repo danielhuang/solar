@@ -35,6 +35,14 @@ AST, while `ir_interp` and native codegen consume IR.
 - Eagerly lower concrete top-level functions and methods so their bodies are
   validated and typed tooling can inspect them without requiring a call site.
   Generic declarations remain demand-monomorphized.
+- Function and method type parameters declared with `out` follow all inferred
+  type parameters and are supplied by the call site's `#[...]` list. Non-`out`
+  parameters cannot be written at a call site: they are always inferred and
+  must occur in at least one parameter type. Output parameters need not occur
+  in the signature.
+- `size_of#[T]()` accepts only sized types. Each concrete type produces a
+  zero-argument monomorphized function whose constant body uses the same packed
+  size and alignment rules as IR layout.
 - Keep user-written and compiler-generated local identifiers as distinct
   `Ident` variants until `mangled_ast` renders them into disjoint strings.
 - Keep mangling and `solar-system/src/panic.rs` demangling in sync.

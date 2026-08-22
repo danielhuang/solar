@@ -51,6 +51,21 @@ fn unsafe_declarations_and_blocks_are_preserved() {
 }
 
 #[test]
+fn function_output_type_parameters_are_preserved() {
+    let ast = parse("fn test#[T, out U, out V](x: T) -> U { x }\n");
+    let TopLevelItem::Function(function) = &ast.items[0] else {
+        panic!("expected function");
+    };
+    assert_eq!(function.type_params, ["T"]);
+    assert_eq!(function.out_type_params, ["U", "V"]);
+}
+
+#[test]
+fn output_type_parameters_must_follow_inferred_parameters() {
+    assert!(solar::parser::parse("fn bad#[out T, U](x: U) {}\n").is_err());
+}
+
+#[test]
 fn struct_fields_and_enum_variants_do_not_require_trailing_commas() {
     let ast = parse("struct Pair { left: Int, right: Int }\nenum Maybe { None, Some(Int) }");
     let TopLevelItem::Struct(pair) = &ast.items[0] else {

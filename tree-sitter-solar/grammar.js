@@ -143,7 +143,7 @@ module.exports = grammar({
         "fn",
         optional(field("attr", $.inline_attr)),
         field("name", $.identifier),
-        optional(field("type_params", $.type_params)),
+        optional(field("type_params", $.function_type_params)),
         "(",
         optional($.parameter_list),
         ")",
@@ -158,7 +158,7 @@ module.exports = grammar({
         "method",
         optional(field("attr", $.inline_attr)),
         field("name", $.identifier),
-        optional(field("type_params", $.type_params)),
+        optional(field("type_params", $.function_type_params)),
         "(",
         optional($.parameter_list),
         ")",
@@ -556,6 +556,25 @@ module.exports = grammar({
 
     // ── Generics ──────────────────────────────────────────────
     type_params: ($) => seq("#", "[", $.identifier, repeat(seq(",", $.identifier)), optional(","), "]"),
+
+    // Function output type parameters are explicit at call sites. Keeping a
+    // separate rule makes `out` unavailable on structs, enums, and aliases and
+    // enforces that all output parameters follow the inferred parameters.
+    function_type_params: ($) => seq(
+      "#", "[",
+      choice(
+        seq($.identifier, repeat(seq(",", $.identifier)), optional(",")),
+        seq(
+          optional(seq($.identifier, repeat(seq(",", $.identifier)), ",")),
+          $.out_type_param,
+          repeat(seq(",", $.out_type_param)),
+          optional(","),
+        ),
+      ),
+      "]",
+    ),
+
+    out_type_param: ($) => seq("out", field("name", $.identifier)),
 
     type_args: ($) => seq("#", "[", $._type, repeat(seq(",", $._type)), optional(","), "]"),
 

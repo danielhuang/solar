@@ -518,8 +518,15 @@ impl Resolver {
                     rewrite_function_body(&mut m, &rewrite_ctx);
                     set_file_id_span(&mut m.span, file_id);
                     let is_std = (file_id as usize) < std_file_count;
+                    let mut method_type_params = m.type_params.clone();
+                    method_type_params.extend(m.out_type_params.iter().cloned());
                     if !m.parameters.iter().any(|parameter| {
-                        method_type_has_local_anchor(&parameter.ty, file_id, &m.type_params, is_std)
+                        method_type_has_local_anchor(
+                            &parameter.ty,
+                            file_id,
+                            &method_type_params,
+                            is_std,
+                        )
                     }) {
                         rewrite_errors.borrow_mut().push(CompileError::new(
                             format!(
@@ -782,7 +789,8 @@ struct RewriteCtx<'a> {
 
 /// Resolves names within a function.
 fn rewrite_function_body(f: &mut FunctionDef, parent_ctx: &RewriteCtx<'_>) {
-    let type_params = &f.type_params;
+    let mut type_params = f.type_params.clone();
+    type_params.extend(f.out_type_params.iter().cloned());
 
     // Collect locally-bound names to avoid renaming them
     let mut locals: HashSet<Ident> = HashSet::new();
@@ -796,7 +804,7 @@ fn rewrite_function_body(f: &mut FunctionDef, parent_ctx: &RewriteCtx<'_>) {
             &p.ty,
             parent_ctx.rename_map,
             parent_ctx.module_aliases,
-            type_params,
+            &type_params,
         );
         rewrite_destructure_pattern(
             &mut p.pattern,
@@ -811,7 +819,7 @@ fn rewrite_function_body(f: &mut FunctionDef, parent_ctx: &RewriteCtx<'_>) {
             rt,
             parent_ctx.rename_map,
             parent_ctx.module_aliases,
-            type_params,
+            &type_params,
         );
     }
 
@@ -822,7 +830,7 @@ fn rewrite_function_body(f: &mut FunctionDef, parent_ctx: &RewriteCtx<'_>) {
         intrinsic_names: parent_ctx.intrinsic_names,
         intrinsic_modules: parent_ctx.intrinsic_modules,
         errors: parent_ctx.errors,
-        type_params,
+        type_params: &type_params,
         file_id: parent_ctx.file_id,
     };
 
@@ -1036,12 +1044,17 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<Ident>) {
                 && ctx.intrinsic_names.contains(name.as_str())
             {
                 let intrinsic = Intrinsic::from_name(name).unwrap();
+                let mut type_args = std::mem::take(type_args);
+                for ty in &mut type_args {
+                    *ty = rewrite_type(ty, ctx.rename_map, ctx.module_aliases, ctx.type_params);
+                }
                 let mut arguments = std::mem::take(arguments);
                 for arg in &mut arguments {
                     rewrite_expr(arg, ctx, locals);
                 }
                 expr.kind = ExprKind::IntrinsicCall {
                     intrinsic,
+                    type_args,
                     arguments,
                 };
                 return;
@@ -1066,12 +1079,17 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<Ident>) {
                     }
                     return;
                 };
+                let mut type_args = std::mem::take(type_args);
+                for ty in &mut type_args {
+                    *ty = rewrite_type(ty, ctx.rename_map, ctx.module_aliases, ctx.type_params);
+                }
                 let mut arguments = std::mem::take(arguments);
                 for arg in &mut arguments {
                     rewrite_expr(arg, ctx, locals);
                 }
                 expr.kind = ExprKind::IntrinsicCall {
                     intrinsic,
+                    type_args,
                     arguments,
                 };
                 return;
