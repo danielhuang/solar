@@ -8,6 +8,12 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 #[test]
+fn assert() {
+    let output = run(&fixture("assert.solar"), "assert");
+    assert_eq!(output, "passed\nassertion failed\n");
+}
+
+#[test]
 fn synthetic_ident_collision() {
     let output = run(
         &fixture("synthetic_ident_collision.solar"),

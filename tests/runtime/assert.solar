@@ -1,0 +1,11 @@
+fn main() {
+	assert(true);
+	println("passed"&);
+
+	try {
+		assert(false);
+		println("UNREACHABLE"&);
+	} catch (e) {
+		println(e);
+	}
+}

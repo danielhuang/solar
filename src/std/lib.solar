@@ -171,6 +171,13 @@ pub fn println#[T](x: T) {
 	println(x.to_string());
 }
 
+/// Throws an assertion failure when `condition` is false.
+pub fn assert(condition: Bool) {
+	if !condition {
+		throw("assertion failed"&);
+	}
+}
+
 /// Throws a recoverable exception.
 pub fn throw(s: &[Uint8]) {
 	intrinsics::throw(s);
