@@ -23,8 +23,6 @@ pub mod heap;
 pub mod init_cell;
 /// Allocation and memory intrinsics.
 pub mod mem;
-/// Socket intrinsics.
-pub mod net;
 /// Panic and exception support.
 pub mod panic;
 /// Process arguments and environment.

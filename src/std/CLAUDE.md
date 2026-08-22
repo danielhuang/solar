@@ -24,9 +24,9 @@ slots@[i] = value;
 ## Backend support
 
 Standard-stream and partial-write file intrinsics have interpreter
-implementations in `src/interp_io.rs`. Other file and directory operations use
-the native-only `syscall` intrinsic, so their tests belong in the compiled-only
-suite. Threads, futexes, and sockets are native-runtime only too.
+implementations in `src/interp_io.rs`. Other file, directory, and socket
+operations use the native-only `syscall` intrinsic, so their tests belong in
+the compiled-only suite. Threads and futexes are native-runtime only too.
 
 When adding a fallible intrinsic, keep its exception text identical in the AST
 interpreter, IR interpreter, and native runtime.
