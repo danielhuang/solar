@@ -38,6 +38,12 @@ pub fn size_of#[out T]() -> Uint {
 	intrinsics::size_of#[T]()
 }
 
+/// Prevents the compiler from treating a value as statically known.
+pub fn black_box#[T](value: T) -> T {
+	intrinsics::black_box_ref(value&);
+	value
+}
+
 /// Returns whether the option contains a value.
 pub method is_some#[T](self: Option#[T]) -> Bool {
 	match self { Option#[T]::Some(value) => true, Option#[T]::None => false }

@@ -10,6 +10,12 @@ use crate::heap;
 /// Function used by the collector to trace an allocation.
 pub type MarkFn = unsafe extern "C" fn(*mut u8, *mut u8, u64);
 
+/// Prevents the optimizer from treating a Solar value as statically known.
+#[unsafe(no_mangle)]
+pub extern "C" fn sol_black_box_ref(value: *mut u8) {
+    let _ = std::hint::black_box(value);
+}
+
 /// Allocates uninitialized GC-managed memory.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -> *mut u8 {

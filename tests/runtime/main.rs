@@ -14,6 +14,12 @@ fn assert() {
 }
 
 #[test]
+fn black_box() {
+    let output = run(&fixture("black_box.solar"), "black_box");
+    assert_eq!(output, "41\n42\n16\n5\n");
+}
+
+#[test]
 fn synthetic_ident_collision() {
     let output = run(
         &fixture("synthetic_ident_collision.solar"),

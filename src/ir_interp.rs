@@ -1416,6 +1416,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let b = self.mem.load(b_place, 8);
                 self.scalar_store(dst, (a == b) as u64, result_ty);
             }
+            Intrinsic::BlackBoxRef => {
+                let _ = self.eval_load(nodes, args[0])?;
+            }
             Intrinsic::FdFromRaw | Intrinsic::FdToRaw => {
                 let value = self.eval_load(nodes, args[0])?;
                 self.scalar_store(dst, value, result_ty);

@@ -43,6 +43,9 @@ AST, while `ir_interp` and native codegen consume IR.
 - `size_of#[T]()` accepts only sized types. Each concrete type produces a
   zero-argument monomorphized function whose constant body uses the same packed
   size and alignment rules as IR layout.
+- `black_box_ref(&T)` accepts a sized reference, passes its pointer through the
+  native runtime's Rust optimizer barrier, and never retains the reference.
+  Escape analysis must therefore treat its argument as non-escaping.
 - Keep user-written and compiler-generated local identifiers as distinct
   `Ident` variants until `mangled_ast` renders them into disjoint strings.
 - Keep mangling and `solar-system/src/panic.rs` demangling in sync.

@@ -1060,6 +1060,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     _ => unreachable!("ref_eq arguments must be references"),
                 }
             }
+            Intrinsic::BlackBoxRef => {
+                self.eval_expr(&arguments[0])?;
+                Value::Unit
+            }
             Intrinsic::FdFromRaw | Intrinsic::FdToRaw => self.eval_expr(&arguments[0])?,
             Intrinsic::Syscall => {
                 panic!("syscall intrinsic not implemented in AST interpreter");

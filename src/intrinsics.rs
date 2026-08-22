@@ -6,6 +6,7 @@ use crate::ast::NumericType;
 #[derive(Debug, Clone)]
 pub enum Intrinsic {
     RefEq,
+    BlackBoxRef,
     Throw,
     Try,
     ArrayLen,
@@ -61,6 +62,7 @@ pub enum Intrinsic {
 
 const INTRINSIC_NAMES: &[(&str, Intrinsic)] = &[
     ("ref_eq", Intrinsic::RefEq),
+    ("black_box_ref", Intrinsic::BlackBoxRef),
     ("throw", Intrinsic::Throw),
     ("try", Intrinsic::Try),
     ("array_len", Intrinsic::ArrayLen),

@@ -8920,6 +8920,14 @@ impl<'a> Lowerer<'a> {
                     }
                     ref_inner = Some(inner_ty);
                 }
+                ParamRequirement::IsSizedRef => {
+                    if !matches!(arg.ty, Type::Ref(_)) {
+                        return Err(CompileError::new(
+                            format!("{name}: expected &T, got {}", arg.ty),
+                            span,
+                        ));
+                    }
+                }
                 ParamRequirement::IsRef => {
                     if !matches!(arg.ty, Type::Ref(_) | Type::RefUnsized(_)) {
                         return Err(CompileError::new(
@@ -9046,6 +9054,7 @@ enum ParamRequirement {
     MatchesFloat,
     RefToAtomic,
     MatchesRefInner,
+    IsSizedRef,
     IsRef,
     MatchesRef,
 }
@@ -9100,6 +9109,10 @@ fn intrinsic_spec(intrinsic: &Intrinsic) -> IntrinsicSpec {
         Intrinsic::RefEq => IntrinsicSpec {
             params: vec![IsRef, MatchesRef],
             ret: Fixed(Type::Bool),
+        },
+        Intrinsic::BlackBoxRef => IntrinsicSpec {
+            params: vec![IsSizedRef],
+            ret: Fixed(Type::Unit),
         },
         // throw(msg: &[Uint8]): unwind with a string payload; diverges.
         Intrinsic::Throw => IntrinsicSpec {

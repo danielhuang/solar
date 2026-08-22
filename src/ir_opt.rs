@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::intrinsics::Intrinsic;
 use crate::ir::{MatchPattern, Module, Node, NodeId, NodeKind, Type, VarId};
 
 /// Run all IR optimization passes over `module` to a fixpoint, mutating it in
@@ -25,19 +26,29 @@ fn param_noescape_snapshot(module: &Module) -> HashMap<String, Vec<bool>> {
 }
 
 /// Node indices that appear as a call argument bound for a parameter currently
-/// known to be non-escaping (per `noescape_params`). Passing a pointer to such a
+/// known to be non-escaping (per `noescape_params`), or as the operand of an
+/// intrinsic whose ABI guarantees non-escape. Passing a pointer to such a
 /// position cannot leak it.
 fn good_call_args(nodes: &[Node], noescape_params: &HashMap<String, Vec<bool>>) -> HashSet<usize> {
     let mut good: HashSet<usize> = HashSet::new();
     for node in nodes {
-        if let NodeKind::Call { function, args } = &node.kind
-            && let Some(pn) = noescape_params.get(function)
-        {
-            for (i, a) in args.iter().enumerate() {
-                if pn.get(i).copied().unwrap_or(false) {
-                    good.insert(a.0);
+        match &node.kind {
+            NodeKind::Call { function, args } => {
+                if let Some(pn) = noescape_params.get(function) {
+                    for (i, a) in args.iter().enumerate() {
+                        if pn.get(i).copied().unwrap_or(false) {
+                            good.insert(a.0);
+                        }
+                    }
                 }
             }
+            NodeKind::IntrinsicCall {
+                intrinsic: Intrinsic::BlackBoxRef,
+                args,
+            } => {
+                good.insert(args[0].0);
+            }
+            _ => {}
         }
     }
     good
@@ -699,6 +710,16 @@ mod tests {
         );
         assert_eq!(noescape_of(&m, "taker"), vec![true]);
         assert_eq!(noescape_of(&m, "leaktaker"), vec![false]);
+    }
+
+    #[test]
+    fn black_box_ref_argument_does_not_escape() {
+        let m = ir_of(
+            "import {black_box_ref} from \"@intrinsics\";\n\
+             fn hide(x: Int) -> Int { black_box_ref(x&); x }\n\
+             fn main() { println(hide(3)); }\n",
+        );
+        assert_eq!(noescape_of(&m, "hide"), vec![true]);
     }
 
     /// Whether the `let = <n>` binding (the `Let` whose value is the integer

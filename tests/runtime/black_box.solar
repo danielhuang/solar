@@ -1,0 +1,17 @@
+import intrinsics from "@intrinsics";
+
+struct Pair { left: Int, right: Int }
+
+fn main() {
+	let value = 41;
+	intrinsics::black_box_ref(value&);
+	println(value);
+	println(black_box(42));
+
+	let pair = black_box(Pair { left: 7, right: 9 });
+	println(pair.left + pair.right);
+
+	let original: [Int; 3] = [3, 5, 7];
+	let values = black_box(original);
+	println(values[1u]);
+}
