@@ -15,7 +15,7 @@ Solar is a programming language whose compiler is written in Rust 2024.
 
 ```bash
 cargo build
-cargo test --workspace
+cargo nextest run --workspace # do not use plain `cargo test`
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
