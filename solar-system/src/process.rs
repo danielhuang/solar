@@ -129,7 +129,7 @@ pub unsafe extern "C" fn sol_env(out: *mut u8) {
 /// `String` in `std`'s `cgroups::quota`) — calling it from a registered
 /// mutator thread would need a GC critical section (the STW signal parking a
 /// thread mid-`malloc` deadlocks the collector's own pause allocations, the
-/// `sol_file_open` reasoning). Computing it before the GC thread or any
+/// the path-copying file intrinsics' reasoning). Computing it before the GC thread or any
 /// mutator exists sidesteps that entirely and makes the intrinsic a plain
 /// load.
 static NUM_CPUS: InitCell<u64> = InitCell::new(0);

@@ -759,7 +759,9 @@ impl<'a> Codegen<'a> {
         self.line("extern uint8_t* sol_alloc(size_t size, size_t align, sol_mark_fn_t mark_fn);");
         self.line("extern void sol_gc_mark(void* ctx, uint8_t* ptr);");
         self.line("extern void sol_memcpy(uint8_t* dst, const uint8_t* src, size_t size);");
-        self.line("extern uint8_t* sol_file_open(const uint8_t* ptr, size_t len, int64_t flags, uint64_t mode);");
+        self.line("extern uint8_t* sol_fd_from_raw(int32_t fd);");
+        self.line("extern int32_t sol_fd_to_raw(uint8_t* fd);");
+        self.line("extern long syscall(long number, ...);");
         self.line("extern void sol_file_close(uint8_t* fd);");
         self.line("extern uint8_t* sol_file_stdin(void);");
         self.line("extern uint8_t* sol_file_stdout(void);");
@@ -2769,20 +2771,50 @@ impl<'a> Codegen<'a> {
                     "sol_try({body_fn}, {body_env}, {handler_fn}, {handler_env});"
                 ));
             }
-            Intrinsic::FileOpen => {
-                // args: &[Uint8] path (fat pointer), Int flags, Uint mode.
-                // Returns a FileDesc (opaque uint8_t* into the fd arena).
-                let (ref_place, _) = self.emit_place(nodes, args[0]);
-                let flags = self.emit_load(nodes, args[1]);
-                let mode = self.emit_load(nodes, args[2]);
-                let data_ptr = self.fresh_tmp();
-                let data_len = self.fresh_tmp();
-                self.linef(format!("uint8_t* {data_ptr} = *(uint8_t**){ref_place};"));
+            Intrinsic::FdFromRaw => {
+                let fd = self.emit_load(nodes, args[0]);
                 self.linef(format!(
-                    "uint64_t {data_len} = *(uint64_t*)({ref_place} + 8);"
+                    "*(uint8_t**){dst} = sol_fd_from_raw((int32_t){fd});"
                 ));
+            }
+            Intrinsic::FdToRaw => {
+                let fd = self.emit_load(nodes, args[0]);
+                self.linef(format!("*(int32_t*){dst} = sol_fd_to_raw((uint8_t*){fd});"));
+            }
+            Intrinsic::Syscall => {
+                let number = self.emit_load(nodes, args[0]);
+                let mut call_args = Vec::with_capacity(args.len());
+                call_args.push(format!("(long){number}"));
+                for argument in &args[1..] {
+                    let ty = &nodes[argument.0].ty;
+                    let value = match ty {
+                        Type::Int64 | Type::Uint64 => {
+                            format!("(long){}", self.emit_load(nodes, *argument))
+                        }
+                        Type::Ref(_)
+                        | Type::RefUnsized(_)
+                        | Type::NullableRef(_)
+                        | Type::NullableRefUnsized(_) => {
+                            let place = if is_place(nodes, *argument) {
+                                self.emit_place(nodes, *argument).0
+                            } else {
+                                let size = self.type_size(ty);
+                                let align = self.type_align(ty);
+                                let mark = self.mark_fn_expr(ty);
+                                let temporary = self.fresh_tmp();
+                                self.emit_alloc(&temporary, size, align, &mark);
+                                self.emit_into(nodes, *argument, &temporary);
+                                temporary
+                            };
+                            format!("(long)*(uint8_t**){place}")
+                        }
+                        _ => unreachable!("invalid syscall argument type: {ty}"),
+                    };
+                    call_args.push(value);
+                }
                 self.linef(format!(
-                    "*(uint8_t**){dst} = sol_file_open({data_ptr}, {data_len}, (int64_t){flags}, (uint64_t){mode});"
+                    "*(int64_t*){dst} = (int64_t)syscall({});",
+                    call_args.join(", ")
                 ));
             }
             Intrinsic::FileClose => {

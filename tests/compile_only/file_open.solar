@@ -1,0 +1,5 @@
+// Opens this fixture through @std's syscall + owned FileDesc path.
+fn main() {
+	let f = file::open("tests/compile_only/file_open.solar"&);
+	println("opened"&);
+}

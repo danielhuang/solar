@@ -1,5 +1,24 @@
 import intrinsics from "@intrinsics";
 
+fn open_raw(path: &[Uint8], flags: Int, mode: Uint) -> FileDesc {
+	// Linux x86-64 openat(2). Keep close(2) private: FileDesc.close uses the
+	// runtime's dup-based stale-handle protection instead.
+	const SYS_OPENAT = 257i64;
+	const AT_FDCWD = 18446744073709551516u64; // -100 as a syscall word
+	const O_CLOEXEC = 0o2000000;
+	let nul_path: [Uint8] = path@ + [0u8];
+	let raw = unsafe {
+		intrinsics::syscall(
+			SYS_OPENAT,
+			AT_FDCWD,
+			nul_path&,
+			Int64(flags + O_CLOEXEC),
+			Uint64(mode),
+		)
+	};
+	unsafe { intrinsics::fd_from_raw(Int32(raw)) }
+}
+
 /// Opens `path` and returns an opaque FileDesc. The garbage collector closes the
 /// file once no live FileDesc refers to it. The boolean keyword arguments select
 /// the open mode: `read`/`write` set the access mode, `append` opens at the end,
@@ -33,7 +52,7 @@ pub fn open(
 	if new { flags = flags + O_EXCL; }
 	if truncate { flags = flags + O_TRUNC; }
 	if append { flags = flags + O_APPEND; }
-	intrinsics::file_open(path, flags, mode)
+	open_raw(path, flags, mode)
 }
 
 /// Returns a FileDesc for the process's standard input. It refers to a stream
@@ -59,7 +78,7 @@ pub fn stderr() -> FileDesc {
 pub fn open_dir(path: &[Uint8]) -> FileDesc {
 	const O_RDONLY = 0;
 	const O_DIRECTORY = 0o200000;
-	intrinsics::file_open(path, O_RDONLY + O_DIRECTORY, 0u)
+	open_raw(path, O_RDONLY + O_DIRECTORY, 0u)
 }
 
 /// "Closes" `f`: the underlying file is released now, but the fd number stays

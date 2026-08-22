@@ -1,7 +1,6 @@
-// Every fallible runtime intrinsic throws a *catchable* Solar exception with a
-// message that is byte-identical across the three backends (interpreters throw
-// the same strings as solar-system). Each case catches, prints the message,
-// and control resumes after the try.
+// Fallible runtime operations shared by all three backends throw catchable
+// exceptions with byte-identical messages. Each case catches, prints the
+// message, and control resumes after the try.
 
 fn first2(pair: [Int; 2]) -> Int {
 	pair[0u]
@@ -41,14 +40,6 @@ fn main() {
 	}
 
 	try { println(first2(a)); } catch (e) { println(e); }
-
-	// File errors.
-	try {
-		let f = file::open("/nonexistent_solar_test_dir/no_such_file"&);
-		println("UNREACHABLE"&);
-	} catch (e) {
-		println(e);
-	}
 
 	println("done"&);
 }

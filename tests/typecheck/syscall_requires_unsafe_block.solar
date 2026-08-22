@@ -1,0 +1,5 @@
+import intrinsics from "@intrinsics";
+
+fn main() {
+	intrinsics::syscall(39i64);
+}

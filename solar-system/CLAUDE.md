@@ -38,6 +38,10 @@ with the dead fd instead of releasing its number, preventing stale handles from
 aliasing a later open. Standard descriptors are not registered and therefore
 are never auto-closed.
 
+`sol_fd_from_raw` transfers a newly owned raw descriptor into the arena and
+registers it for GC closure. `sol_fd_to_raw` only borrows the descriptor number;
+it does not remove the handle from GC ownership.
+
 Sockets use the same descriptor arena and lifecycle.
 
 ## Exceptions

@@ -1,0 +1,10 @@
+fn main() {
+	try {
+		let f = file::open("/nonexistent_solar_test_dir/no_such_file"&);
+		println("UNREACHABLE"&);
+	} catch (e) {
+		println(e);
+	}
+
+	println("done"&);
+}

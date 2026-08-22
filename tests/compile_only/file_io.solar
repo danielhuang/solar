@@ -1,9 +1,9 @@
 // Exercises the FileDesc read/write methods: the explicit-buffer read overload,
 // the allocating read(max_size) overload, and write (looping write_all) to the
 // stdout FileDesc. The data file holds "hello world\n" (12 bytes). All three
-// backends must agree.
+// This is native-only because file opening uses the syscall intrinsic.
 fn main() {
-	let f = file::open("tests/runtime/file_io_data.txt"&);
+	let f = file::open("tests/compile_only/file_io_data.txt"&);
 
 	// Read the first 5 bytes into an explicit buffer.
 	let buf: [Uint8] = [0u8; 5u];

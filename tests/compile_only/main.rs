@@ -108,3 +108,49 @@ fn exit() {
     let output = run_codegen_file(&fixture("exit.solar"), "compile_only_exit");
     assert_eq!(output, "before exit\n");
 }
+
+#[test]
+fn file_open() {
+    let output = run_codegen_file(&fixture("file_open.solar"), "compile_only_file_open");
+    assert_eq!(output, "opened\n");
+}
+
+#[test]
+fn file_io() {
+    let output = run_codegen_file(&fixture("file_io.solar"), "compile_only_file_io");
+    assert_eq!(output, "5\nhello world\n");
+}
+
+#[test]
+fn file_open_flags() {
+    let output = run_codegen_file(
+        &fixture("file_open_flags.solar"),
+        "compile_only_file_open_flags",
+    );
+    assert_eq!(output, "xyz\n");
+}
+
+#[test]
+fn file_ops() {
+    let output = run_codegen_file(&fixture("file_ops.solar"), "compile_only_file_ops");
+    assert_eq!(
+        output,
+        "dir created\n5\nworld\nWORLD\n11\n0\n1\nno phantom\nlocked\n2\na.txt listed\nrenamed\ncleaned\n"
+    );
+}
+
+#[test]
+fn file_open_error() {
+    let output = run_codegen_file(
+        &fixture("file_open_error.solar"),
+        "compile_only_file_open_error",
+    );
+    assert!(output.starts_with("fd_from_raw failed: "), "{output}");
+    assert!(output.ends_with("\ndone\n"), "{output}");
+}
+
+#[test]
+fn syscall() {
+    let output = run_codegen_file(&fixture("syscall.solar"), "compile_only_syscall");
+    assert_eq!(output, "syscall\n8\n");
+}

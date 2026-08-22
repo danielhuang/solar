@@ -1,5 +1,4 @@
-// Exercises file::open keyword arguments: create + truncate to write a fresh
-// file, then reopen it read-only (write=false) and read the contents back.
+// Exercises native file::open keyword arguments through the syscall path.
 fn main() {
 	let path = "target/solar_open_flags.tmp"&;
 

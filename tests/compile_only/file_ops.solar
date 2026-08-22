@@ -1,8 +1,8 @@
 // Exercises the file intrinsics through their @std wrappers: directory
 // create/list/remove, positioned read/write, stat/exists, rename, remove,
 // sync, and locks. Uses a fixed path under target/ (tests run from the crate
-// root in all three backends); starts by removing leftovers from a previous
-// failed run so reruns stay deterministic.
+// root in native codegen); starts by removing leftovers from a previous failed
+// run so reruns stay deterministic.
 fn cleanup() {
 	try { file::remove("target/solar_test_file_ops/a.txt"&); } catch (e) {}
 	try { file::remove("target/solar_test_file_ops/b.txt"&); } catch (e) {}

@@ -23,9 +23,10 @@ slots@[i] = value;
 
 ## Backend support
 
-File APIs have interpreter implementations in `src/interp_io.rs`. Threads,
-futexes, and sockets are native-runtime only; tests for them belong in the
-compiled-only suite.
+Standard-stream and non-opening file intrinsics have interpreter
+implementations in `src/interp_io.rs`. `file::open` and `file::open_dir` use the
+native-only `syscall` intrinsic, so tests that open files belong in the
+compiled-only suite. Threads, futexes, and sockets are native-runtime only too.
 
 When adding a fallible intrinsic, keep its exception text identical in the AST
 interpreter, IR interpreter, and native runtime.

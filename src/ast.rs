@@ -710,7 +710,9 @@ pub enum Intrinsic {
     AtomicCompareExchange,
     FutexWait,
     FutexWake,
-    FileOpen,
+    FdFromRaw,
+    FdToRaw,
+    Syscall,
     FileClose,
     FileStdin,
     FileStdout,
@@ -781,7 +783,9 @@ const INTRINSIC_NAMES: &[(&str, Intrinsic)] = &[
     ("atomic_compare_exchange", Intrinsic::AtomicCompareExchange),
     ("futex_wait", Intrinsic::FutexWait),
     ("futex_wake", Intrinsic::FutexWake),
-    ("file_open", Intrinsic::FileOpen),
+    ("fd_from_raw", Intrinsic::FdFromRaw),
+    ("fd_to_raw", Intrinsic::FdToRaw),
+    ("syscall", Intrinsic::Syscall),
     ("file_close", Intrinsic::FileClose),
     ("file_stdin", Intrinsic::FileStdin),
     ("file_stdout", Intrinsic::FileStdout),
@@ -864,6 +868,11 @@ impl Intrinsic {
             return parse_cast_type_names(suffix);
         }
         None
+    }
+
+    /// Whether calling this intrinsic requires an explicit `unsafe` block.
+    pub fn is_unsafe(&self) -> bool {
+        matches!(self, Intrinsic::FdFromRaw | Intrinsic::Syscall)
     }
 }
 

@@ -57,6 +57,10 @@ AST, while `ir_interp` and native codegen consume IR.
   `unsafe method`, including converting a declaration to a function value,
   requires an explicit `unsafe {}` block. An unsafe declaration does not make
   its own body, or a closure created inside an unsafe block, implicitly unsafe.
+- `syscall` is a native-only unsafe intrinsic with an `Int64`/`Uint64` syscall
+  number, up to six `Int64`, `Uint64`, or reference arguments, and an `Int64`
+  result. `fd_from_raw(Int32)` is unsafe and transfers descriptor ownership to
+  the GC; `fd_to_raw(FileDesc)` safely borrows the underlying number.
 
 ## LSP
 

@@ -97,42 +97,28 @@ unsafe fn mark_word(fd: usize) -> *const AtomicU64 {
     unsafe { (FD_MARK_BITS.get() as *const AtomicU64).add(fd >> 6) }
 }
 
-/// Open `path` with the given `open(2)` `flags` and creation `mode`, and return
-/// an opaque `FileDesc` pointer (`FD_BASE + fd`). The fd's allocated bit is set
-/// so the next GC traces it. `O_CLOEXEC` is always added so descriptors don't
-/// leak across `exec`.
+/// Take ownership of a raw file descriptor and return its GC-traced
+/// `FileDesc`. Once no reachable `FileDesc` contains this handle, sweeping may
+/// close the descriptor. The caller must ensure `fd` is newly owned and is not
+/// simultaneously managed elsewhere.
 ///
-/// Throws a Solar exception on failure so the returned pointer is always a
-/// valid, live fd — the opaque-handle contract needs no sentinel value.
-/// `extern "C-unwind"` so the throw may unwind through the generated C frames
-/// to the nearest `sol_try`.
+/// A negative descriptor is treated as the immediately preceding syscall's
+/// failure sentinel and throws its saved OS error.
 #[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn sol_file_open(
-    path_ptr: *const u8,
-    path_len: usize,
-    flags: i64,
-    mode: u64,
-) -> *mut u8 {
-    // NUL-terminated GC copy of the (unterminated) Solar byte-slice path — the
-    // GC allocator, not the system malloc, so no critical section is needed
-    // around its lifetime (a malloc'd buffer once forced the whole body into
-    // one: the STW signal parking this thread mid-`malloc` would deadlock the
-    // GC thread's own allocations).
-    let path = copy_path(path_ptr, path_len);
-
-    // O_CLOEXEC is always set so fds don't leak across exec.
-    let fd = unsafe {
-        libc::open(
-            path,
-            (flags as libc::c_int) | libc::O_CLOEXEC,
-            mode as libc::c_uint,
-        )
-    };
+pub unsafe extern "C-unwind" fn sol_fd_from_raw(fd: libc::c_int) -> *mut u8 {
     if fd < 0 {
         let err = std::io::Error::last_os_error();
-        crate::panic::throw_message(format_args!("file_open failed: {err}"));
+        crate::panic::throw_message(format_args!("fd_from_raw failed: {err}"));
     }
     unsafe { register_new_fd(fd as usize) }
+}
+
+/// Borrow the raw descriptor represented by `fd_ptr` without transferring
+/// ownership. The returned number remains valid only while the `FileDesc` is
+/// live and has not been closed.
+#[unsafe(no_mangle)]
+pub extern "C" fn sol_fd_to_raw(fd_ptr: *mut u8) -> libc::c_int {
+    fd_from_ptr(fd_ptr)
 }
 
 /// Register a freshly created fd (an opened file, a socket, an accepted

@@ -3,7 +3,7 @@
 use crate::file::{fd_from_ptr, register_new_fd};
 
 /// `socket(2)`. `SOCK_CLOEXEC` is always added so sockets don't leak across
-/// `exec` (mirroring `sol_file_open`'s `O_CLOEXEC`). Throws a Solar exception
+/// `exec` (matching `@std` file opening's `O_CLOEXEC`). Throws a Solar exception
 /// on error.
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn sol_socket_create(

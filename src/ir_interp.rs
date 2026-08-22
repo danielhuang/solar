@@ -1425,21 +1425,12 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let b = self.mem.load(b_place, 8);
                 self.scalar_store(dst, (a == b) as u64, result_ty);
             }
-            Intrinsic::FileOpen => {
-                let (ref_addr, _) = self.eval_place(nodes, args[0])?;
-                let data_ptr = self.mem.load(ref_addr, 8) as usize;
-                let data_len = self.mem.load(ref_addr + 8, 8) as usize;
-                let bytes = self.mem.data[data_ptr..data_ptr + data_len].to_vec();
-                let path = String::from_utf8_lossy(&bytes).into_owned();
-                let flags = self.eval_load(nodes, args[1])? as i64;
-                let mode = self.eval_load(nodes, args[2])? as u32;
-                // No fd arena / GC here: the FileDesc is an index into a virtual
-                // table of boxed streams (the compiled runtime uses a real fd).
-                let fd = match self.files.open(&path, flags, mode) {
-                    Ok(fd) => fd,
-                    Err(err) => return Err(self.thrown(&format!("file_open failed: {err}"))),
-                };
-                self.scalar_store(dst, fd as u64, result_ty);
+            Intrinsic::FdFromRaw | Intrinsic::FdToRaw => {
+                let value = self.eval_load(nodes, args[0])?;
+                self.scalar_store(dst, value, result_ty);
+            }
+            Intrinsic::Syscall => {
+                panic!("syscall intrinsic not implemented in IR interpreter");
             }
             Intrinsic::FileClose => {
                 // The virtual table keeps the stream alive (no auto-close in the

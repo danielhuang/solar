@@ -1,0 +1,5 @@
+import intrinsics from "@intrinsics";
+
+fn main() {
+	unsafe { intrinsics::syscall(1i64, 1i32); }
+}

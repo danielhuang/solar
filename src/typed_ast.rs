@@ -8699,6 +8699,15 @@ impl<'a> Lowerer<'a> {
         arguments: &[ast::Expr],
     ) -> Result<Expr, CompileError> {
         let name = intrinsic.name();
+        if intrinsic.is_unsafe() && self.unsafe_depth == 0 {
+            return Err(CompileError::new(
+                format!("access to unsafe intrinsic `{name}` requires an unsafe block"),
+                span,
+            ));
+        }
+        if matches!(intrinsic, ast::Intrinsic::Syscall) {
+            return self.lower_syscall_intrinsic(span, arguments);
+        }
         let spec = intrinsic_spec(intrinsic);
 
         if arguments.len() != spec.params.len() {
@@ -8857,6 +8866,65 @@ impl<'a> Lowerer<'a> {
             span,
         })
     }
+
+    fn lower_syscall_intrinsic(
+        &mut self,
+        span: ast::SourceSpan,
+        arguments: &[ast::Expr],
+    ) -> Result<Expr, CompileError> {
+        if !(1..=7).contains(&arguments.len()) {
+            return Err(CompileError::new(
+                format!(
+                    "syscall: expected a syscall number and at most 6 arguments, got {} arguments",
+                    arguments.len()
+                ),
+                span,
+            ));
+        }
+
+        let mut lowered_args = Vec::with_capacity(arguments.len());
+        for (index, argument) in arguments.iter().enumerate() {
+            let argument = self.lower_expr(argument)?;
+            let valid = if index == 0 {
+                matches!(argument.ty, Type::Int64 | Type::Uint64)
+            } else {
+                matches!(
+                    argument.ty,
+                    Type::Int64
+                        | Type::Uint64
+                        | Type::Ref(_)
+                        | Type::RefUnsized(_)
+                        | Type::NullableRef(_)
+                        | Type::NullableRefUnsized(_)
+                )
+            };
+            if !valid {
+                let expected = if index == 0 {
+                    "Int64 or Uint64"
+                } else {
+                    "Int64, Uint64, or a reference"
+                };
+                return Err(CompileError::new(
+                    format!(
+                        "syscall: argument {} must be {expected}, got {}",
+                        index + 1,
+                        argument.ty
+                    ),
+                    argument.span,
+                ));
+            }
+            lowered_args.push(argument);
+        }
+
+        Ok(Expr {
+            ty: Type::Int64,
+            kind: ExprKind::IntrinsicCall {
+                intrinsic: ast::Intrinsic::Syscall,
+                arguments: lowered_args,
+            },
+            span,
+        })
+    }
 }
 
 enum ParamRequirement {
@@ -8978,11 +9046,15 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
             params: vec![ref_u32(), u32()],
             ret: Fixed(Type::Unit),
         },
-        ast::Intrinsic::FileOpen => IntrinsicSpec {
-            // (path, open(2) flags, file-creation mode)
-            params: vec![byte_slice(), Exact(Type::Int), Exact(Type::Uint)],
+        ast::Intrinsic::FdFromRaw => IntrinsicSpec {
+            params: vec![Exact(Type::Int32)],
             ret: Fixed(Type::FileDesc),
         },
+        ast::Intrinsic::FdToRaw => IntrinsicSpec {
+            params: vec![Exact(Type::FileDesc)],
+            ret: Fixed(Type::Int32),
+        },
+        ast::Intrinsic::Syscall => unreachable!("syscall has a variadic signature"),
         ast::Intrinsic::FileClose => IntrinsicSpec {
             params: vec![Exact(Type::FileDesc)],
             ret: Fixed(Type::Unit),

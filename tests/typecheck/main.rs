@@ -482,3 +482,27 @@ fn unsafe_function_body_is_not_implicitly_unsafe() {
 fn closure_does_not_inherit_unsafe_context() {
     compile(&fixture("unsafe_closure_requires_own_block.solar"));
 }
+
+#[test]
+#[should_panic(expected = "access to unsafe intrinsic `syscall` requires an unsafe block")]
+fn syscall_requires_unsafe_block() {
+    compile_with_pipeline(&fixture("syscall_requires_unsafe_block.solar"));
+}
+
+#[test]
+#[should_panic(expected = "access to unsafe intrinsic `fd_from_raw` requires an unsafe block")]
+fn fd_from_raw_requires_unsafe_block() {
+    compile_with_pipeline(&fixture("fd_from_raw_requires_unsafe_block.solar"));
+}
+
+#[test]
+#[should_panic(expected = "syscall: argument 2 must be Int64, Uint64, or a reference, got Int32")]
+fn syscall_rejects_other_argument_types() {
+    compile_with_pipeline(&fixture("syscall_bad_argument.solar"));
+}
+
+#[test]
+#[should_panic(expected = "syscall: expected a syscall number and at most 6 arguments")]
+fn syscall_rejects_too_many_arguments() {
+    compile_with_pipeline(&fixture("syscall_too_many_arguments.solar"));
+}

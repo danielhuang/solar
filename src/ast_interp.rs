@@ -1087,37 +1087,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     _ => unreachable!("ref_eq arguments must be references"),
                 }
             }
-            Intrinsic::FileOpen => {
-                let val = self.eval_expr(&arguments[0])?;
-                let bytes: Vec<u8> = match &val {
-                    Value::Ref(slot) | Value::Unique(slot) => match &*slot.borrow() {
-                        Value::Array(elements) => elements
-                            .iter()
-                            .map(|s| match &*s.borrow() {
-                                Value::Int(n) => *n as u8,
-                                _ => unreachable!(),
-                            })
-                            .collect(),
-                        _ => unreachable!(),
-                    },
-                    _ => unreachable!(),
-                };
-                let path = String::from_utf8_lossy(&bytes).into_owned();
-                let flags = match self.eval_expr(&arguments[1])? {
-                    Value::Int(n) => n,
-                    _ => unreachable!(),
-                };
-                let mode = match self.eval_expr(&arguments[2])? {
-                    Value::Int(n) => n as u32,
-                    _ => unreachable!(),
-                };
-                // No fd arena / GC here: the FileDesc is an index into a virtual
-                // table of boxed streams (the compiled runtime uses a real fd).
-                let fd = match self.files.open(&path, flags, mode) {
-                    Ok(fd) => fd,
-                    Err(err) => return Err(thrown(&format!("file_open failed: {err}"))),
-                };
-                Value::Int(fd as i64)
+            Intrinsic::FdFromRaw | Intrinsic::FdToRaw => self.eval_expr(&arguments[0])?,
+            Intrinsic::Syscall => {
+                panic!("syscall intrinsic not implemented in AST interpreter");
             }
             Intrinsic::FileClose => {
                 // The virtual table keeps the stream alive (no auto-close in the
