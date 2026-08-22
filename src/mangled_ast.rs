@@ -1,188 +1,11 @@
 //! Typed AST with definition identities replaced by final symbol names.
 
 use crate::ast;
+use crate::intrinsics::Intrinsic;
 use crate::typed_ast as ta;
 use std::collections::HashMap;
-use std::fmt;
-
-/// A fully resolved Solar type.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Type {
-    Int8,
-    Int16,
-    Int32,
-    Int64,
-    Int,
-    Uint8,
-    Uint16,
-    Uint32,
-    Uint64,
-    Uint,
-    Float32,
-    Float64,
-    Bool,
-    Struct(String),
-    Enum(String),
-    Array(Box<Type>),
-    FixedArray(Box<Type>, u64),
-    Ref(Box<Type>),
-    RefUnsized(Box<Type>),
-    /// `&?T` — a nullable reference to a sized `T` (8-byte pointer, may be null).
-    NullableRef(Box<Type>),
-    /// `&?T` — a nullable reference to an unsized `T` (16-byte fat pointer, may be null).
-    NullableRefUnsized(Box<Type>),
-    Unique(Box<Type>),
-    UniqueUnsized(Box<Type>),
-    Function {
-        params: Vec<Type>,
-        return_type: Box<Type>,
-    },
-    /// An open file descriptor. A built-in opaque handle with the byte
-    /// representation of `&Int32`: an 8-byte pointer into the GC-traced fd
-    /// arena. The collector closes the file once no live `FileDesc` remains.
-    FileDesc,
-    Unit,
-    Never,
-}
-
-impl From<&ast::NumericType> for Type {
-    fn from(nt: &ast::NumericType) -> Type {
-        match nt {
-            ast::NumericType::Int8 => Type::Int8,
-            ast::NumericType::Int16 => Type::Int16,
-            ast::NumericType::Int32 => Type::Int32,
-            ast::NumericType::Int64 => Type::Int64,
-            ast::NumericType::Int => Type::Int,
-            ast::NumericType::Uint8 => Type::Uint8,
-            ast::NumericType::Uint16 => Type::Uint16,
-            ast::NumericType::Uint32 => Type::Uint32,
-            ast::NumericType::Uint64 => Type::Uint64,
-            ast::NumericType::Uint => Type::Uint,
-            ast::NumericType::Float32 => Type::Float32,
-            ast::NumericType::Float64 => Type::Float64,
-        }
-    }
-}
-
-impl Type {
-    /// Returns whether this is an integer type.
-    pub fn is_integer(&self) -> bool {
-        matches!(
-            self,
-            Type::Int8
-                | Type::Int16
-                | Type::Int32
-                | Type::Int64
-                | Type::Int
-                | Type::Uint8
-                | Type::Uint16
-                | Type::Uint32
-                | Type::Uint64
-                | Type::Uint
-        )
-    }
-
-    /// Returns whether this is a floating-point type.
-    pub fn is_float(&self) -> bool {
-        matches!(self, Type::Float32 | Type::Float64)
-    }
-
-    /// Returns whether this is numeric.
-    pub fn is_numeric(&self) -> bool {
-        self.is_integer() || matches!(self, Type::Float32 | Type::Float64)
-    }
-
-    /// Returns whether this is an unsigned integer type.
-    pub fn is_unsigned(&self) -> bool {
-        matches!(
-            self,
-            Type::Uint8 | Type::Uint16 | Type::Uint32 | Type::Uint64 | Type::Uint
-        )
-    }
-
-    /// Bit width of an integer type (`Int`/`Uint` are pointer-width 64). Panics
-    /// on non-integer types.
-    pub fn int_bit_width(&self) -> u32 {
-        match self {
-            Type::Int8 | Type::Uint8 => 8,
-            Type::Int16 | Type::Uint16 => 16,
-            Type::Int32 | Type::Uint32 => 32,
-            Type::Int64 | Type::Uint64 | Type::Int | Type::Uint => 64,
-            other => panic!("int_bit_width on non-integer type {other}"),
-        }
-    }
-
-    /// Returns whether this is a nullable reference type.
-    pub fn is_nullable_ref(&self) -> bool {
-        matches!(self, Type::NullableRef(_) | Type::NullableRefUnsized(_))
-    }
-
-    /// Returns whether values of this type have a compile-time size.
-    pub fn is_sized(&self, structs: &HashMap<String, StructDef>) -> bool {
-        match self {
-            Type::Array(_) => false,
-            Type::FixedArray(_, _) | Type::Function { .. } => true,
-            Type::Enum(_) => true,
-            Type::Struct(name) => {
-                let def = structs
-                    .get(name)
-                    .unwrap_or_else(|| panic!("is_sized: missing struct `{name}`"));
-                def.fields.last().is_none_or(|f| f.ty.is_sized(structs))
-            }
-            _ => true,
-        }
-    }
-}
-
-impl fmt::Display for Type {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Type::Int8 => write!(f, "Int8"),
-            Type::Int16 => write!(f, "Int16"),
-            Type::Int32 => write!(f, "Int32"),
-            Type::Int64 => write!(f, "Int64"),
-            Type::Int => write!(f, "Int"),
-            Type::Uint8 => write!(f, "Uint8"),
-            Type::Uint16 => write!(f, "Uint16"),
-            Type::Uint32 => write!(f, "Uint32"),
-            Type::Uint64 => write!(f, "Uint64"),
-            Type::Uint => write!(f, "Uint"),
-            Type::Float32 => write!(f, "Float32"),
-            Type::Float64 => write!(f, "Float64"),
-            Type::Bool => write!(f, "Bool"),
-            Type::Struct(name) => write!(f, "{name}"),
-            Type::Enum(name) => write!(f, "{name}"),
-            Type::Array(inner) => write!(f, "[{inner}]"),
-            Type::FixedArray(inner, n) => write!(f, "[{inner}; {n}]"),
-            Type::Ref(inner) => write!(f, "&{inner}"),
-            Type::RefUnsized(inner) => write!(f, "&{inner}"),
-            Type::NullableRef(inner) => write!(f, "&?{inner}"),
-            Type::NullableRefUnsized(inner) => write!(f, "&?{inner}"),
-            Type::Unique(inner) => write!(f, "^{inner}"),
-            Type::UniqueUnsized(inner) => write!(f, "^{inner}"),
-            Type::Function {
-                params,
-                return_type,
-            } => {
-                write!(f, "fn(")?;
-                for (i, p) in params.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{p}")?;
-                }
-                write!(f, ")")?;
-                if **return_type != Type::Unit {
-                    write!(f, " -> {return_type}")?;
-                }
-                Ok(())
-            }
-            Type::FileDesc => write!(f, "FileDesc"),
-            Type::Unit => write!(f, "()"),
-            Type::Never => write!(f, "!"),
-        }
-    }
-}
+/// A fully resolved Solar type with final symbol names.
+pub type Type = crate::types::Type<String>;
 
 /// A mangled, monomorphized program.
 #[derive(Debug)]
@@ -226,6 +49,13 @@ pub struct FieldDef {
     pub name: String,
     /// Field type.
     pub ty: Type,
+}
+
+impl crate::types::StructDefinitions<String> for HashMap<String, StructDef> {
+    fn last_field_type<'a>(&'a self, id: &String) -> Option<Option<&'a Type>> {
+        self.get(id)
+            .map(|def| def.fields.last().map(|field| &field.ty))
+    }
 }
 
 /// A function definition.
@@ -388,7 +218,7 @@ pub enum ExprKind {
         arms: Vec<TypedMatchArm>,
     },
     IntrinsicCall {
-        intrinsic: ast::Intrinsic,
+        intrinsic: Intrinsic,
         arguments: Vec<Expr>,
     },
 }
@@ -627,45 +457,8 @@ impl Renderer<'_> {
         }
     }
 
-    fn conv_type(&self, t: &ta::Type) -> Type {
-        use ta::Type as T;
-        match t {
-            T::Int8 => Type::Int8,
-            T::Int16 => Type::Int16,
-            T::Int32 => Type::Int32,
-            T::Int64 => Type::Int64,
-            T::Int => Type::Int,
-            T::Uint8 => Type::Uint8,
-            T::Uint16 => Type::Uint16,
-            T::Uint32 => Type::Uint32,
-            T::Uint64 => Type::Uint64,
-            T::Uint => Type::Uint,
-            T::Float32 => Type::Float32,
-            T::Float64 => Type::Float64,
-            T::Bool => Type::Bool,
-            T::Struct(id) => Type::Struct(self.type_name(id)),
-            T::Enum(id) => Type::Enum(self.type_name(id)),
-            T::Array(inner) => Type::Array(Box::new(self.conv_type(inner))),
-            T::FixedArray(inner, n) => Type::FixedArray(Box::new(self.conv_type(inner)), *n),
-            T::Ref(inner) => Type::Ref(Box::new(self.conv_type(inner))),
-            T::RefUnsized(inner) => Type::RefUnsized(Box::new(self.conv_type(inner))),
-            T::NullableRef(inner) => Type::NullableRef(Box::new(self.conv_type(inner))),
-            T::NullableRefUnsized(inner) => {
-                Type::NullableRefUnsized(Box::new(self.conv_type(inner)))
-            }
-            T::Unique(inner) => Type::Unique(Box::new(self.conv_type(inner))),
-            T::UniqueUnsized(inner) => Type::UniqueUnsized(Box::new(self.conv_type(inner))),
-            T::Function {
-                params,
-                return_type,
-            } => Type::Function {
-                params: params.iter().map(|p| self.conv_type(p)).collect(),
-                return_type: Box::new(self.conv_type(return_type)),
-            },
-            T::FileDesc => Type::FileDesc,
-            T::Unit => Type::Unit,
-            T::Never => Type::Never,
-        }
+    fn conv_type(&self, ty: &ta::Type) -> Type {
+        ty.map_id(|id| self.type_name(id))
     }
 
     fn conv_static(&self, s: &ta::StaticItem) -> StaticItem {

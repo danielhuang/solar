@@ -5,6 +5,7 @@ use solar::{
     ast::{self, SourceSpan},
     error::{CompileError, SourceMap},
     fmt::format_source,
+    intrinsics::Intrinsic,
     resolve, typed_ast,
 };
 use std::{
@@ -1445,8 +1446,7 @@ impl DefFinder<'_> {
                 arguments,
             } => {
                 let name_matches = self.name == intrinsic.name()
-                    || matches!(intrinsic, ast::Intrinsic::Cast(..))
-                        && self.name.starts_with("cast_");
+                    || matches!(intrinsic, Intrinsic::Cast(..)) && self.name.starts_with("cast_");
                 if name_matches && self.at(expr.span, self.anchor.unwrap_or(self.cursor)) {
                     self.out.push(SymbolTarget::BuiltIn(call_signature(
                         "fn",

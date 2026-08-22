@@ -1,6 +1,7 @@
 //! Name-resolved AST and compiler-supplied definitions.
 
 use crate::ast;
+use crate::intrinsics::Intrinsic;
 
 /// A resolved, untyped Solar program.
 #[derive(Debug)]
@@ -31,7 +32,7 @@ fn generate_numeric_constructors(items: &mut Vec<ast::TopLevelItem>) {
             if target_name == from_name {
                 continue;
             }
-            let intrinsic = ast::Intrinsic::Cast(from, target);
+            let intrinsic = Intrinsic::Cast(from, target);
             items.push(ast::TopLevelItem::Function(ast::FunctionDef {
                 name: target_name.to_string(),
                 display_name: target_name.to_string(),

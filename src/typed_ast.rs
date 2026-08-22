@@ -1,4 +1,5 @@
 use crate::error::CompileError;
+use crate::intrinsics::Intrinsic;
 use crate::scope::ScopeStack;
 use crate::{ast, resolved_ast};
 use std::cmp::Ordering;
@@ -75,190 +76,8 @@ impl fmt::Display for FuncId {
         write!(f, "{}", self.def.name)
     }
 }
-
-/// A type-checked Solar type.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Type {
-    Int8,
-    Int16,
-    Int32,
-    Int64,
-    Int,
-    Uint8,
-    Uint16,
-    Uint32,
-    Uint64,
-    Uint,
-    Float32,
-    Float64,
-    Bool,
-    Struct(TypeId),
-    Enum(TypeId),
-    Array(Box<Type>),
-    FixedArray(Box<Type>, u64),
-    Ref(Box<Type>),
-    RefUnsized(Box<Type>),
-    /// `&?T` — a nullable reference to a sized `T` (8-byte pointer, may be null).
-    NullableRef(Box<Type>),
-    /// `&?T` — a nullable reference to an unsized `T` (16-byte fat pointer, may be null).
-    NullableRefUnsized(Box<Type>),
-    Unique(Box<Type>),
-    UniqueUnsized(Box<Type>),
-    Function {
-        params: Vec<Type>,
-        return_type: Box<Type>,
-    },
-    /// An open file descriptor. A built-in opaque handle with the byte
-    /// representation of `&Int32`: an 8-byte pointer into the GC-traced fd
-    /// arena. The collector closes the file once no live `FileDesc` remains.
-    FileDesc,
-    Unit,
-    Never,
-}
-
-impl From<&ast::NumericType> for Type {
-    fn from(nt: &ast::NumericType) -> Type {
-        match nt {
-            ast::NumericType::Int8 => Type::Int8,
-            ast::NumericType::Int16 => Type::Int16,
-            ast::NumericType::Int32 => Type::Int32,
-            ast::NumericType::Int64 => Type::Int64,
-            ast::NumericType::Int => Type::Int,
-            ast::NumericType::Uint8 => Type::Uint8,
-            ast::NumericType::Uint16 => Type::Uint16,
-            ast::NumericType::Uint32 => Type::Uint32,
-            ast::NumericType::Uint64 => Type::Uint64,
-            ast::NumericType::Uint => Type::Uint,
-            ast::NumericType::Float32 => Type::Float32,
-            ast::NumericType::Float64 => Type::Float64,
-        }
-    }
-}
-
-impl Type {
-    /// Returns whether this is an integer type.
-    pub fn is_integer(&self) -> bool {
-        matches!(
-            self,
-            Type::Int8
-                | Type::Int16
-                | Type::Int32
-                | Type::Int64
-                | Type::Int
-                | Type::Uint8
-                | Type::Uint16
-                | Type::Uint32
-                | Type::Uint64
-                | Type::Uint
-        )
-    }
-
-    /// Returns whether this is a floating-point type.
-    pub fn is_float(&self) -> bool {
-        matches!(self, Type::Float32 | Type::Float64)
-    }
-
-    /// Returns whether this is numeric.
-    pub fn is_numeric(&self) -> bool {
-        self.is_integer() || matches!(self, Type::Float32 | Type::Float64)
-    }
-
-    /// Returns whether this is an unsigned integer type.
-    pub fn is_unsigned(&self) -> bool {
-        matches!(
-            self,
-            Type::Uint8 | Type::Uint16 | Type::Uint32 | Type::Uint64 | Type::Uint
-        )
-    }
-
-    /// Bit width of an integer type (`Int`/`Uint` are pointer-width 64). Panics
-    /// on non-integer types.
-    pub fn int_bit_width(&self) -> u32 {
-        match self {
-            Type::Int8 | Type::Uint8 => 8,
-            Type::Int16 | Type::Uint16 => 16,
-            Type::Int32 | Type::Uint32 => 32,
-            Type::Int64 | Type::Uint64 | Type::Int | Type::Uint => 64,
-            other => panic!("int_bit_width on non-integer type {other}"),
-        }
-    }
-
-    /// Returns whether this is a nullable reference type.
-    pub fn is_nullable_ref(&self) -> bool {
-        matches!(self, Type::NullableRef(_) | Type::NullableRefUnsized(_))
-    }
-
-    /// Returns whether values of this type have a compile-time size.
-    pub fn is_sized(&self, structs: &HashMap<TypeId, StructDef>) -> bool {
-        match self {
-            Type::Array(_) => false,
-            Type::FixedArray(_, _) | Type::Function { .. } => true,
-            Type::Enum(_) => true,
-            Type::Struct(name) => {
-                let def = structs.get(name).unwrap_or_else(|| {
-                    panic!(
-                        "is_sized: missing struct `{name}` — the name resolved to no \
-                         definition. Check for a module-qualified type whose module does \
-                         not export it (e.g. a typo in `alias::Name`), or a generic type \
-                         used only in a position that never triggered monomorphization."
-                    )
-                });
-                def.fields.last().is_none_or(|f| f.ty.is_sized(structs))
-            }
-            _ => true,
-        }
-    }
-}
-
-impl fmt::Display for Type {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Type::Int8 => write!(f, "Int8"),
-            Type::Int16 => write!(f, "Int16"),
-            Type::Int32 => write!(f, "Int32"),
-            Type::Int64 => write!(f, "Int64"),
-            Type::Int => write!(f, "Int"),
-            Type::Uint8 => write!(f, "Uint8"),
-            Type::Uint16 => write!(f, "Uint16"),
-            Type::Uint32 => write!(f, "Uint32"),
-            Type::Uint64 => write!(f, "Uint64"),
-            Type::Uint => write!(f, "Uint"),
-            Type::Float32 => write!(f, "Float32"),
-            Type::Float64 => write!(f, "Float64"),
-            Type::Bool => write!(f, "Bool"),
-            Type::Struct(id) => write!(f, "{id}"),
-            Type::Enum(id) => write!(f, "{id}"),
-            Type::Array(inner) => write!(f, "[{inner}]"),
-            Type::FixedArray(inner, n) => write!(f, "[{inner}; {n}]"),
-            Type::Ref(inner) => write!(f, "&{inner}"),
-            Type::RefUnsized(inner) => write!(f, "&{inner}"),
-            Type::NullableRef(inner) => write!(f, "&?{inner}"),
-            Type::NullableRefUnsized(inner) => write!(f, "&?{inner}"),
-            Type::Unique(inner) => write!(f, "^{inner}"),
-            Type::UniqueUnsized(inner) => write!(f, "^{inner}"),
-            Type::Function {
-                params,
-                return_type,
-            } => {
-                write!(f, "fn(")?;
-                for (i, p) in params.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{p}")?;
-                }
-                write!(f, ")")?;
-                if **return_type != Type::Unit {
-                    write!(f, " -> {return_type}")?;
-                }
-                Ok(())
-            }
-            Type::FileDesc => write!(f, "FileDesc"),
-            Type::Unit => write!(f, "()"),
-            Type::Never => write!(f, "!"),
-        }
-    }
-}
+/// A type-checked Solar type with structural definition identities.
+pub type Type = crate::types::Type<TypeId>;
 
 fn is_place_expr(expr: &Expr) -> bool {
     match &expr.kind {
@@ -1051,6 +870,13 @@ pub struct FieldDef {
     pub ty: Type,
 }
 
+impl crate::types::StructDefinitions<TypeId> for HashMap<TypeId, StructDef> {
+    fn last_field_type<'a>(&'a self, id: &TypeId) -> Option<Option<&'a Type>> {
+        self.get(id)
+            .map(|def| def.fields.last().map(|field| &field.ty))
+    }
+}
+
 /// A concrete function definition.
 #[derive(Debug, Clone)]
 pub struct FunctionDef {
@@ -1213,7 +1039,7 @@ pub enum ExprKind {
         arms: Vec<TypedMatchArm>,
     },
     IntrinsicCall {
-        intrinsic: ast::Intrinsic,
+        intrinsic: Intrinsic,
         arguments: Vec<Expr>,
     },
 }
@@ -3910,7 +3736,7 @@ impl<'a> Lowerer<'a> {
             self.next_closure_is_try_block = false;
             lowered_arguments.push(lowered_argument?);
         }
-        let expected_arguments = intrinsic_spec(&ast::Intrinsic::Try).params;
+        let expected_arguments = intrinsic_spec(&Intrinsic::Try).params;
         for (argument, expected) in lowered_arguments.iter_mut().zip(expected_arguments) {
             let ParamRequirement::Exact(expected) = expected else {
                 unreachable!("try closure requirements are exact function types")
@@ -3926,7 +3752,7 @@ impl<'a> Lowerer<'a> {
         let intrinsic = Expr {
             ty: Type::Unit,
             kind: ExprKind::IntrinsicCall {
-                intrinsic: ast::Intrinsic::Try,
+                intrinsic: Intrinsic::Try,
                 arguments: lowered_arguments,
             },
             span,
@@ -8648,7 +8474,7 @@ impl<'a> Lowerer<'a> {
                             kind: StatementKind::Expression(Expr {
                                 ty: Type::Unit,
                                 kind: ExprKind::IntrinsicCall {
-                                    intrinsic: ast::Intrinsic::AssertArrayLen,
+                                    intrinsic: Intrinsic::AssertArrayLen,
                                     arguments: vec![
                                         base_expr.clone(),
                                         Expr {
@@ -8695,7 +8521,7 @@ impl<'a> Lowerer<'a> {
     fn lower_intrinsic_call(
         &mut self,
         span: ast::SourceSpan,
-        intrinsic: &ast::Intrinsic,
+        intrinsic: &Intrinsic,
         arguments: &[ast::Expr],
     ) -> Result<Expr, CompileError> {
         let name = intrinsic.name();
@@ -8705,7 +8531,7 @@ impl<'a> Lowerer<'a> {
                 span,
             ));
         }
-        if matches!(intrinsic, ast::Intrinsic::Syscall) {
+        if matches!(intrinsic, Intrinsic::Syscall) {
             return self.lower_syscall_intrinsic(span, arguments);
         }
         let spec = intrinsic_spec(intrinsic);
@@ -8919,7 +8745,7 @@ impl<'a> Lowerer<'a> {
         Ok(Expr {
             ty: Type::Int64,
             kind: ExprKind::IntrinsicCall {
-                intrinsic: ast::Intrinsic::Syscall,
+                intrinsic: Intrinsic::Syscall,
                 arguments: lowered_args,
             },
             span,
@@ -8955,7 +8781,7 @@ struct IntrinsicSpec {
     ret: ReturnSpec,
 }
 
-fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
+fn intrinsic_spec(intrinsic: &Intrinsic) -> IntrinsicSpec {
     use ParamRequirement::*;
     use ReturnSpec::*;
 
@@ -8990,157 +8816,155 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
     };
 
     match intrinsic {
-        ast::Intrinsic::RefEq => IntrinsicSpec {
+        Intrinsic::RefEq => IntrinsicSpec {
             params: vec![IsRef, MatchesRef],
             ret: Fixed(Type::Bool),
         },
         // throw(msg: &[Uint8]): unwind with a string payload; diverges.
-        ast::Intrinsic::Throw => IntrinsicSpec {
+        Intrinsic::Throw => IntrinsicSpec {
             params: vec![byte_slice()],
             ret: Fixed(Type::Never),
         },
         // try(body: fn(), handler: fn(&[Uint8])): run `body`; if it throws,
         // run `handler` with the thrown message.
-        ast::Intrinsic::Try => IntrinsicSpec {
+        Intrinsic::Try => IntrinsicSpec {
             params: vec![fn_unit(), fn_byte_slice()],
             ret: Fixed(Type::Unit),
         },
-        ast::Intrinsic::Cast(from_nt, to_nt) => IntrinsicSpec {
+        Intrinsic::Cast(from_nt, to_nt) => IntrinsicSpec {
             params: vec![Exact(from_nt.into())],
             ret: Fixed(to_nt.into()),
         },
-        ast::Intrinsic::ArrayLen => IntrinsicSpec {
+        Intrinsic::ArrayLen => IntrinsicSpec {
             params: vec![IsArray],
             ret: Fixed(Type::Uint),
         },
-        ast::Intrinsic::AssertArrayLen => IntrinsicSpec {
+        Intrinsic::AssertArrayLen => IntrinsicSpec {
             params: vec![IsArray, Exact(Type::Uint)],
             ret: Fixed(Type::Unit),
         },
-        ast::Intrinsic::ThreadSpawn => IntrinsicSpec {
+        Intrinsic::ThreadSpawn => IntrinsicSpec {
             params: vec![fn_unit()],
             ret: Fixed(Type::Unit),
         },
-        ast::Intrinsic::AtomicLoad => IntrinsicSpec {
+        Intrinsic::AtomicLoad => IntrinsicSpec {
             params: vec![RefToAtomic],
             ret: RefInner,
         },
-        ast::Intrinsic::AtomicStore => IntrinsicSpec {
+        Intrinsic::AtomicStore => IntrinsicSpec {
             params: vec![RefToAtomic, MatchesRefInner],
             ret: Fixed(Type::Unit),
         },
-        ast::Intrinsic::AtomicExchange => IntrinsicSpec {
+        Intrinsic::AtomicExchange => IntrinsicSpec {
             params: vec![RefToAtomic, MatchesRefInner],
             ret: RefInner,
         },
-        ast::Intrinsic::AtomicCompareExchange => IntrinsicSpec {
+        Intrinsic::AtomicCompareExchange => IntrinsicSpec {
             params: vec![RefToAtomic, MatchesRefInner, MatchesRefInner],
             ret: RefInner,
         },
-        ast::Intrinsic::FutexWait => IntrinsicSpec {
+        Intrinsic::FutexWait => IntrinsicSpec {
             // (word, expected value, timeout in nanoseconds; u64::MAX = forever)
             params: vec![ref_u32(), u32(), Exact(Type::Uint64)],
             ret: Fixed(Type::Unit),
         },
-        ast::Intrinsic::FutexWake => IntrinsicSpec {
+        Intrinsic::FutexWake => IntrinsicSpec {
             params: vec![ref_u32(), u32()],
             ret: Fixed(Type::Unit),
         },
-        ast::Intrinsic::FdFromRaw => IntrinsicSpec {
+        Intrinsic::FdFromRaw => IntrinsicSpec {
             params: vec![Exact(Type::Int32)],
             ret: Fixed(Type::FileDesc),
         },
-        ast::Intrinsic::FdToRaw => IntrinsicSpec {
+        Intrinsic::FdToRaw => IntrinsicSpec {
             params: vec![Exact(Type::FileDesc)],
             ret: Fixed(Type::Int32),
         },
-        ast::Intrinsic::Syscall => unreachable!("syscall has a variadic signature"),
-        ast::Intrinsic::FileClose => IntrinsicSpec {
+        Intrinsic::Syscall => unreachable!("syscall has a variadic signature"),
+        Intrinsic::FileClose => IntrinsicSpec {
             params: vec![Exact(Type::FileDesc)],
             ret: Fixed(Type::Unit),
         },
-        ast::Intrinsic::FileStdin | ast::Intrinsic::FileStdout | ast::Intrinsic::FileStderr => {
-            IntrinsicSpec {
-                params: vec![],
-                ret: Fixed(Type::FileDesc),
-            }
-        }
-        ast::Intrinsic::FileRead => IntrinsicSpec {
+        Intrinsic::FileStdin | Intrinsic::FileStdout | Intrinsic::FileStderr => IntrinsicSpec {
+            params: vec![],
+            ret: Fixed(Type::FileDesc),
+        },
+        Intrinsic::FileRead => IntrinsicSpec {
             params: vec![Exact(Type::FileDesc), byte_slice()],
             ret: Fixed(Type::Uint),
         },
-        ast::Intrinsic::FileWritePartial => IntrinsicSpec {
+        Intrinsic::FileWritePartial => IntrinsicSpec {
             params: vec![Exact(Type::FileDesc), byte_slice()],
             ret: Fixed(Type::Uint),
         },
         // (fd, buffer, absolute byte offset) — pread(2)/pwrite(2): positioned
         // single-syscall I/O that doesn't move the file cursor.
-        ast::Intrinsic::FileReadAt | ast::Intrinsic::FileWriteAt => IntrinsicSpec {
+        Intrinsic::FileReadAt | Intrinsic::FileWriteAt => IntrinsicSpec {
             params: vec![Exact(Type::FileDesc), byte_slice(), Exact(Type::Uint)],
             ret: Fixed(Type::Uint),
         },
-        ast::Intrinsic::FileSync => IntrinsicSpec {
+        Intrinsic::FileSync => IntrinsicSpec {
             params: vec![Exact(Type::FileDesc)],
             ret: Fixed(Type::Unit),
         },
         // (fd, raw flock(2) LOCK_* op word). Returns false only when a
         // non-blocking request would have to wait.
-        ast::Intrinsic::FileLock => IntrinsicSpec {
+        Intrinsic::FileLock => IntrinsicSpec {
             params: vec![Exact(Type::FileDesc), Exact(Type::Int)],
             ret: Fixed(Type::Bool),
         },
         // unlink(2) / rmdir(2).
-        ast::Intrinsic::FileRemove | ast::Intrinsic::DirRemove => IntrinsicSpec {
+        Intrinsic::FileRemove | Intrinsic::DirRemove => IntrinsicSpec {
             params: vec![byte_slice()],
             ret: Fixed(Type::Unit),
         },
         // rename(2): (old path, new path).
-        ast::Intrinsic::FileRename => IntrinsicSpec {
+        Intrinsic::FileRename => IntrinsicSpec {
             params: vec![byte_slice(), byte_slice()],
             ret: Fixed(Type::Unit),
         },
         // mkdir(2): (path, permission bits).
-        ast::Intrinsic::DirCreate => IntrinsicSpec {
+        Intrinsic::DirCreate => IntrinsicSpec {
             params: vec![byte_slice(), Exact(Type::Uint)],
             ret: Fixed(Type::Unit),
         },
         // stat(2): (path, out size, out mtime-nanos, out kind 0/1/2 =
         // file/dir/other). Returns false (outs zeroed) when the path doesn't
         // exist.
-        ast::Intrinsic::FileStat => IntrinsicSpec {
+        Intrinsic::FileStat => IntrinsicSpec {
             params: vec![byte_slice(), ref_u64(), ref_u64(), ref_u64()],
             ret: Fixed(Type::Bool),
         },
         // getdents64(2): one batch of entries from a directory fd, each entry a
         // byte-slice of (kind byte, name bytes); empty slice = exhausted.
-        ast::Intrinsic::DirRead => IntrinsicSpec {
+        Intrinsic::DirRead => IntrinsicSpec {
             params: vec![Exact(Type::FileDesc)],
             ret: Fixed(byte_slice_slice()),
         },
         // socket(2): (domain, type, protocol) — raw AF_*/SOCK_*/IPPROTO_*
         // values built by `@std`'s net.solar. The socket is a FileDesc in the
         // fd arena, so file_read/file_write_partial/file_close work on it.
-        ast::Intrinsic::SocketCreate => IntrinsicSpec {
+        Intrinsic::SocketCreate => IntrinsicSpec {
             params: vec![Exact(Type::Int), Exact(Type::Int), Exact(Type::Int)],
             ret: Fixed(Type::FileDesc),
         },
         // bind(2)/connect(2): the address crosses as raw sockaddr bytes.
-        ast::Intrinsic::SocketBind | ast::Intrinsic::SocketConnect => IntrinsicSpec {
+        Intrinsic::SocketBind | Intrinsic::SocketConnect => IntrinsicSpec {
             params: vec![Exact(Type::FileDesc), byte_slice()],
             ret: Fixed(Type::Unit),
         },
         // listen(2): (fd, backlog).
-        ast::Intrinsic::SocketListen => IntrinsicSpec {
+        Intrinsic::SocketListen => IntrinsicSpec {
             params: vec![Exact(Type::FileDesc), Exact(Type::Int)],
             ret: Fixed(Type::Unit),
         },
         // accept4(2): blocks until a connection arrives.
-        ast::Intrinsic::SocketAccept => IntrinsicSpec {
+        Intrinsic::SocketAccept => IntrinsicSpec {
             params: vec![Exact(Type::FileDesc)],
             ret: Fixed(Type::FileDesc),
         },
         // setsockopt(2): (fd, level, name, int value).
-        ast::Intrinsic::SocketSetOption => IntrinsicSpec {
+        Intrinsic::SocketSetOption => IntrinsicSpec {
             params: vec![
                 Exact(Type::FileDesc),
                 Exact(Type::Int),
@@ -9151,18 +8975,18 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
         },
         // getsockname(2): writes raw sockaddr bytes into the buffer, returns
         // the address's full length.
-        ast::Intrinsic::SocketLocalAddr => IntrinsicSpec {
+        Intrinsic::SocketLocalAddr => IntrinsicSpec {
             params: vec![Exact(Type::FileDesc), byte_slice()],
             ret: Fixed(Type::Uint),
         },
         // shutdown(2): (fd, how 0/1/2 = read/write/both).
-        ast::Intrinsic::SocketShutdown => IntrinsicSpec {
+        Intrinsic::SocketShutdown => IntrinsicSpec {
             params: vec![Exact(Type::FileDesc), Exact(Type::Int)],
             ret: Fixed(Type::Unit),
         },
         // args() / env(): no parameters; return `&[&[Uint8]]`. The runtime
         // copies each argument / `KEY=VALUE` entry into a fresh GC allocation.
-        ast::Intrinsic::Args | ast::Intrinsic::Env => IntrinsicSpec {
+        Intrinsic::Args | Intrinsic::Env => IntrinsicSpec {
             params: vec![],
             ret: Fixed(byte_slice_slice()),
         },
@@ -9170,17 +8994,17 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
         // reading in nanoseconds (CLOCK_MONOTONIC / nanoseconds since the Unix
         // epoch). The monotonic epoch is unspecified — only differences are
         // meaningful.
-        ast::Intrinsic::MonotonicTime | ast::Intrinsic::SystemTime => IntrinsicSpec {
+        Intrinsic::MonotonicTime | Intrinsic::SystemTime => IntrinsicSpec {
             params: vec![],
             ret: Fixed(Type::Uint64),
         },
         // num_cpus(): the OS's available parallelism (>= 1).
-        ast::Intrinsic::NumCpus => IntrinsicSpec {
+        Intrinsic::NumCpus => IntrinsicSpec {
             params: vec![],
             ret: Fixed(Type::Uint),
         },
         // exit(code): terminate the process immediately with the given status.
-        ast::Intrinsic::Exit => IntrinsicSpec {
+        Intrinsic::Exit => IntrinsicSpec {
             params: vec![Exact(Type::Int)],
             ret: Fixed(Type::Never),
         },
@@ -9188,44 +9012,44 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
         // type. Codegen lowers to the clang builtins (llvm.sqrt/... or libm
         // calls); the interpreters use the Rust float methods — the same
         // system libm, keeping the three backends bit-identical.
-        ast::Intrinsic::Sqrt
-        | ast::Intrinsic::Sin
-        | ast::Intrinsic::Cos
-        | ast::Intrinsic::Tan
-        | ast::Intrinsic::Asin
-        | ast::Intrinsic::Acos
-        | ast::Intrinsic::Atan
-        | ast::Intrinsic::Exp
-        | ast::Intrinsic::Log
-        | ast::Intrinsic::Floor
-        | ast::Intrinsic::Ceil
-        | ast::Intrinsic::Round
-        | ast::Intrinsic::Trunc
-        | ast::Intrinsic::FloatAbs => IntrinsicSpec {
+        Intrinsic::Sqrt
+        | Intrinsic::Sin
+        | Intrinsic::Cos
+        | Intrinsic::Tan
+        | Intrinsic::Asin
+        | Intrinsic::Acos
+        | Intrinsic::Atan
+        | Intrinsic::Exp
+        | Intrinsic::Log
+        | Intrinsic::Floor
+        | Intrinsic::Ceil
+        | Intrinsic::Round
+        | Intrinsic::Trunc
+        | Intrinsic::FloatAbs => IntrinsicSpec {
             params: vec![IsFloat],
             ret: FloatArg,
         },
         // Binary float math: both operands the same float type.
-        ast::Intrinsic::Atan2 | ast::Intrinsic::Pow => IntrinsicSpec {
+        Intrinsic::Atan2 | Intrinsic::Pow => IntrinsicSpec {
             params: vec![IsFloat, MatchesFloat],
             ret: FloatArg,
         },
         // Bit-counting intrinsics: take any integer, return a count as `Uint`.
-        ast::Intrinsic::CountTrailingZeros
-        | ast::Intrinsic::CountLeadingZeros
-        | ast::Intrinsic::CountOnes => IntrinsicSpec {
-            params: vec![IsInteger],
-            ret: Fixed(Type::Uint),
-        },
+        Intrinsic::CountTrailingZeros | Intrinsic::CountLeadingZeros | Intrinsic::CountOnes => {
+            IntrinsicSpec {
+                params: vec![IsInteger],
+                ret: Fixed(Type::Uint),
+            }
+        }
         // u64_from_le([Uint8; 8]) / u32_from_le([Uint8; 4]): decode a fixed byte
         // array as a little-endian integer. Callers pass a slice that coerces to
         // the fixed array (`u64_from_le(s[i..i+8u])`); the coercion's length
         // assertion guarantees exactly N in-bounds bytes are read.
-        ast::Intrinsic::U64FromLe => IntrinsicSpec {
+        Intrinsic::U64FromLe => IntrinsicSpec {
             params: vec![Exact(Type::FixedArray(Box::new(Type::Uint8), 8))],
             ret: Fixed(Type::Uint64),
         },
-        ast::Intrinsic::U32FromLe => IntrinsicSpec {
+        Intrinsic::U32FromLe => IntrinsicSpec {
             params: vec![Exact(Type::FixedArray(Box::new(Type::Uint8), 4))],
             ret: Fixed(Type::Uint32),
         },
@@ -9233,21 +9057,21 @@ fn intrinsic_spec(intrinsic: &ast::Intrinsic) -> IntrinsicSpec {
         // SwissTable group scans over a 16-lane byte vector. Return a compact
         // 16-bit match mask (`Uint`). Lowered to a real SSE2 compare + move-mask
         // so they vectorize regardless of caller context.
-        ast::Intrinsic::SimdMatchByteX16 => IntrinsicSpec {
+        Intrinsic::SimdMatchByteX16 => IntrinsicSpec {
             params: vec![
                 Exact(Type::FixedArray(Box::new(Type::Uint8), 16)),
                 Exact(Type::Uint8),
             ],
             ret: Fixed(Type::Uint),
         },
-        ast::Intrinsic::SimdMatchHighBitX16 => IntrinsicSpec {
+        Intrinsic::SimdMatchHighBitX16 => IntrinsicSpec {
             params: vec![Exact(Type::FixedArray(Box::new(Type::Uint8), 16))],
             ret: Fixed(Type::Uint),
         },
         // carrying_mul_add(a, b, carry, add, out_lo, out_hi): computes the full
         // 128-bit product `a*b + carry + add` and writes the low/high 64-bit
         // halves through the two `&Uint64` out-params. Returns Unit.
-        ast::Intrinsic::CarryingMulAdd => IntrinsicSpec {
+        Intrinsic::CarryingMulAdd => IntrinsicSpec {
             params: vec![
                 Exact(Type::Uint64),
                 Exact(Type::Uint64),

@@ -1,6 +1,6 @@
 use crate::ast::BinOp;
-use crate::ast::Intrinsic;
 use crate::ast::SourceSpan;
+use crate::intrinsics::Intrinsic;
 use crate::mangled_ast;
 use crate::scope::ScopeStack;
 use std::collections::HashMap;

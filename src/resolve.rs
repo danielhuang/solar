@@ -1,5 +1,6 @@
 use crate::ast::*;
 use crate::error::{CompileError, SourceMap};
+use crate::intrinsics::Intrinsic;
 use crate::parser;
 use crate::{desugared_ast, resolved_ast};
 use std::cell::RefCell;

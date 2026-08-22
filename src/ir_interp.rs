@@ -1,5 +1,5 @@
 use crate::ast::BinOp;
-use crate::ast::Intrinsic;
+use crate::intrinsics::Intrinsic;
 use crate::ir::*;
 use std::collections::HashMap;
 use std::io::{Read, Write};

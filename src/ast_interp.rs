@@ -1,5 +1,5 @@
-use crate::ast::Intrinsic;
 use crate::ast_interp::Unwind::Thrown;
+use crate::intrinsics::Intrinsic;
 use crate::mangled_ast::*;
 use crate::scope::ScopeStack;
 use std::cell::RefCell;

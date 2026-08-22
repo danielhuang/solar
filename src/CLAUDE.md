@@ -25,6 +25,8 @@ AST, while `ir_interp` and native codegen consume IR.
 
 - Keep identities structural through resolution and type checking. Do not
   encode file provenance in names before `mangled_ast`.
+- `types::Type<I>` is shared by the typed and mangled stages: typed types use
+  structural `TypeId` identities, while mangled types use final symbol strings.
 - Every method signature must mention a parameter type owned by its declaring
   file. The standard library may additionally define methods on primitive and
   structural built-in types.

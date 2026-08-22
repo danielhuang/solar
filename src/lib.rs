@@ -14,6 +14,8 @@ pub mod error;
 pub mod fmt;
 /// Interpreter file and directory support.
 pub mod interp_io;
+/// Compiler intrinsics.
+pub mod intrinsics;
 /// Lowered intermediate representation.
 pub mod ir;
 /// IR interpreter.
@@ -34,3 +36,5 @@ pub mod resolved_ast;
 pub mod scope;
 /// Typed and monomorphized AST.
 pub mod typed_ast;
+/// Types shared by compiler stages.
+pub mod types;

@@ -1,6 +1,6 @@
 use crate::ast::BinOp;
-use crate::ast::Intrinsic;
 use crate::error::SourceMap;
+use crate::intrinsics::Intrinsic;
 use crate::ir::*;
 use std::collections::{HashMap, HashSet};
 
