@@ -10,7 +10,7 @@ fn fixture(name: &str) -> PathBuf {
 #[test]
 fn atomics() {
     let output = run_codegen_file(&fixture("atomics.solar"), "compile_only_atomics");
-    assert_eq!(output, "42\n");
+    assert_eq!(output, "42\n3\n99\n4\n");
 }
 
 #[test]

@@ -38,7 +38,7 @@ pub struct StaticItem {
 pub struct StructDef {
     /// Struct symbol.
     pub name: String,
-    /// Fields in layout order.
+    /// Fields in declaration order.
     pub fields: Vec<FieldDef>,
 }
 

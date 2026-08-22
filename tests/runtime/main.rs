@@ -47,6 +47,15 @@ fn tuple_struct() {
 }
 
 #[test]
+fn layout_packing() {
+    let output = run(&fixture("layout_packing.solar"), "layout_packing");
+    assert_eq!(
+        output,
+        "7\nwide\n300\n9000\n8\n9001\nbyte\nwide\nhalf\nword\n7\n42\n9\n123\n12\n"
+    );
+}
+
+#[test]
 fn hashbrown_bitmask() {
     let output = run(&fixture("hashbrown_bitmask.solar"), "hashbrown_bitmask");
     assert_eq!(output, "0\n2\n5\n0\n");

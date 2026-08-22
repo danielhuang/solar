@@ -1,0 +1,51 @@
+struct Packed { byte: Uint8, wide: &[Uint8], half: Uint16, word: Uint64 }
+
+struct PackedTail { tag: Uint8, word: Uint64, tail: [Uint8] }
+
+enum PackedEnum { Wide(&[Uint8]), Byte(Uint8) }
+
+fn enum_value(value: PackedEnum) -> Uint {
+	match value {
+		PackedEnum::Wide(bytes) => bytes.len(),
+		PackedEnum::Byte(byte) => Uint(byte),
+	}
+}
+
+fn copy_enum(value: PackedEnum) -> PackedEnum {
+	value
+}
+
+fn main() {
+	let packed = Packed {
+		byte: 7u8,
+		wide: "wide"&,
+		half: 300u16,
+		word: 9000u64,
+	};
+	println(Uint(packed.byte));
+	println(packed.wide);
+	println(Uint(packed.half));
+	println(Uint(packed.word));
+
+	packed.byte = 8u8;
+	packed.word = 9001u64;
+	println(Uint(packed.byte));
+	println(Uint(packed.word));
+
+	// Reflection remains in declaration order even though memory layout does not.
+	for.reflect_fields (name, field) in packed& { println(name); }
+
+	let value = PackedEnum::Wide("payload"&);
+	println(enum_value(copy_enum(value)));
+	value = PackedEnum::Byte(42u8);
+	println(enum_value(copy_enum(value)));
+
+	let tail: PackedTail = PackedTail {
+		tag: 9u8,
+		word: 123u64,
+		tail: [10u8, 11u8, 12u8],
+	};
+	println(Uint(tail.tag));
+	println(Uint(tail.word));
+	println(Uint(tail.tail[2u]));
+}

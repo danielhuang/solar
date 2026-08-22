@@ -857,7 +857,7 @@ pub struct StaticItem {
 pub struct StructDef {
     /// Struct identity.
     pub id: TypeId,
-    /// Fields in layout order.
+    /// Fields in declaration order.
     pub fields: Vec<FieldDef>,
 }
 
@@ -9064,16 +9064,19 @@ fn atomic_type_size(ty: &Type, structs: &HashMap<TypeId, StructDef>) -> Option<u
         | Type::Function { .. } => Some(16),
         Type::Struct(name) => {
             let def = structs.get(name)?;
-            let mut size = 0usize;
-            let mut struct_align = 1usize;
-            for f in &def.fields {
-                let fs = atomic_type_size(&f.ty, structs)?;
-                let fa = atomic_type_align(&f.ty, structs)?;
-                size = (size + fa - 1) & !(fa - 1);
-                size += fs;
-                struct_align = struct_align.max(fa);
-            }
-            size = (size + struct_align - 1) & !(struct_align - 1);
+            let fields = def
+                .fields
+                .iter()
+                .map(|field| {
+                    Some((
+                        atomic_type_size(&field.ty, structs)?,
+                        atomic_type_align(&field.ty, structs)?,
+                    ))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            let (_, extent) = crate::types::pack_fields(&fields, 0);
+            let struct_align = fields.iter().map(|(_, align)| *align).max().unwrap_or(1);
+            let size = (extent + struct_align - 1) & !(struct_align - 1);
             Some(size)
         }
         _ => None,

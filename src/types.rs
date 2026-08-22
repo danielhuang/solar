@@ -50,6 +50,57 @@ pub trait StructDefinitions<I> {
     fn last_field_type<'a>(&'a self, id: &I) -> Option<Option<&'a Type<I>>>;
 }
 
+/// Packs aligned, non-overlapping fields around an occupied byte prefix.
+///
+/// Returns one byte offset per `(size, alignment)` input, in input order, plus
+/// the first byte after every occupied field. Fields are considered from
+/// strictest to loosest alignment and placed in the first aligned gap where
+/// they fit, so later small fields can consume padding left by earlier fields.
+pub(crate) fn pack_fields(
+    fields: &[(usize, usize)],
+    occupied_prefix: usize,
+) -> (Vec<usize>, usize) {
+    let mut order: Vec<usize> = (0..fields.len()).collect();
+    order.sort_by_key(|&index| std::cmp::Reverse(fields[index].1));
+
+    let mut occupied = if occupied_prefix == 0 {
+        Vec::new()
+    } else {
+        vec![(0usize, occupied_prefix)]
+    };
+    let mut offsets = vec![0usize; fields.len()];
+    let mut extent = occupied_prefix;
+
+    for index in order {
+        let (size, align) = fields[index];
+        assert!(
+            align.is_power_of_two(),
+            "field alignment must be a power of two"
+        );
+
+        let mut offset = 0usize;
+        for &(start, end) in &occupied {
+            offset = (offset + align - 1) & !(align - 1);
+            if offset + size <= start {
+                break;
+            }
+            if offset < end {
+                offset = end;
+            }
+        }
+        offset = (offset + align - 1) & !(align - 1);
+        offsets[index] = offset;
+        extent = extent.max(offset + size);
+
+        if size != 0 {
+            let insert_at = occupied.partition_point(|&(start, _)| start < offset);
+            occupied.insert(insert_at, (offset, offset + size));
+        }
+    }
+
+    (offsets, extent)
+}
+
 impl<I> From<&NumericType> for Type<I> {
     fn from(nt: &NumericType) -> Type<I> {
         match nt {

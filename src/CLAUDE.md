@@ -50,6 +50,10 @@ AST, while `ir_interp` and native codegen consume IR.
   starts; references to the cell may cross threads and outlive the owner.
 - Solar copies may alias. Every backend must implement memmove semantics,
   including aggregate and slice-range copies.
+- IR layouts pack struct fields and disjoint enum payload slots into alignment
+  gaps while preserving each field's alignment. Declaration and discriminant
+  order remain semantic order; an unsized struct field remains the declared and
+  physical tail.
 - Pointer-bearing values must reach LLVM with pointer-typed pointer words so
   the write-barrier pass can distinguish references from scalar data.
 - `CompileOptions` controls GC, GC-San, and optimization independently. GC-San

@@ -765,95 +765,134 @@ fn can_resolve_type(ty: &Type, resolved: &HashMap<String, DataType>) -> bool {
 }
 
 fn layout_struct(s: &mangled_ast::StructDef, resolved: &HashMap<String, DataType>) -> DataType {
-    let mut offset = 0usize;
     let mut max_align = 1usize;
-    let mut fields = Vec::new();
-    let mut struct_is_sized = true;
+    let unsized_tail = s
+        .fields
+        .last()
+        .filter(|field| !is_sized(&field.ty, resolved));
+    let sized_len = s.fields.len() - usize::from(unsized_tail.is_some());
 
-    for (i, f) in s.fields.iter().enumerate() {
-        let is_last = i == s.fields.len() - 1;
-        let field_is_sized = is_sized(&f.ty, resolved);
-        let align = type_align(&f.ty, resolved);
-        offset = align_up(offset, align);
+    for field in &s.fields[..sized_len] {
+        assert!(
+            is_sized(&field.ty, resolved),
+            "struct `{}`: field `{}` is unsized ({:?}), but only the last field may be",
+            s.name,
+            field.name,
+            field.ty
+        );
+    }
 
-        if !field_is_sized && is_last {
-            // Unsized tail field: size = 0, struct becomes unsized
-            fields.push(FieldLayout {
-                name: f.name.clone(),
-                ty: f.ty.clone(),
+    let shapes: Vec<_> = s.fields[..sized_len]
+        .iter()
+        .map(|field| {
+            let align = type_align(&field.ty, resolved);
+            max_align = max_align.max(align);
+            (type_size(&field.ty, resolved), align)
+        })
+        .collect();
+    let (offsets, mut extent) = crate::types::pack_fields(&shapes, 0);
+    let mut fields: Vec<_> = s.fields[..sized_len]
+        .iter()
+        .zip(shapes)
+        .zip(offsets)
+        .enumerate()
+        .map(|(source_index, ((field, (size, _align)), offset))| {
+            (
+                source_index,
+                FieldLayout {
+                    name: field.name.clone(),
+                    ty: field.ty.clone(),
+                    offset,
+                    size,
+                },
+            )
+        })
+        .collect();
+
+    if let Some(tail) = unsized_tail {
+        let align = type_align(&tail.ty, resolved);
+        max_align = max_align.max(align);
+        let offset = align_up(extent, align);
+        extent = offset;
+        fields.push((
+            sized_len,
+            FieldLayout {
+                name: tail.name.clone(),
+                ty: tail.ty.clone(),
                 offset,
                 size: 0,
-            });
-            struct_is_sized = false;
-        } else {
-            // Only the LAST field may be unsized; anything else has no layout.
-            // Report which struct and field rather than panicking inside
-            // `type_size` with just the type.
-            assert!(
-                field_is_sized,
-                "struct `{}`: field `{}` is unsized ({:?}), but only the last field may be",
-                s.name, f.name, f.ty
-            );
-            let size = type_size(&f.ty, resolved);
-            fields.push(FieldLayout {
-                name: f.name.clone(),
-                ty: f.ty.clone(),
-                offset,
-                size,
-            });
-            offset += size;
-        }
-        max_align = max_align.max(align);
+            },
+        ));
     }
+
+    fields.sort_by_key(|(source_index, field)| (field.offset, *source_index));
 
     DataType {
         name: s.name.clone(),
-        size: align_up(offset, max_align),
+        size: align_up(extent, max_align),
         align: max_align,
-        is_sized: struct_is_sized,
-        fields,
+        is_sized: unsized_tail.is_none(),
+        fields: fields.into_iter().map(|(_, field)| field).collect(),
         variant_map: None,
     }
 }
 
 fn layout_enum(e: &mangled_ast::EnumDef, resolved: &HashMap<String, DataType>) -> DataType {
-    // Layout: [discriminant: u64][variant0_data][variant1_data]...
-    let mut offset = 8usize; // discriminant is 8 bytes
+    // Payload slots stay disjoint so a concurrent marker that observes the old
+    // discriminant still sees its untouched payload while another thread
+    // constructs a replacement variant. Pack those slots into alignment gaps
+    // around the fixed leading discriminant.
     let mut max_align = 8usize; // at least 8 for discriminant
-    let mut fields = Vec::new();
-    let mut variant_map = Vec::new();
+    let mut variant_map = vec![None; e.variants.len()];
 
-    // First field is the discriminant
-    fields.push(FieldLayout {
+    let payloads: Vec<_> = e
+        .variants
+        .iter()
+        .filter_map(|variant| {
+            variant.inner_type.as_ref().map(|ty| {
+                assert!(
+                    is_sized(ty, resolved),
+                    "enum `{}`: variant `{}` has unsized payload {:?}",
+                    e.name,
+                    variant.name,
+                    ty
+                );
+                assert!(variant.index < variant_map.len());
+                variant_map[variant.index] = Some(variant.name.clone());
+                let align = type_align(ty, resolved);
+                let size = type_size(ty, resolved);
+                max_align = max_align.max(align);
+                (variant, size, align)
+            })
+        })
+        .collect();
+    let shapes: Vec<_> = payloads
+        .iter()
+        .map(|(_, size, align)| (*size, *align))
+        .collect();
+    let (offsets, extent) = crate::types::pack_fields(&shapes, 8);
+    let mut fields = vec![FieldLayout {
         name: "__discriminant".to_string(),
         ty: Type::Uint64,
         offset: 0,
         size: 8,
-    });
-
-    // Each variant with data gets a field; build variant_map for all variants
-    for variant in &e.variants {
-        if let Some(ref ty) = variant.inner_type {
-            let align = type_align(ty, resolved);
-            offset = align_up(offset, align);
-            let size = type_size(ty, resolved);
-            fields.push(FieldLayout {
+    }];
+    fields.extend(
+        payloads
+            .into_iter()
+            .zip(offsets)
+            .map(|((variant, size, _align), offset)| FieldLayout {
                 name: variant.name.clone(),
-                ty: ty.clone(),
+                ty: variant.inner_type.clone().unwrap(),
                 offset,
                 size,
-            });
-            offset += size;
-            max_align = max_align.max(align);
-            variant_map.push(Some(variant.name.clone()));
-        } else {
-            variant_map.push(None);
-        }
-    }
+            }),
+    );
+    fields.sort_by_key(|field| field.offset);
 
     DataType {
         name: e.name.clone(),
-        size: align_up(offset, max_align),
+        size: align_up(extent, max_align),
         align: max_align,
         is_sized: true,
         fields,
@@ -1716,5 +1755,110 @@ fn lower_function(
         // Conservative default: every parameter may escape. Refined by
         // `ir_opt::analyze_param_escapes`.
         param_noescape: vec![false; num_params],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn struct_field(name: &str, ty: Type) -> mangled_ast::FieldDef {
+        mangled_ast::FieldDef {
+            name: name.to_string(),
+            ty,
+        }
+    }
+
+    fn variant(name: &str, inner_type: Option<Type>, index: usize) -> mangled_ast::EnumVariantDef {
+        mangled_ast::EnumVariantDef {
+            name: name.to_string(),
+            inner_type,
+            index,
+        }
+    }
+
+    #[test]
+    fn struct_layout_packs_fields_into_alignment_order() {
+        let def = mangled_ast::StructDef {
+            name: "Packed".to_string(),
+            fields: vec![
+                struct_field("byte", Type::Uint8),
+                struct_field("word", Type::Uint64),
+                struct_field("half", Type::Uint16),
+                struct_field("quarter", Type::Uint32),
+            ],
+        };
+
+        let layout = layout_struct(&def, &HashMap::new());
+        let fields: Vec<_> = layout
+            .fields
+            .iter()
+            .map(|field| (field.name.as_str(), field.offset))
+            .collect();
+
+        assert_eq!(
+            fields,
+            [("word", 0), ("quarter", 8), ("half", 12), ("byte", 14)]
+        );
+        assert_eq!(layout.size, 16);
+        assert_eq!(layout.align, 8);
+        assert!(layout.is_sized);
+    }
+
+    #[test]
+    fn enum_layout_fills_padding_but_keeps_payloads_disjoint() {
+        let def = mangled_ast::EnumDef {
+            name: "PackedEnum".to_string(),
+            variants: vec![
+                variant(
+                    "Wide",
+                    Some(Type::Function {
+                        params: Vec::new(),
+                        return_type: Box::new(Type::Unit),
+                    }),
+                    0,
+                ),
+                variant("Byte", Some(Type::Uint8), 1),
+            ],
+        };
+
+        let layout = layout_enum(&def, &HashMap::new());
+        let fields: Vec<_> = layout
+            .fields
+            .iter()
+            .map(|field| (field.name.as_str(), field.offset))
+            .collect();
+
+        assert_eq!(fields, [("__discriminant", 0), ("Byte", 8), ("Wide", 16)]);
+        assert_eq!(
+            layout.variant_map,
+            Some(vec![Some("Wide".to_string()), Some("Byte".to_string())])
+        );
+        assert_eq!(layout.size, 32);
+        assert_eq!(layout.align, 16);
+    }
+
+    #[test]
+    fn unsized_struct_tail_stays_last_in_memory() {
+        let def = mangled_ast::StructDef {
+            name: "PackedTail".to_string(),
+            fields: vec![
+                struct_field("tag", Type::Uint8),
+                struct_field("word", Type::Uint64),
+                struct_field("tail", Type::Array(Box::new(Type::Uint8))),
+            ],
+        };
+
+        let layout = layout_struct(&def, &HashMap::new());
+        let fields: Vec<_> = layout
+            .fields
+            .iter()
+            .map(|field| (field.name.as_str(), field.offset))
+            .collect();
+
+        assert_eq!(fields, [("word", 0), ("tag", 8), ("tail", 9)]);
+        assert_eq!(layout.size, 16);
+        assert_eq!(layout.align, 8);
+        assert!(!layout.is_sized);
     }
 }
