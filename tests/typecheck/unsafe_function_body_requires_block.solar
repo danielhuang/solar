@@ -1,0 +1,7 @@
+unsafe fn dangerous() {}
+
+unsafe fn wrapper() {
+	dangerous();
+}
+
+fn main() {}

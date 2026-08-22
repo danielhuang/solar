@@ -1187,7 +1187,12 @@ struct DefFinder<'a> {
 }
 
 fn function_signature(function: &typed_ast::FunctionDef) -> String {
-    let kind = if function.id.method { "method" } else { "fn" };
+    let kind = match (function.is_unsafe, function.id.method) {
+        (true, true) => "unsafe method",
+        (true, false) => "unsafe fn",
+        (false, true) => "method",
+        (false, false) => "fn",
+    };
     call_signature(
         kind,
         &function.id.def.name,

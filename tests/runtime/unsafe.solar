@@ -1,0 +1,34 @@
+struct Number { value: Int }
+
+unsafe fn increment(value: Int) -> Int {
+	value + 1
+}
+
+unsafe fn identity#[T](value: T) -> T {
+	value
+}
+
+unsafe method doubled(self: Number) -> Int {
+	self.value * 2
+}
+
+fn main() {
+	unsafe {
+		println(increment(1));
+		println(identity#[Int](4));
+		println((Number { value: 3 }).doubled());
+	}
+
+	let callback: fn(Int) -> Int = unsafe { increment };
+	println(callback(7));
+
+	unsafe fn nested(value: Int) -> Int {
+		value * 2
+	}
+
+	let nested_callback: fn(Int) -> Int = unsafe { nested };
+	println(nested_callback(5));
+
+	let nested = \value: Int { value + 100 };
+	println(nested(1));
+}

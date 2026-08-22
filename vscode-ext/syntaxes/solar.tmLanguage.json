@@ -39,7 +39,7 @@
     },
     {
       "name": "keyword.control.solar",
-      "match": "\\b(?:break|catch|const|continue|else|enum|false|fn|for|from|if|import|in|let|loop|match|method|null|pub|reflect|reflect_fields|reflect_fields_pair|reflect_variant|reflect_variant_pair|return|static|struct|true|try|type|while)\\b"
+      "match": "\\b(?:break|catch|const|continue|else|enum|false|fn|for|from|if|import|in|let|loop|match|method|null|pub|reflect|reflect_fields|reflect_fields_pair|reflect_variant|reflect_variant_pair|return|static|struct|true|try|type|unsafe|while)\\b"
     },
     {
       "name": "keyword.operator.solar",

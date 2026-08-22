@@ -280,6 +280,8 @@ pub struct FunctionDef {
     pub body: Vec<Statement>,
     /// Whether the declaration is exported.
     pub is_pub: bool,
+    /// Whether accessing this function requires an `unsafe` block.
+    pub is_unsafe: bool,
     /// Whether the declaration requests inlining.
     pub inline_hint: bool,
     /// Attached documentation.
@@ -547,6 +549,8 @@ pub enum ExprKind {
         else_body: Vec<Statement>,
     },
     Block(Vec<Statement>),
+    /// A block in which unsafe function declarations may be accessed.
+    UnsafeBlock(Vec<Statement>),
     Closure {
         parameters: Vec<Parameter>,
         return_type: Option<Type>,

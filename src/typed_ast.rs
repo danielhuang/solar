@@ -550,6 +550,12 @@ fn apply_subst_to_ast_expr(expr: &ast::Expr, subst: &HashMap<String, ast::Type>)
                 .map(|s| apply_subst_to_ast_statement(s, subst))
                 .collect(),
         ),
+        ast::ExprKind::UnsafeBlock(stmts) => ast::ExprKind::UnsafeBlock(
+            stmts
+                .iter()
+                .map(|s| apply_subst_to_ast_statement(s, subst))
+                .collect(),
+        ),
         ast::ExprKind::Loop(stmts) => ast::ExprKind::Loop(
             stmts
                 .iter()
@@ -817,6 +823,7 @@ fn apply_subst_to_ast_statement(
                     .map(|s| apply_subst_to_ast_statement(s, subst))
                     .collect(),
                 is_pub: fdef.is_pub,
+                is_unsafe: fdef.is_unsafe,
                 inline_hint: fdef.inline_hint,
                 doc: fdef.doc.clone(),
                 span: fdef.span,
@@ -1055,6 +1062,8 @@ pub struct FunctionDef {
     pub return_type: Type,
     /// Function body.
     pub body: Vec<Statement>,
+    /// Whether the source declaration is unsafe to access.
+    pub is_unsafe: bool,
     /// Whether code generation should request inlining.
     pub inline_hint: bool,
     /// Source declaration span.
@@ -1604,6 +1613,9 @@ struct Lowerer<'a> {
     resolved_return_types: HashMap<FuncId, Type>,
     resolving_return_types: Vec<FuncId>,
     scopes: ScopeStack<Type, ast::Ident>,
+    /// Local bindings created for non-overloaded unsafe nested functions.
+    /// Kept parallel to `scopes` so an ordinary binding can shadow them.
+    unsafe_function_scopes: Vec<HashSet<ast::Ident>>,
     current_return_type: Option<Type>,
     current_return_type_span: Option<ast::SourceSpan>,
     closure_counter: usize,
@@ -1650,6 +1662,8 @@ struct Lowerer<'a> {
     /// — without this, `\c { if c { return 5; } println(0); }` inferred `()`
     /// and the stray `Int` return miscompiled (undeclared `_ret` in codegen).
     inference_returns: Vec<(Type, ast::SourceSpan)>,
+    /// Number of enclosing explicit `unsafe` blocks in the current function.
+    unsafe_depth: usize,
 }
 
 /// Per-loop state used to type `loop` expressions and validate `break`.
@@ -1953,6 +1967,7 @@ impl<'a> Lowerer<'a> {
             resolved_return_types: HashMap::new(),
             resolving_return_types: Vec::new(),
             scopes: ScopeStack::default(),
+            unsafe_function_scopes: Vec::new(),
             current_return_type: None,
             current_return_type_span: None,
             closure_counter: 0,
@@ -1972,6 +1987,7 @@ impl<'a> Lowerer<'a> {
             in_try_block: None,
             try_contexts: Vec::new(),
             inference_returns: Vec::new(),
+            unsafe_depth: 0,
         })
     }
 
@@ -1979,6 +1995,24 @@ impl<'a> Lowerer<'a> {
     /// names are no longer renamed by `resolve`, so this is now the identity.
     fn display_name<'n>(&'n self, name: &'n str) -> &'n str {
         name
+    }
+
+    fn require_unsafe_access(
+        &self,
+        function: &ast::FunctionDef,
+        span: ast::SourceSpan,
+    ) -> Result<(), CompileError> {
+        if function.is_unsafe && self.unsafe_depth == 0 {
+            return Err(CompileError::new(
+                format!(
+                    "access to unsafe function `{}` requires an unsafe block",
+                    function.display_name
+                ),
+                span,
+            )
+            .with_label("unsafe function declared here", function.span));
+        }
+        Ok(())
     }
 
     /// Look up the AST struct definition for a (possibly monomorphized) struct name.
@@ -2065,11 +2099,13 @@ impl<'a> Lowerer<'a> {
     fn push_scope(&mut self) {
         self.scopes.push();
         self.const_scopes.push(HashMap::new());
+        self.unsafe_function_scopes.push(HashSet::new());
     }
 
     fn pop_scope(&mut self) {
         self.scopes.pop();
         self.const_scopes.pop();
+        self.unsafe_function_scopes.pop();
     }
 
     /// Look up a const declaration in scope: innermost local const scope first,
@@ -2107,7 +2143,19 @@ impl<'a> Lowerer<'a> {
     }
 
     fn define_var(&mut self, name: ast::Ident, ty: Type) {
+        self.unsafe_function_scopes
+            .last_mut()
+            .unwrap()
+            .remove(&name);
         self.scopes.define(name, ty);
+    }
+
+    fn is_unsafe_function_binding(&self, name: &ast::Ident) -> bool {
+        (0..self.scopes.depth()).rev().find_map(|index| {
+            self.scopes
+                .lookup_at(name, index)
+                .map(|_| self.unsafe_function_scopes[index].contains(name))
+        }) == Some(true)
     }
 
     fn lookup_var(&mut self, name: &ast::Ident) -> Option<Type> {
@@ -3184,6 +3232,7 @@ impl<'a> Lowerer<'a> {
                     parameters: stub_params,
                     return_type: stub_return,
                     body: Vec::new(),
+                    is_unsafe: ast_def.is_unsafe,
                     inline_hint: ast_def.inline_hint,
                     def_span: ast_def.span,
                 },
@@ -3518,6 +3567,7 @@ impl<'a> Lowerer<'a> {
         self.resolving_return_types.push(name.clone());
         let func_def = self.concrete_ast_defs.get(name).unwrap().clone();
         let saved_scopes = std::mem::take(&mut self.scopes);
+        let saved_unsafe_function_scopes = std::mem::take(&mut self.unsafe_function_scopes);
         let saved_return_type = self.current_return_type.take();
         let saved_return_type_span = self.current_return_type_span.take();
         let saved_capture_contexts = std::mem::take(&mut self.capture_contexts);
@@ -3536,6 +3586,7 @@ impl<'a> Lowerer<'a> {
         // lowering.
         let lowered = self.lower_function(&func_def)?;
         self.scopes = saved_scopes;
+        self.unsafe_function_scopes = saved_unsafe_function_scopes;
         self.current_return_type = saved_return_type;
         self.current_return_type_span = saved_return_type_span;
         self.capture_contexts = saved_capture_contexts;
@@ -3548,6 +3599,9 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_function(&mut self, func: &ast::FunctionDef) -> Result<FunctionDef, CompileError> {
+        // An unsafe declaration does not make its body an unsafe context, and
+        // lazy lowering must not inherit an unsafe block from its call site.
+        let saved_unsafe_depth = std::mem::replace(&mut self.unsafe_depth, 0);
         self.push_scope();
         self.nested_function_defs.push(HashMap::new());
         // A function body starts a fresh loop context (lowering can be triggered
@@ -3627,6 +3681,7 @@ impl<'a> Lowerer<'a> {
             .into_iter()
             .flatten()
             .collect();
+        self.unsafe_depth = saved_unsafe_depth;
         self.current_return_type = prev_return_type;
         self.current_return_type_span = prev_return_type_span;
 
@@ -3743,6 +3798,7 @@ impl<'a> Lowerer<'a> {
             parameters,
             return_type,
             body,
+            is_unsafe: func.is_unsafe,
             inline_hint: func.inline_hint,
             def_span: func.span,
         })
@@ -4611,6 +4667,12 @@ impl<'a> Lowerer<'a> {
                 let fn_ty = closure_expr.ty.clone();
                 let local_name = ast::Ident::user(fdef.name.clone());
                 self.define_var(local_name.clone(), fn_ty.clone());
+                if fdef.is_unsafe {
+                    self.unsafe_function_scopes
+                        .last_mut()
+                        .unwrap()
+                        .insert(local_name.clone());
+                }
                 Ok(vec![Statement {
                     kind: StatementKind::Let {
                         name: local_name,
@@ -4675,6 +4737,7 @@ impl<'a> Lowerer<'a> {
                     span,
                 ));
             }
+            self.require_unsafe_access(&entries[0].ast_def, span)?;
             let params: Vec<Type> = entries[0]
                 .ast_def
                 .parameters
@@ -4723,6 +4786,20 @@ impl<'a> Lowerer<'a> {
                     ));
                 }
                 if let Some(ty) = self.lookup_var(name) {
+                    if self.is_unsafe_function_binding(name) {
+                        let function = source_name
+                            .and_then(|name| {
+                                self.nested_function_defs
+                                    .iter()
+                                    .rev()
+                                    .find_map(|functions| functions.get(name))
+                                    .and_then(|entries| {
+                                        (entries.len() == 1).then(|| &entries[0].ast_def)
+                                    })
+                            })
+                            .unwrap();
+                        self.require_unsafe_access(function, expr.span)?;
+                    }
                     Ok(Expr {
                         ty,
                         kind: ExprKind::Identifier(name.clone()),
@@ -5167,6 +5244,7 @@ impl<'a> Lowerer<'a> {
                                     continue;
                                 }
 
+                                self.require_unsafe_access(gdef, expr.span)?;
                                 let closure_expr = self.lower_closure(
                                     expr.span,
                                     &gdef.parameters,
@@ -5253,6 +5331,7 @@ impl<'a> Lowerer<'a> {
                                     .map(|s| apply_subst_to_ast_statement(s, &subst))
                                     .collect();
 
+                                self.require_unsafe_access(gdef, expr.span)?;
                                 let closure_expr = self.lower_closure(
                                     expr.span,
                                     &concrete_params,
@@ -6036,6 +6115,30 @@ impl<'a> Lowerer<'a> {
                     .last()
                     .and_then(|s| match &s.kind {
                         StatementKind::Expression(e) => Some(e.ty.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or(Type::Unit);
+                Ok(Expr {
+                    ty,
+                    kind: ExprKind::Block(lowered),
+                    span: expr.span,
+                })
+            }
+            ast::ExprKind::UnsafeBlock(stmts) => {
+                self.push_scope();
+                let previous_unsafe_depth = self.unsafe_depth;
+                self.unsafe_depth = previous_unsafe_depth + 1;
+                let lowered = stmts
+                    .iter()
+                    .map(|statement| self.lower_statement(statement))
+                    .collect::<Result<Vec<Vec<Statement>>, CompileError>>();
+                self.unsafe_depth = previous_unsafe_depth;
+                let lowered: Vec<Statement> = lowered?.into_iter().flatten().collect();
+                self.pop_scope();
+                let ty = lowered
+                    .last()
+                    .and_then(|statement| match &statement.kind {
+                        StatementKind::Expression(expression) => Some(expression.ty.clone()),
                         _ => None,
                     })
                     .unwrap_or(Type::Unit);
@@ -7403,6 +7506,9 @@ impl<'a> Lowerer<'a> {
         let prev_return_type =
             std::mem::replace(&mut self.current_return_type, explicit_return_type.clone());
         let prev_return_type_span = self.current_return_type_span.take();
+        // A closure body executes later and cannot inherit the unsafe context
+        // in which the closure value was created.
+        let saved_unsafe_depth = std::mem::replace(&mut self.unsafe_depth, 0);
         let lowered_body: Vec<Statement> = body
             .iter()
             .map(|s| self.lower_statement(s))
@@ -7410,6 +7516,7 @@ impl<'a> Lowerer<'a> {
             .into_iter()
             .flatten()
             .collect();
+        self.unsafe_depth = saved_unsafe_depth;
         self.current_return_type = prev_return_type;
         self.current_return_type_span = prev_return_type_span;
         self.in_try_block = saved_in_try_block;
@@ -7498,6 +7605,7 @@ impl<'a> Lowerer<'a> {
             parameters: typed_params.clone(),
             return_type: fn_return_type.clone(),
             body: lowered_body,
+            is_unsafe: false,
             inline_hint: false,
             def_span: span,
         };
@@ -7798,6 +7906,7 @@ impl<'a> Lowerer<'a> {
                     span,
                 )
             })?;
+            self.require_unsafe_access(&gdef.ast_def, span)?;
             let mangled = self.ensure_function_monomorphized_with_def(
                 name,
                 &gdef,
@@ -8111,6 +8220,7 @@ impl<'a> Lowerer<'a> {
 
             match best_candidate {
                 Candidate::Concrete(param_types, ast_def, lowered_args) => {
+                    self.require_unsafe_access(&ast_def, span)?;
                     let mangled = FuncId {
                         def: def_id_of_def(&ast_def.name, ast_def.span),
                         args: param_types.clone(),
@@ -8134,6 +8244,7 @@ impl<'a> Lowerer<'a> {
                     })
                 }
                 Candidate::Generic(gdef, inferred, lowered_args) => {
+                    self.require_unsafe_access(&gdef.ast_def, span)?;
                     let mangled = self.ensure_function_monomorphized_with_def(
                         name,
                         &gdef,
@@ -8274,6 +8385,7 @@ impl<'a> Lowerer<'a> {
                     continue;
                 }
 
+                self.require_unsafe_access(&gdef.ast_def, span)?;
                 matched_result = Some(Ok(Expr {
                     ty: mono_fn.return_type.clone(),
                     kind: ExprKind::Call {
@@ -8322,6 +8434,7 @@ impl<'a> Lowerer<'a> {
                     continue;
                 }
 
+                self.require_unsafe_access(&entry.ast_def, span)?;
                 let mangled = FuncId {
                     def: def_id_of_def(&entry.ast_def.name, entry.ast_def.span),
                     args: param_types.clone(),

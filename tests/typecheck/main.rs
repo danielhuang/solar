@@ -452,3 +452,33 @@ fn generic_recursion_inferred_return() {
 fn polymorphic_recursion() {
     compile_with_pipeline(&fixture("polymorphic_recursion.solar"));
 }
+
+#[test]
+#[should_panic(expected = "access to unsafe function `dangerous` requires an unsafe block")]
+fn unsafe_call_requires_block() {
+    compile(&fixture("unsafe_call_requires_block.solar"));
+}
+
+#[test]
+#[should_panic(expected = "access to unsafe function `dangerous` requires an unsafe block")]
+fn unsafe_reference_requires_block() {
+    compile(&fixture("unsafe_reference_requires_block.solar"));
+}
+
+#[test]
+#[should_panic(expected = "access to unsafe function `touch` requires an unsafe block")]
+fn unsafe_method_requires_block() {
+    compile(&fixture("unsafe_method_requires_block.solar"));
+}
+
+#[test]
+#[should_panic(expected = "access to unsafe function `dangerous` requires an unsafe block")]
+fn unsafe_function_body_is_not_implicitly_unsafe() {
+    compile(&fixture("unsafe_function_body_requires_block.solar"));
+}
+
+#[test]
+#[should_panic(expected = "access to unsafe function `dangerous` requires an unsafe block")]
+fn closure_does_not_inherit_unsafe_context() {
+    compile(&fixture("unsafe_closure_requires_own_block.solar"));
+}

@@ -53,6 +53,10 @@ AST, while `ir_interp` and native codegen consume IR.
 - `CompileOptions` controls GC, GC-San, and optimization independently. GC-San
   and optimization require GC; `-O3` and LTO are used only when optimization is
   enabled.
+- Function values are always safe to call. Accessing an `unsafe fn` or
+  `unsafe method`, including converting a declaration to a function value,
+  requires an explicit `unsafe {}` block. An unsafe declaration does not make
+  its own body, or a closure created inside an unsafe block, implicitly unsafe.
 
 ## LSP
 

@@ -239,6 +239,8 @@ pub struct FunctionDef {
     pub return_type: Type,
     /// Function body.
     pub body: Vec<Statement>,
+    /// Whether the source declaration is unsafe to access.
+    pub is_unsafe: bool,
     /// Whether code generation should request inlining.
     pub inline_hint: bool,
 }
@@ -710,6 +712,7 @@ impl Renderer<'_> {
             parameters: f.parameters.iter().map(|p| self.conv_param(p)).collect(),
             return_type: self.conv_type(&f.return_type),
             body: f.body.iter().map(|s| self.conv_stmt(s)).collect(),
+            is_unsafe: f.is_unsafe,
             inline_hint: f.inline_hint,
         }
     }

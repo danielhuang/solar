@@ -1,0 +1,8 @@
+unsafe fn dangerous() {}
+
+fn main() {
+	unsafe {
+		let callback = \ { dangerous(); };
+		callback();
+	}
+}

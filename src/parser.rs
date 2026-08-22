@@ -372,6 +372,7 @@ fn convert_field_def(node: tree_sitter::Node, source: &str) -> FieldDef {
 fn convert_function_def(node: tree_sitter::Node, source: &str) -> FunctionDef {
     let name = node_text(node.child_by_field_name("name").unwrap(), source).to_string();
     let is_pub = has_pub_keyword(node, source);
+    let is_unsafe = node.child_by_field_name("unsafe").is_some();
     let type_params = node
         .child_by_field_name("type_params")
         .map(|n| convert_type_params(n, source))
@@ -405,6 +406,7 @@ fn convert_function_def(node: tree_sitter::Node, source: &str) -> FunctionDef {
         return_type_span,
         body,
         is_pub,
+        is_unsafe,
         inline_hint,
         doc: leading_doc(node, source),
         span: source_span(node),
@@ -549,6 +551,13 @@ fn convert_block(node: tree_sitter::Node, source: &str) -> Vec<Statement> {
             "let_statement" => stmts.push(convert_let_statement(child, source)),
             "assignment_statement" => stmts.push(convert_assignment_statement(child, source)),
             "expression_statement" => stmts.push(convert_expression_statement(child, source)),
+            "unsafe_block_statement" => {
+                let unsafe_block = named_child_by_kind(child, "unsafe_block").unwrap();
+                stmts.push(Statement {
+                    kind: StatementKind::Expression(convert_expr(unsafe_block, source)),
+                    span: source_span(child),
+                });
+            }
             "if_statement" => stmts.push(convert_if_statement(child, source)),
             "while_statement" => stmts.push(convert_while_statement(child, source)),
             "for_statement" => stmts.push(convert_for_statement(child, source)),
@@ -1112,6 +1121,10 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             }
         }
         "block" => ExprKind::Block(convert_block(node, source)),
+        "unsafe_block" => ExprKind::UnsafeBlock(convert_block(
+            node.child_by_field_name("body").unwrap(),
+            source,
+        )),
         "loop_expression" => {
             let body_node = node.child_by_field_name("body").unwrap();
             ExprKind::Loop(convert_block(body_node, source))

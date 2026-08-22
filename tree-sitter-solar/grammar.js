@@ -25,6 +25,7 @@ module.exports = grammar({
     [$.binary_expression, $.unique_expr],
     [$.binary_expression, $.not_expression, $.reference_expr],
     [$.binary_expression, $.not_expression, $.unique_expr],
+    [$.unsafe_block_statement, $._expression],
   ],
 
   rules: {
@@ -138,6 +139,7 @@ module.exports = grammar({
     function_def: ($) =>
       seq(
         optional("pub"),
+        optional(field("unsafe", "unsafe")),
         "fn",
         optional(field("attr", $.inline_attr)),
         field("name", $.identifier),
@@ -152,6 +154,7 @@ module.exports = grammar({
     method_def: ($) =>
       seq(
         optional("pub"),
+        optional(field("unsafe", "unsafe")),
         "method",
         optional(field("attr", $.inline_attr)),
         field("name", $.identifier),
@@ -180,9 +183,16 @@ module.exports = grammar({
 
     block: ($) => seq("{", repeat($._statement), optional(field("tail", $._expression_with_struct)), "}"),
 
+    unsafe_block: ($) => seq("unsafe", field("body", $.block)),
+
     // ── Statements ──────────────────────────────────────────
     _statement: ($) =>
-      choice($.let_statement, $.assignment_statement, $.expression_statement, $.if_statement, $.while_statement, $.for_statement, $.reflect_fields_statement, $.reflect_fields_pair_statement, $.reflect_variant_statement, $.reflect_variant_pair_statement, $.return_statement, $.break_statement, $.continue_statement, $.try_statement, $.function_def, $.const_def),
+      choice($.let_statement, $.assignment_statement, $.expression_statement, $.unsafe_block_statement, $.if_statement, $.while_statement, $.for_statement, $.reflect_fields_statement, $.reflect_fields_pair_statement, $.reflect_variant_statement, $.reflect_variant_pair_statement, $.return_statement, $.break_statement, $.continue_statement, $.try_statement, $.function_def, $.const_def),
+
+    // Like other brace-delimited control-flow statements, a standalone unsafe
+    // block needs no semicolon. Lower dynamic precedence keeps a final unsafe
+    // block available as the enclosing block's value-producing tail expression.
+    unsafe_block_statement: ($) => prec.dynamic(-1, $.unsafe_block),
 
     return_statement: ($) =>
       seq("return", optional(field("value", $._expression_with_struct)), ";"),
@@ -272,6 +282,7 @@ module.exports = grammar({
         $.not_expression,
         $.if_expression,
         $.loop_expression,
+        $.unsafe_block,
         $.closure_expr,
         $.path_expr,
         $.match_expression,

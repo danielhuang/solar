@@ -58,6 +58,7 @@ fn generate_numeric_constructors(items: &mut Vec<ast::TopLevelItem>) {
                     span,
                 }],
                 is_pub: false,
+                is_unsafe: false,
                 inline_hint: false,
                 doc: None,
                 span,

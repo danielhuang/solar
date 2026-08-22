@@ -99,6 +99,8 @@ pub struct Function {
     pub body: Vec<NodeId>,
     /// Variables loaded from a closure environment.
     pub env_captures: Vec<EnvCapture>,
+    /// Whether the source declaration is unsafe to access.
+    pub is_unsafe: bool,
     /// Whether code generation should request inlining.
     pub inline_hint: bool,
     /// Per-parameter proof that no reference escapes the call.
@@ -372,6 +374,7 @@ pub fn lower(source: &mangled_ast::SourceFile) -> Module {
                     span: st.init.span,
                 })
                 .collect(),
+            is_unsafe: false,
             inline_hint: false,
         };
         functions.push(lower_function(
@@ -1708,6 +1711,7 @@ fn lower_function(
         nodes: lowerer.nodes,
         body,
         env_captures,
+        is_unsafe: func.is_unsafe,
         inline_hint: func.inline_hint,
         // Conservative default: every parameter may escape. Refined by
         // `ir_opt::analyze_param_escapes`.

@@ -24,6 +24,33 @@ fn ordinary_static_is_not_thread_local() {
 }
 
 #[test]
+fn unsafe_declarations_and_blocks_are_preserved() {
+    let ast = parse(
+        "pub unsafe fn(inline) danger() { unsafe { danger(); } }\n\
+         unsafe method touch(value: Int) {}",
+    );
+    let TopLevelItem::Function(function) = &ast.items[0] else {
+        panic!("expected function");
+    };
+    assert!(function.is_pub);
+    assert!(function.is_unsafe);
+    assert!(function.inline_hint);
+    let StatementKind::Expression(Expr {
+        kind: ExprKind::UnsafeBlock(body),
+        ..
+    }) = &function.body[0].kind
+    else {
+        panic!("expected unsafe block");
+    };
+    assert_eq!(body.len(), 1);
+
+    let TopLevelItem::Method(method) = &ast.items[1] else {
+        panic!("expected method");
+    };
+    assert!(method.is_unsafe);
+}
+
+#[test]
 fn struct_fields_and_enum_variants_do_not_require_trailing_commas() {
     let ast = parse("struct Pair { left: Int, right: Int }\nenum Maybe { None, Some(Int) }");
     let TopLevelItem::Struct(pair) = &ast.items[0] else {

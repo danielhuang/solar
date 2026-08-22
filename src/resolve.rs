@@ -1146,6 +1146,10 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<Ident>) {
             let mut locals_copy = locals.clone();
             rewrite_statements(stmts, ctx, &mut locals_copy);
         }
+        ExprKind::UnsafeBlock(stmts) => {
+            let mut locals_copy = locals.clone();
+            rewrite_statements(stmts, ctx, &mut locals_copy);
+        }
         ExprKind::Loop(stmts) => {
             let mut locals_copy = locals.clone();
             rewrite_statements(stmts, ctx, &mut locals_copy);

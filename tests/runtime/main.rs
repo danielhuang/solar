@@ -1043,3 +1043,9 @@ fn tail_expr_coerce() {
     let output = run(&fixture("tail_expr_coerce.solar"), "tail_expr_coerce");
     assert_eq!(output, "1\n1\n3\n3\n");
 }
+
+#[test]
+fn unsafe_access_and_safe_function_values() {
+    let output = run(&fixture("unsafe.solar"), "unsafe");
+    assert_eq!(output, "2\n4\n6\n8\n10\n101\n");
+}

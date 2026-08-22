@@ -449,6 +449,11 @@ fn function_doc(definition: &FunctionDef, keyword: &str, context: &SourceContext
     let parameter_docs = format_spanned_items(&parameters, definition.span, context, false, true);
     let signature = Doc::concat([
         visibility(definition.is_pub),
+        if definition.is_unsafe {
+            Doc::text("unsafe ")
+        } else {
+            Doc::Nil
+        },
         Doc::text(keyword),
         if definition.inline_hint {
             Doc::text("(inline) ")
@@ -934,6 +939,10 @@ fn expr_doc(expression: &Expr, context: &SourceContext<'_>) -> Doc {
         ])
         .group(),
         ExprKind::Block(body) => block_doc(body, expression.span, context),
+        ExprKind::UnsafeBlock(body) => Doc::concat([
+            Doc::text("unsafe "),
+            block_doc(body, expression.span, context),
+        ]),
         ExprKind::Closure {
             parameters,
             return_type,

@@ -313,6 +313,10 @@ impl Desugarer {
                 self.statements(&mut body);
                 ast::ExprKind::Block(body)
             }
+            ast::ExprKind::UnsafeBlock(mut body) => {
+                self.statements(&mut body);
+                ast::ExprKind::UnsafeBlock(body)
+            }
             ast::ExprKind::Closure {
                 mut parameters,
                 return_type,

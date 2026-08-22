@@ -1,0 +1,8 @@
+struct Token {}
+
+unsafe method touch(self: Token) {}
+
+fn main() {
+	let token = Token {};
+	token.touch();
+}
