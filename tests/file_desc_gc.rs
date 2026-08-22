@@ -3,14 +3,15 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use solar::pipeline::CompileMode;
+use solar::pipeline::CompileOptions;
 
 const FD_LIMIT: u32 = 64;
 
-fn build(src: &str, name: &str, mode: CompileMode) -> PathBuf {
-    match mode {
-        CompileMode::Debug => test_utils::ensure_runtime_built(),
-        CompileMode::Release => test_utils::ensure_release_runtime_built(),
+fn build(src: &str, name: &str, options: CompileOptions) -> PathBuf {
+    if options.optimize {
+        test_utils::ensure_release_runtime_built();
+    } else {
+        test_utils::ensure_runtime_built();
     }
     let dir = Path::new("target/test-fixtures");
     std::fs::create_dir_all(dir).unwrap();
@@ -22,7 +23,7 @@ fn build(src: &str, name: &str, mode: CompileMode) -> PathBuf {
         .to_ir()
         .optimized()
         .to_c(&path.display().to_string())
-        .to_binary(name, mode)
+        .to_binary(name, options)
         .path
 }
 
@@ -87,7 +88,7 @@ fn main() {
 fn dropped_file_descriptors_are_closed_by_gc() {
     // Unreachable descriptors must be collected before exhausting the limit.
     let src = TEMPLATE.replace("OPEN_STMT", r#"let f = file::open("Cargo.toml"&);"#);
-    let bin = build(&src, "fd_gc_dropped", CompileMode::Release);
+    let bin = build(&src, "fd_gc_dropped", CompileOptions::RELEASE);
     assert!(
         run_with_fd_limit(&bin),
         "opening+dropping FileDescs should survive a low fd limit because the \
@@ -105,7 +106,7 @@ fn closed_file_descriptors_keep_their_fd_number() {
             kept = (FdNode { fd: f, next: FdOpt::Some(kept) })&;
             fd_root&.atomic_store(kept);"#,
     );
-    let bin = build(&src, "fd_gc_closed_retained", CompileMode::Debug);
+    let bin = build(&src, "fd_gc_closed_retained", CompileOptions::DEBUG);
     assert!(
         !run_with_fd_limit(&bin),
         "closing a FileDesc must keep its fd number occupied (dup2 over a dead \
@@ -122,7 +123,7 @@ fn retained_file_descriptors_are_not_closed() {
         r#"kept = (FdNode { fd: file::open("Cargo.toml"&), next: FdOpt::Some(kept) })&;
             fd_root&.atomic_store(kept);"#,
     );
-    let bin = build(&src, "fd_gc_retained", CompileMode::Debug);
+    let bin = build(&src, "fd_gc_retained", CompileOptions::DEBUG);
     assert!(
         !run_with_fd_limit(&bin),
         "retaining all FileDescs should exhaust the fd limit because the GC \

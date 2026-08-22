@@ -726,12 +726,13 @@ impl<'a> Codegen<'a> {
         // Emit main
         self.line("int main(void) {");
         self.indent += 1;
-        // The debug compile pipeline (single clang, no write-barrier pass) emits
-        // no GC barriers, so a real collection could free live objects. Force
-        // bump-allocator mode there; `-DSOLAR_DEBUG_DISABLE_GC` is passed only by
-        // the debug build (release runs the collector normally).
+        // Builds without the write-barrier pass cannot collect safely. The
+        // native pipeline defines this macro exactly when `enable_gc` is false.
         self.raw_line("#ifdef SOLAR_DEBUG_DISABLE_GC");
         self.raw_line("sol_disable_gc();");
+        self.raw_line("#endif");
+        self.raw_line("#ifdef SOLAR_GC_SAN");
+        self.raw_line("sol_enable_gc_san();");
         self.raw_line("#endif");
         let statics = if self.static_root_count > 0 {
             format!("_sol_statics, {}", self.static_root_count)
@@ -829,6 +830,7 @@ impl<'a> Codegen<'a> {
             "extern void sol_start(void (*solar_main)(void*), const sol_static_entry* statics, size_t statics_len, void (*register_tls)(void));",
         );
         self.line("extern void sol_disable_gc(void);");
+        self.line("extern void sol_enable_gc_san(void);");
         self.line("extern uint8_t* sol_thread_static_alloc(size_t size, size_t align);");
         self.line("extern void sol_thread_register_statics(const sol_static_entry* statics, size_t statics_len);");
         self.line("extern void sol_thread_spawn(void* fn_ptr, void* env, void (*register_tls)(void), void (*init_tls)(void*));");

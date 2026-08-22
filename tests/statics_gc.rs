@@ -1,13 +1,14 @@
 //! Ensures statics retain heap objects across collections.
 
-use solar::pipeline::CompileMode;
+use solar::pipeline::CompileOptions;
 use std::path::PathBuf;
 use std::process::Command;
 
-fn build(src: &str, name: &str, mode: CompileMode) -> PathBuf {
-    match mode {
-        CompileMode::Release => test_utils::ensure_release_runtime_built(),
-        CompileMode::Debug => test_utils::ensure_runtime_built(),
+fn build(src: &str, name: &str, options: CompileOptions) -> PathBuf {
+    if options.optimize {
+        test_utils::ensure_release_runtime_built();
+    } else {
+        test_utils::ensure_runtime_built();
     }
     let dir = std::env::temp_dir().join(format!("solar_test_{name}"));
     std::fs::create_dir_all(&dir).unwrap();
@@ -19,7 +20,7 @@ fn build(src: &str, name: &str, mode: CompileMode) -> PathBuf {
         .to_ir()
         .optimized()
         .to_c(&src_path.display().to_string())
-        .to_binary(name, mode)
+        .to_binary(name, options)
         .path
 }
 
@@ -74,7 +75,7 @@ fn main() {
 
 #[test]
 fn statics_root_heap_objects_across_gc() {
-    let bin = build(GC_SRC, "statics_gc", CompileMode::Release);
+    let bin = build(GC_SRC, "statics_gc", CompileOptions::RELEASE);
     let out = Command::new(bin.canonicalize().unwrap())
         .env("SOLAR_PRINT_GC_STATS", "1")
         .output()
@@ -121,7 +122,11 @@ fn main() {
 
 #[test]
 fn thread_local_statics_root_heap_objects_across_gc() {
-    let bin = build(TLS_GC_SRC, "thread_local_statics_gc", CompileMode::Release);
+    let bin = build(
+        TLS_GC_SRC,
+        "thread_local_statics_gc",
+        CompileOptions::RELEASE,
+    );
     let out = Command::new(bin.canonicalize().unwrap())
         .env("SOLAR_PRINT_GC_STATS", "1")
         .output()

@@ -1,7 +1,8 @@
 # Native runtime
 
-`solar-system` is linked into native Solar programs. Release builds exercise
-the concurrent collector. Debug codegen disables collection and bump-allocates.
+`solar-system` is linked into native Solar programs. `CompileOptions::enable_gc`
+selects the concurrent collector; builds without it disable collection and
+bump-allocate. This choice is independent of LLVM optimization and LTO.
 
 ## Collector invariants
 
@@ -17,6 +18,8 @@ STW root scan -> concurrent mark -> STW remark -> concurrent arena sweep
 - Stack and static destinations are rescanned at remark and do not need write
   barriers.
 - Arena sweeping and mutator allocation must operate on disjoint bitmap words.
+- GC-San clears dead allocation bits but never moves an arena allocation
+  frontier backward, keeping swept addresses permanently poisoned.
 - A mutator may only call `sol_alloc` after thread registration.
 - Generated descriptors for thread-local static cells are attached during
   thread registration and scanned with that thread's stack roots.

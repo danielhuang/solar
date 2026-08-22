@@ -8,7 +8,8 @@
 1. `solar-specialize-gc-alloc`
 2. LLVM `-O3`
 3. `solar-write-barriers`
-4. final LTO link
+4. optional `solar-gc-sanitize`
+5. final LTO link
 
 `solar-specialize-gc-alloc` redirects constant request size/alignment pairs to
 a const-generic runtime entry point for the resulting arena class. The entry
@@ -33,4 +34,12 @@ Preserve these invariants:
 Barriers run after `-O3` so they do not inhibit allocation elimination. The
 inserted calls must inherit valid debug locations.
 
-Debug codegen does not run these passes and disables collection.
+Debug codegen runs the write-barrier pass without allocation specialization,
+LTO, or `-O3`, and leaves collection enabled.
+
+`solar-gc-sanitize` is enabled by `CompileOptions::gc_san`. It checks the address
+ranges of generated loads, stores, atomic accesses, memory transfers, and memory
+sets before they execute. Runtime functions are not instrumented.
+
+Unoptimized GC builds run the write-barrier pass and optional GC-San pass over
+generated C bitcode without allocation specialization, LTO, or `-O3`.

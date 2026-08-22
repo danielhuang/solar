@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use solar::pipeline::CompileMode;
+use solar::pipeline::CompileOptions;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -26,7 +26,7 @@ fn main() {
         .to_ir()
         .optimized()
         .to_c(input)
-        .to_binary(stem, CompileMode::Release);
+        .to_binary(stem, CompileOptions::RELEASE);
 
     // Move the binary to the requested output location
     std::fs::copy(&binary.path, output_bin).unwrap();

@@ -1,6 +1,6 @@
 //! Ensures interior references retain their containing allocation across GC.
 
-use solar::pipeline::CompileMode;
+use solar::pipeline::CompileOptions;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -16,7 +16,7 @@ fn build(src: &str, name: &str) -> PathBuf {
         .to_ir()
         .optimized()
         .to_c(&src_path.display().to_string())
-        .to_binary(name, CompileMode::Release)
+        .to_binary(name, CompileOptions::RELEASE)
         .path
 }
 

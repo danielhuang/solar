@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use solar::pipeline::CompileMode;
+use solar::pipeline::CompileOptions;
 
 fn example_files() -> Vec<PathBuf> {
     let examples_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
@@ -45,6 +45,6 @@ fn all_examples_compile_debug() {
             .to_ir()
             .optimized()
             .to_c(&path.display().to_string())
-            .to_binary(&test_name, CompileMode::Debug);
+            .to_binary(&test_name, CompileOptions::DEBUG);
     }
 }

@@ -230,6 +230,82 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
   static bool isRequired() { return true; }
 };
 
+// Insert checks before every memory operation emitted in generated Solar
+// functions. The runtime helper ignores non-arena ranges and rejects any arena
+// slot whose allocation bit was cleared by the sweeper.
+struct SolarGcSanitize : PassInfoMixin<SolarGcSanitize> {
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
+    LLVMContext &Ctx = M.getContext();
+    Type *VoidTy = Type::getVoidTy(Ctx);
+    Type *I64 = Type::getInt64Ty(Ctx);
+    PointerType *PtrTy = PointerType::getUnqual(Ctx);
+    const DataLayout &DL = M.getDataLayout();
+    FunctionCallee Check = M.getOrInsertFunction(
+        "sol_gc_san_check", FunctionType::get(VoidTy, {PtrTy, I64}, false));
+
+    unsigned NChecks = 0;
+    auto EmitCheck = [&](Instruction *At, Value *Ptr, Value *Size) {
+      IRBuilder<> B(At);
+      Value *Size64 = B.CreateZExtOrTrunc(Size, I64);
+      CallInst *C = B.CreateCall(Check, {Ptr, Size64});
+      C->setDebugLoc(barrierDebugLoc(At));
+      ++NChecks;
+    };
+    auto EmitFixedCheck = [&](Instruction *At, Value *Ptr, Type *AccessTy) {
+      uint64_t Size = DL.getTypeStoreSize(AccessTy);
+      EmitCheck(At, Ptr, ConstantInt::get(I64, Size));
+    };
+
+    for (Function &F : M) {
+      if (F.isDeclaration() || !isGeneratedFunc(F))
+        continue;
+
+      SmallVector<LoadInst *, 32> Loads;
+      SmallVector<StoreInst *, 32> Stores;
+      SmallVector<AtomicRMWInst *, 8> RMWs;
+      SmallVector<AtomicCmpXchgInst *, 8> CmpXchgs;
+      SmallVector<AnyMemTransferInst *, 8> Transfers;
+      SmallVector<MemSetInst *, 8> Sets;
+      for (Instruction &I : instructions(F)) {
+        if (auto *LI = dyn_cast<LoadInst>(&I))
+          Loads.push_back(LI);
+        else if (auto *SI = dyn_cast<StoreInst>(&I))
+          Stores.push_back(SI);
+        else if (auto *RMW = dyn_cast<AtomicRMWInst>(&I))
+          RMWs.push_back(RMW);
+        else if (auto *CX = dyn_cast<AtomicCmpXchgInst>(&I))
+          CmpXchgs.push_back(CX);
+        else if (auto *MT = dyn_cast<AnyMemTransferInst>(&I))
+          Transfers.push_back(MT);
+        else if (auto *MS = dyn_cast<MemSetInst>(&I))
+          Sets.push_back(MS);
+      }
+
+      for (LoadInst *LI : Loads)
+        EmitFixedCheck(LI, LI->getPointerOperand(), LI->getType());
+      for (StoreInst *SI : Stores)
+        EmitFixedCheck(SI, SI->getPointerOperand(),
+                       SI->getValueOperand()->getType());
+      for (AtomicRMWInst *RMW : RMWs)
+        EmitFixedCheck(RMW, RMW->getPointerOperand(),
+                       RMW->getValOperand()->getType());
+      for (AtomicCmpXchgInst *CX : CmpXchgs)
+        EmitFixedCheck(CX, CX->getPointerOperand(),
+                       CX->getCompareOperand()->getType());
+      for (AnyMemTransferInst *MT : Transfers) {
+        EmitCheck(MT, MT->getRawSource(), MT->getLength());
+        EmitCheck(MT, MT->getRawDest(), MT->getLength());
+      }
+      for (MemSetInst *MS : Sets)
+        EmitCheck(MS, MS->getRawDest(), MS->getLength());
+    }
+
+    return NChecks ? PreservedAnalyses::none() : PreservedAnalyses::all();
+  }
+
+  static bool isRequired() { return true; }
+};
+
 } // namespace
 
 extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo
@@ -245,6 +321,10 @@ llvmGetPassPluginInfo() {
                   }
                   if (Name == "solar-specialize-gc-alloc") {
                     MPM.addPass(SolarSpecializeGcAlloc());
+                    return true;
+                  }
+                  if (Name == "solar-gc-sanitize") {
+                    MPM.addPass(SolarGcSanitize());
                     return true;
                   }
                   return false;

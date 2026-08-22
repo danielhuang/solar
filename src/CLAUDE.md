@@ -50,6 +50,9 @@ AST, while `ir_interp` and native codegen consume IR.
   including aggregate and slice-range copies.
 - Pointer-bearing values must reach LLVM with pointer-typed pointer words so
   the write-barrier pass can distinguish references from scalar data.
+- `CompileOptions` controls GC, GC-San, and optimization independently. GC-San
+  and optimization require GC; `-O3` and LTO are used only when optimization is
+  enabled.
 
 ## LSP
 

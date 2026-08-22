@@ -11,8 +11,12 @@ Test groups have distinct backend coverage:
 - Dedicated release integration tests exercise the collector and LLVM passes.
 
 Use `test-utils` helpers instead of duplicating pipeline setup. Debug native
-tests use ASAN. Collector behavior must be tested with release codegen because
-debug codegen disables collection.
+tests use ASAN and exercise the unoptimized write-barrier/collector path.
+Release integration tests additionally exercise LTO and allocation
+specialization.
+
+GC-San tests cover both optimized and unoptimized `CompileOptions`: both run the
+collector with arena access checks and monotonic allocation frontiers.
 
 Keep runtime exception messages identical across all backends. Add regression
 fixtures near the subsystem they exercise and avoid temporary probe tests or

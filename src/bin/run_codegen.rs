@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use solar::pipeline::CompileMode;
+use solar::pipeline::CompileOptions;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -16,7 +16,7 @@ fn main() {
         .to_mangled()
         .to_ir()
         .to_c(filename)
-        .to_binary(test_name, CompileMode::Debug);
+        .to_binary(test_name, CompileOptions::DEBUG);
 
     let status = Command::new(binary.path.canonicalize().unwrap())
         .env("ASAN_OPTIONS", "detect_leaks=0")

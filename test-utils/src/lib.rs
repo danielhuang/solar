@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::Once;
 
-use solar::pipeline::{CompileMode, Ir, Mangled};
+use solar::pipeline::{CompileOptions, Ir, Mangled};
 
 static BUILD_RUNTIME: Once = Once::new();
 
@@ -68,7 +68,7 @@ pub fn run_codegen_file(file_path: &Path, test_name: &str) -> String {
         .to_mangled()
         .to_ir()
         .to_c(&file_path.display().to_string())
-        .to_binary(test_name, CompileMode::Debug)
+        .to_binary(test_name, CompileOptions::DEBUG)
         .run(test_name)
 }
 
@@ -86,7 +86,7 @@ pub fn run(file_path: &Path, test_name: &str) -> String {
     );
     let codegen_out = ir
         .to_c(&file_path.display().to_string())
-        .to_binary(test_name, CompileMode::Debug)
+        .to_binary(test_name, CompileOptions::DEBUG)
         .run(test_name);
     assert_eq!(
         ir_out, codegen_out,

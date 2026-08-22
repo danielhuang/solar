@@ -89,6 +89,8 @@ pub(crate) fn note_claimed(bytes: usize) {
 pub(crate) static ENABLE_STAT_PRINTS: InitCell<bool> = InitCell::new(false);
 pub(crate) static ENABLE_ALLOC_PRINTS: InitCell<bool> = InitCell::new(false);
 pub(crate) static DISABLE_GC: InitCell<bool> = InitCell::new(false);
+/// Whether swept arena slots must remain poisoned instead of being reused.
+pub(crate) static GC_SAN: InitCell<bool> = InitCell::new(false);
 
 /// Number of gray-queue shards. Sized ≥ typical core count so producers
 /// (mutators flushing) and consumers (mark workers) rarely hit the same shard.
@@ -1131,12 +1133,12 @@ unsafe fn run_gc_cycle(statics: &[crate::StaticEntry]) {
     let new_total_live_size = arena_live + big_live;
     let freed_count = arena_freed + big_freed + fd_closed;
 
-    // ===== STW pause 3: reset frontier (reuse swept holes) + publish accounting. =
-    // A backward frontier move (refilling from 0 to reuse the holes the sweep
-    // just opened) is only safe when no thread holds a claim into the region —
-    // true here, world stopped. Done as its own short pause rather than folded
-    // into the next cycle's pause 1 so hole reuse is prompt (bounding the RSS
-    // bump from allocating above `hwm` during the sweep window).
+    // ===== STW pause 3: optional hole reuse + publish accounting. =============
+    // In release mode, a backward frontier move refills from 0 to reuse holes.
+    // It is only safe when no thread holds a claim into the region — true here,
+    // with the world stopped. GC-San skips the move so swept addresses stay
+    // poisoned. This remains a separate short pause because both modes must
+    // abandon claims and publish accounting after the concurrent sweep.
     let pause3_start = std::time::Instant::now();
     let epoch3 = epoch2 + 1;
     let p3_signal;
@@ -1147,18 +1149,20 @@ unsafe fn run_gc_cycle(statics: &[crate::StaticEntry]) {
         unsafe { signal_and_wait(&registry, epoch3) };
         p3_signal = sig_start.elapsed();
 
-        // For any class that is now mostly holes, refill from slot 0 next so the
-        // swept holes are reused (otherwise the frontier keeps climbing). Compare
-        // the swept span against the live count — the same < 50%-live heuristic
-        // the STW sweep used, but on the snapshotted boundary.
-        for c in 0..heap::NUM_CLASSES {
-            let swept_slots = (sweep_words[c] as u64) * 64;
-            if swept_slots > 2 * live_slots[c] {
-                heap::reset_frontier(c);
+        // In release mode, refill mostly-empty classes from slot 0. GC-San keeps
+        // the frontier monotonic so a stale pointer can never alias a replacement
+        // object. Compare against the same < 50%-live heuristic the STW sweep
+        // used, but on the snapshotted boundary.
+        if !GC_SAN.get() {
+            for c in 0..heap::NUM_CLASSES {
+                let swept_slots = (sweep_words[c] as u64) * 64;
+                if swept_slots > 2 * live_slots[c] {
+                    heap::reset_frontier(c);
+                }
             }
         }
-        // Abandon each thread's run so it re-claims from the (possibly reset)
-        // frontier and clear per-thread alloc accounting for the new cycle.
+        // Abandon each thread's run so it re-claims from the current frontier and
+        // clear per-thread alloc accounting for the new cycle.
         for slot in registry.values() {
             let st = unsafe { &mut *slot.alloc.get() };
             st.reset_claims();

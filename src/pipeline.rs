@@ -95,17 +95,56 @@ pub struct CSource {
     pub source_map: SourceMap,
 }
 
-/// Native compilation mode.
-pub enum CompileMode {
-    /// Builds with Clang and AddressSanitizer.
-    Debug,
-    /// Builds with LLVM optimization and LTO.
-    Release,
+/// Options controlling native compilation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CompileOptions {
+    /// Enables collection and inserts the GC write-barrier pass.
+    pub enable_gc: bool,
+    /// Inserts GC-San access checks and disables reuse of swept arena slots.
+    /// Requires [`Self::enable_gc`].
+    pub gc_san: bool,
+    /// Enables `-O3`, cross-language LTO, and allocation specialization.
+    /// Requires [`Self::enable_gc`].
+    pub optimize: bool,
+}
+
+impl CompileOptions {
+    /// Unoptimized AddressSanitizer build with collection enabled.
+    pub const DEBUG: Self = Self {
+        enable_gc: true,
+        gc_san: false,
+        optimize: false,
+    };
+    /// Optimized production build with collection enabled.
+    pub const RELEASE: Self = Self {
+        enable_gc: true,
+        gc_san: false,
+        optimize: true,
+    };
+    /// Optimized build with collection and GC-San checks enabled.
+    pub const GC_SAN: Self = Self {
+        enable_gc: true,
+        gc_san: true,
+        optimize: true,
+    };
+
+    fn validate(self) {
+        assert!(!self.gc_san || self.enable_gc, "gc_san requires enable_gc");
+        assert!(
+            !self.optimize || self.enable_gc,
+            "optimize requires enable_gc"
+        );
+    }
 }
 
 impl CSource {
     /// Compiles the generated C to a native binary.
-    pub fn to_binary(self, name: &str, mode: CompileMode) -> Binary {
+    ///
+    /// # Panics
+    ///
+    /// Panics when GC-San or optimization is requested without GC.
+    pub fn to_binary(self, name: &str, options: CompileOptions) -> Binary {
+        options.validate();
         let unique: u64 = rand::random();
         let slug = format!("{name}_{unique:x}");
         let dir = Path::new("target/solar").join(&slug);
@@ -114,9 +153,10 @@ impl CSource {
         let c_path = dir.join(format!("{name}.c"));
         std::fs::write(&c_path, &self.c_source).unwrap();
 
-        let bin_path = match mode {
-            CompileMode::Debug => compile_debug(&c_path, &dir, name),
-            CompileMode::Release => compile_release(&c_path, &dir, name),
+        let bin_path = if options.optimize {
+            compile_optimized(&c_path, &dir, name, options.gc_san)
+        } else {
+            compile_unoptimized(&c_path, &dir, name, options)
         };
 
         Binary { path: bin_path }
@@ -181,18 +221,70 @@ fn insert_write_barriers(in_bc: &Path, out_bc: &Path) {
     run_solar_pass("solar-write-barriers", in_bc, out_bc);
 }
 
+/// Instrument generated memory operations with arena-allocation checks.
+fn insert_gc_san_checks(in_bc: &Path, out_bc: &Path) {
+    run_solar_pass("solar-gc-sanitize", in_bc, out_bc);
+}
+
 /// Redirect constant-size allocations to fixed-class runtime entry points and
 /// lower pointer-free Solar copies to optimizer-visible memmoves.
 fn specialize_gc_alloc(in_bc: &Path, out_bc: &Path) {
     run_solar_pass("solar-specialize-gc-alloc", in_bc, out_bc);
 }
 
-fn compile_debug(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
+fn compile_unoptimized(c_path: &Path, dir: &Path, name: &str, options: CompileOptions) -> PathBuf {
     let bin_path = dir.join(name);
 
-    // Debug codegen has no write barriers, so it disables collection.
+    if options.enable_gc {
+        let c_bc = dir.join(format!("{name}_c.bc"));
+        let mut clang_args = vec![
+            "-emit-llvm",
+            "-c",
+            "-O0",
+            "-fno-omit-frame-pointer",
+            "-fno-strict-aliasing",
+            "-g",
+            "-fexceptions",
+        ];
+        if options.gc_san {
+            clang_args.push("-DSOLAR_GC_SAN");
+        }
+        clang_args.extend([c_path.to_str().unwrap(), "-o", c_bc.to_str().unwrap()]);
+        run_cmd("clang", &clang_args);
+
+        let wb_bc = dir.join("debug_wb.bc");
+        insert_write_barriers(&c_bc, &wb_bc);
+        let gc_san_bc = dir.join("debug_gc_san.bc");
+        let final_bc = if options.gc_san {
+            insert_gc_san_checks(&wb_bc, &gc_san_bc);
+            &gc_san_bc
+        } else {
+            &wb_bc
+        };
+
+        run_cmd(
+            "clang",
+            &[
+                "-O0",
+                "-fsanitize=address",
+                "-fno-omit-frame-pointer",
+                "-fuse-ld=lld",
+                final_bc.to_str().unwrap(),
+                "target/debug/libsolar_system.a",
+                "-lm",
+                "-lpthread",
+                "-ldl",
+                "-o",
+                bin_path.to_str().unwrap(),
+            ],
+        );
+        return bin_path;
+    }
+
+    // Without write barriers, collection must remain disabled.
     let out = Command::new("clang")
         .args([
+            "-O0",
             "-fsanitize=address",
             "-fno-omit-frame-pointer",
             // The generated C accesses the same memory through mixed-typed
@@ -204,8 +296,8 @@ fn compile_debug(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
             // `throw` (a Rust panic from `sol_throw`) can unwind back through
             // these C frames to the nearest `sol_try` / `catch_unwind`.
             "-fexceptions",
-            // No write-barrier pass in this pipeline, so force bump-allocator
-            // mode (codegen guards the `sol_disable_gc()` call on this macro).
+            // No write-barrier pass, so force bump-allocator mode (codegen
+            // guards the `sol_disable_gc()` call on this macro).
             "-DSOLAR_DEBUG_DISABLE_GC",
             // lld: some of the runtime archive's dependency-crate members are
             // LLVM bitcode (fat LTO); GNU ld can't read those, lld LTO-compiles
@@ -231,7 +323,7 @@ fn compile_debug(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
 }
 
 // ---------------------------------------------------------------------------
-// Release compilation: LLVM LTO with cross-language optimization
+// Optimized compilation: LLVM LTO with cross-language optimization
 // ---------------------------------------------------------------------------
 
 /// Enable aggressive LLVM Attributor pass. Currently disabled due to an LLVM bug
@@ -267,7 +359,7 @@ fn force_replace(input: &str, from: &str, to: &str) -> String {
     new
 }
 
-fn compile_release(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
+fn compile_optimized(c_path: &Path, dir: &Path, name: &str, gc_san: bool) -> PathBuf {
     let runtime_lib = Path::new("target/release/libsolar_system.a");
     assert!(
         runtime_lib.exists(),
@@ -338,6 +430,9 @@ fn compile_release(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
         ];
         if ATTRIBUTOR_ENABLE_ALL {
             clang_args.extend(["-mllvm", "-attributor-enable=all"]);
+        }
+        if gc_san {
+            clang_args.push("-DSOLAR_GC_SAN");
         }
         clang_args.extend([c_path.to_str().unwrap(), "-o", c_bc.to_str().unwrap()]);
         run_cmd("clang", &clang_args);
@@ -429,6 +524,15 @@ fn compile_release(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
     let full_wb_bc = dir.join("full_wb.bc");
     insert_write_barriers(&full_opt_bc, &full_wb_bc);
 
+    let full_gc_san_bc = dir.join("full_gc_san.bc");
+    let final_bc = if gc_san {
+        eprintln!("=== Inserting GC sanitizer checks ===");
+        insert_gc_san_checks(&full_wb_bc, &full_gc_san_bc);
+        &full_gc_san_bc
+    } else {
+        &full_wb_bc
+    };
+
     // Final link
     eprintln!("=== Final link ===");
     let bin_path = dir.join(name);
@@ -442,7 +546,7 @@ fn compile_release(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
             link_args.extend(["-mllvm", "-attributor-enable=all"]);
         }
         link_args.extend([
-            full_wb_bc.to_str().unwrap(),
+            final_bc.to_str().unwrap(),
             runtime_lib.to_str().unwrap(),
             "-lm",
             "-lpthread",
@@ -455,4 +559,26 @@ fn compile_release(c_path: &Path, dir: &Path, name: &str) -> PathBuf {
 
     eprintln!("=== Built: {} ===", bin_path.display());
     bin_path
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CompileOptions;
+
+    #[test]
+    fn compile_options_require_gc_for_gc_features() {
+        let gc_san_without_gc = CompileOptions {
+            enable_gc: false,
+            gc_san: true,
+            optimize: false,
+        };
+        assert!(std::panic::catch_unwind(|| gc_san_without_gc.validate()).is_err());
+
+        let optimize_without_gc = CompileOptions {
+            enable_gc: false,
+            gc_san: false,
+            optimize: true,
+        };
+        assert!(std::panic::catch_unwind(|| optimize_without_gc.validate()).is_err());
+    }
 }

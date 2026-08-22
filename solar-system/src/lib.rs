@@ -53,6 +53,22 @@ pub extern "C" fn sol_disable_gc() {
     unsafe { gc::DISABLE_GC.set(true) };
 }
 
+/// Enables swept-arena access checking before runtime startup.
+#[unsafe(no_mangle)]
+pub extern "C" fn sol_enable_gc_san() {
+    // SAFETY: called before `sol_start`, single-threaded.
+    unsafe { gc::GC_SAN.set(true) };
+}
+
+/// Asserts that every arena slot touched by `[addr, addr + size)` is allocated.
+#[unsafe(no_mangle)]
+pub extern "C" fn sol_gc_san_check(addr: *const u8, size: usize) {
+    if size == 0 {
+        return;
+    }
+    heap::assert_allocated_range(addr as usize, size);
+}
+
 /// A mutable global or thread-local slot registered as a GC root.
 #[repr(C)]
 pub struct StaticEntry {

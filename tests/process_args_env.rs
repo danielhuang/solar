@@ -3,12 +3,13 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use solar::pipeline::CompileMode;
+use solar::pipeline::CompileOptions;
 
-fn build(src: &str, name: &str, mode: CompileMode) -> PathBuf {
-    match mode {
-        CompileMode::Debug => test_utils::ensure_runtime_built(),
-        CompileMode::Release => test_utils::ensure_release_runtime_built(),
+fn build(src: &str, name: &str, options: CompileOptions) -> PathBuf {
+    if options.optimize {
+        test_utils::ensure_release_runtime_built();
+    } else {
+        test_utils::ensure_runtime_built();
     }
     let dir = Path::new("target/test-fixtures");
     std::fs::create_dir_all(dir).unwrap();
@@ -20,7 +21,7 @@ fn build(src: &str, name: &str, mode: CompileMode) -> PathBuf {
         .to_ir()
         .optimized()
         .to_c(&path.display().to_string())
-        .to_binary(name, mode)
+        .to_binary(name, options)
         .path
 }
 
@@ -53,7 +54,7 @@ fn main() {
 
 #[test]
 fn args_and_env_are_exposed_to_compiled_programs() {
-    let bin = build(PRINT_SRC, "process_print", CompileMode::Release);
+    let bin = build(PRINT_SRC, "process_print", CompileOptions::RELEASE);
     let out = Command::new(bin.canonicalize().unwrap())
         .args(["hello", "wor ld", "42"])
         .env("SOLAR_TEST_VAR", "the-value")
@@ -135,7 +136,7 @@ fn main() {
 #[test]
 fn retained_env_copies_survive_collection() {
     // Only release codegen runs the collector.
-    let bin = build(GC_SRC, "process_env_gc", CompileMode::Release);
+    let bin = build(GC_SRC, "process_env_gc", CompileOptions::RELEASE);
     let out = Command::new(bin.canonicalize().unwrap())
         .env("SOLAR_TEST_VAR", "stress")
         .env("ASAN_OPTIONS", "detect_leaks=0")

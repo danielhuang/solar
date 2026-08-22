@@ -237,6 +237,29 @@ pub unsafe fn is_allocated(class: usize, slot: usize) -> bool {
     let w = unsafe { &*alloc_class_base(class).add(slot >> 6) };
     w.load(Ordering::Relaxed) & bit_mask(slot) != 0
 }
+
+/// Asserts that each arena slot intersecting `[addr, addr + size)` is live.
+/// Addresses outside the arena are ignored.
+pub fn assert_allocated_range(addr: usize, size: usize) {
+    let arena = arena_base();
+    if arena == 0 || size == 0 {
+        return;
+    }
+    let arena_end = arena + ARENA_SIZE;
+    let access_end = addr.saturating_add(size);
+    let mut p = addr.max(arena);
+    let end = access_end.min(arena_end);
+    while p < end {
+        let (class, rbase) = classify(p).unwrap();
+        let slot = slot_index(p, rbase, class);
+        assert!(
+            unsafe { is_allocated(class, slot) },
+            "GC-San: access to swept arena allocation at {p:#x} (class {class}, slot {slot})"
+        );
+        let slot_end = slot_addr(rbase, slot, class) + slot_size(class);
+        p = slot_end.min(end);
+    }
+}
 /// Load a whole alloc-bitmap word. The allocator's find-slot scan loads the
 /// word covering its cursor once and tests all 64 slots from it, instead of
 /// reloading the word per slot via `is_allocated`.
@@ -455,4 +478,26 @@ pub fn live_slots() -> (usize, usize) {
         bytes += pop as usize * slot_size(c);
     }
     (count, bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allocation_range_check_rejects_swept_slots() {
+        init();
+        let class = 0;
+        let addr = region_base(class);
+
+        unsafe { set_allocated(class, 0) };
+        assert_allocated_range(addr, slot_size(class));
+        assert_allocated_range(addr + 1, 1);
+        assert_allocated_range(1, 8);
+
+        let swept = unsafe { sweep_word_range(class, 0, 1) };
+        assert_eq!(swept, (0, 1));
+        let panic = std::panic::catch_unwind(|| assert_allocated_range(addr, 1));
+        assert!(panic.is_err());
+    }
 }
