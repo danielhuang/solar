@@ -9,13 +9,15 @@
 2. LLVM `-O3`
 3. `solar-write-barriers`
 4. optional `solar-gc-sanitize`
-5. final LTO link
+5. final native link
 
 `solar-specialize-gc-alloc` redirects constant request size/alignment pairs to
 a const-generic runtime entry point for the resulting arena class. The entry
 point retains the allocator ABI and `noinline`, while LLVM folds class-dependent
-address calculations. The pass also lowers pointer-free `sol_memcpy` calls to
-`llvm.memmove !solar.nobarrier`.
+address calculations. The generic and fixed-class entry points carry LLVM's
+`noalias`, `allocalign`, `allocsize`, and `allockind` attributes so allocation
+elimination continues after specialization. The pass also lowers pointer-free
+`sol_memcpy` calls to `llvm.memmove !solar.nobarrier`.
 
 Preserve these invariants:
 

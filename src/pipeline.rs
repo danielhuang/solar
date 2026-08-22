@@ -462,6 +462,7 @@ fn compile_optimized(c_path: &Path, dir: &Path, name: &str, gc_san: bool) -> Pat
         let ll = std::fs::read_to_string(&full_ll).unwrap();
         let mut patched = String::with_capacity(ll.len());
         let mut matched = 0usize;
+        let mut matched_classes = 0usize;
         for line in ll.lines() {
             if line.contains("@sol_alloc(") && line.starts_with("define") {
                 matched += 1;
@@ -481,6 +482,24 @@ fn compile_optimized(c_path: &Path, dir: &Path, name: &str, gc_san: bool) -> Pat
                     "define noundef noalias ptr @sol_alloc",
                 );
                 patched.push_str(&line);
+            } else if line.contains("@sol_alloc_class_") && line.starts_with("define") {
+                matched_classes += 1;
+                let line = force_replace(
+                    line,
+                    "personality ptr @rust_eh_personality",
+                    "noinline allocsize(0) allockind(\"alloc,aligned\") personality ptr @rust_eh_personality",
+                );
+                let line = force_replace(
+                    &line,
+                    "(i64 noundef %0, i64 noundef %1,",
+                    "(i64 noundef %0, i64 noundef allocalign %1,",
+                );
+                let line = force_replace(
+                    &line,
+                    "define noundef ptr @sol_alloc_class_",
+                    "define noundef noalias ptr @sol_alloc_class_",
+                );
+                patched.push_str(&line);
             } else {
                 patched.push_str(line);
             }
@@ -489,6 +508,10 @@ fn compile_optimized(c_path: &Path, dir: &Path, name: &str, gc_san: bool) -> Pat
         assert!(
             matched == 1,
             "expected exactly 1 sol_alloc definition, found {matched}"
+        );
+        assert!(
+            matched_classes == 28,
+            "expected exactly 28 sol_alloc_class definitions, found {matched_classes}"
         );
         std::fs::write(&full_ll, patched).unwrap();
     }
