@@ -1,4 +1,4 @@
-// Exercises the file intrinsics through their @std wrappers: directory
+// Exercises the syscall-backed @std file APIs: directory
 // create/list/remove, positioned read/write, stat/exists, rename, remove,
 // sync, and locks. Uses a fixed path under target/ (tests run from the crate
 // root in native codegen); starts by removing leftovers from a previous failed

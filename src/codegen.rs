@@ -754,6 +754,16 @@ impl<'a> Codegen<'a> {
         self.line("#include <stdint.h>");
         self.line("#include <string.h>");
         self.line("");
+        self.line("static inline int64_t sol_syscall(int64_t number, int64_t arg1, int64_t arg2, int64_t arg3, int64_t arg4, int64_t arg5, int64_t arg6) {");
+        self.indent += 1;
+        self.line("register int64_t r10 __asm__(\"r10\") = arg4;");
+        self.line("register int64_t r8 __asm__(\"r8\") = arg5;");
+        self.line("register int64_t r9 __asm__(\"r9\") = arg6;");
+        self.line("__asm__ volatile(\"syscall\" : \"+a\"(number) : \"D\"(arg1), \"S\"(arg2), \"d\"(arg3), \"r\"(r10), \"r\"(r8), \"r\"(r9) : \"rcx\", \"r11\", \"memory\");");
+        self.line("return number;");
+        self.indent -= 1;
+        self.line("}");
+        self.line("");
         self.line("// Runtime externs");
         self.line("typedef void (*sol_mark_fn_t)(void*, uint8_t*, uint64_t);");
         self.line("extern uint8_t* sol_alloc(size_t size, size_t align, sol_mark_fn_t mark_fn);");
@@ -761,33 +771,13 @@ impl<'a> Codegen<'a> {
         self.line("extern void sol_memcpy(uint8_t* dst, const uint8_t* src, size_t size);");
         self.line("extern uint8_t* sol_fd_from_raw(int32_t fd);");
         self.line("extern int32_t sol_fd_to_raw(uint8_t* fd);");
-        self.line("extern long syscall(long number, ...);");
         self.line("extern void sol_file_close(uint8_t* fd);");
         self.line("extern uint8_t* sol_file_stdin(void);");
         self.line("extern uint8_t* sol_file_stdout(void);");
         self.line("extern uint8_t* sol_file_stderr(void);");
-        self.line("extern size_t sol_file_read(uint8_t* fd, uint8_t* ptr, size_t len);");
         self.line(
             "extern size_t sol_file_write_partial(uint8_t* fd, const uint8_t* ptr, size_t len);",
         );
-        self.line(
-            "extern size_t sol_file_read_at(uint8_t* fd, uint8_t* ptr, size_t len, uint64_t offset);",
-        );
-        self.line(
-            "extern size_t sol_file_write_at(uint8_t* fd, const uint8_t* ptr, size_t len, uint64_t offset);",
-        );
-        self.line("extern void sol_file_sync(uint8_t* fd);");
-        self.line("extern uint8_t sol_file_lock(uint8_t* fd, int64_t op);");
-        self.line("extern void sol_file_remove(const uint8_t* ptr, size_t len);");
-        self.line("extern void sol_dir_remove(const uint8_t* ptr, size_t len);");
-        self.line(
-            "extern void sol_file_rename(const uint8_t* old_ptr, size_t old_len, const uint8_t* new_ptr, size_t new_len);",
-        );
-        self.line("extern void sol_dir_create(const uint8_t* ptr, size_t len, uint64_t mode);");
-        self.line(
-            "extern uint8_t sol_file_stat(const uint8_t* ptr, size_t len, uint64_t* size, uint64_t* mtime, uint64_t* kind);",
-        );
-        self.line("extern void sol_dir_read(uint8_t* fd, uint8_t* out);");
         self.line(
             "extern uint8_t* sol_socket_create(int64_t domain, int64_t type, int64_t protocol);",
         );
@@ -2783,13 +2773,13 @@ impl<'a> Codegen<'a> {
             }
             Intrinsic::Syscall => {
                 let number = self.emit_load(nodes, args[0]);
-                let mut call_args = Vec::with_capacity(args.len());
-                call_args.push(format!("(long){number}"));
+                let mut call_args = Vec::with_capacity(7);
+                call_args.push(format!("(int64_t){number}"));
                 for argument in &args[1..] {
                     let ty = &nodes[argument.0].ty;
                     let value = match ty {
                         Type::Int64 | Type::Uint64 => {
-                            format!("(long){}", self.emit_load(nodes, *argument))
+                            format!("(int64_t){}", self.emit_load(nodes, *argument))
                         }
                         Type::Ref(_)
                         | Type::RefUnsized(_)
@@ -2806,14 +2796,15 @@ impl<'a> Codegen<'a> {
                                 self.emit_into(nodes, *argument, &temporary);
                                 temporary
                             };
-                            format!("(long)*(uint8_t**){place}")
+                            format!("(int64_t)*(uint8_t**){place}")
                         }
                         _ => unreachable!("invalid syscall argument type: {ty}"),
                     };
                     call_args.push(value);
                 }
+                call_args.resize(7, "(int64_t)0".to_string());
                 self.linef(format!(
-                    "*(int64_t*){dst} = (int64_t)syscall({});",
+                    "*(int64_t*){dst} = sol_syscall({});",
                     call_args.join(", ")
                 ));
             }
@@ -2830,21 +2821,6 @@ impl<'a> Codegen<'a> {
             Intrinsic::FileStdout => {
                 // No args; returns a FileDesc for stdout (opaque uint8_t*).
                 self.linef(format!("*(uint8_t**){dst} = sol_file_stdout();"));
-            }
-            Intrinsic::FileRead => {
-                // args: FileDesc, &[Uint8] dst (fat pointer). Returns bytes read.
-                let fd = self.emit_load(nodes, args[0]);
-                let (ref_place, _) = self.emit_place(nodes, args[1]);
-                let data_ptr = self.fresh_tmp();
-                let data_len = self.fresh_tmp();
-                self.linef(format!("uint8_t* {data_ptr} = *(uint8_t**){ref_place};"));
-                self.linef(format!(
-                    "uint64_t {data_len} = *(uint64_t*)({ref_place} + 8);"
-                ));
-                let c_ty = self.c_int_type(result_ty);
-                self.linef(format!(
-                    "*({c_ty}*){dst} = ({c_ty})sol_file_read((uint8_t*){fd}, {data_ptr}, {data_len});"
-                ));
             }
             Intrinsic::FileWritePartial => {
                 // args: FileDesc, &[Uint8] src (fat pointer). Returns bytes written.
@@ -2864,117 +2840,6 @@ impl<'a> Codegen<'a> {
             Intrinsic::FileStderr => {
                 // No args; returns a FileDesc for stderr (opaque uint8_t*).
                 self.linef(format!("*(uint8_t**){dst} = sol_file_stderr();"));
-            }
-            Intrinsic::FileReadAt | Intrinsic::FileWriteAt => {
-                // args: FileDesc, &[Uint8] buffer (fat pointer), Uint absolute
-                // offset. Returns bytes transferred by the single pread/pwrite.
-                let f = if matches!(intrinsic, Intrinsic::FileReadAt) {
-                    "sol_file_read_at"
-                } else {
-                    "sol_file_write_at"
-                };
-                let fd = self.emit_load(nodes, args[0]);
-                let (ref_place, _) = self.emit_place(nodes, args[1]);
-                let offset = self.emit_load(nodes, args[2]);
-                let data_ptr = self.fresh_tmp();
-                let data_len = self.fresh_tmp();
-                self.linef(format!("uint8_t* {data_ptr} = *(uint8_t**){ref_place};"));
-                self.linef(format!(
-                    "uint64_t {data_len} = *(uint64_t*)({ref_place} + 8);"
-                ));
-                let c_ty = self.c_int_type(result_ty);
-                self.linef(format!(
-                    "*({c_ty}*){dst} = ({c_ty}){f}((uint8_t*){fd}, {data_ptr}, {data_len}, (uint64_t){offset});"
-                ));
-            }
-            Intrinsic::FileSync => {
-                // arg: FileDesc. fsync(2); no result.
-                let fd = self.emit_load(nodes, args[0]);
-                self.linef(format!("sol_file_sync((uint8_t*){fd});"));
-            }
-            Intrinsic::FileLock => {
-                // args: FileDesc, Int flock(2) LOCK_* op. Returns Bool (false =
-                // non-blocking request would have to wait).
-                let fd = self.emit_load(nodes, args[0]);
-                let op = self.emit_load(nodes, args[1]);
-                let c_ty = self.c_int_type(result_ty);
-                self.linef(format!(
-                    "*({c_ty}*){dst} = ({c_ty})sol_file_lock((uint8_t*){fd}, (int64_t){op});"
-                ));
-            }
-            Intrinsic::FileRemove | Intrinsic::DirRemove => {
-                // arg: &[Uint8] path (fat pointer). unlink(2)/rmdir(2); no result.
-                let f = if matches!(intrinsic, Intrinsic::FileRemove) {
-                    "sol_file_remove"
-                } else {
-                    "sol_dir_remove"
-                };
-                let (ref_place, _) = self.emit_place(nodes, args[0]);
-                let data_ptr = self.fresh_tmp();
-                let data_len = self.fresh_tmp();
-                self.linef(format!("uint8_t* {data_ptr} = *(uint8_t**){ref_place};"));
-                self.linef(format!(
-                    "uint64_t {data_len} = *(uint64_t*)({ref_place} + 8);"
-                ));
-                self.linef(format!("{f}({data_ptr}, {data_len});"));
-            }
-            Intrinsic::FileRename => {
-                // args: &[Uint8] old path, &[Uint8] new path. rename(2).
-                let (old_place, _) = self.emit_place(nodes, args[0]);
-                let (new_place, _) = self.emit_place(nodes, args[1]);
-                let old_ptr = self.fresh_tmp();
-                let old_len = self.fresh_tmp();
-                let new_ptr = self.fresh_tmp();
-                let new_len = self.fresh_tmp();
-                self.linef(format!("uint8_t* {old_ptr} = *(uint8_t**){old_place};"));
-                self.linef(format!(
-                    "uint64_t {old_len} = *(uint64_t*)({old_place} + 8);"
-                ));
-                self.linef(format!("uint8_t* {new_ptr} = *(uint8_t**){new_place};"));
-                self.linef(format!(
-                    "uint64_t {new_len} = *(uint64_t*)({new_place} + 8);"
-                ));
-                self.linef(format!(
-                    "sol_file_rename({old_ptr}, {old_len}, {new_ptr}, {new_len});"
-                ));
-            }
-            Intrinsic::DirCreate => {
-                // args: &[Uint8] path, Uint permission mode. mkdir(2).
-                let (ref_place, _) = self.emit_place(nodes, args[0]);
-                let mode = self.emit_load(nodes, args[1]);
-                let data_ptr = self.fresh_tmp();
-                let data_len = self.fresh_tmp();
-                self.linef(format!("uint8_t* {data_ptr} = *(uint8_t**){ref_place};"));
-                self.linef(format!(
-                    "uint64_t {data_len} = *(uint64_t*)({ref_place} + 8);"
-                ));
-                self.linef(format!(
-                    "sol_dir_create({data_ptr}, {data_len}, (uint64_t){mode});"
-                ));
-            }
-            Intrinsic::FileStat => {
-                // args: &[Uint8] path, three &Uint64 out-params (size, mtime
-                // nanos, kind). Returns Bool (false = path doesn't exist).
-                let (ref_place, _) = self.emit_place(nodes, args[0]);
-                let size_ptr = self.emit_load(nodes, args[1]);
-                let mtime_ptr = self.emit_load(nodes, args[2]);
-                let kind_ptr = self.emit_load(nodes, args[3]);
-                let data_ptr = self.fresh_tmp();
-                let data_len = self.fresh_tmp();
-                self.linef(format!("uint8_t* {data_ptr} = *(uint8_t**){ref_place};"));
-                self.linef(format!(
-                    "uint64_t {data_len} = *(uint64_t*)({ref_place} + 8);"
-                ));
-                let c_ty = self.c_int_type(result_ty);
-                self.linef(format!(
-                    "*({c_ty}*){dst} = ({c_ty})sol_file_stat({data_ptr}, {data_len}, (uint64_t*){size_ptr}, (uint64_t*){mtime_ptr}, (uint64_t*){kind_ptr});"
-                ));
-            }
-            Intrinsic::DirRead => {
-                // arg: FileDesc of a directory. The runtime builds the batch's
-                // `&[&[Uint8]]` and writes its 16-byte fat pointer into `dst`.
-                let fd = self.emit_load(nodes, args[0]);
-                self.linef(format!("sol_dir_read((uint8_t*){fd}, (uint8_t*){dst});"));
             }
             Intrinsic::SocketCreate => {
                 // args: Int domain, Int type, Int protocol. Returns a FileDesc.
