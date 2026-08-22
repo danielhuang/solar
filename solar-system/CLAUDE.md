@@ -4,6 +4,11 @@
 selects the concurrent collector; builds without it disable collection and
 bump-allocate. This choice is independent of LLVM optimization and LTO.
 
+Cargo release LTO is disabled. The workspace's `-Clinker-plugin-lto` rustflag
+still emits `solar-system` archive members as LLVM bitcode so the optimized
+Solar pipeline can merge them with generated code and perform its own
+cross-language optimization.
+
 ## Collector invariants
 
 The collector cycle is:

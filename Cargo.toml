@@ -22,6 +22,6 @@ tree-sitter-solar = { workspace = true }
 test-utils = { path = "test-utils" }
 
 [profile.release]
-lto = "fat"
+lto = false
 opt-level = 3
 debug = true

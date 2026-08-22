@@ -300,8 +300,8 @@ fn compile_unoptimized(c_path: &Path, dir: &Path, name: &str, options: CompileOp
             // guards the `sol_disable_gc()` call on this macro).
             "-DSOLAR_DEBUG_DISABLE_GC",
             // lld: some of the runtime archive's dependency-crate members are
-            // LLVM bitcode (fat LTO); GNU ld can't read those, lld LTO-compiles
-            // them at link time.
+            // LLVM bitcode (`linker-plugin-lto`); GNU ld can't read those, so
+            // lld compiles them at link time.
             "-fuse-ld=lld",
             c_path.to_str().unwrap(),
             "target/debug/libsolar_system.a",
@@ -538,9 +538,9 @@ fn compile_optimized(c_path: &Path, dir: &Path, name: &str, gc_san: bool) -> Pat
     let bin_path = dir.join(name);
     {
         // Use lld: the runtime archive's dependency-crate members (backtrace,
-        // gimli, …) are LLVM bitcode (fat LTO) and are now pulled here rather
-        // than pre-merged. GNU ld can't read bitcode archive members; lld
-        // LTO-compiles them at link time.
+        // gimli, …) are LLVM bitcode (`linker-plugin-lto`) and are now pulled
+        // here rather than pre-merged. GNU ld can't read bitcode archive
+        // members; lld compiles them at link time.
         let mut link_args = vec!["-fuse-ld=lld", "-march=native", "-O3", "-g"];
         if ATTRIBUTOR_ENABLE_ALL {
             link_args.extend(["-mllvm", "-attributor-enable=all"]);

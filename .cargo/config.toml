@@ -1,6 +1,8 @@
 [target.x86_64-unknown-linux-gnu]
 rustflags = [
     "-Ctarget-cpu=native",
+    # Preserve raw LLVM bitcode members in libsolar_system.a for Solar's own
+    # cross-language optimization pipeline. Cargo release LTO remains disabled.
     "-Clinker-plugin-lto",
     # "-Clinker=clang",
     # "-Clink-arg=-fuse-ld=lld",
