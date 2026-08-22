@@ -16,6 +16,27 @@ pub extern "C" fn sol_black_box_ref(value: *mut u8) {
     let _ = std::hint::black_box(value);
 }
 
+/// Keeps a GC reference materialized until this call returns.
+///
+/// The collector conservatively scans registers captured by its suspension
+/// signal as well as the stack. Keeping this function out of line forces the
+/// reference through the native calling convention, while the side-effecting
+/// assembly operand forces LLVM to materialize it in a register at the fence.
+#[unsafe(no_mangle)]
+#[inline(never)]
+pub extern "C" fn sol_gc_keepalive(value: *mut u8) {
+    // SAFETY: the empty assembly has no machine-level effects. Its input
+    // operand is the effect: LLVM must make `value` available in a register,
+    // which the collector's suspension signal captures and scans.
+    unsafe {
+        std::arch::asm!(
+            "/* {value} */",
+            value = in(reg) value,
+            options(nostack, preserves_flags)
+        );
+    }
+}
+
 /// Allocates uninitialized GC-managed memory.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -> *mut u8 {

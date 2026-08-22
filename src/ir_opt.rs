@@ -43,7 +43,7 @@ fn good_call_args(nodes: &[Node], noescape_params: &HashMap<String, Vec<bool>>) 
                 }
             }
             NodeKind::IntrinsicCall {
-                intrinsic: Intrinsic::BlackBoxRef,
+                intrinsic: Intrinsic::BlackBoxRef | Intrinsic::GcKeepAlive,
                 args,
             } => {
                 good.insert(args[0].0);
@@ -720,6 +720,16 @@ mod tests {
              fn main() { println(hide(3)); }\n",
         );
         assert_eq!(noescape_of(&m, "hide"), vec![true]);
+    }
+
+    #[test]
+    fn gc_keepalive_argument_does_not_escape() {
+        let m = ir_of(
+            "import {gc_keepalive} from \"@intrinsics\";\n\
+             fn keep(x: &Int) { gc_keepalive(x); }\n\
+             fn main() { let x = 3; keep(x&); }\n",
+        );
+        assert_eq!(noescape_of(&m, "keep"), vec![true]);
     }
 
     /// Whether the `let = <n>` binding (the `Let` whose value is the integer

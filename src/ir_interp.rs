@@ -1419,6 +1419,13 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             Intrinsic::BlackBoxRef => {
                 let _ = self.eval_load(nodes, args[0])?;
             }
+            Intrinsic::GcKeepAlive => {
+                // Materialize the reference value, including the data-pointer
+                // word of a fat reference. The interpreter has no collector,
+                // so evaluating the argument is the complete observable effect.
+                let (place, _) = self.eval_place(nodes, args[0])?;
+                let _ = self.mem.load(place, 8);
+            }
             Intrinsic::FdFromRaw | Intrinsic::FdToRaw => {
                 let value = self.eval_load(nodes, args[0])?;
                 self.scalar_store(dst, value, result_ty);

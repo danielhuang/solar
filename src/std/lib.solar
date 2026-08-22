@@ -44,6 +44,11 @@ pub fn black_box#[T](value: T) -> T {
 	value
 }
 
+/// Keeps a referenced value reachable by the garbage collector until this call.
+pub fn gc_keepalive#[T](reference: &T) {
+	intrinsics::gc_keepalive(reference);
+}
+
 /// Returns whether the option contains a value.
 pub method is_some#[T](self: Option#[T]) -> Bool {
 	match self { Option#[T]::Some(value) => true, Option#[T]::None => false }

@@ -20,6 +20,12 @@ fn black_box() {
 }
 
 #[test]
+fn gc_keepalive() {
+    let output = run(&fixture("gc_keepalive.solar"), "gc_keepalive");
+    assert_eq!(output, "42\n9\n");
+}
+
+#[test]
 fn synthetic_ident_collision() {
     let output = run(
         &fixture("synthetic_ident_collision.solar"),

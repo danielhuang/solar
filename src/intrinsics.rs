@@ -7,6 +7,7 @@ use crate::ast::NumericType;
 pub enum Intrinsic {
     RefEq,
     BlackBoxRef,
+    GcKeepAlive,
     Throw,
     Try,
     ArrayLen,
@@ -63,6 +64,7 @@ pub enum Intrinsic {
 const INTRINSIC_NAMES: &[(&str, Intrinsic)] = &[
     ("ref_eq", Intrinsic::RefEq),
     ("black_box_ref", Intrinsic::BlackBoxRef),
+    ("gc_keepalive", Intrinsic::GcKeepAlive),
     ("throw", Intrinsic::Throw),
     ("try", Intrinsic::Try),
     ("array_len", Intrinsic::ArrayLen),

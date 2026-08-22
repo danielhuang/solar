@@ -1,0 +1,13 @@
+import intrinsics from "@intrinsics";
+
+fn main() {
+	let value = 42;
+	gc_keepalive(value&);
+
+	let values = [7, 8, 9];
+	let slice = values[0u..3u]&;
+	intrinsics::gc_keepalive(slice);
+
+	println(value);
+	println(slice@[2u]);
+}

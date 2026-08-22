@@ -9114,6 +9114,10 @@ fn intrinsic_spec(intrinsic: &Intrinsic) -> IntrinsicSpec {
             params: vec![IsSizedRef],
             ret: Fixed(Type::Unit),
         },
+        Intrinsic::GcKeepAlive => IntrinsicSpec {
+            params: vec![IsRef],
+            ret: Fixed(Type::Unit),
+        },
         // throw(msg: &[Uint8]): unwind with a string payload; diverges.
         Intrinsic::Throw => IntrinsicSpec {
             params: vec![byte_slice()],

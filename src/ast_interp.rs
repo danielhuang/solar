@@ -1060,7 +1060,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     _ => unreachable!("ref_eq arguments must be references"),
                 }
             }
-            Intrinsic::BlackBoxRef => {
+            Intrinsic::BlackBoxRef | Intrinsic::GcKeepAlive => {
                 self.eval_expr(&arguments[0])?;
                 Value::Unit
             }

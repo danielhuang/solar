@@ -768,6 +768,7 @@ impl<'a> Codegen<'a> {
         self.line("typedef void (*sol_mark_fn_t)(void*, uint8_t*, uint64_t);");
         self.line("extern uint8_t* sol_alloc(size_t size, size_t align, sol_mark_fn_t mark_fn);");
         self.line("extern void sol_black_box_ref(uint8_t* value);");
+        self.line("extern void sol_gc_keepalive(uint8_t* value);");
         self.line("extern void sol_gc_mark(void* ctx, uint8_t* ptr);");
         self.line("extern void sol_memcpy(uint8_t* dst, const uint8_t* src, size_t size);");
         self.line("extern uint8_t* sol_fd_from_raw(int32_t fd);");
@@ -2723,6 +2724,20 @@ impl<'a> Codegen<'a> {
                     self.emit_load(nodes, args[0])
                 };
                 self.linef(format!("sol_black_box_ref((uint8_t*){value});"));
+            }
+            Intrinsic::GcKeepAlive => {
+                // Pass the data-pointer word itself, rather than the address of
+                // the reference value. For a direct `place&`, avoid materializing
+                // a temporary reference solely to load that word back out.
+                let value = if let NodeKind::Ref(inner) = &nodes[args[0].0].kind
+                    && is_place(nodes, *inner)
+                {
+                    self.emit_place(nodes, *inner).0
+                } else {
+                    let (reference, _) = self.emit_place(nodes, args[0]);
+                    format!("*(uint8_t**){reference}")
+                };
+                self.linef(format!("sol_gc_keepalive((uint8_t*){value});"));
             }
             Intrinsic::Throw => {
                 // arg[0] is a &[Uint8] fat pointer (ptr + len). Unwind with it.

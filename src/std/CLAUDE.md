@@ -11,6 +11,8 @@ there. Imports are resolved relative to `src/std`, including subdirectories.
 - `size_of#[T]()` returns the packed byte size of a statically sized type.
 - `black_box(T)` returns its input after passing a non-escaping reference to
   Rust's optimizer barrier.
+- `gc_keepalive(&T)` keeps its argument reachable through the call without
+  retaining it.
 - `ref_eq(a, b)` compares reference identity.
 - The blanket `operator_eq(self: &&T, other: &&T)` compares referenced values.
 - Reflective equality and hashing for structs and enums require public fields.
