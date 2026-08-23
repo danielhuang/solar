@@ -12,18 +12,16 @@ fn main() {
 	let t = 0u;
 
 	while t < threads {
-		let h = thread::spawn(
-			\ {
-				let i = 0;
+		let h = thread::spawn(\ {
+			let i = 0;
 
-				while i < iters {
-					m&.lock();
-					counter = counter + 1;
-					m&.unlock();
-					i = i + 1;
-				}
-			},
-		);
+			while i < iters {
+				m&.lock();
+				counter = counter + 1;
+				m&.unlock();
+				i = i + 1;
+			}
+		});
 		handles = (handles@ + [h])^;
 		t = t + 1u;
 	}

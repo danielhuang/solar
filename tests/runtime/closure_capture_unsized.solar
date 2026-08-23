@@ -6,11 +6,9 @@ fn run(f: fn()) { f(); }
 
 fn main() {
 	let buf = [65u8, 66u8, 67u8]; // "ABC"
-	run(
-		\ {
-			buf[0u] = 'Z'; // mutate the captured array
-			buf[2u] = 'X'; // index 2 needs the captured length
-		},
-	);
+	run(\ {
+		buf[0u] = 'Z'; // mutate the captured array
+		buf[2u] = 'X'; // index 2 needs the captured length
+	});
 	println(buf&); // "ZBX"
 }

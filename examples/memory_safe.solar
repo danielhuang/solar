@@ -7,14 +7,12 @@ fn main() {
 
 	let my_fn = a_fn;
 
-	thread::spawn(
-		\ {
-			while true {
-				my_fn = a_fn;
-				my_fn = b_fn;
-			}
-		},
-	);
+	thread::spawn(\ {
+		while true {
+			my_fn = a_fn;
+			my_fn = b_fn;
+		}
+	});
 
 	while true {
 		my_fn();

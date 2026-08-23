@@ -2,24 +2,18 @@ struct PackedAtomic { low: Uint8, value: Uint64, high: Uint8 }
 
 fn main() {
 	let x = 0;
-	thread::spawn(
-		\ {
-			x&.atomic_store(42);
-		},
-	);
+	thread::spawn(\ {
+		x&.atomic_store(42);
+	});
 	while x&.atomic_load() == 0 {}
 	println(x&.atomic_load());
 
 	// Declaration-order layout is 24 bytes; packed layout is 16 and therefore
 	// supported by the 128-bit atomic load/store path.
 	let packed = PackedAtomic { low: 1u8, value: 0u64, high: 2u8 };
-	thread::spawn(
-		\ {
-			packed&.atomic_store(
-				PackedAtomic { low: 3u8, value: 99u64, high: 4u8 },
-			);
-		},
-	);
+	thread::spawn(\ {
+		packed&.atomic_store(PackedAtomic { low: 3u8, value: 99u64, high: 4u8 });
+	});
 	while packed&.atomic_load().value == 0u64 {}
 	let loaded = packed&.atomic_load();
 	println(Uint(loaded.low));

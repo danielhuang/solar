@@ -12,12 +12,10 @@ fn main() {
 	println(a); // 15
 
 	// block expression as function argument
-	println(
-		{
-			let x: Int = 3;
-			x * 7
-		},
-	); // 21
+	println({
+		let x: Int = 3;
+		x * 7
+	}); // 21
 
 	// shadowing: outer variable retains value after block
 	let outer: Int = 42;

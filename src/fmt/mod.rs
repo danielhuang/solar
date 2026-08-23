@@ -287,6 +287,10 @@ fn list_with_padding(
     delimited(open, Doc::concat(content), close, padding, false)
 }
 
+fn hugged(open: &str, content: Doc, close: &str) -> Doc {
+    Doc::concat([Doc::text(open), content, Doc::text(close)])
+}
+
 fn source_file_doc(file: &SourceFile, context: &SourceContext<'_>) -> Doc {
     let end_line = context.source.lines().count().saturating_sub(1) as u32;
     let boundary = SourceSpan {
@@ -901,11 +905,7 @@ fn expr_doc(expression: &Expr, context: &SourceContext<'_>) -> Doc {
             Doc::text("]"),
         ]),
         ExprKind::ArrayLiteral(elements, ty) => Doc::concat([
-            list(
-                elements.iter().map(|value| expr_doc(value, context)),
-                "[",
-                "]",
-            ),
+            expression_list(elements, "[", "]", context),
             ty.as_ref().map_or(Doc::Nil, |ty| {
                 Doc::concat([Doc::text("#["), type_doc(ty), Doc::text("]")])
             }),
@@ -1021,11 +1021,7 @@ fn expr_doc(expression: &Expr, context: &SourceContext<'_>) -> Doc {
             type_arguments(type_args),
             argument_list(arguments, kwargs, context),
         ]),
-        ExprKind::TupleLiteral(elements) => list(
-            elements.iter().map(|value| expr_doc(value, context)),
-            "(",
-            ")",
-        ),
+        ExprKind::TupleLiteral(elements) => expression_list(elements, "(", ")", context),
         ExprKind::IntrinsicCall {
             intrinsic,
             type_args,
@@ -1033,11 +1029,7 @@ fn expr_doc(expression: &Expr, context: &SourceContext<'_>) -> Doc {
         } => Doc::concat([
             Doc::text(intrinsic.name()),
             type_arguments(type_args),
-            list(
-                arguments.iter().map(|value| expr_doc(value, context)),
-                "(",
-                ")",
-            ),
+            expression_list(arguments, "(", ")", context),
         ]),
     };
     wrap_parentheses(expression, doc, context)
@@ -1062,16 +1054,68 @@ fn argument_list(
     kwargs: &[(String, Expr)],
     context: &SourceContext<'_>,
 ) -> Doc {
-    list(
-        arguments
-            .iter()
-            .map(|argument| expr_doc(argument, context))
-            .chain(kwargs.iter().map(|(name, value)| {
-                Doc::concat([Doc::text(name), Doc::text(" = "), expr_doc(value, context)])
-            })),
-        "(",
-        ")",
-    )
+    let docs = arguments
+        .iter()
+        .map(|argument| expr_doc(argument, context))
+        .chain(kwargs.iter().map(|(name, value)| {
+            Doc::concat([Doc::text(name), Doc::text(" = "), expr_doc(value, context)])
+        }))
+        .collect::<Vec<_>>();
+    let sole_block = match (arguments, kwargs) {
+        ([argument], []) => expression_is_huggable_block(argument),
+        ([], [(_, value)]) => expression_is_huggable_block(value),
+        _ => false,
+    };
+    if sole_block {
+        hugged("(", docs.into_iter().next().unwrap(), ")")
+    } else {
+        list(docs, "(", ")")
+    }
+}
+
+fn expression_list(
+    expressions: &[Expr],
+    open: &str,
+    close: &str,
+    context: &SourceContext<'_>,
+) -> Doc {
+    if let [expression] = expressions
+        && expression_is_huggable_block(expression)
+    {
+        hugged(open, expr_doc(expression, context), close)
+    } else {
+        list(
+            expressions
+                .iter()
+                .map(|expression| expr_doc(expression, context)),
+            open,
+            close,
+        )
+    }
+}
+
+fn expression_is_huggable_block(expression: &Expr) -> bool {
+    match &expression.kind {
+        ExprKind::Block(_)
+        | ExprKind::UnsafeBlock(_)
+        | ExprKind::Closure { .. }
+        | ExprKind::ArrayLiteral(..)
+        | ExprKind::TupleLiteral(_) => true,
+        ExprKind::Call {
+            arguments, kwargs, ..
+        }
+        | ExprKind::MethodCall {
+            arguments, kwargs, ..
+        } => match (arguments.as_slice(), kwargs.as_slice()) {
+            ([argument], []) => expression_is_huggable_block(argument),
+            ([], [(_, value)]) => expression_is_huggable_block(value),
+            _ => false,
+        },
+        ExprKind::IntrinsicCall { arguments, .. } => {
+            matches!(arguments.as_slice(), [argument] if expression_is_huggable_block(argument))
+        }
+        _ => false,
+    }
 }
 
 fn closure_doc(
@@ -1512,6 +1556,16 @@ mod tests {
         assert_eq!(
             formatted("fn f(){let x=1;x}\n"),
             "fn f() { let x = 1; x }\n"
+        );
+    }
+
+    #[test]
+    fn hugs_sole_nested_blocks_but_not_control_flow() {
+        assert_eq!(
+            formatted(
+                "fn f() {\nthread::spawn(\n\\ {\nlet x=1;\nx\n},\n);\nlet callbacks=[\n\\ {\nlet x=2;\nx\n},\n];\nouter(\ninner(\n\\ {\nlet x=3;\nx\n},\n),\n);\nconsume(\nif true {\n1\n} else {\n2\n},\n);\n}\n"
+            ),
+            "fn f() {\n\tthread::spawn(\\ {\n\t\tlet x = 1;\n\t\tx\n\t});\n\tlet callbacks = [\\ {\n\t\tlet x = 2;\n\t\tx\n\t}];\n\touter(inner(\\ {\n\t\tlet x = 3;\n\t\tx\n\t}));\n\tconsume(\n\t\tif true {\n\t\t\t1\n\t\t} else {\n\t\t\t2\n\t\t},\n\t);\n}\n"
         );
     }
 

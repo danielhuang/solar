@@ -122,8 +122,10 @@ Only multiline block items require surrounding blank lines; compact block items
 can remain adjacent to other items. Nonempty executable blocks remain multiline
 when written multiline, even with only one code item, while short declaration
 and parameter lists still collapse.
-Nested parentheses containing a single multiline block value hug that value at
-every layer, leaving the block's contents to begin on the following line.
+Nested parentheses and arrays containing a single multiline block value hug
+that value at every layer, leaving the block's contents to begin on the
+following line. Block-bodied closures and plain block expressions are huggable;
+control-flow expressions are not.
 Zero-parameter closures have a space after `\`; parameterized closures keep the
 first parameter adjacent to it.
 Range operators have no surrounding spaces (`a..b`).

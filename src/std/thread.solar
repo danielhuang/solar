@@ -6,13 +6,11 @@ pub struct Thread { done: &Uint32 }
 /// Spawns a thread that runs `f`.
 pub fn spawn(f: fn()) -> Thread {
 	let done = 0u32;
-	intrinsics::thread_spawn(
-		\ {
-			f();
-			done&.atomic_store(1u32);
-			done&.futex_wake();
-		},
-	);
+	intrinsics::thread_spawn(\ {
+		f();
+		done&.atomic_store(1u32);
+		done&.futex_wake();
+	});
 	Thread { done: done& }
 }
 

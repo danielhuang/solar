@@ -4,14 +4,12 @@ fn main() {
 	let listener = net::listen("127.0.0.1"&, 0u);
 	let port = listener.local_port();
 
-	let server = thread::spawn(
-		\ {
-			let conn = listener.accept();
-			let msg = conn.read(64u);
-			conn.write(msg);
-			conn.shutdown_write();
-		},
-	);
+	let server = thread::spawn(\ {
+		let conn = listener.accept();
+		let msg = conn.read(64u);
+		conn.write(msg);
+		conn.shutdown_write();
+	});
 
 	let client = net::connect("127.0.0.1"&, port);
 	client.set_nodelay(true);

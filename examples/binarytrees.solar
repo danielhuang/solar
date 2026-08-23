@@ -33,18 +33,16 @@ fn check(t: &Tree) -> Int {
 // Sum `check(make(d))` over `1 << (max_depth - d + MIN_DEPTH)` iterations,
 // storing the result into `res[idx]`. Run on its own thread per depth.
 fn spawn_depth(d: Int, max_depth: Int, res: &[Int], idx: Uint) -> thread::Thread {
-	thread::spawn(
-		\ {
-			let iters = 1 << (max_depth - d + MIN_DEPTH);
-			let sum = 0;
+	thread::spawn(\ {
+		let iters = 1 << (max_depth - d + MIN_DEPTH);
+		let sum = 0;
 
-			for _ in 0..iters {
-				sum = sum + check(make(d));
-			}
+		for _ in 0..iters {
+			sum = sum + check(make(d));
+		}
 
-			res@[idx] = sum;
-		},
-	)
+		res@[idx] = sum;
+	})
 }
 
 fn main() {

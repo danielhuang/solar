@@ -8,16 +8,14 @@ fn main() {
 	NUMBER = 11;
 	TEXT = "main"&;
 
-	let t = thread::spawn(
-		\ {
-			println(NUMBER);
-			println(TEXT);
-			NUMBER = 22;
-			TEXT = "worker"&;
-			println(NUMBER);
-			println(TEXT);
-		},
-	);
+	let t = thread::spawn(\ {
+		println(NUMBER);
+		println(TEXT);
+		NUMBER = 22;
+		TEXT = "worker"&;
+		println(NUMBER);
+		println(TEXT);
+	});
 	t.join();
 
 	println(NUMBER);
@@ -26,44 +24,36 @@ fn main() {
 	// A reference names the owner's stable TLS cell, not the reader's cell.
 	let refs = sync::Channel#[&Int]();
 	let release_owner = sync::Channel#[Int]();
-	let owner = thread::spawn(
-		\ {
-			SHARED = 40;
-			refs&.send(SHARED&);
-			release_owner&.recv();
-			return;
-		},
-	);
+	let owner = thread::spawn(\ {
+		SHARED = 40;
+		refs&.send(SHARED&);
+		release_owner&.recv();
+		return;
+	});
 	let escaped = refs&.recv();
-	let reader = thread::spawn(
-		\ {
-			println(escaped@);
-			escaped@ = 41;
-			release_owner&.send(0);
-			return;
-		},
-	);
+	let reader = thread::spawn(\ {
+		println(escaped@);
+		escaped@ = 41;
+		release_owner&.send(0);
+		return;
+	});
 	reader.join();
 	println(escaped@);
 	owner.join();
 
 	// The cell remains alive after the thread that created it exits.
 	let refs_after_exit = sync::Channel#[&Int]();
-	let departed = thread::spawn(
-		\ {
-			SHARED = 50;
-			refs_after_exit&.send(SHARED&);
-		},
-	);
+	let departed = thread::spawn(\ {
+		SHARED = 50;
+		refs_after_exit&.send(SHARED&);
+	});
 	let escaped_after_exit = refs_after_exit&.recv();
 	departed.join();
-	let reader_after_exit = thread::spawn(
-		\ {
-			println(escaped_after_exit@);
-			escaped_after_exit@ = 51;
-			return;
-		},
-	);
+	let reader_after_exit = thread::spawn(\ {
+		println(escaped_after_exit@);
+		escaped_after_exit@ = 51;
+		return;
+	});
 	reader_after_exit.join();
 	println(escaped_after_exit@);
 }
