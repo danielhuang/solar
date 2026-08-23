@@ -1,0 +1,15 @@
+fn main() {
+	for _ in 0..10000 {
+		thread::spawn(
+			\ {
+				loop {
+					0u32&.futex_wait(0u32);
+				}
+			},
+		);
+	}
+
+	loop {
+		black_box(0&);
+	}
+}
