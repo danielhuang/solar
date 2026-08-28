@@ -35,6 +35,36 @@ fn example_typechecks() {
 }
 
 #[test]
+#[should_panic(expected = "field `kind` has non-C-representable type Kind: enums")]
+fn repr_c_rejects_enum_fields() {
+    compile(&fixture("repr_c_enum_field.solar"));
+}
+
+#[test]
+#[should_panic(expected = "field `marker` has non-C-representable type (): zero-sized")]
+fn repr_c_rejects_zero_sized_fields() {
+    compile(&fixture("repr_c_zst_field.solar"));
+}
+
+#[test]
+#[should_panic(expected = "zero-sized structs are not representable in C")]
+fn repr_c_rejects_empty_structs() {
+    compile(&fixture("repr_c_empty.solar"));
+}
+
+#[test]
+#[should_panic(expected = "nested struct `Inner` must also use repr(C)")]
+fn repr_c_rejects_non_c_nested_structs() {
+    compile(&fixture("repr_c_nested_non_c.solar"));
+}
+
+#[test]
+#[should_panic(expected = "function values include a closure environment")]
+fn repr_c_rejects_function_values() {
+    compile(&fixture("repr_c_function_field.solar"));
+}
+
+#[test]
 #[should_panic(expected = "type mismatch in let: expected Foo, got Int")]
 fn bad_let() {
     compile(&fixture("typecheck_bad_let.solar"));

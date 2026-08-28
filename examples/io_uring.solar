@@ -1,0 +1,435 @@
+import intrinsics from "@intrinsics";
+
+// A deliberately small Linux x86-64 (kernel 6.5+) io_uring executor prototype.
+// Async functions are ordinary structs plus poll methods; there is no compiler
+// support for async/await in this example.
+
+const SYS_IO_URING_SETUP = 425i64;
+const SYS_IO_URING_ENTER = 426i64;
+
+const PAGE_SIZE = 4096u;
+const RING_ENTRIES = 8u64;
+
+const IORING_SETUP_NO_MMAP = 16384u64;
+const IORING_ENTER_GETEVENTS = 1u64;
+const IORING_OP_WRITE = 23u64;
+
+// io_uring_sqe is eight 64-bit words. Keeping addr pointer-typed is important:
+// the kernel sees a raw address at byte 16, while Solar's GC sees a reference
+// and retains the submitted buffer. repr(C) fixes the source-order offsets at
+// 0, 8, ..., 56.
+struct(repr(C)) Sqe {
+	header: Uint64,
+	offset: Uint64,
+	address: &?Uint8,
+	len_and_flags: Uint64,
+	user_data: Uint64,
+	extra: Uint64,
+	addr3: Uint64,
+	pad: Uint64,
+}
+
+// struct io_uring_params is fifteen 64-bit words. NO_MMAP gives two words
+// pointer semantics: sq_off.user_addr at byte 72 points to the SQEs, and
+// cq_off.user_addr at byte 112 points to the combined SQ/CQ ring allocation.
+// repr(C) makes the source order the kernel-visible byte order.
+struct(repr(C)) SetupParams {
+	entries: Uint64,
+	flags_and_cpu: Uint64,
+	idle_and_features: Uint64,
+	wq_fd_and_reserved: Uint64,
+	reserved: Uint64,
+	sq_head_and_tail: Uint64,
+	sq_mask_and_entries: Uint64,
+	sq_flags_and_dropped: Uint64,
+	sq_array_and_reserved: Uint64,
+	sqes_address: &?Sqe,
+	cq_head_and_tail: Uint64,
+	cq_mask_and_entries: Uint64,
+	cq_overflow_and_cqes: Uint64,
+	cq_flags_and_reserved: Uint64,
+	rings_address: &?Uint32,
+}
+
+struct Ring {
+	fd: FileDesc,
+	rings: &[Uint32],
+	sqes: &[Sqe],
+	sq_head_offset: Uint32,
+	sq_tail_offset: Uint32,
+	sq_mask_offset: Uint32,
+	sq_entries_offset: Uint32,
+	sq_array_offset: Uint32,
+	cq_head_offset: Uint32,
+	cq_tail_offset: Uint32,
+	cq_mask_offset: Uint32,
+	cqes_offset: Uint32,
+}
+
+fn check_syscall(result: Int64, message: &[Uint8]) {
+	if result < 0i64 { intrinsics::throw(message); }
+}
+
+fn raw_fd(fd: FileDesc) -> Int64 {
+	Int64(intrinsics::fd_to_raw(fd))
+}
+
+fn ring_index(byte_offset: Uint32) -> Uint {
+	Uint(byte_offset) / 4u
+}
+
+fn ring_load(page: &[Uint32], byte_offset: Uint32) -> Uint32 {
+	page@[ring_index(byte_offset)]&.atomic_load()
+}
+
+fn ring_store(page: &[Uint32], byte_offset: Uint32, value: Uint32) {
+	page@[ring_index(byte_offset)]&.atomic_store(value);
+}
+
+fn empty_sqe(_index: Uint) -> Sqe {
+	Sqe {
+		header: 0u64,
+		offset: 0u64,
+		address: null#[Uint8],
+		len_and_flags: 0u64,
+		user_data: 0u64,
+		extra: 0u64,
+		addr3: 0u64,
+		pad: 0u64,
+	}
+}
+
+fn Ring() -> Ring {
+	// NO_MMAP requires page-aligned contiguous storage. Solar's 4096-byte arena
+	// size class supplies that for these two exactly-page-sized allocations.
+	// The kernel places both SQ and CQ structures in ring_storage.
+	let ring_storage: [Uint32] = [0u32; 1024u];
+	let sqe_storage: [Sqe] = [64u; empty_sqe];
+	let rings = ring_storage&;
+	let sqes = sqe_storage&;
+	let params = SetupParams {
+		entries: 0u64,
+		flags_and_cpu: IORING_SETUP_NO_MMAP,
+		idle_and_features: 0u64,
+		wq_fd_and_reserved: 0u64,
+		reserved: 0u64,
+		sq_head_and_tail: 0u64,
+		sq_mask_and_entries: 0u64,
+		sq_flags_and_dropped: 0u64,
+		sq_array_and_reserved: 0u64,
+		sqes_address: sqes@[0u]&,
+		cq_head_and_tail: 0u64,
+		cq_mask_and_entries: 0u64,
+		cq_overflow_and_cqes: 0u64,
+		cq_flags_and_reserved: 0u64,
+		rings_address: rings@[0u]&,
+	};
+	assert(size_of#[SetupParams]() == 120u);
+	assert(size_of#[Sqe]() == 64u);
+
+	let setup = unsafe {
+		intrinsics::syscall(SYS_IO_URING_SETUP, RING_ENTRIES, params&)
+	};
+	check_syscall(setup, "io_uring_setup NO_MMAP failed"&);
+	let fd = unsafe { intrinsics::fd_from_raw(Int32(setup)) };
+
+	let sq_head = Uint32(params.sq_head_and_tail);
+	let sq_tail = Uint32(params.sq_head_and_tail >> 32u);
+	let sq_mask = Uint32(params.sq_mask_and_entries);
+	let sq_entries = Uint32(params.sq_mask_and_entries >> 32u);
+	let sq_array = Uint32(params.sq_array_and_reserved);
+	let cq_head = Uint32(params.cq_head_and_tail);
+	let cq_tail = Uint32(params.cq_head_and_tail >> 32u);
+	let cq_mask = Uint32(params.cq_mask_and_entries);
+	let cq_entries = Uint32(params.cq_mask_and_entries >> 32u);
+	let cqes = Uint32(params.cq_overflow_and_cqes >> 32u);
+	let sq_entry_count = ring_load(rings, sq_entries);
+	let cq_entry_count = ring_load(rings, cq_entries);
+	assert(Uint(sq_array) + Uint(sq_entry_count) * 4u <= PAGE_SIZE);
+	assert(Uint(cqes) + Uint(cq_entry_count) * 16u <= PAGE_SIZE);
+	assert(Uint(sq_entry_count) * 64u <= PAGE_SIZE);
+
+	Ring {
+		fd: fd,
+		rings: rings,
+		sqes: sqes,
+		sq_head_offset: sq_head,
+		sq_tail_offset: sq_tail,
+		sq_mask_offset: sq_mask,
+		sq_entries_offset: sq_entries,
+		sq_array_offset: sq_array,
+		cq_head_offset: cq_head,
+		cq_tail_offset: cq_tail,
+		cq_mask_offset: cq_mask,
+		cqes_offset: cqes,
+	}
+}
+
+// Submit one write and return its CQE key. This prototype permits one request
+// in flight, which keeps the executor and future state machines easy to see.
+method submit_write(self: &Ring, fd: FileDesc, buffer: &[Uint8]) -> Uint64 {
+	assert(buffer.len() > 0u);
+	assert(buffer.len() <= 4294967295u);
+
+	let rings = self@.rings;
+	let head = ring_load(rings, self@.sq_head_offset);
+	let tail = ring_load(rings, self@.sq_tail_offset);
+	let entries = ring_load(rings, self@.sq_entries_offset);
+	assert(tail - head < entries);
+
+	let mask = ring_load(rings, self@.sq_mask_offset);
+	let sqe_index = tail & mask;
+	let key = Uint64(sqe_index) + 1u64;
+	let sqe = self@.sqes@[Uint(sqe_index)]&;
+
+	// opcode:u8, flags:u8, ioprio:u16, fd:i32
+	sqe@.header = IORING_OP_WRITE +
+		(Uint64(Uint32(intrinsics::fd_to_raw(fd))) << 32u);
+	sqe@.offset = 18446744073709551615u64; // -1: use the file position
+	sqe@.address = buffer@[0u]&;
+	sqe@.len_and_flags = Uint64(buffer.len());
+	sqe@.user_data = key;
+	sqe@.extra = 0u64;
+	sqe@.addr3 = 0u64;
+	sqe@.pad = 0u64;
+
+	rings@[ring_index(self@.sq_array_offset) + Uint(sqe_index)] = sqe_index;
+	// The release store publishes the initialized SQE and array entry.
+	ring_store(rings, self@.sq_tail_offset, tail + 1u32);
+
+	let entered = unsafe {
+		intrinsics::syscall(
+			SYS_IO_URING_ENTER,
+			raw_fd(self@.fd),
+			1u64,
+			0u64,
+			0u64,
+			0u64,
+			0u64,
+		)
+	};
+	check_syscall(entered, "io_uring submit failed"&);
+	assert(entered == 1i64);
+	key
+}
+
+method wait_completion(self: &Ring) -> (Uint64, Int64) {
+	let rings = self@.rings;
+	let head = ring_load(rings, self@.cq_head_offset);
+	let tail = ring_load(rings, self@.cq_tail_offset);
+
+	while head == tail {
+		let entered = unsafe {
+			intrinsics::syscall(
+				SYS_IO_URING_ENTER,
+				raw_fd(self@.fd),
+				0u64,
+				1u64,
+				IORING_ENTER_GETEVENTS,
+				0u64,
+				0u64,
+			)
+		};
+
+		if entered != 0i64 - 4i64 {
+			check_syscall(entered, "io_uring wait failed"&);
+		}
+
+		tail = ring_load(rings, self@.cq_tail_offset);
+	}
+
+	let mask = ring_load(rings, self@.cq_mask_offset);
+	let cqe_offset = ring_index(self@.cqes_offset) + Uint(head & mask) * 4u;
+	let key = Uint64(rings@[cqe_offset]) |
+		(Uint64(rings@[cqe_offset + 1u]) << 32u);
+	let result = Int64(Int32(rings@[cqe_offset + 2u]));
+
+	// This executor has at most one request in flight. Clearing addr after the
+	// terminal CQE releases the extra GC edge held in the mapped SQE.
+	let sqe_index = Uint(key - 1u64);
+	self@.sqes@[sqe_index] = empty_sqe(sqe_index);
+	ring_store(rings, self@.cq_head_offset, head + 1u32);
+	(key, result)
+}
+
+method shutdown(self: &Ring) {
+	// execute_task calls this only after every submitted operation has a CQE.
+	// With NO_MMAP, closing the fd releases the kernel's references; the two
+	// ordinary GC allocations remain valid and become collectible with Ring.
+	self@.fd.close();
+}
+
+enum CompletionState { Empty, Ready }
+
+struct Executor {
+	ring: Ring,
+	completion_state: CompletionState,
+	completion_key: Uint64,
+	completion_result: Int64,
+}
+
+fn Executor() -> Executor {
+	Executor {
+		ring: Ring(),
+		completion_state: CompletionState::Empty,
+		completion_key: 0u64,
+		completion_result: 0i64,
+	}
+}
+
+method wait_one(self: &Executor) {
+	let completion = self@.ring&.wait_completion();
+	self@.completion_key = completion.0;
+	self@.completion_result = completion.1;
+	self@.completion_state = CompletionState::Ready;
+}
+
+method take_completion(self: &Executor, key: Uint64) -> Option#[Int64] {
+	match self@.completion_state {
+		CompletionState::Empty => Option#[Int64]::None,
+		CompletionState::Ready => {
+			assert(self@.completion_key == key);
+			let result = self@.completion_result;
+			self@.completion_state = CompletionState::Empty;
+			Option#[Int64]::Some(result)
+		},
+	}
+}
+
+enum Poll#[T] { Pending, Ready(T) }
+
+enum WriteState { Start, Waiting, Done }
+
+// The manual state machine produced by an imaginary:
+//
+// async fn write_all(fd, buffer) -> Int64
+struct WriteFuture {
+	fd: FileDesc,
+	buffer: &[Uint8],
+	written: Uint,
+	key: Uint64,
+	result: Int64,
+	state: WriteState,
+}
+
+fn write_async(fd: FileDesc, buffer: &[Uint8]) -> WriteFuture {
+	WriteFuture {
+		fd: fd,
+		buffer: buffer,
+		written: 0u,
+		key: 0u64,
+		result: 0i64,
+		state: WriteState::Start,
+	}
+}
+
+method poll(self: &WriteFuture, executor: &Executor) -> Poll#[Int64] {
+	loop {
+		match self@.state {
+			WriteState::Start => {
+				let remaining = self@.buffer@[self@.written..self@.buffer.len()]&;
+				let key = executor@.ring&.submit_write(self@.fd, remaining);
+				self@.key = key;
+				self@.state = WriteState::Waiting;
+				return Poll#[Int64]::Pending;
+			},
+			WriteState::Waiting => {
+				match executor.take_completion(self@.key) {
+					Option#[Int64]::None => {
+						return Poll#[Int64]::Pending;
+					},
+					Option#[Int64]::Some(result) => {
+						if result <= 0i64 {
+							intrinsics::throw("asynchronous write failed"&);
+						}
+
+						self@.written = self@.written + Uint(result);
+
+						if self@.written == self@.buffer.len() {
+							self@.result = Int64(self@.written);
+							self@.state = WriteState::Done;
+						} else {
+							self@.state = WriteState::Start;
+						}
+					},
+				}
+			},
+			WriteState::Done => {
+				return Poll#[Int64]::Ready(self@.result);
+			},
+		}
+	}
+}
+
+enum HelloState { First, Second, Done }
+
+// A second manual async function which awaits two write_all futures.
+struct HelloFuture {
+	first: WriteFuture,
+	second: WriteFuture,
+	total: Int64,
+	state: HelloState,
+}
+
+fn hello_async() -> HelloFuture {
+	let stdout = file::stdout();
+	HelloFuture {
+		first: write_async(stdout, "first completion\n"&),
+		second: write_async(stdout, "second completion\n"&),
+		total: 0i64,
+		state: HelloState::First,
+	}
+}
+
+method poll(self: &HelloFuture, executor: &Executor) -> Poll#[Int64] {
+	loop {
+		match self@.state {
+			HelloState::First => {
+				match self@.first&.poll(executor) {
+					Poll#[Int64]::Pending => {
+						return Poll#[Int64]::Pending;
+					},
+					Poll#[Int64]::Ready(n) => {
+						self@.total = n;
+						self@.state = HelloState::Second;
+					},
+				}
+			},
+			HelloState::Second => {
+				match self@.second&.poll(executor) {
+					Poll#[Int64]::Pending => {
+						return Poll#[Int64]::Pending;
+					},
+					Poll#[Int64]::Ready(n) => {
+						self@.total = self@.total + n;
+						self@.state = HelloState::Done;
+					},
+				}
+			},
+			HelloState::Done => {
+				return Poll#[Int64]::Ready(self@.total);
+			},
+		}
+	}
+}
+
+// Structured execution is the lifetime boundary: no task or buffer can outlive
+// this function, and the ring shuts down only after the final terminal CQE.
+fn execute_task(task: HelloFuture) -> Int64 {
+	let executor = Executor();
+
+	loop {
+		match task&.poll(executor&) {
+			Poll#[Int64]::Pending => executor&.wait_one(),
+			Poll#[Int64]::Ready(result) => {
+				executor.ring&.shutdown();
+				return result;
+			},
+		}
+	}
+}
+
+fn main() {
+	let bytes_written = execute_task(hello_async());
+	println(Int(bytes_written));
+}

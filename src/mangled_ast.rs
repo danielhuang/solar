@@ -38,6 +38,8 @@ pub struct StaticItem {
 pub struct StructDef {
     /// Struct symbol.
     pub name: String,
+    /// Whether the struct requires C-compatible field layout.
+    pub repr_c: bool,
     /// Fields in declaration order.
     pub fields: Vec<FieldDef>,
 }
@@ -473,6 +475,7 @@ impl Renderer<'_> {
     fn conv_struct(&self, s: &ta::StructDef) -> StructDef {
         StructDef {
             name: self.type_name(&s.id),
+            repr_c: s.repr_c,
             fields: s.fields.iter().map(|f| self.conv_field(f)).collect(),
         }
     }

@@ -790,7 +790,11 @@ fn layout_struct(s: &mangled_ast::StructDef, resolved: &HashMap<String, DataType
             (type_size(&field.ty, resolved), align)
         })
         .collect();
-    let (offsets, mut extent) = crate::types::pack_fields(&shapes, 0);
+    let (offsets, mut extent) = if s.repr_c {
+        crate::types::layout_fields_in_order(&shapes)
+    } else {
+        crate::types::pack_fields(&shapes, 0)
+    };
     let mut fields: Vec<_> = s.fields[..sized_len]
         .iter()
         .zip(shapes)
@@ -1781,6 +1785,7 @@ mod tests {
     fn struct_layout_packs_fields_into_alignment_order() {
         let def = mangled_ast::StructDef {
             name: "Packed".to_string(),
+            repr_c: false,
             fields: vec![
                 struct_field("byte", Type::Uint8),
                 struct_field("word", Type::Uint64),
@@ -1801,6 +1806,31 @@ mod tests {
             [("word", 0), ("quarter", 8), ("half", 12), ("byte", 14)]
         );
         assert_eq!(layout.size, 16);
+        assert_eq!(layout.align, 8);
+        assert!(layout.is_sized);
+    }
+
+    #[test]
+    fn c_repr_struct_layout_preserves_declaration_order() {
+        let def = mangled_ast::StructDef {
+            name: "CRecord".to_string(),
+            repr_c: true,
+            fields: vec![
+                struct_field("byte", Type::Uint8),
+                struct_field("word", Type::Uint64),
+                struct_field("half", Type::Uint16),
+            ],
+        };
+
+        let layout = layout_struct(&def, &HashMap::new());
+        let fields: Vec<_> = layout
+            .fields
+            .iter()
+            .map(|field| (field.name.as_str(), field.offset))
+            .collect();
+
+        assert_eq!(fields, [("byte", 0), ("word", 8), ("half", 16)]);
+        assert_eq!(layout.size, 24);
         assert_eq!(layout.align, 8);
         assert!(layout.is_sized);
     }
@@ -1842,6 +1872,7 @@ mod tests {
     fn unsized_struct_tail_stays_last_in_memory() {
         let def = mangled_ast::StructDef {
             name: "PackedTail".to_string(),
+            repr_c: false,
             fields: vec![
                 struct_field("tag", Type::Uint8),
                 struct_field("word", Type::Uint64),

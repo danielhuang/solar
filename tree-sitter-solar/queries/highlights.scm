@@ -172,6 +172,7 @@
 ] @keyword
 
 (inline_attr "inline" @attribute)
+(struct_repr_attr ["repr" "C"] @attribute)
 (static_attr "thread_local" @attribute)
 
 ; ── Operators & punctuation ────────────────────────────────────────────────

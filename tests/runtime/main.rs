@@ -68,6 +68,12 @@ fn layout_packing() {
 }
 
 #[test]
+fn repr_c() {
+    let output = run(&fixture("repr_c.solar"), "repr_c");
+    assert_eq!(output, "24\n24\n7\n9000\n300\n");
+}
+
+#[test]
 fn out_generics_and_size_of() {
     let path = fixture("out_generics.solar");
     let output = run(&path, "out_generics_and_size_of");

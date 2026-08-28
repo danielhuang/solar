@@ -14,3 +14,6 @@ When changing syntax:
 
 `tree-sitter-solar/build.rs` runs `tree-sitter generate` when the grammar
 changes.
+
+Struct representation attributes follow the declaration keyword:
+`struct(repr(C)) Name { ... }`. Only that exact optional attribute is accepted.

@@ -78,6 +78,22 @@ fn struct_fields_and_enum_variants_do_not_require_trailing_commas() {
     assert_eq!(maybe.variants.len(), 2);
 }
 
+#[test]
+fn struct_c_repr_attribute_is_preserved() {
+    let ast = parse(
+        "struct(repr(C)) Header { tag: Uint8, length: Uint64 }\n\
+         struct Ordinary { value: Int }",
+    );
+    let TopLevelItem::Struct(header) = &ast.items[0] else {
+        panic!("expected struct");
+    };
+    assert!(header.repr_c);
+    let TopLevelItem::Struct(ordinary) = &ast.items[1] else {
+        panic!("expected struct");
+    };
+    assert!(!ordinary.repr_c);
+}
+
 /// Helper to check a span matches expected 0-indexed positions.
 fn check(span: SourceSpan, start_line: u32, start_col: u32, end_line: u32, end_col: u32) {
     assert_eq!(

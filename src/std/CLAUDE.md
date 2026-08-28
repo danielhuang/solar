@@ -8,7 +8,8 @@ there. Imports are resolved relative to `src/std`, including subdirectories.
 - Add `///` documentation to every public declaration.
 - Keep low-level operations in `@intrinsics`; expose user-facing wrappers from
   `@std`.
-- `size_of#[T]()` returns the packed byte size of a statically sized type.
+- `size_of#[T]()` returns the laid-out byte size of a statically sized type,
+  including C-compatible padding for `struct(repr(C))`.
 - `black_box(T)` returns its input after passing a non-escaping reference to
   Rust's optimizer barrier.
 - `gc_keepalive(&T)` keeps its argument reachable through the call without

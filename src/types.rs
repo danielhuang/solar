@@ -101,6 +101,25 @@ pub(crate) fn pack_fields(
     (offsets, extent)
 }
 
+/// Lays out fields in declaration order using C struct alignment rules.
+pub(crate) fn layout_fields_in_order(fields: &[(usize, usize)]) -> (Vec<usize>, usize) {
+    let mut extent = 0usize;
+    let offsets = fields
+        .iter()
+        .map(|&(size, align)| {
+            assert!(
+                align.is_power_of_two(),
+                "field alignment must be a power of two"
+            );
+            extent = (extent + align - 1) & !(align - 1);
+            let offset = extent;
+            extent += size;
+            offset
+        })
+        .collect();
+    (offsets, extent)
+}
+
 impl<I> From<&NumericType> for Type<I> {
     fn from(nt: &NumericType) -> Type<I> {
         match nt {

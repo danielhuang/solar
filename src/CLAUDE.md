@@ -41,8 +41,8 @@ AST, while `ir_interp` and native codegen consume IR.
   must occur in at least one parameter type. Output parameters need not occur
   in the signature.
 - `size_of#[T]()` accepts only sized types. Each concrete type produces a
-  zero-argument monomorphized function whose constant body uses the same packed
-  size and alignment rules as IR layout.
+  zero-argument monomorphized function whose constant body uses the same size
+  and alignment rules as IR layout.
 - `black_box_ref(&T)` accepts a sized reference, passes its pointer through the
   native runtime's Rust optimizer barrier, and never retains the reference.
   Escape analysis must therefore treat its argument as non-escaping.
@@ -66,10 +66,14 @@ AST, while `ir_interp` and native codegen consume IR.
   starts; references to the cell may cross threads and outlive the owner.
 - Solar copies may alias. Every backend must implement memmove semantics,
   including aggregate and slice-range copies.
-- IR layouts pack struct fields and disjoint enum payload slots into alignment
-  gaps while preserving each field's alignment. Declaration and discriminant
-  order remain semantic order; an unsized struct field remains the declared and
-  physical tail.
+- IR layouts pack ordinary struct fields and disjoint enum payload slots into
+  alignment gaps while preserving each field's alignment. Declaration and
+  discriminant order remain semantic order; an unsized struct field remains the
+  declared and physical tail. `struct(repr(C))` instead preserves declaration
+  order and applies C field alignment and tail padding. Its by-value fields must
+  be C-representable: nested structs must also use `repr(C)`, and enums,
+  zero-sized or unsized types, fat pointers, closure values, and runtime-only
+  handles are rejected.
 - Pointer-bearing values must reach LLVM with pointer-typed pointer words so
   the write-barrier pass can distinguish references from scalar data.
 - `CompileOptions` controls GC, GC-San, and optimization independently. GC-San

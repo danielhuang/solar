@@ -274,6 +274,7 @@ fn convert_struct_def(node: tree_sitter::Node, source: &str) -> StructDef {
         type_params,
         fields,
         is_tuple: named_child_by_kind(node, "tuple_struct_body").is_some(),
+        repr_c: node.child_by_field_name("attr").is_some(),
         is_pub,
         doc: leading_doc(node, source),
         span: source_span(node),

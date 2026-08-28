@@ -1,0 +1,2 @@
+struct Inner { value: Uint64 }
+struct(repr(C)) Outer { inner: Inner }

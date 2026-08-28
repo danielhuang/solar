@@ -863,6 +863,8 @@ pub struct StaticItem {
 pub struct StructDef {
     /// Struct identity.
     pub id: TypeId,
+    /// Whether the struct requires C-compatible field layout.
+    pub repr_c: bool,
     /// Fields in declaration order.
     pub fields: Vec<FieldDef>,
 }
@@ -2609,6 +2611,7 @@ impl<'a> Lowerer<'a> {
             id.clone(),
             StructDef {
                 id: id.clone(),
+                repr_c: gdef.ast_def.repr_c,
                 fields: Vec::new(),
             },
         );
@@ -2746,6 +2749,7 @@ impl<'a> Lowerer<'a> {
             id.clone(),
             StructDef {
                 id: id.clone(),
+                repr_c: false,
                 fields,
             },
         );
@@ -3129,6 +3133,7 @@ impl<'a> Lowerer<'a> {
                 id.clone(),
                 StructDef {
                     id: id.clone(),
+                    repr_c: self.structs[def].repr_c,
                     fields: Vec::new(),
                 },
             );
@@ -3356,6 +3361,35 @@ impl<'a> Lowerer<'a> {
         // Merge monomorphized generic functions into the output
         for (fid, fdef) in std::mem::take(&mut self.monomorphized_functions) {
             functions.entry(fid).or_insert(fdef);
+        }
+
+        // Function lowering can instantiate additional generic structs, so
+        // validate repr(C) only after every eagerly reachable body is lowered.
+        for sdef in self.lowered_structs.values().filter(|sdef| sdef.repr_c) {
+            let ast_def = self.ast_struct_def(&sdef.id);
+            if sdef.fields.is_empty() {
+                return Err(CompileError::new(
+                    format!(
+                        "struct `{}` cannot use repr(C): zero-sized structs are not representable in C",
+                        sdef.id
+                    ),
+                    ast_def.map_or_default(|def| def.span),
+                ));
+            }
+            for (index, field) in sdef.fields.iter().enumerate() {
+                if let Some(reason) = c_repr_rejection(&field.ty, &self.lowered_structs) {
+                    let span = ast_def
+                        .and_then(|def| def.fields.get(index))
+                        .map_or_default(|field| field.span);
+                    return Err(CompileError::new(
+                        format!(
+                            "struct `{}` field `{}` has non-C-representable type {}: {reason}",
+                            sdef.id, field.name, field.ty
+                        ),
+                        span,
+                    ));
+                }
+            }
         }
 
         // Assemble the output struct/enum tables, keyed by each type's structural
@@ -9303,8 +9337,8 @@ fn is_atomic_compatible(ty: &Type, structs: &HashMap<TypeId, StructDef>) -> bool
     matches!(atomic_type_size(ty, structs), Some(1 | 2 | 4 | 8 | 16))
 }
 
-/// Computes the same packed `(size, alignment)` used by IR layout. Unsized
-/// types return `None`.
+/// Computes the same `(size, alignment)` used by IR layout. Unsized types
+/// return `None`.
 fn type_layout(
     ty: &Type,
     structs: &HashMap<TypeId, StructDef>,
@@ -9334,8 +9368,8 @@ fn type_layout(
             Some((size * *count as usize, align))
         }
         Type::Struct(id) => {
-            let fields = structs
-                .get(id)?
+            let def = structs.get(id)?;
+            let fields = def
                 .fields
                 .iter()
                 .map(|field| type_layout(&field.ty, structs, enums));
@@ -9345,7 +9379,11 @@ fn type_layout(
                 .map(|(_, alignment)| *alignment)
                 .max()
                 .unwrap_or(1);
-            let (_, extent) = crate::types::pack_fields(&fields, 0);
+            let (_, extent) = if def.repr_c {
+                crate::types::layout_fields_in_order(&fields)
+            } else {
+                crate::types::pack_fields(&fields, 0)
+            };
             Some((align_to(extent, align), align))
         }
         Type::Enum(id) => {
@@ -9370,6 +9408,46 @@ fn type_layout(
 
 fn align_to(value: usize, alignment: usize) -> usize {
     (value + alignment - 1) & !(alignment - 1)
+}
+
+/// Explains why a type cannot be embedded by value in a C-compatible struct.
+fn c_repr_rejection(ty: &Type, structs: &HashMap<TypeId, StructDef>) -> Option<String> {
+    match ty {
+        Type::Bool
+        | Type::Int8
+        | Type::Uint8
+        | Type::Int16
+        | Type::Uint16
+        | Type::Int32
+        | Type::Uint32
+        | Type::Float32
+        | Type::Int64
+        | Type::Uint64
+        | Type::Int
+        | Type::Uint
+        | Type::Float64
+        | Type::Ref(_)
+        | Type::NullableRef(_)
+        | Type::Unique(_) => None,
+        Type::Struct(id) => match structs.get(id) {
+            Some(def) if !def.repr_c => Some(format!("nested struct `{id}` must also use repr(C)")),
+            Some(def) if def.fields.is_empty() => {
+                Some(format!("nested struct `{id}` is zero-sized"))
+            }
+            Some(_) => None,
+            None => Some(format!("struct `{id}` has no concrete definition")),
+        },
+        Type::FixedArray(inner, 0) => Some(format!("zero-length arrays are zero-sized ({inner})")),
+        Type::FixedArray(inner, _) => c_repr_rejection(inner, structs),
+        Type::Enum(_) => Some("enums do not have a C representation".to_string()),
+        Type::Array(_) => Some("unsized arrays do not have a C representation".to_string()),
+        Type::RefUnsized(_) | Type::NullableRefUnsized(_) | Type::UniqueUnsized(_) => {
+            Some("fat pointers do not have a C representation".to_string())
+        }
+        Type::Function { .. } => Some("function values include a closure environment".to_string()),
+        Type::FileDesc => Some("FileDesc is a Solar runtime handle".to_string()),
+        Type::Unit | Type::Never => Some("zero-sized types are not representable in C".to_string()),
+    }
 }
 
 fn is_atomic_shape_ok(ty: &Type, structs: &HashMap<TypeId, StructDef>) -> bool {
@@ -9443,7 +9521,11 @@ fn atomic_type_size(ty: &Type, structs: &HashMap<TypeId, StructDef>) -> Option<u
                     ))
                 })
                 .collect::<Option<Vec<_>>>()?;
-            let (_, extent) = crate::types::pack_fields(&fields, 0);
+            let (_, extent) = if def.repr_c {
+                crate::types::layout_fields_in_order(&fields)
+            } else {
+                crate::types::pack_fields(&fields, 0)
+            };
             let struct_align = fields.iter().map(|(_, align)| *align).max().unwrap_or(1);
             let size = (extent + struct_align - 1) & !(struct_align - 1);
             Some(size)

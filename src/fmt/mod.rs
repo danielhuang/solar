@@ -379,7 +379,11 @@ fn top_level_doc(item: &TopLevelItem, context: &SourceContext<'_>) -> Doc {
 fn struct_doc(definition: &StructDef, context: &SourceContext<'_>) -> Doc {
     let header = Doc::concat([
         visibility(definition.is_pub),
-        Doc::text("struct "),
+        if definition.repr_c {
+            Doc::text("struct(repr(C)) ")
+        } else {
+            Doc::text("struct ")
+        },
         Doc::text(&definition.name),
         type_parameters(&definition.type_params),
     ]);

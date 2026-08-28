@@ -101,6 +101,7 @@ module.exports = grammar({
       seq(
         optional("pub"),
         "struct",
+        optional(field("attr", $.struct_repr_attr)),
         field("name", $.identifier),
         optional(field("type_params", $.type_params)),
         choice(
@@ -108,6 +109,9 @@ module.exports = grammar({
           seq($.tuple_struct_body, optional(";")),
         ),
       ),
+
+    // C-compatible field order and padding: `struct(repr(C)) Name { ... }`.
+    struct_repr_attr: ($) => seq("(", "repr", "(", "C", ")", ")"),
 
     field_list: ($) => seq($.field_def, repeat(seq(",", $.field_def)), optional(",")),
 

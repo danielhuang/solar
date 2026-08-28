@@ -1,0 +1,12 @@
+struct(repr(C)) Record { byte: Uint8, word: Uint64, half: Uint16 }
+
+struct(repr(C)) GenericRecord#[T] { byte: Uint8, value: T, half: Uint16 }
+
+fn main() {
+	println(size_of#[Record]());
+	println(size_of#[GenericRecord#[Uint64]]());
+	let record = Record { byte: 7u8, word: 9000u64, half: 300u16 };
+	println(Uint(record.byte));
+	println(Uint(record.word));
+	println(Uint(record.half));
+}
