@@ -197,6 +197,7 @@ fn collect_fn_facts(nodes: &[Node]) -> FnFacts {
                 MatchPattern::Variant { binding, .. } => binding
                     .as_ref()
                     .is_some_and(|(v, _)| f.addr_taken.contains(v)),
+                MatchPattern::IntegerLiteral(_) => false,
                 MatchPattern::Wildcard(v, _) => f.addr_taken.contains(v),
             });
             if binding_escapes {

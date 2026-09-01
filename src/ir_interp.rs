@@ -613,7 +613,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             NodeKind::Match { scrutinee, arms } => {
                 let scrutinee = *scrutinee;
                 let arms = arms.clone();
-                let enum_base = if is_place(nodes, scrutinee) {
+                let match_base = if is_place(nodes, scrutinee) {
                     let (addr, _) = self.eval_place(nodes, scrutinee)?;
                     addr
                 } else {
@@ -622,15 +622,20 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     self.eval_into(nodes, scrutinee, tmp)?;
                     tmp
                 };
-                let disc = self.mem.load(enum_base, 8);
-                let enum_ty = &nodes[scrutinee.0].ty;
-                let enum_name = match enum_ty {
-                    Type::Enum(name) => name.clone(),
-                    _ => unreachable!(),
+                let match_ty = nodes[scrutinee.0].ty.clone();
+                let selector = match &match_ty {
+                    Type::Enum(_) => self.mem.load(match_base, 8),
+                    ty if ty.is_integer() => self.scalar_load(match_base, ty),
+                    _ => unreachable!("match on non-enum, non-integer value"),
+                };
+                let enum_name = match &match_ty {
+                    Type::Enum(name) => Some(name.clone()),
+                    _ => None,
                 };
                 for arm in &arms {
                     let matches = match &arm.pattern {
-                        MatchPattern::Variant { variant_index, .. } => disc == *variant_index,
+                        MatchPattern::Variant { variant_index, .. } => selector == *variant_index,
+                        MatchPattern::IntegerLiteral(value) => selector == *value as u64,
                         MatchPattern::Wildcard(_, _) => true,
                     };
                     if matches {
@@ -640,13 +645,13 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                                 binding: Some((var, _ty)),
                                 ..
                             } => {
-                                let dt = &self.module.datatypes[enum_name.as_str()];
+                                let dt = &self.module.datatypes[enum_name.as_deref().unwrap()];
                                 let fl =
                                     dt.fields.iter().find(|f| f.name == *variant_name).unwrap();
-                                self.vars.insert(*var, enum_base + fl.offset);
+                                self.vars.insert(*var, match_base + fl.offset);
                             }
                             MatchPattern::Wildcard(var, _) => {
-                                self.vars.insert(*var, enum_base);
+                                self.vars.insert(*var, match_base);
                             }
                             _ => {}
                         }
@@ -1242,8 +1247,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             NodeKind::Match { scrutinee, arms } => {
                 let scrutinee = *scrutinee;
                 let arms = arms.clone();
-                // Get the scrutinee's place (address in memory)
-                let enum_base = if is_place(nodes, scrutinee) {
+                // Get the scrutinee's place (address in memory).
+                let match_base = if is_place(nodes, scrutinee) {
                     let (addr, _) = self.eval_place(nodes, scrutinee)?;
                     addr
                 } else {
@@ -1252,17 +1257,21 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     self.eval_into(nodes, scrutinee, tmp)?;
                     tmp
                 };
-                // Read discriminant
-                let disc = self.mem.load(enum_base, 8);
-                let enum_ty = &nodes[scrutinee.0].ty;
-                let enum_name = match enum_ty {
-                    Type::Enum(name) => name.clone(),
-                    _ => unreachable!(),
+                let match_ty = nodes[scrutinee.0].ty.clone();
+                let selector = match &match_ty {
+                    Type::Enum(_) => self.mem.load(match_base, 8),
+                    ty if ty.is_integer() => self.scalar_load(match_base, ty),
+                    _ => unreachable!("match on non-enum, non-integer value"),
+                };
+                let enum_name = match &match_ty {
+                    Type::Enum(name) => Some(name.clone()),
+                    _ => None,
                 };
                 // Find matching arm
                 for arm in &arms {
                     let matches = match &arm.pattern {
-                        MatchPattern::Variant { variant_index, .. } => disc == *variant_index,
+                        MatchPattern::Variant { variant_index, .. } => selector == *variant_index,
+                        MatchPattern::IntegerLiteral(value) => selector == *value as u64,
                         MatchPattern::Wildcard(_, _) => true,
                     };
                     if matches {
@@ -1273,13 +1282,13 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                                 binding: Some((var, _ty)),
                                 ..
                             } => {
-                                let dt = &self.module.datatypes[enum_name.as_str()];
+                                let dt = &self.module.datatypes[enum_name.as_deref().unwrap()];
                                 let fl =
                                     dt.fields.iter().find(|f| f.name == *variant_name).unwrap();
-                                self.vars.insert(*var, enum_base + fl.offset);
+                                self.vars.insert(*var, match_base + fl.offset);
                             }
                             MatchPattern::Wildcard(var, _) => {
-                                self.vars.insert(*var, enum_base);
+                                self.vars.insert(*var, match_base);
                             }
                             _ => {}
                         }

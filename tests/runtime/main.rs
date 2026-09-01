@@ -869,6 +869,26 @@ fn ipv6_parse() {
 }
 
 #[test]
+fn linux_errors() {
+    let output = run(&fixture("linux_errors.solar"), "linux_errors");
+    assert_eq!(
+        output,
+        "Operation not permitted\n\
+         Too many levels of symbolic links\n\
+         No message of desired type\n\
+         Bad message\n\
+         Value too large for defined data type\n\
+         No buffer space available\n\
+         Transport endpoint is already connected\n\
+         Memory page has hardware error\n\
+         Unknown error\n\
+         Unknown error\n\
+         operation failed: Permission denied (os error 13)\n\
+         done\n"
+    );
+}
+
+#[test]
 fn statics() {
     let output = run(&fixture("statics.solar"), "statics");
     assert_eq!(
@@ -1059,7 +1079,16 @@ fn integer_literal_match_patterns() {
         &fixture("integer_match_patterns.solar"),
         "integer_match_patterns",
     );
-    assert_eq!(output, "10\n20\n37\n31\n1\n");
+    assert_eq!(output, "10\n20\n37\n80\n7\n64\n9\n102\n");
+}
+
+#[test]
+fn integer_match_scrutinee_is_evaluated_once() {
+    let output = run(
+        &fixture("integer_match_scrutinee_once.solar"),
+        "integer_match_scrutinee_once",
+    );
+    assert_eq!(output, "10\n1\n");
 }
 
 #[test]

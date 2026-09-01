@@ -1,0 +1,22 @@
+fn main() {
+	println(linux::error_message(1));
+	println(linux::error_message(40));
+	println(linux::error_message(42));
+	println(linux::error_message(74));
+	println(linux::error_message(75));
+	println(linux::error_message(105));
+	println(linux::error_message(106));
+	println(linux::error_message(133));
+	println(linux::error_message(41));
+	println(linux::error_message(999));
+
+	linux::check_syscall(0i64, "successful operation"&);
+
+	try {
+		linux::check_syscall(0i64 - 13i64, "operation failed"&);
+	} catch (error) {
+		println(error);
+	}
+
+	println("done"&);
+}

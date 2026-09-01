@@ -2131,6 +2131,7 @@ impl BindingSignatureCollector<'_> {
                         | typed_ast::TypedPattern::Wildcard(name, ty) => {
                             self.record_declaration(span, name, ty);
                         }
+                        typed_ast::TypedPattern::IntegerLiteral(_) => {}
                         typed_ast::TypedPattern::Variant { binding: None, .. } => {}
                     }
                     for statement in &arm.body {

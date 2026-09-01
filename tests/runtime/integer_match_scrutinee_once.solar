@@ -1,0 +1,11 @@
+fn bump(value: &Int) -> Int {
+	value@ = value@ + 1;
+	value@
+}
+
+fn main() {
+	let calls = 0;
+	let result = match bump(calls&) { 1 => 10, value => value };
+	println(result);
+	println(calls);
+}

@@ -450,17 +450,21 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 result
             }
             ExprKind::Match { scrutinee, arms } => {
-                let enum_slot = self.eval_place(scrutinee)?;
-                let disc = {
-                    let val = enum_slot.borrow();
+                let match_slot = self.eval_place(scrutinee)?;
+                let selector = {
+                    let val = match_slot.borrow();
                     match &*val {
-                        Value::Enum { variant_index, .. } => *variant_index,
-                        _ => unreachable!("match on non-enum value"),
+                        Value::Enum { variant_index, .. } => *variant_index as i64,
+                        Value::Int(value) => *value,
+                        _ => unreachable!("match on non-enum, non-integer value"),
                     }
                 };
                 for arm in arms {
                     let matches = match &arm.pattern {
-                        TypedPattern::Variant { variant_index, .. } => disc == *variant_index,
+                        TypedPattern::Variant { variant_index, .. } => {
+                            selector == *variant_index as i64
+                        }
+                        TypedPattern::IntegerLiteral(value) => selector == *value,
                         TypedPattern::Wildcard(_, _) => true,
                     };
                     if matches {
@@ -471,7 +475,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                                 ..
                             } => {
                                 let inner_slot = {
-                                    let val = enum_slot.borrow();
+                                    let val = match_slot.borrow();
                                     match &*val {
                                         Value::Enum {
                                             value: Some(slot), ..
@@ -482,7 +486,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                                 self.define_var(bname.clone(), inner_slot);
                             }
                             TypedPattern::Wildcard(name, _) => {
-                                self.define_var(name.clone(), Rc::clone(&enum_slot));
+                                self.define_var(name.clone(), Rc::clone(&match_slot));
                             }
                             _ => {}
                         }
@@ -919,18 +923,22 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 }
             }
             ExprKind::Match { scrutinee, arms } => {
-                // Get the scrutinee as a place (shared slot)
-                let enum_slot = self.eval_place(scrutinee)?;
-                let disc = {
-                    let val = enum_slot.borrow();
+                // Get the scrutinee as a place (shared slot).
+                let match_slot = self.eval_place(scrutinee)?;
+                let selector = {
+                    let val = match_slot.borrow();
                     match &*val {
-                        Value::Enum { variant_index, .. } => *variant_index,
-                        _ => unreachable!("match on non-enum value"),
+                        Value::Enum { variant_index, .. } => *variant_index as i64,
+                        Value::Int(value) => *value,
+                        _ => unreachable!("match on non-enum, non-integer value"),
                     }
                 };
                 for arm in arms {
                     let matches = match &arm.pattern {
-                        TypedPattern::Variant { variant_index, .. } => disc == *variant_index,
+                        TypedPattern::Variant { variant_index, .. } => {
+                            selector == *variant_index as i64
+                        }
+                        TypedPattern::IntegerLiteral(value) => selector == *value,
                         TypedPattern::Wildcard(_, _) => true,
                     };
                     if matches {
@@ -942,7 +950,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                             } => {
                                 // Bind inner value slot directly (place semantics)
                                 let inner_slot = {
-                                    let val = enum_slot.borrow();
+                                    let val = match_slot.borrow();
                                     match &*val {
                                         Value::Enum {
                                             value: Some(slot), ..
@@ -953,8 +961,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                                 self.define_var(bname.clone(), inner_slot);
                             }
                             TypedPattern::Wildcard(name, _) => {
-                                // Bind the entire enum slot
-                                self.define_var(name.clone(), Rc::clone(&enum_slot));
+                                // Bind the entire scrutinee slot.
+                                self.define_var(name.clone(), Rc::clone(&match_slot));
                             }
                             _ => {}
                         }

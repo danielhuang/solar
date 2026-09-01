@@ -2,18 +2,25 @@ fn classify(x: Int) -> Int {
 	match x { 0 => 10, 2 => 20, n => n + 30 }
 }
 
-fn bump(value: &Int) -> Int {
-	value@ = value@ + 1;
-	value@
+fn classify_u8(x: Uint8) -> Int {
+	match x { 255u8 => 80, other => Int(other) }
+}
+
+fn classify_u64(x: Uint64) -> Int {
+	match x { 18446744073709551615u64 => 64, other => Int(other) }
+}
+
+fn wildcard_is_first(x: Int) -> Int {
+	match x { other => other + 100, 2 => 2 }
 }
 
 fn main() {
 	println(classify(0));
 	println(classify(2));
 	println(classify(7));
-
-	// The match scrutinee must be evaluated exactly once.
-	let calls = 0;
-	println(classify(bump(calls&)));
-	println(calls);
+	println(classify_u8(255u8));
+	println(classify_u8(7u8));
+	println(classify_u64(18446744073709551615u64));
+	println(classify_u64(9u64));
+	println(wildcard_is_first(2));
 }

@@ -32,7 +32,9 @@ slots@[i] = value;
 Standard-stream and partial-write file intrinsics have interpreter
 implementations in `src/interp_io.rs`. Other file, directory, and socket
 operations use the native-only `syscall` intrinsic, so their tests belong in
-the compiled-only suite. Threads and futexes are native-runtime only too.
+the compiled-only suite. Raw syscall failures must be formatted through
+`linux::check_syscall` so exceptions include both the registered Linux error
+message and errno. Threads and futexes are native-runtime only too.
 
 When adding a fallible intrinsic, keep its exception text identical in the AST
 interpreter, IR interpreter, and native runtime.

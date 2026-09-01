@@ -342,6 +342,67 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    fn emit_match_selector(&mut self, ty: &Type, base: &str) -> (String, Option<String>) {
+        match ty {
+            Type::Enum(name) => {
+                // Acquire pairs with the release store of the discriminant in
+                // variant construction/copy. Enum bases are at least 8-byte
+                // aligned, though their C representation is a byte pointer.
+                let selector = self.fresh_tmp();
+                self.linef(format!(
+                    "uint64_t {selector} = __atomic_load_n((uint64_t*)__builtin_assume_aligned(({base}), 8), __ATOMIC_ACQUIRE);"
+                ));
+                (selector, Some(name.clone()))
+            }
+            ty if ty.is_integer() => {
+                let selector = self.fresh_tmp();
+                let c_ty = self.c_int_type(ty);
+                self.linef(format!("{c_ty} {selector} = *({c_ty}*){base};"));
+                (selector, None)
+            }
+            _ => unreachable!("match on non-enum, non-integer type: {ty}"),
+        }
+    }
+
+    fn match_condition(&self, pattern: &MatchPattern, selector: &str, ty: &Type) -> Option<String> {
+        match pattern {
+            MatchPattern::Variant { variant_index, .. } => {
+                Some(format!("{selector} == {variant_index}u"))
+            }
+            MatchPattern::IntegerLiteral(value) => {
+                let literal = if ty.is_unsigned() {
+                    format!("({}){}u", self.c_int_type(ty), *value as u64)
+                } else {
+                    value.to_string()
+                };
+                Some(format!("{selector} == {literal}"))
+            }
+            MatchPattern::Wildcard(_, _) => None,
+        }
+    }
+
+    fn emit_match_binding(&mut self, pattern: &MatchPattern, base: &str, enum_name: Option<&str>) {
+        match pattern {
+            MatchPattern::Variant {
+                variant_name,
+                binding: Some((var, _)),
+                ..
+            } => {
+                let offset = self.module.datatypes[enum_name.unwrap()]
+                    .fields
+                    .iter()
+                    .find(|field| field.name == *variant_name)
+                    .unwrap()
+                    .offset;
+                self.linef(format!("uint8_t* _v{} = {base} + {offset};", var.0));
+            }
+            MatchPattern::Wildcard(var, _) => {
+                self.linef(format!("uint8_t* _v{} = {base};", var.0));
+            }
+            _ => {}
+        }
+    }
+
     fn c_atomic_type(&self, size: usize) -> &'static str {
         match size {
             1 => "uint8_t",
@@ -1187,34 +1248,20 @@ impl<'a> Codegen<'a> {
             NodeKind::Match { scrutinee, arms } => {
                 let scrutinee = *scrutinee;
                 let arms = arms.clone();
-                let enum_ty = nodes[scrutinee.0].ty.clone();
-                let enum_name = match &enum_ty {
-                    Type::Enum(name) => name.clone(),
-                    _ => unreachable!(),
-                };
-                let enum_base = if is_place(nodes, scrutinee) {
+                let match_ty = nodes[scrutinee.0].ty.clone();
+                let match_base = if is_place(nodes, scrutinee) {
                     let (place, _) = self.emit_place(nodes, scrutinee);
                     place
                 } else {
-                    let s = self.type_size(&enum_ty);
-                    let a = self.type_align(&enum_ty);
-                    let mf = self.mark_fn_expr(&enum_ty);
+                    let s = self.type_size(&match_ty);
+                    let a = self.type_align(&match_ty);
+                    let mf = self.mark_fn_expr(&match_ty);
                     let tmp = self.fresh_tmp();
                     self.emit_alloc(&tmp, s, a, &mf);
                     self.emit_into(nodes, scrutinee, &tmp);
                     tmp
                 };
-                // Acquire pairs with the release store of the discriminant in
-                // variant construction/copy: observing the tag also observes
-                // the payload it describes. `layout_enum` gives every enum at
-                // least 8-byte alignment; struct fields, array strides, heap
-                // allocations, and generated value typedefs preserve it. The
-                // byte-pointer representation hides that fact from Clang, so
-                // restore the proven alignment before using the atomic builtin.
-                let disc = self.fresh_tmp();
-                self.linef(format!(
-                    "uint64_t {disc} = __atomic_load_n((uint64_t*)__builtin_assume_aligned(({enum_base}), 8), __ATOMIC_ACQUIRE);"
-                ));
+                let (selector, enum_name) = self.emit_match_selector(&match_ty, &match_base);
                 let ptr_tmp = self.fresh_tmp();
                 let has_meta = !self.is_sized(&nodes[id.0].ty);
                 let meta_tmp = if has_meta {
@@ -1226,43 +1273,17 @@ impl<'a> Codegen<'a> {
                 };
                 self.linef(format!("uint8_t* {ptr_tmp};"));
                 for (i, arm) in arms.iter().enumerate() {
-                    let is_wildcard = matches!(arm.pattern, MatchPattern::Wildcard(_, _));
-                    if i == 0 {
-                        if is_wildcard {
-                            self.line("{");
-                        } else {
-                            let idx = match &arm.pattern {
-                                MatchPattern::Variant { variant_index, .. } => *variant_index,
-                                _ => unreachable!(),
-                            };
-                            self.linef(format!("if ({disc} == {idx}u) {{"));
+                    let condition = self.match_condition(&arm.pattern, &selector, &match_ty);
+                    match (i, condition) {
+                        (0, None) => self.line("{"),
+                        (0, Some(condition)) => self.linef(format!("if ({condition}) {{")),
+                        (_, None) => self.line("} else {"),
+                        (_, Some(condition)) => {
+                            self.linef(format!("}} else if ({condition}) {{"));
                         }
-                    } else if is_wildcard {
-                        self.line("} else {");
-                    } else {
-                        let idx = match &arm.pattern {
-                            MatchPattern::Variant { variant_index, .. } => *variant_index,
-                            _ => unreachable!(),
-                        };
-                        self.linef(format!("}} else if ({disc} == {idx}u) {{"));
                     }
                     self.indent += 1;
-                    match &arm.pattern {
-                        MatchPattern::Variant {
-                            variant_name,
-                            binding: Some((var, _)),
-                            ..
-                        } => {
-                            let dt = &self.module.datatypes[enum_name.as_str()];
-                            let fl = dt.fields.iter().find(|f| f.name == *variant_name).unwrap();
-                            let offset = fl.offset;
-                            self.linef(format!("uint8_t* _v{} = {enum_base} + {offset};", var.0));
-                        }
-                        MatchPattern::Wildcard(var, _) => {
-                            self.linef(format!("uint8_t* _v{} = {enum_base};", var.0));
-                        }
-                        _ => {}
-                    }
+                    self.emit_match_binding(&arm.pattern, &match_base, enum_name.as_deref());
                     self.emit_branch_place(
                         nodes,
                         &arm.body,
@@ -2449,72 +2470,32 @@ impl<'a> Codegen<'a> {
             NodeKind::Match { scrutinee, arms } => {
                 let scrutinee = *scrutinee;
                 let arms = arms.clone();
-                let enum_ty = nodes[scrutinee.0].ty.clone();
-                let enum_name = match &enum_ty {
-                    Type::Enum(name) => name.clone(),
-                    _ => unreachable!(),
-                };
-                // Get enum base address
-                let enum_base = if is_place(nodes, scrutinee) {
+                let match_ty = nodes[scrutinee.0].ty.clone();
+                let match_base = if is_place(nodes, scrutinee) {
                     let (place, _) = self.emit_place(nodes, scrutinee);
                     place
                 } else {
-                    let s = self.type_size(&enum_ty);
-                    let a = self.type_align(&enum_ty);
-                    let mf = self.mark_fn_expr(&enum_ty);
+                    let s = self.type_size(&match_ty);
+                    let a = self.type_align(&match_ty);
+                    let mf = self.mark_fn_expr(&match_ty);
                     let tmp = self.fresh_tmp();
                     self.emit_alloc(&tmp, s, a, &mf);
                     self.emit_into(nodes, scrutinee, &tmp);
                     tmp
                 };
-                // Load discriminant with acquire ordering (pairs with the
-                // release store in variant construction/copy). The enum layout
-                // guarantees 8-byte alignment even though this expression is a
-                // byte pointer in generated C.
-                let disc = self.fresh_tmp();
-                self.linef(format!(
-                    "uint64_t {disc} = __atomic_load_n((uint64_t*)__builtin_assume_aligned(({enum_base}), 8), __ATOMIC_ACQUIRE);"
-                ));
-                // Emit if-else chain
+                let (selector, enum_name) = self.emit_match_selector(&match_ty, &match_base);
                 for (i, arm) in arms.iter().enumerate() {
-                    let is_wildcard = matches!(arm.pattern, MatchPattern::Wildcard(_, _));
-                    if i == 0 {
-                        if is_wildcard {
-                            self.line("{");
-                        } else {
-                            let idx = match &arm.pattern {
-                                MatchPattern::Variant { variant_index, .. } => *variant_index,
-                                _ => unreachable!(),
-                            };
-                            self.linef(format!("if ({disc} == {idx}u) {{"));
+                    let condition = self.match_condition(&arm.pattern, &selector, &match_ty);
+                    match (i, condition) {
+                        (0, None) => self.line("{"),
+                        (0, Some(condition)) => self.linef(format!("if ({condition}) {{")),
+                        (_, None) => self.line("} else {"),
+                        (_, Some(condition)) => {
+                            self.linef(format!("}} else if ({condition}) {{"));
                         }
-                    } else if is_wildcard {
-                        self.line("} else {");
-                    } else {
-                        let idx = match &arm.pattern {
-                            MatchPattern::Variant { variant_index, .. } => *variant_index,
-                            _ => unreachable!(),
-                        };
-                        self.linef(format!("}} else if ({disc} == {idx}u) {{"));
                     }
                     self.indent += 1;
-                    // Bind pattern variable
-                    match &arm.pattern {
-                        MatchPattern::Variant {
-                            variant_name,
-                            binding: Some((var, _)),
-                            ..
-                        } => {
-                            let dt = &self.module.datatypes[enum_name.as_str()];
-                            let fl = dt.fields.iter().find(|f| f.name == *variant_name).unwrap();
-                            let offset = fl.offset;
-                            self.linef(format!("uint8_t* _v{} = {enum_base} + {offset};", var.0));
-                        }
-                        MatchPattern::Wildcard(var, _) => {
-                            self.linef(format!("uint8_t* _v{} = {enum_base};", var.0));
-                        }
-                        _ => {}
-                    }
+                    self.emit_match_binding(&arm.pattern, &match_base, enum_name.as_deref());
                     self.emit_branch_into(nodes, &arm.body, dst);
                     self.indent -= 1;
                 }

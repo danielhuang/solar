@@ -145,8 +145,10 @@ fn file_open_error() {
         &fixture("file_open_error.solar"),
         "compile_only_file_open_error",
     );
-    assert!(output.starts_with("fd_from_raw failed: "), "{output}");
-    assert!(output.ends_with("\ndone\n"), "{output}");
+    assert_eq!(
+        output,
+        "file_open failed: No such file or directory (os error 2)\ndone\n"
+    );
 }
 
 #[test]

@@ -1,4 +1,5 @@
 import intrinsics from "@intrinsics";
+import linux from "linux.solar";
 
 /// A listening TCP socket.
 pub struct TcpListener {
@@ -46,10 +47,6 @@ fn raw_fd(fd: FileDesc) -> Int64 {
 	Int64(intrinsics::fd_to_raw(fd))
 }
 
-fn check_syscall(result: Int64, message: &[Uint8]) {
-	if result < 0i64 { intrinsics::throw(message); }
-}
-
 fn socket_create(domain: Int) -> FileDesc {
 	let raw = unsafe {
 		intrinsics::syscall(
@@ -59,7 +56,7 @@ fn socket_create(domain: Int) -> FileDesc {
 			0i64,
 		)
 	};
-	check_syscall(raw, "socket_create failed"&);
+	linux::check_syscall(raw, "socket_create failed"&);
 	unsafe { intrinsics::fd_from_raw(Int32(raw)) }
 }
 
@@ -67,14 +64,14 @@ fn socket_bind(fd: FileDesc, addr: &[Uint8]) {
 	let result = unsafe {
 		intrinsics::syscall(SYS_BIND, raw_fd(fd), addr, Uint64(addr.len()))
 	};
-	check_syscall(result, "socket_bind failed"&);
+	linux::check_syscall(result, "socket_bind failed"&);
 }
 
 fn socket_listen(fd: FileDesc, backlog: Int) {
 	let result = unsafe {
 		intrinsics::syscall(SYS_LISTEN, raw_fd(fd), Int64(backlog))
 	};
-	check_syscall(result, "socket_listen failed"&);
+	linux::check_syscall(result, "socket_listen failed"&);
 }
 
 fn socket_accept(fd: FileDesc) -> FileDesc {
@@ -93,7 +90,9 @@ fn socket_accept(fd: FileDesc) -> FileDesc {
 			return unsafe { intrinsics::fd_from_raw(Int32(raw)) };
 		}
 
-		if raw != 0i64 - EINTR { intrinsics::throw("socket_accept failed"&); }
+		if raw != 0i64 - EINTR {
+			linux::check_syscall(raw, "socket_accept failed"&);
+		}
 	}
 }
 
@@ -110,7 +109,7 @@ fn socket_connect(fd: FileDesc, addr: &[Uint8]) {
 		if result == 0i64 || result == 0i64 - EISCONN { break; }
 
 		if result != 0i64 - EINTR && result != 0i64 - EALREADY {
-			intrinsics::throw("socket_connect failed"&);
+			linux::check_syscall(result, "socket_connect failed"&);
 		}
 	}
 }
@@ -127,7 +126,7 @@ fn socket_set_option(fd: FileDesc, level: Int, name: Int, value: Int) {
 			4u64,
 		)
 	};
-	check_syscall(result, "socket_set_option failed"&);
+	linux::check_syscall(result, "socket_set_option failed"&);
 }
 
 fn socket_local_addr(fd: FileDesc, dst: &[Uint8]) -> Uint {
@@ -135,7 +134,7 @@ fn socket_local_addr(fd: FileDesc, dst: &[Uint8]) -> Uint {
 	let result = unsafe {
 		intrinsics::syscall(SYS_GETSOCKNAME, raw_fd(fd), dst, len&)
 	};
-	check_syscall(result, "socket_local_addr failed"&);
+	linux::check_syscall(result, "socket_local_addr failed"&);
 	Uint(len)
 }
 
@@ -143,7 +142,7 @@ fn socket_shutdown(fd: FileDesc, how: Int) {
 	let result = unsafe {
 		intrinsics::syscall(SYS_SHUTDOWN, raw_fd(fd), Int64(how))
 	};
-	check_syscall(result, "socket_shutdown failed"&);
+	linux::check_syscall(result, "socket_shutdown failed"&);
 }
 
 /// Is `addr` an IPv6 literal? (Any ':' marks IPv6 — dotted quads have none.)

@@ -1108,6 +1108,7 @@ pub enum TypedPattern {
         variant_index: usize,
         binding: Option<(ast::Ident, Type)>,
     },
+    IntegerLiteral(i64),
     Wildcard(ast::Ident, Type),
 }
 
@@ -6371,10 +6372,8 @@ impl<'a> Lowerer<'a> {
         })
     }
 
-    /// Lower an integer match to a block containing one scrutinee temporary and
-    /// a nested if/else chain. The ordinary integer equality machinery then
-    /// provides identical behavior in the AST interpreter, IR interpreter, and
-    /// native backend without teaching enum-layout match nodes about scalars.
+    /// Lowers an integer match while preserving its flat arm representation.
+    /// Backends dispatch integer and enum patterns from the same match node.
     fn lower_integer_match(
         &mut self,
         span: ast::SourceSpan,
@@ -6382,18 +6381,14 @@ impl<'a> Lowerer<'a> {
         arms: &[ast::MatchArm],
     ) -> Result<Expr, CompileError> {
         let scrutinee_ty = scrutinee.ty.clone();
-        let n = self.destructure_counter;
-        self.destructure_counter += 1;
-        let temp_name = ast::Ident::synthetic(format!("__integer_match_{n}"));
-
         let mut seen_literals = HashSet::new();
         let mut wildcard_index = None;
-        let mut lowered_arms: Vec<(Option<Expr>, Vec<Statement>)> = Vec::new();
+        let mut typed_arms = Vec::new();
         let mut result_ty: Option<Type> = None;
 
         for (index, arm) in arms.iter().enumerate() {
             self.push_scope();
-            let literal = match &arm.pattern {
+            let pattern = match &arm.pattern {
                 ast::Pattern::IntegerLiteral(value, int_ty) => {
                     let literal_ast = ast::Expr {
                         kind: ast::ExprKind::IntegerLiteral(*value, *int_ty),
@@ -6420,11 +6415,7 @@ impl<'a> Lowerer<'a> {
                             arm.body.span,
                         ));
                     }
-                    Some(Expr {
-                        ty: literal.ty,
-                        kind: ExprKind::IntegerLiteral(bits),
-                        span: literal.span,
-                    })
+                    TypedPattern::IntegerLiteral(bits)
                 }
                 ast::Pattern::Wildcard(name) => {
                     if wildcard_index.is_some() {
@@ -6436,7 +6427,7 @@ impl<'a> Lowerer<'a> {
                     }
                     wildcard_index = Some(index);
                     self.define_var(name.clone(), scrutinee_ty.clone());
-                    None
+                    TypedPattern::Wildcard(name.clone(), scrutinee_ty.clone())
                 }
                 ast::Pattern::Variant { .. } => {
                     self.pop_scope();
@@ -6449,25 +6440,10 @@ impl<'a> Lowerer<'a> {
 
             let lowered_body_expr = self.lower_expr(&arm.body)?;
             let arm_ty = lowered_body_expr.ty.clone();
-            let mut body = Vec::new();
-            if let ast::Pattern::Wildcard(name) = &arm.pattern {
-                body.push(Statement {
-                    kind: StatementKind::Let {
-                        name: name.clone(),
-                        ty: scrutinee_ty.clone(),
-                        value: Expr {
-                            ty: scrutinee_ty.clone(),
-                            kind: ExprKind::Identifier(temp_name.clone()),
-                            span: arm.body.span,
-                        },
-                    },
-                    span: arm.body.span,
-                });
-            }
-            body.push(Statement {
+            let body = vec![Statement {
                 kind: StatementKind::Expression(lowered_body_expr),
                 span: arm.body.span,
-            });
+            }];
             self.pop_scope();
 
             if arm_ty == Type::Never {
@@ -6482,7 +6458,7 @@ impl<'a> Lowerer<'a> {
             } else {
                 result_ty = Some(arm_ty);
             }
-            lowered_arms.push((literal, body));
+            typed_arms.push(TypedMatchArm { pattern, body });
         }
 
         let Some(wildcard_index) = wildcard_index else {
@@ -6491,63 +6467,16 @@ impl<'a> Lowerer<'a> {
                 span,
             ));
         };
-        let result_ty = result_ty.unwrap_or(Type::Unit);
-
-        // Arms after the first wildcard are unreachable, matching the existing
-        // first-match semantics of enum matches.
-        let mut chain: Option<Expr> = None;
-        for (literal, body) in lowered_arms.into_iter().take(wildcard_index + 1).rev() {
-            chain = Some(if let Some(literal) = literal {
-                let else_expr = chain.expect("wildcard arm terminates integer match");
-                Expr {
-                    ty: result_ty.clone(),
-                    kind: ExprKind::If {
-                        condition: Box::new(Expr {
-                            ty: Type::Bool,
-                            kind: ExprKind::BinaryOp {
-                                op: ast::BinOp::Eq,
-                                left: Box::new(Expr {
-                                    ty: scrutinee_ty.clone(),
-                                    kind: ExprKind::Identifier(temp_name.clone()),
-                                    span,
-                                }),
-                                right: Box::new(literal),
-                            },
-                            span,
-                        }),
-                        then_body: body,
-                        else_body: vec![Statement {
-                            kind: StatementKind::Expression(else_expr),
-                            span,
-                        }],
-                    },
-                    span,
-                }
-            } else {
-                Expr {
-                    ty: result_ty.clone(),
-                    kind: ExprKind::Block(body),
-                    span,
-                }
-            });
-        }
+        // Preserve first-match semantics without sending unreachable arms after
+        // the wildcard to backends that emit an if/else chain.
+        typed_arms.truncate(wildcard_index + 1);
 
         Ok(Expr {
-            ty: result_ty,
-            kind: ExprKind::Block(vec![
-                Statement {
-                    kind: StatementKind::Let {
-                        name: temp_name,
-                        ty: scrutinee_ty,
-                        value: scrutinee,
-                    },
-                    span,
-                },
-                Statement {
-                    kind: StatementKind::Expression(chain.unwrap()),
-                    span,
-                },
-            ]),
+            ty: result_ty.unwrap_or(Type::Unit),
+            kind: ExprKind::Match {
+                scrutinee: Box::new(scrutinee),
+                arms: typed_arms,
+            },
             span,
         })
     }

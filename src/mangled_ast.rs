@@ -281,6 +281,7 @@ pub enum TypedPattern {
         variant_index: usize,
         binding: Option<(String, Type)>,
     },
+    IntegerLiteral(i64),
     Wildcard(String, Type),
 }
 
@@ -713,6 +714,7 @@ impl Renderer<'_> {
                     .as_ref()
                     .map(|(n, t)| (self.ident_name(n), self.conv_type(t))),
             },
+            ta::TypedPattern::IntegerLiteral(bits) => TypedPattern::IntegerLiteral(*bits),
             ta::TypedPattern::Wildcard(name, ty) => {
                 TypedPattern::Wildcard(self.ident_name(name), self.conv_type(ty))
             }

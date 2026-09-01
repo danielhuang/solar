@@ -18,6 +18,9 @@ pub import file from "file.solar";
 /// TCP networking.
 pub import net from "net.solar";
 
+/// Linux error messages and raw syscall error handling.
+pub import linux from "linux.solar";
+
 /// Floating-point mathematics.
 pub import math from "math.solar";
 

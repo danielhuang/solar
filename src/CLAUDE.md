@@ -58,6 +58,9 @@ AST, while `ir_interp` and native codegen consume IR.
   `error.rs`; malformed input must not panic the compiler or LSP.
 - Escape analysis is conservative: uncertainty means the value may escape.
 - Compile-time field reflection evaluates its object once.
+- Keep integer matches as flat match nodes through typed AST, mangling, and IR;
+  expanding their arms into nested `if` expressions makes compiler stack usage
+  proportional to the number of arms.
 - Surface `for binding in value` is duck-typed: desugaring evaluates `value`
   once, calls `iter`, then drives `next` inside a `loop` until it returns
   `Option::None`.

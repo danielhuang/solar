@@ -266,6 +266,7 @@ pub enum MatchPattern {
         variant_index: u64,
         binding: Option<(VarId, Type)>,
     },
+    IntegerLiteral(i64),
     Wildcard(VarId, Type),
 }
 
@@ -1502,6 +1503,9 @@ impl<'a> FunctionLowerer<'a> {
                                     variant_index: *variant_index as u64,
                                     binding: binding_ir,
                                 }
+                            }
+                            mangled_ast::TypedPattern::IntegerLiteral(bits) => {
+                                MatchPattern::IntegerLiteral(*bits)
                             }
                             mangled_ast::TypedPattern::Wildcard(name, ty) => {
                                 let var = self.define(name);
