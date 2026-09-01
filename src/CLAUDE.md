@@ -109,6 +109,9 @@ compiler failures into diagnostics rather than terminating the server.
 Diagnostics and language features share one resolved and type-checked analysis
 per document revision; do not compile the same buffer independently for each
 request.
+Inlay hints show compiler-inferred binding and non-unit return types only where
+the source annotation is omitted. Their positions use LSP UTF-16 coordinates
+and range requests must not return hints outside the requested range.
 
 ## Formatter
 

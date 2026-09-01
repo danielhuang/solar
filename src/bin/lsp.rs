@@ -57,6 +57,7 @@ fn main() {
                         "documentFormattingProvider": true,
                         "hoverProvider": true,
                         "definitionProvider": true,
+                        "inlayHintProvider": true,
                         "semanticTokensProvider": {
                             "legend": { "tokenTypes": TOKEN_TYPES, "tokenModifiers": [] },
                             "full": true,
@@ -145,6 +146,19 @@ fn main() {
                 };
                 respond(&mut output, id, result.unwrap_or(Value::Null));
             }
+            Some("textDocument/inlayHint") => {
+                let uri = params.pointer("/textDocument/uri").and_then(Value::as_str);
+                let range = inlay_hint_range(&params);
+                let target = uri.and_then(|uri| documents.get(uri).map(|text| (uri, text)));
+                let result = match target {
+                    Some((uri, text)) => {
+                        let document = cached(&mut cache, uri, text);
+                        inlay_hints(text, document, range)
+                    }
+                    None => Vec::new(),
+                };
+                respond(&mut output, id, json!(result));
+            }
             _ => {
                 // Notifications and methods outside this server's deliberately
                 // small surface are harmless. Return MethodNotFound only for a
@@ -185,6 +199,379 @@ fn formatting_edits(source: &str) -> Vec<Value> {
         },
         "newText": formatted,
     })]
+}
+
+type InlayHintRange = ((u32, u32), (u32, u32));
+
+fn inlay_hint_range(params: &Value) -> Option<InlayHintRange> {
+    Some((
+        (
+            params.pointer("/range/start/line")?.as_u64()? as u32,
+            params.pointer("/range/start/character")?.as_u64()? as u32,
+        ),
+        (
+            params.pointer("/range/end/line")?.as_u64()? as u32,
+            params.pointer("/range/end/character")?.as_u64()? as u32,
+        ),
+    ))
+}
+
+/// Returns inferred-type hints for declarations whose annotations are omitted.
+fn inlay_hints(source: &str, document: &Document, range: Option<InlayHintRange>) -> Vec<Value> {
+    let Some(analysis) = &document.analysis else {
+        return Vec::new();
+    };
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_solar::LANGUAGE.into())
+        .expect("Solar grammar must load");
+    let Some(tree) = parser.parse(source, None) else {
+        return Vec::new();
+    };
+
+    let mut return_types = HashMap::<SpanKey, Vec<String>>::new();
+    for function in analysis.typed.functions.values() {
+        if function.def_span.file_id == analysis.file_id
+            && function.return_type != typed_ast::Type::Unit
+        {
+            return_types
+                .entry(span_key(function.def_span))
+                .or_default()
+                .push(function.return_type.to_string());
+        }
+    }
+    normalize_type_options(&mut return_types);
+
+    let static_types: HashMap<&str, &typed_ast::Type> = analysis
+        .typed
+        .statics
+        .iter()
+        .filter(|item| item.id.file == analysis.file_id)
+        .map(|item| (item.id.name.as_str(), &item.ty))
+        .collect();
+    let context = InlayHintContext {
+        source,
+        file_id: analysis.file_id,
+        binding_types: &document.inferred_binding_types,
+        return_types: &return_types,
+        static_types: &static_types,
+        range,
+    };
+    let mut hints = Vec::new();
+    collect_inlay_hints(tree.root_node(), &context, &mut hints);
+    hints.sort_by_key(|hint| {
+        let label = hint["label"].as_str().unwrap_or_default();
+        let type_order = if label.starts_with(": ") { 0 } else { 1 };
+        (
+            hint["position"]["line"].as_u64().unwrap_or_default(),
+            hint["position"]["character"].as_u64().unwrap_or_default(),
+            type_order,
+            label.to_owned(),
+        )
+    });
+    hints.dedup();
+    hints
+}
+
+struct InlayHintContext<'a> {
+    source: &'a str,
+    file_id: u32,
+    binding_types: &'a HashMap<SpanKey, Vec<String>>,
+    return_types: &'a HashMap<SpanKey, Vec<String>>,
+    static_types: &'a HashMap<&'a str, &'a typed_ast::Type>,
+    range: Option<InlayHintRange>,
+}
+
+fn collect_inlay_hints(node: Node<'_>, context: &InlayHintContext<'_>, out: &mut Vec<Value>) {
+    match node.kind() {
+        "let_statement" if node.child_by_field_name("type").is_none() => {
+            if let Some(pattern) = node.child_by_field_name("pattern") {
+                collect_pattern_inlay_hints(pattern, context, out);
+            }
+        }
+        "parameter" if node.child_by_field_name("type").is_none() => {
+            if let Some(pattern) = node.child_by_field_name("pattern") {
+                collect_pattern_inlay_hints(pattern, context, out);
+                let key = span_key(node_span(pattern, context.file_id));
+                if pattern.kind() == "identifier"
+                    && !context.binding_types.contains_key(&key)
+                    && let Some(default) = node.child_by_field_name("default")
+                    && let Some(ty) = inferred_literal_type(default, context.source)
+                {
+                    push_inlay_hint(
+                        node_end_position(pattern, context.source),
+                        format!(": {ty}"),
+                        context,
+                        out,
+                    );
+                }
+            }
+        }
+        "closure_param" if node.child_by_field_name("type").is_none() => {
+            if let Some(name) = node.child_by_field_name("name") {
+                push_binding_inlay_hint(name, context, out);
+            }
+        }
+        "for_statement" => {
+            if let Some(variable) = node.child_by_field_name("variable") {
+                push_binding_inlay_hint(variable, context, out);
+            }
+        }
+        "try_statement" if node.child_by_field_name("binding_type").is_none() => {
+            if let Some(binding) = node.child_by_field_name("binding") {
+                push_binding_inlay_hint(binding, context, out);
+            }
+        }
+        "match_arm" => {
+            if let Some(pattern) = node.child_by_field_name("pattern") {
+                collect_pattern_inlay_hints(pattern, context, out);
+            }
+        }
+        "reflect_fields_statement" | "reflect_fields_pair_statement" => {
+            if let Some(pattern) = node.child_by_field_name("variable") {
+                collect_pattern_inlay_hints(pattern, context, out);
+            }
+        }
+        "reflect_variant_statement" | "reflect_variant_pair_statement" => {
+            if let Some(pattern) = node.child_by_field_name("pattern") {
+                collect_pattern_inlay_hints(pattern, context, out);
+            }
+        }
+        "const_def" if node.child_by_field_name("type").is_none() => {
+            if let (Some(name), Some(value)) = (
+                node.child_by_field_name("name"),
+                node.child_by_field_name("value"),
+            ) && let Some(ty) = inferred_literal_type(value, context.source)
+            {
+                push_inlay_hint(
+                    node_end_position(name, context.source),
+                    format!(": {ty}"),
+                    context,
+                    out,
+                );
+            }
+        }
+        "static_def" if node.child_by_field_name("type").is_none() => {
+            if let Some(name) = node.child_by_field_name("name") {
+                let text = &context.source[name.byte_range()];
+                if let Some(ty) = context.static_types.get(text) {
+                    push_inlay_hint(
+                        node_end_position(name, context.source),
+                        format!(": {ty}"),
+                        context,
+                        out,
+                    );
+                }
+            }
+        }
+        "function_def" | "method_def" if node.child_by_field_name("return_type").is_none() => {
+            push_return_inlay_hint(node, function_return_anchor(node), context, out);
+        }
+        "closure_expr" if node.child_by_field_name("return_type").is_none() => {
+            let anchor = named_child(node, "closure_param_list").or_else(|| {
+                (0..node.child_count())
+                    .filter_map(|index| node.child(index))
+                    .find(|child| child.kind() == "\\")
+            });
+            push_return_inlay_hint(node, anchor, context, out);
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_inlay_hints(child, context, out);
+    }
+}
+
+fn function_return_anchor(node: Node<'_>) -> Option<Node<'_>> {
+    let body_start = node.child_by_field_name("body")?.start_byte();
+    (0..node.child_count())
+        .filter_map(|index| node.child(index))
+        .rfind(|child| child.kind() == ")" && child.end_byte() <= body_start)
+}
+
+fn push_return_inlay_hint(
+    declaration: Node<'_>,
+    anchor: Option<Node<'_>>,
+    context: &InlayHintContext<'_>,
+    out: &mut Vec<Value>,
+) {
+    let Some(anchor) = anchor else {
+        return;
+    };
+    let key = span_key(node_span(declaration, context.file_id));
+    let Some(types) = context.return_types.get(&key) else {
+        return;
+    };
+    push_inlay_hint(
+        node_end_position(anchor, context.source),
+        format_type_hint(" -> ", types),
+        context,
+        out,
+    );
+}
+
+fn collect_pattern_inlay_hints(
+    pattern: Node<'_>,
+    context: &InlayHintContext<'_>,
+    out: &mut Vec<Value>,
+) {
+    if pattern.kind() == "identifier" {
+        push_binding_inlay_hint(pattern, context, out);
+        return;
+    }
+    if matches!(pattern.kind(), "variant_pattern" | "wildcard_pattern") {
+        let field = if pattern.kind() == "variant_pattern" {
+            "binding"
+        } else {
+            "name"
+        };
+        if let Some(binding) = pattern.child_by_field_name(field) {
+            push_binding_inlay_hint(binding, context, out);
+        }
+        return;
+    }
+    if pattern.kind() == "struct_pattern_field" {
+        if let Some(inner) = pattern.child_by_field_name("pattern") {
+            collect_pattern_inlay_hints(inner, context, out);
+        } else if let Some(name) = pattern.child_by_field_name("field_name") {
+            push_binding_inlay_hint(name, context, out);
+        }
+        return;
+    }
+    let mut cursor = pattern.walk();
+    for child in pattern.named_children(&mut cursor) {
+        if matches!(
+            pattern.kind(),
+            "tuple_pattern" | "array_pattern" | "match_pattern"
+        ) || pattern.kind() == "struct_pattern" && child.kind() == "struct_pattern_field"
+        {
+            collect_pattern_inlay_hints(child, context, out);
+        }
+    }
+}
+
+fn push_binding_inlay_hint(
+    binding: Node<'_>,
+    context: &InlayHintContext<'_>,
+    out: &mut Vec<Value>,
+) {
+    if &context.source[binding.byte_range()] == "_" {
+        return;
+    }
+    let key = span_key(node_span(binding, context.file_id));
+    let Some(types) = context.binding_types.get(&key) else {
+        return;
+    };
+    push_inlay_hint(
+        node_end_position(binding, context.source),
+        format_type_hint(": ", types),
+        context,
+        out,
+    );
+}
+
+fn push_inlay_hint(
+    position: (u32, u32),
+    label: String,
+    context: &InlayHintContext<'_>,
+    out: &mut Vec<Value>,
+) {
+    if context
+        .range
+        .is_some_and(|(start, end)| position < start || position >= end)
+    {
+        return;
+    }
+    out.push(json!({
+        "position": { "line": position.0, "character": position.1 },
+        "label": label,
+        "kind": 1,
+    }));
+}
+
+fn node_end_position(node: Node<'_>, source: &str) -> (u32, u32) {
+    let end = node.end_position();
+    let line = source.lines().nth(end.row).unwrap_or("");
+    (end.row as u32, utf16_column(line, end.column))
+}
+
+fn format_type_hint(prefix: &str, types: &[String]) -> String {
+    format!("{prefix}{}", types.join(" | "))
+}
+
+fn normalize_type_options(types: &mut HashMap<SpanKey, Vec<String>>) {
+    for options in types.values_mut() {
+        options.sort();
+        options.dedup();
+    }
+}
+
+fn inferred_literal_type(node: Node<'_>, source: &str) -> Option<String> {
+    let text = &source[node.byte_range()];
+    match node.kind() {
+        "integer_literal" => Some(
+            [
+                ("i8", "Int8"),
+                ("i16", "Int16"),
+                ("i32", "Int32"),
+                ("i64", "Int64"),
+                ("u8", "Uint8"),
+                ("u16", "Uint16"),
+                ("u32", "Uint32"),
+                ("u64", "Uint64"),
+                ("u", "Uint"),
+            ]
+            .into_iter()
+            .find_map(|(suffix, ty)| text.ends_with(suffix).then_some(ty))
+            .unwrap_or("Int")
+            .to_owned(),
+        ),
+        "float_literal" => Some(if text.ends_with("f32") {
+            "Float32".to_owned()
+        } else {
+            "Float64".to_owned()
+        }),
+        "boolean_literal" => Some("Bool".to_owned()),
+        "char_literal" => Some("Uint8".to_owned()),
+        "string_literal" => Some("[Uint8]".to_owned()),
+        "null_expr" => {
+            let type_args = node.child_by_field_name("type_args")?;
+            let ty = first_named_code_child(type_args)?;
+            Some(format!("&?{}", &source[ty.byte_range()]))
+        }
+        "reference_expr" => Some(format!(
+            "&{}",
+            inferred_literal_type(node.child_by_field_name("operand")?, source)?
+        )),
+        "unique_expr" => Some(format!(
+            "^{}",
+            inferred_literal_type(node.child_by_field_name("operand")?, source)?
+        )),
+        "array_literal" => {
+            let element = if let Some(type_args) = node.child_by_field_name("type_args") {
+                let ty = first_named_code_child(type_args)?;
+                source[ty.byte_range()].to_owned()
+            } else {
+                let list = named_child(node, "element_list")?;
+                inferred_literal_type(first_named_code_child(list)?, source)?
+            };
+            Some(format!("[{element}]"))
+        }
+        "array_repeat" => Some(format!(
+            "[{}]",
+            inferred_literal_type(node.child_by_field_name("element")?, source)?
+        )),
+        "parenthesized_expression" => inferred_literal_type(first_named_code_child(node)?, source),
+        _ => None,
+    }
+}
+
+fn first_named_code_child(node: Node<'_>) -> Option<Node<'_>> {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .find(|child| !matches!(child.kind(), "comment" | "doc_comment"))
 }
 
 fn publish_check_diagnostics(
@@ -1602,6 +1989,9 @@ struct Document {
     signatures: HashMap<SpanKey, String>,
     /// Exact local-binding span → concrete `name: Type` signatures.
     binding_signatures: HashMap<SpanKey, Vec<String>>,
+    /// Exact local-binding span → concrete inferred type(s), used for inlay
+    /// hints only when the corresponding syntax omits an annotation.
+    inferred_binding_types: HashMap<SpanKey, Vec<String>>,
     /// Free-function overload declarations keyed by resolved provenance.
     function_defs: HashMap<ast::DefId, Vec<SourceSpan>>,
     /// Method overload declarations keyed by their source name.
@@ -1677,13 +2067,16 @@ fn compute_with_diagnostics(uri: &str, source: &str) -> (Document, HashMap<Strin
             diagnostics_from_errors(uri, source, std::slice::from_ref(&error), &source_map),
         ),
     };
-    let binding_signatures = analysis.as_ref().map_or_else(HashMap::new, |analysis| {
-        collect_binding_signatures(analysis, source)
-    });
+    let binding_facts = analysis
+        .as_ref()
+        .map_or_else(BindingFacts::default, |analysis| {
+            collect_binding_facts(analysis, source)
+        });
     let document = Document {
         docs: collect_docs(&ast),
         signatures,
-        binding_signatures,
+        binding_signatures: binding_facts.signatures,
+        inferred_binding_types: binding_facts.types,
         function_defs: definition_catalog.function_defs,
         method_defs: definition_catalog.method_defs,
         field_defs: definition_catalog.field_defs,
@@ -1842,13 +2235,19 @@ fn analysis_from_typed(typed: typed_ast::SourceFile, source_map: &SourceMap) -> 
 
 type BindingDeclarationKey = (SpanKey, String);
 
-fn collect_binding_signatures(analysis: &Analysis, source: &str) -> HashMap<SpanKey, Vec<String>> {
+#[derive(Default)]
+struct BindingFacts {
+    signatures: HashMap<SpanKey, Vec<String>>,
+    types: HashMap<SpanKey, Vec<String>>,
+}
+
+fn collect_binding_facts(analysis: &Analysis, source: &str) -> BindingFacts {
     let mut parser = Parser::new();
     parser
         .set_language(&tree_sitter_solar::LANGUAGE.into())
         .expect("Solar grammar must load");
     let Some(tree) = parser.parse(source, None) else {
-        return HashMap::new();
+        return BindingFacts::default();
     };
     let root = tree.root_node();
     let mut declarations = HashMap::new();
@@ -1858,7 +2257,7 @@ fn collect_binding_signatures(analysis: &Analysis, source: &str) -> HashMap<Span
         file_id: analysis.file_id,
         scope: None,
         declarations: &declarations,
-        out: HashMap::new(),
+        facts: BindingFacts::default(),
     };
     for function in analysis.typed.functions.values() {
         if function.def_span.file_id != analysis.file_id {
@@ -1876,11 +2275,12 @@ fn collect_binding_signatures(analysis: &Analysis, source: &str) -> HashMap<Span
     for static_item in &analysis.typed.statics {
         collector.walk_expr(&static_item.init);
     }
-    for signatures in collector.out.values_mut() {
+    for signatures in collector.facts.signatures.values_mut() {
         signatures.sort();
         signatures.dedup();
     }
-    collector.out
+    normalize_type_options(&mut collector.facts.types);
+    collector.facts
 }
 
 fn collect_binding_declarations(
@@ -1892,7 +2292,12 @@ fn collect_binding_declarations(
     let pattern = match node.kind() {
         "parameter" | "let_statement" => node.child_by_field_name("pattern"),
         "closure_param" => node.child_by_field_name("name"),
-        "for_statement" => node.child_by_field_name("variable"),
+        "for_statement" | "reflect_fields_statement" | "reflect_fields_pair_statement" => {
+            node.child_by_field_name("variable")
+        }
+        "reflect_variant_statement" | "reflect_variant_pair_statement" => {
+            node.child_by_field_name("pattern")
+        }
         "try_statement" => node.child_by_field_name("binding"),
         "match_arm" => node.child_by_field_name("pattern"),
         _ => None,
@@ -1962,15 +2367,21 @@ struct BindingSignatureCollector<'a> {
     file_id: u32,
     scope: Option<SourceSpan>,
     declarations: &'a HashMap<BindingDeclarationKey, Vec<SpanKey>>,
-    out: HashMap<SpanKey, Vec<String>>,
+    facts: BindingFacts,
 }
 
 impl BindingSignatureCollector<'_> {
     fn insert(&mut self, target: SpanKey, name: &str, ty: &typed_ast::Type) {
-        self.out
+        self.facts
+            .signatures
             .entry(target)
             .or_default()
             .push(format!("{name}: {ty}"));
+        self.facts
+            .types
+            .entry(target)
+            .or_default()
+            .push(ty.to_string());
     }
 
     fn record_declaration(
@@ -2600,6 +3011,13 @@ mod tests {
         }
     }
 
+    fn hint_labels(hints: &[Value]) -> Vec<&str> {
+        hints
+            .iter()
+            .map(|hint| hint["label"].as_str().unwrap())
+            .collect()
+    }
+
     #[test]
     fn formatting_returns_a_full_document_utf16_edit() {
         let source = "fn f(){println(\"😀\"&);}";
@@ -3153,6 +3571,144 @@ fn main() {
                 assert!(contents.contains(&format!("{name}: {ty}")), "{contents}");
             }
         }
+    }
+
+    #[test]
+    fn inlay_hints_cover_omitted_binding_and_return_types() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/runtime/enums.solar");
+        let uri = format!("file://{}", path.display());
+        let source = r#"enum Shape {
+    Circle(Int),
+    Empty,
+}
+
+fn main() {
+    let shape = Shape::Circle(1);
+    let radius = match shape {
+        Shape::Circle(value) => value,
+        Shape::Empty => 0,
+    };
+    for index in 0..radius {
+        println(index);
+    }
+    try {
+        println(radius);
+    } catch (message) {
+        println(message);
+    }
+}
+"#;
+        let document = compute(&uri, source);
+
+        let hints = inlay_hints(source, &document, None);
+        let labels = hint_labels(&hints);
+
+        for expected in [": Shape", ": Int", ": Int", ": Int", ": &[Uint8]"] {
+            assert!(labels.contains(&expected), "missing {expected}: {labels:?}");
+        }
+        assert!(!labels.contains(&" -> ()"), "{labels:?}");
+    }
+
+    #[test]
+    fn inlay_hints_cover_globals_defaults_and_contextual_closures() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/runtime/methods.solar");
+        let uri = format!("file://{}", path.display());
+        let source = r#"const LIMIT = 4u;
+static ENABLED = true;
+
+fn apply(function: fn(Int) -> Int, debug = false) -> Int {
+    if debug { function(1) } else { 0 }
+}
+
+fn main() {
+    let result = apply(\value value);
+    let explicit: Int = result;
+    if ENABLED { println(result); }
+}
+"#;
+        let document = compute(&uri, source);
+
+        let hints = inlay_hints(source, &document, None);
+        let labels = hint_labels(&hints);
+
+        assert!(labels.contains(&": Uint"), "{labels:?}");
+        assert_eq!(labels.iter().filter(|label| **label == ": Bool").count(), 2);
+        assert_eq!(labels.iter().filter(|label| **label == ": Int").count(), 2);
+        assert!(labels.contains(&" -> Int"), "{labels:?}");
+        assert!(!labels.contains(&" -> ()"), "{labels:?}");
+
+        let explicit = occurrence_position(source, "explicit", 0);
+        assert!(!hints.iter().any(|hint| {
+            hint["position"]["line"] == explicit.0
+                && hint["position"]["character"] == explicit.1 + "explicit".len() as u32
+        }));
+    }
+
+    #[test]
+    fn inlay_hint_positions_and_ranges_use_utf16() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/runtime/methods.solar");
+        let uri = format!("file://{}", path.display());
+        let source = "fn main() { println(\"😀\"&); let value = 1; }\n";
+        let document = compute(&uri, source);
+        let (line, start) = occurrence_position(source, "value", 0);
+        let position = (line, start + "value".encode_utf16().count() as u32);
+
+        let range_end = (position.0, position.1 + 1);
+        let hints = inlay_hints(source, &document, Some((position, range_end)));
+
+        assert_eq!(hints.len(), 1, "{hints:?}");
+        assert_eq!(
+            hints[0]["position"],
+            json!({ "line": 0, "character": position.1 })
+        );
+        assert_eq!(hints[0]["label"], ": Int");
+    }
+
+    #[test]
+    fn inlay_hints_cover_reflection_pattern_bindings() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/runtime/methods.solar");
+        let uri = format!("file://{}", path.display());
+        let source = r#"struct Pair { number: Int, flag: Bool, }
+
+fn main() {
+    let pair = Pair { number: 1, flag: true, };
+    for.reflect_fields (name, value) in pair& {
+        println(name);
+    }
+}
+"#;
+        let document = compute(&uri, source);
+
+        let hints = inlay_hints(source, &document, None);
+        let labels = hint_labels(&hints);
+
+        assert!(labels.contains(&": &[Uint8]"), "{labels:?}");
+        assert!(
+            labels.contains(&": &Bool | &Int") || labels.contains(&": &Int | &Bool"),
+            "{labels:?}"
+        );
+    }
+
+    #[test]
+    fn closure_parameter_hint_precedes_return_hint_at_the_same_position() {
+        let (_, source, document) = fixture_document("examples/threads_loop.solar");
+        let (line, closure_start) = occurrence_position(&source, "\\i thread::spawn(test)", 0);
+        let position = (line, closure_start + "\\i".encode_utf16().count() as u32);
+
+        let hints = inlay_hints(
+            &source,
+            &document,
+            Some((position, (position.0, position.1 + 1))),
+        );
+        let labels = hint_labels(&hints);
+
+        assert_eq!(labels.len(), 2, "{hints:?}");
+        assert_eq!(labels[0], ": Uint");
+        assert!(labels[1].starts_with(" -> "), "{labels:?}");
     }
 
     #[test]
