@@ -545,7 +545,7 @@ pub fn type_size(ty: &Type, datatypes: &HashMap<String, DataType>) -> usize {
         Type::Int16 | Type::Uint16 => 2,
         Type::Int32 | Type::Uint32 | Type::Float32 => 4,
         Type::Int64 | Type::Uint64 | Type::Int | Type::Uint | Type::Float64 => 8,
-        Type::Function { .. } => 16,
+        Type::Function { .. } | Type::Any => 16,
         Type::Ref(_) | Type::NullableRef(_) | Type::Unique(_) | Type::FileDesc => 8,
         Type::RefUnsized(_) | Type::NullableRefUnsized(_) | Type::UniqueUnsized(_) => 16,
         Type::FixedArray(inner, n) => (*n as usize) * type_size(inner, datatypes),
@@ -572,7 +572,8 @@ pub fn type_align(ty: &Type, datatypes: &HashMap<String, DataType>) -> usize {
         Type::RefUnsized(_)
         | Type::NullableRefUnsized(_)
         | Type::UniqueUnsized(_)
-        | Type::Function { .. } => 16,
+        | Type::Function { .. }
+        | Type::Any => 16,
         Type::Array(inner) | Type::FixedArray(inner, _) => type_align(inner, datatypes),
         Type::Struct(name) | Type::Enum(name) => datatypes[name].align,
         Type::Unit | Type::Never => 1,
@@ -641,7 +642,7 @@ pub fn type_contains_gc_ptr(ty: &Type, dt: &HashMap<String, DataType>) -> bool {
         | Type::NullableRef(_)
         | Type::NullableRefUnsized(_) => true,
         // A `FileDesc` is a traced pointer into the fd arena.
-        Type::FileDesc => true,
+        Type::FileDesc | Type::Any => true,
         Type::Function { .. } => true,
         Type::Struct(name) | Type::Enum(name) => {
             if let Some(d) = dt.get(name.as_str()) {

@@ -1,0 +1,31 @@
+struct Payload { value: Int }
+
+fn erased_payload() -> Any {
+	let payload = Payload { value: 77 };
+	Any(payload&)
+}
+
+fn print_bool(value: Bool) {
+	println(if value { 1 } else { 0 });
+}
+
+fn main() {
+	let value = 41;
+	let any1 = Any(value&);
+	let any2 = any1;
+
+	let first = any1.downcast#[Int]();
+	first@ = 42;
+	println(any2.downcast#[Int]()@);
+	print_bool(any1.downcast#[Bool]() == null#[Bool]);
+	println(size_of#[Any]());
+
+	let flag = true;
+	let atomic_any = Any(value&);
+	atomic_any&.atomic_store(Any(flag&));
+	let loaded = atomic_any&.atomic_load();
+	print_bool(loaded.downcast#[Bool]()@);
+
+	let erased = erased_payload();
+	println(erased.downcast#[Payload]()@.value);
+}

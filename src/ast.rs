@@ -628,6 +628,7 @@ pub enum PrimitiveType {
     Float64,
     Bool,
     FileDesc,
+    Any,
     Unit,
     Never,
 }
@@ -648,6 +649,7 @@ pub const PRIMITIVE_TYPES: &[(PrimitiveType, &str)] = &[
     (PrimitiveType::Float64, "Float64"),
     (PrimitiveType::Bool, "Bool"),
     (PrimitiveType::FileDesc, "FileDesc"),
+    (PrimitiveType::Any, "Any"),
     (PrimitiveType::Unit, "Unit"),
     (PrimitiveType::Never, "Never"),
 ];
@@ -685,6 +687,7 @@ impl PrimitiveType {
             PrimitiveType::Float64 => Some(NumericType::Float64),
             PrimitiveType::Bool
             | PrimitiveType::FileDesc
+            | PrimitiveType::Any
             | PrimitiveType::Unit
             | PrimitiveType::Never => None,
         }

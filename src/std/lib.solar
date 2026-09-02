@@ -1,5 +1,8 @@
 import intrinsics from "@intrinsics";
 
+/// Type-erased reference construction and downcasting.
+pub import {Any} from "any.solar";
+
 /// Slice utilities and iteration.
 pub import slice from "slice.solar";
 

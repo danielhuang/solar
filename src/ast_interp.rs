@@ -20,6 +20,11 @@ enum Value {
     },
     Array(Vec<Slot>),
     Ref(Slot),
+    /// A type-erased reference; copying it preserves the target alias.
+    Any {
+        target: Slot,
+        ty: Type,
+    },
     Unique(Slot),
     Enum {
         enum_name: String,
@@ -164,6 +169,10 @@ fn deep_copy_value(val: &Value) -> Value {
             }),
         },
         Value::Ref(target) => Value::Ref(Rc::clone(target)),
+        Value::Any { target, ty } => Value::Any {
+            target: Rc::clone(target),
+            ty: ty.clone(),
+        },
         Value::Unique(target) => {
             Value::Unique(Rc::new(RefCell::new(deep_copy_value(&target.borrow()))))
         }
@@ -187,6 +196,9 @@ fn atomic_value_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => x == y,
         (Value::Ref(x), Value::Ref(y)) => Rc::ptr_eq(x, y),
+        (Value::Any { target: x, ty: xt }, Value::Any { target: y, ty: yt }) => {
+            xt == yt && Rc::ptr_eq(x, y)
+        }
         // Nullable references: a null compares equal only to another null.
         (Value::Null, Value::Null) => true,
         (Value::Null, Value::Ref(_)) | (Value::Ref(_), Value::Null) => false,
@@ -1071,6 +1083,34 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             Intrinsic::BlackBoxRef | Intrinsic::GcKeepAlive => {
                 self.eval_expr(&arguments[0])?;
                 Value::Unit
+            }
+            Intrinsic::AnyNew => {
+                let value = self.eval_expr(&arguments[0])?;
+                let target = match value {
+                    Value::Ref(target) => target,
+                    _ => unreachable!("any_new argument must be a sized reference"),
+                };
+                let Type::Ref(inner) = &arguments[0].ty else {
+                    unreachable!("any_new argument must be a sized reference")
+                };
+                Value::Any {
+                    target,
+                    ty: (**inner).clone(),
+                }
+            }
+            Intrinsic::AnyDowncast => {
+                let value = self.eval_expr(&arguments[0])?;
+                let Value::Any { target, ty } = value else {
+                    unreachable!("any_downcast argument must be Any")
+                };
+                let Type::NullableRef(expected) = result_ty else {
+                    unreachable!("any_downcast result must be a nullable reference")
+                };
+                if ty == **expected {
+                    Value::Ref(target)
+                } else {
+                    Value::Null
+                }
             }
             Intrinsic::FdFromRaw | Intrinsic::FdToRaw => self.eval_expr(&arguments[0])?,
             Intrinsic::Syscall => {

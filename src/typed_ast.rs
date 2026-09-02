@@ -143,6 +143,7 @@ fn from_ast_type_with_subst(ty: &ast::Type, subst: &HashMap<String, Type>) -> Ty
                     ast::PrimitiveType::Float64 => Type::Float64,
                     ast::PrimitiveType::Bool => Type::Bool,
                     ast::PrimitiveType::FileDesc => Type::FileDesc,
+                    ast::PrimitiveType::Any => Type::Any,
                     ast::PrimitiveType::Unit => Type::Unit,
                     ast::PrimitiveType::Never => Type::Never,
                 }
@@ -2786,6 +2787,7 @@ impl<'a> Lowerer<'a> {
             Type::Float64 => ast::Type::Named(DefId::new(0, "Float64")),
             Type::Bool => ast::Type::Named(DefId::new(0, "Bool")),
             Type::FileDesc => ast::Type::Named(DefId::new(0, "FileDesc")),
+            Type::Any => ast::Type::Named(DefId::new(0, "Any")),
             Type::Unit => ast::Type::Named(DefId::new(0, "Unit")),
             Type::Never => ast::Type::Named(DefId::new(0, "Never")),
             Type::NullableRef(inner) | Type::NullableRefUnsized(inner) => {
@@ -8773,7 +8775,28 @@ impl<'a> Lowerer<'a> {
                 span,
             });
         }
-        if !type_args.is_empty() {
+        let any_downcast_type = if matches!(intrinsic, Intrinsic::AnyDowncast) {
+            if type_args.len() != 1 {
+                return Err(CompileError::new(
+                    format!(
+                        "any_downcast: expected 1 type argument, got {}",
+                        type_args.len()
+                    ),
+                    span,
+                ));
+            }
+            let ty = self.resolve_ast_type(&type_args[0])?;
+            if type_layout(&ty, &self.lowered_structs, &self.lowered_enums).is_none() {
+                return Err(CompileError::new(
+                    format!("any_downcast: type {ty} is unsized"),
+                    span,
+                ));
+            }
+            Some(ty)
+        } else {
+            None
+        };
+        if any_downcast_type.is_none() && !type_args.is_empty() {
             return Err(CompileError::new(
                 format!("{name} does not accept type arguments"),
                 span,
@@ -8934,6 +8957,9 @@ impl<'a> Lowerer<'a> {
             ReturnSpec::Fixed(ty) => ty,
             ReturnSpec::RefInner => ref_inner.unwrap(),
             ReturnSpec::FloatArg => float_ty.unwrap(),
+            ReturnSpec::NullableRefTypeArg => {
+                Type::NullableRef(Box::new(any_downcast_type.unwrap()))
+            }
         };
 
         Ok(Expr {
@@ -9028,6 +9054,8 @@ enum ReturnSpec {
     /// The type captured by the `IsFloat` param (float math returns its
     /// operand's type).
     FloatArg,
+    /// A nullable reference to the sole explicit, sized type argument.
+    NullableRefTypeArg,
 }
 
 struct IntrinsicSpec {
@@ -9069,6 +9097,14 @@ fn intrinsic_spec(intrinsic: &Intrinsic) -> IntrinsicSpec {
     };
 
     match intrinsic {
+        Intrinsic::AnyNew => IntrinsicSpec {
+            params: vec![IsSizedRef],
+            ret: Fixed(Type::Any),
+        },
+        Intrinsic::AnyDowncast => IntrinsicSpec {
+            params: vec![Exact(Type::Any)],
+            ret: NullableRefTypeArg,
+        },
         Intrinsic::RefEq => IntrinsicSpec {
             params: vec![IsRef, MatchesRef],
             ret: Fixed(Type::Bool),
@@ -9289,7 +9325,8 @@ fn type_layout(
         Type::RefUnsized(_)
         | Type::NullableRefUnsized(_)
         | Type::UniqueUnsized(_)
-        | Type::Function { .. } => Some((16, 16)),
+        | Type::Function { .. }
+        | Type::Any => Some((16, 16)),
         Type::Unit | Type::Never => Some((0, 1)),
         Type::Array(_) => None,
         Type::FixedArray(inner, count) => {
@@ -9375,6 +9412,7 @@ fn c_repr_rejection(ty: &Type, structs: &HashMap<TypeId, StructDef>) -> Option<S
         }
         Type::Function { .. } => Some("function values include a closure environment".to_string()),
         Type::FileDesc => Some("FileDesc is a Solar runtime handle".to_string()),
+        Type::Any => Some("Any is a Solar runtime handle".to_string()),
         Type::Unit | Type::Never => Some("zero-sized types are not representable in C".to_string()),
     }
 }
@@ -9398,7 +9436,8 @@ fn is_atomic_shape_ok(ty: &Type, structs: &HashMap<TypeId, StructDef>) -> bool {
         | Type::RefUnsized(_)
         | Type::NullableRef(_)
         | Type::NullableRefUnsized(_)
-        | Type::Function { .. } => true,
+        | Type::Function { .. }
+        | Type::Any => true,
         Type::Struct(name) => {
             if let Some(def) = structs.get(name) {
                 def.fields
@@ -9437,7 +9476,8 @@ fn atomic_type_size(ty: &Type, structs: &HashMap<TypeId, StructDef>) -> Option<u
         Type::RefUnsized(_)
         | Type::NullableRefUnsized(_)
         | Type::UniqueUnsized(_)
-        | Type::Function { .. } => Some(16),
+        | Type::Function { .. }
+        | Type::Any => Some(16),
         Type::Struct(name) => {
             let def = structs.get(name)?;
             let fields = def
@@ -9479,7 +9519,8 @@ fn atomic_type_align(ty: &Type, structs: &HashMap<TypeId, StructDef>) -> Option<
         Type::RefUnsized(_)
         | Type::NullableRefUnsized(_)
         | Type::UniqueUnsized(_)
-        | Type::Function { .. } => Some(16),
+        | Type::Function { .. }
+        | Type::Any => Some(16),
         Type::Struct(name) => {
             let def = structs.get(name)?;
             let mut a = 1usize;

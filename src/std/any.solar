@@ -1,0 +1,12 @@
+import intrinsics from "@intrinsics";
+
+/// Erases the concrete type of a reference to a sized value.
+pub fn Any#[T](x: &T) -> Any {
+	intrinsics::any_new(x)
+}
+
+/// Returns the referenced value when its concrete type is `T`, or null when it
+/// has a different concrete type.
+pub method downcast#[out T](self: Any) -> &?T {
+	intrinsics::any_downcast#[T](self)
+}

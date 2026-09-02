@@ -3,6 +3,10 @@
 use crate::ast::NumericType;
 use std::fmt;
 
+/// Compiler-private marker placed in bits 48..63 of every `Any` type tag.
+/// The non-pointer-looking prefix reduces conservative GC false positives.
+pub(crate) const ANY_TYPE_TAG_PREFIX: u64 = 0x00ff_0000_0000_0000;
+
 /// A Solar type parameterized by its struct and enum identity representation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type<I> {
@@ -39,6 +43,9 @@ pub enum Type<I> {
     /// representation of `&Int32`: an 8-byte pointer into the GC-traced fd
     /// arena. The collector closes the file once no live `FileDesc` remains.
     FileDesc,
+    /// A type-erased reference to a sized value. Its 16-byte representation is
+    /// a traced pointer followed by a compiler-private concrete-type tag.
+    Any,
     Unit,
     Never,
 }
@@ -182,6 +189,7 @@ impl<I> Type<I> {
                 return_type: Box::new(return_type.map_id_with(map)),
             },
             Type::FileDesc => Type::FileDesc,
+            Type::Any => Type::Any,
             Type::Unit => Type::Unit,
             Type::Never => Type::Never,
         }
@@ -311,6 +319,7 @@ impl<I: fmt::Display> fmt::Display for Type<I> {
                 Ok(())
             }
             Type::FileDesc => write!(f, "FileDesc"),
+            Type::Any => write!(f, "Any"),
             Type::Unit => write!(f, "()"),
             Type::Never => write!(f, "!"),
         }

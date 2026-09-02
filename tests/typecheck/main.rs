@@ -341,6 +341,24 @@ fn size_of_unsized_type() {
 }
 
 #[test]
+#[should_panic(expected = "any_new: expected &T, got &[Int]")]
+fn any_rejects_unsized_referents() {
+    compile_with_pipeline(&fixture("any_rejects_unsized.solar"));
+}
+
+#[test]
+#[should_panic(expected = "any_downcast: type [Int] is unsized")]
+fn any_downcast_rejects_unsized_types() {
+    compile_with_pipeline(&fixture("any_downcast_rejects_unsized.solar"));
+}
+
+#[test]
+#[should_panic(expected = "field access on non-struct type Any")]
+fn any_type_id_is_private() {
+    compile_with_pipeline(&fixture("any_type_id_private.solar"));
+}
+
+#[test]
 #[should_panic(expected = "cannot infer type of closure parameter `x` without context")]
 fn bad_closure_infer_no_context() {
     compile(&fixture("typecheck_bad_closure_infer_no_context.solar"));

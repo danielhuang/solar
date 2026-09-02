@@ -26,6 +26,8 @@ pub fn generate(module: &Module, source_file: &str, source_map: &SourceMap) -> S
         loop_dst: Vec::new(),
         cur_loc: None,
         cur_fn_returns_nothing: false,
+        any_type_ids: HashMap::new(),
+        next_any_type_id: 1,
     };
     cg.emit_module();
     cg.out
@@ -60,6 +62,9 @@ struct Codegen<'a> {
     /// which no `_ret` slot is declared — an explicit `return <unit expr>;`
     /// must therefore evaluate the expression for its effects and `return;`.
     cur_fn_returns_nothing: bool,
+    /// Per-module concrete type identities used only while lowering `Any`.
+    any_type_ids: HashMap<Type, u64>,
+    next_any_type_id: u64,
 }
 
 impl<'a> Codegen<'a> {
@@ -136,6 +141,17 @@ impl<'a> Codegen<'a> {
         type_contains_gc_ptr(ty, &self.module.datatypes)
     }
 
+    fn any_type_tag(&mut self, ty: &Type) -> u64 {
+        if let Some(tag) = self.any_type_ids.get(ty) {
+            return *tag;
+        }
+        assert!(self.next_any_type_id < (1u64 << 48));
+        let tag = crate::types::ANY_TYPE_TAG_PREFIX | self.next_any_type_id;
+        self.next_any_type_id += 1;
+        self.any_type_ids.insert(ty.clone(), tag);
+        tag
+    }
+
     /// Returns the C expression for the mark_fn to pass to sol_alloc for a given
     /// allocation content type.
     fn mark_fn_expr(&self, ty: &Type) -> String {
@@ -148,9 +164,10 @@ impl<'a> Codegen<'a> {
             Type::Ref(_) | Type::NullableRef(_) | Type::Unique(_) | Type::FileDesc => {
                 "_mark_single_ptr".to_string()
             }
-            Type::RefUnsized(_) | Type::NullableRefUnsized(_) | Type::UniqueUnsized(_) => {
-                "_mark_wide_ptr".to_string()
-            }
+            Type::RefUnsized(_)
+            | Type::NullableRefUnsized(_)
+            | Type::UniqueUnsized(_)
+            | Type::Any => "_mark_wide_ptr".to_string(),
             Type::Function { .. } => "_mark_fn_value".to_string(),
             Type::Struct(name) | Type::Enum(name) => {
                 format!("_mark_{}", Self::sanitize_type_name(name))
@@ -287,7 +304,10 @@ impl<'a> Codegen<'a> {
             Type::Ref(_) | Type::NullableRef(_) | Type::Unique(_) | Type::FileDesc => {
                 self.linef(format!("sol_gc_mark(ctx, *(uint8_t**){base});"));
             }
-            Type::RefUnsized(_) | Type::NullableRefUnsized(_) | Type::UniqueUnsized(_) => {
+            Type::RefUnsized(_)
+            | Type::NullableRefUnsized(_)
+            | Type::UniqueUnsized(_)
+            | Type::Any => {
                 self.linef(format!("sol_gc_mark(ctx, *(uint8_t**){base});"));
             }
             Type::Function { .. } => {
@@ -434,7 +454,8 @@ impl<'a> Codegen<'a> {
             | Type::FileDesc
             | Type::RefUnsized(_)
             | Type::NullableRefUnsized(_)
-            | Type::UniqueUnsized(_) => {
+            | Type::UniqueUnsized(_)
+            | Type::Any => {
                 out.insert(base);
             }
             // Owned slice value: (data ptr, len) — only the data word is a pointer.
@@ -1971,7 +1992,7 @@ impl<'a> Codegen<'a> {
         // UniqueUnsized needs deep-copy, so it goes through the match below
         if matches!(
             ty,
-            Type::Function { .. } | Type::RefUnsized(_) | Type::NullableRefUnsized(_)
+            Type::Function { .. } | Type::RefUnsized(_) | Type::NullableRefUnsized(_) | Type::Any
         ) {
             self.linef(format!("sol_copy_128_unordered({dst}, {src});"));
             return;
@@ -2719,6 +2740,35 @@ impl<'a> Codegen<'a> {
                     format!("*(uint8_t**){reference}")
                 };
                 self.linef(format!("sol_gc_keepalive((uint8_t*){value});"));
+            }
+            Intrinsic::AnyNew => {
+                let ptr = self.emit_load(nodes, args[0]);
+                let Type::Ref(inner) = &nodes[args[0].0].ty else {
+                    unreachable!("any_new argument must be a sized reference")
+                };
+                let inner = (**inner).clone();
+                let tag = self.any_type_tag(&inner);
+                let temporary = self.fresh_tmp();
+                self.linef(format!("_Alignas(16) uint8_t {temporary}[16] = {{0}};"));
+                self.linef(format!("*(uint8_t**){temporary} = (uint8_t*){ptr};"));
+                self.linef(format!(
+                    "*(uint64_t*)({temporary} + 8) = UINT64_C(0x{tag:016x});"
+                ));
+                self.linef(format!("sol_store_128_unordered({dst}, {temporary});"));
+            }
+            Intrinsic::AnyDowncast => {
+                let (any_place, _) = self.emit_place(nodes, args[0]);
+                let Type::NullableRef(expected) = result_ty else {
+                    unreachable!("any_downcast result must be a nullable reference")
+                };
+                let expected = (**expected).clone();
+                let tag = self.any_type_tag(&expected);
+                let snapshot = self.fresh_tmp();
+                self.linef(format!("_Alignas(16) uint8_t {snapshot}[16];"));
+                self.linef(format!("sol_load_128_unordered({snapshot}, {any_place});"));
+                self.linef(format!(
+                    "*(uint8_t**){dst} = *(uint64_t*)({snapshot} + 8) == UINT64_C(0x{tag:016x}) ? *(uint8_t**){snapshot} : (uint8_t*)0;"
+                ));
             }
             Intrinsic::Throw => {
                 // arg[0] is a &[Uint8] fat pointer (ptr + len). Unwind with it.

@@ -455,6 +455,7 @@ impl Renderer<'_> {
                 s
             }
             T::FileDesc => enc_id("FileDesc"),
+            T::Any => enc_id("Any"),
             T::Unit => enc_id("Unit"),
             T::Never => enc_id("Never"),
         }

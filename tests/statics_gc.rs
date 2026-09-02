@@ -29,11 +29,15 @@ const GC_SRC: &str = r#"
 static KEEP: &?[Uint8] = null#[[Uint8]];
 static CHAIN: &?Node = null#[Node];
 static SCRATCH: &?[Uint8] = null#[[Uint8]];
+static ERASED: &?ErasedHolder = null#[ErasedHolder];
 
 pub struct Node {
     pub val: Int,
     pub next: &?Node,
 }
+
+pub struct AnyPayload { pub value: Int }
+pub struct ErasedHolder { pub value: Any }
 
 fn setup() {
     let buf = [7u8; 4096u];
@@ -47,6 +51,10 @@ fn setup() {
         head = (Node { val: i, next: head })&;
     }
     CHAIN = head;
+
+    // The payload is reachable only through an Any nested in a heap object.
+    let payload = AnyPayload { value: 123 };
+    ERASED = (ErasedHolder { value: Any(payload&) })&;
 }
 
 fn churn() {
@@ -70,6 +78,7 @@ fn main() {
         walk = walk@.next;
     }
     println(sum);
+    println(ERASED@.value.downcast#[AnyPayload]()@.value);
 }
 "#;
 
@@ -86,7 +95,7 @@ fn statics_root_heap_objects_across_gc() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(stdout, "255\n42\n9\n7\n4950\n");
+    assert_eq!(stdout, "255\n42\n9\n7\n4950\n123\n");
     // Sanity: the churn actually forced collection cycles.
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(

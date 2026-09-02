@@ -2,9 +2,10 @@ target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:
 target triple = "x86_64-unknown-linux-gnu"
 
 ; The `_unordered` 128-bit helpers exist solely to give ordinary 16-byte values
-; (fat pointers `&[T]`, function values) single-copy atomicity so a concurrent
-; reader / the GC marker can never observe a torn `{ptr,len}` pair and index out
-; of bounds. They need NO inter-thread ordering — real atomics (`sync.solar`) use
+; (fat pointers `&[T]`, `Any`, function values) single-copy atomicity so a
+; concurrent reader / the GC marker can never observe a torn `{ptr,metadata}`
+; pair and index out of bounds. They need NO inter-thread ordering — real
+; atomics (`sync.solar`) use
 ; the `_acq`/`_rel`/cmpxchg variants below. `unordered` is the weakest ordering
 ; that still forbids tearing, and crucially it is the only one LLVM's SROA/mem2reg
 ; will promote: with `monotonic`+ the access is a synchronization point and a

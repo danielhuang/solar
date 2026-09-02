@@ -14,6 +14,8 @@ there. Imports are resolved relative to `src/std`, including subdirectories.
   Rust's optimizer barrier.
 - `gc_keepalive(&T)` keeps its argument reachable through the call without
   retaining it.
+- `Any(&T)` erases a sized referent's concrete type while preserving reference
+  aliasing; `Any.downcast#[T]()` returns `&?T` without exposing the private tag.
 - `ref_eq(a, b)` compares reference identity.
 - The blanket `operator_eq(self: &&T, other: &&T)` compares referenced values.
 - Reflective equality and hashing for structs and enums require public fields.

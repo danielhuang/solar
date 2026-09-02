@@ -186,6 +186,9 @@ struct Interpreter<'a, 'io> {
     /// literal initial values are stored by the assignments IR lowering
     /// prepended to `main`).
     static_addrs: Vec<usize>,
+    /// Per-module concrete type identities used only by `Any` intrinsics.
+    any_type_ids: HashMap<Type, u64>,
+    next_any_type_id: u64,
 }
 
 impl<'a, 'io> Interpreter<'a, 'io> {
@@ -225,7 +228,20 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             loop_dst: Vec::new(),
             ret_dst: Vec::new(),
             static_addrs,
+            any_type_ids: HashMap::new(),
+            next_any_type_id: 1,
         }
+    }
+
+    fn any_type_tag(&mut self, ty: &Type) -> u64 {
+        if let Some(tag) = self.any_type_ids.get(ty) {
+            return *tag;
+        }
+        assert!(self.next_any_type_id < (1u64 << 48));
+        let tag = crate::types::ANY_TYPE_TAG_PREFIX | self.next_any_type_id;
+        self.next_any_type_id += 1;
+        self.any_type_ids.insert(ty.clone(), tag);
+        tag
     }
 
     /// Build a `Thrown` carrying `msg` as freshly-allocated message bytes —
@@ -1434,6 +1450,27 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 // so evaluating the argument is the complete observable effect.
                 let (place, _) = self.eval_place(nodes, args[0])?;
                 let _ = self.mem.load(place, 8);
+            }
+            Intrinsic::AnyNew => {
+                let ptr = self.eval_load(nodes, args[0])?;
+                let Type::Ref(inner) = &nodes[args[0].0].ty else {
+                    unreachable!("any_new argument must be a sized reference")
+                };
+                let inner = (**inner).clone();
+                let tag = self.any_type_tag(&inner);
+                self.mem.store(dst, ptr, 8);
+                self.mem.store(dst + 8, tag, 8);
+            }
+            Intrinsic::AnyDowncast => {
+                let (place, _) = self.eval_place(nodes, args[0])?;
+                let ptr = self.mem.load(place, 8);
+                let actual_tag = self.mem.load(place + 8, 8);
+                let Type::NullableRef(expected) = result_ty else {
+                    unreachable!("any_downcast result must be a nullable reference")
+                };
+                let expected_tag = self.any_type_tag(expected);
+                self.mem
+                    .store(dst, if actual_tag == expected_tag { ptr } else { 0 }, 8);
             }
             Intrinsic::FdFromRaw | Intrinsic::FdToRaw => {
                 let value = self.eval_load(nodes, args[0])?;

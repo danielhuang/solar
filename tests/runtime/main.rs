@@ -20,6 +20,24 @@ fn black_box() {
 }
 
 #[test]
+fn any() {
+    let path = fixture("any.solar");
+    let output = run(&path, "any");
+    assert_eq!(output, "42\n1\n16\n1\n77\n");
+
+    let c = solar::pipeline::compile(&path)
+        .unwrap()
+        .to_mangled()
+        .to_ir()
+        .to_c(&path.display().to_string())
+        .c_source;
+    assert!(c.contains("UINT64_C(0x00ff0000000000"));
+    assert!(c.contains("sol_store_128_unordered(_"));
+    assert!(c.contains("sol_load_128_unordered(_"));
+    assert!(c.contains("sol_copy_128_unordered(_"));
+}
+
+#[test]
 fn gc_keepalive() {
     let output = run(&fixture("gc_keepalive.solar"), "gc_keepalive");
     assert_eq!(output, "42\n9\n");
