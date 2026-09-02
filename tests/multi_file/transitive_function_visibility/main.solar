@@ -1,0 +1,7 @@
+import {reexported_fn, visible_fn} from "lib.solar";
+
+fn main() {
+	visible_fn();
+	reexported_fn();
+	hidden_fn();
+}

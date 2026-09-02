@@ -56,6 +56,15 @@ fn private_fn_import() {
 }
 
 #[test]
+#[should_panic(expected = "undefined variable: hidden_fn")]
+fn transitive_function_is_not_visible_by_bare_name() {
+    run(
+        &fixture("transitive_function_visibility/main.solar"),
+        "transitive_function_visibility",
+    );
+}
+
+#[test]
 fn many_modules() {
     let output = run(&fixture("many_modules/main.solar"), "many_modules");
     assert_eq!(output, "1\n");

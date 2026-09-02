@@ -1,0 +1,6 @@
+import hidden from "hidden.solar";
+pub import {reexported_fn} from "hidden.solar";
+
+pub fn visible_fn() {
+	hidden::hidden_fn();
+}

@@ -3074,7 +3074,7 @@ fn compute_with_diagnostics(uri: &str, source: &str) -> (Document, HashMap<Strin
         })
         .collect();
     let (completion_symbols, completion_fields) =
-        collect_completion_catalog(&ast, source_map.root_file_id(), &signatures);
+        collect_completion_catalog(&ast, &source_map, &signatures);
     let completion_aliases = ast
         .items
         .iter()
@@ -3136,18 +3136,19 @@ struct DefinitionCatalog {
 
 fn collect_completion_catalog(
     ast: &solar::resolved_ast::SourceFile,
-    root_file: Option<u32>,
+    source_map: &SourceMap,
     signatures: &HashMap<SpanKey, String>,
 ) -> (
     Vec<CompletionSymbol>,
     HashMap<ast::DefId, Vec<CompletionField>>,
 ) {
     use solar::ast::TopLevelItem;
+    let visible_defs = visible_completion_defs(source_map);
     let mut symbols = Vec::new();
     let mut fields = HashMap::<ast::DefId, Vec<CompletionField>>::new();
     for item in &ast.items {
-        let (label, kind, is_pub, doc, span) = match item {
-            TopLevelItem::Function(def) => (&def.name, 3, def.is_pub, &def.doc, def.span),
+        let (label, kind, doc, span) = match item {
+            TopLevelItem::Function(def) => (&def.name, 3, &def.doc, def.span),
             TopLevelItem::Struct(def) => {
                 fields.insert(
                     def.def_id.clone(),
@@ -3161,15 +3162,16 @@ fn collect_completion_catalog(
                         })
                         .collect(),
                 );
-                (&def.name, 22, def.is_pub, &def.doc, def.span)
+                (&def.name, 22, &def.doc, def.span)
             }
-            TopLevelItem::Enum(def) => (&def.name, 13, def.is_pub, &def.doc, def.span),
-            TopLevelItem::TypeAlias(def) => (&def.name, 7, def.is_pub, &def.doc, def.span),
-            TopLevelItem::Const(def) => (&def.name, 21, def.is_pub, &def.doc, def.span),
-            TopLevelItem::Static(def) => (&def.name, 6, def.is_pub, &def.doc, def.span),
+            TopLevelItem::Enum(def) => (&def.name, 13, &def.doc, def.span),
+            TopLevelItem::TypeAlias(def) => (&def.name, 7, &def.doc, def.span),
+            TopLevelItem::Const(def) => (&def.name, 21, &def.doc, def.span),
+            TopLevelItem::Static(def) => (&def.name, 6, &def.doc, def.span),
             TopLevelItem::Method(_) | TopLevelItem::Import(_) => continue,
         };
-        if root_file == Some(span.file_id) || is_pub || span.file_id == ast::SYNTHETIC_FILE {
+        let def = ast::DefId::new(span.file_id, label);
+        if visible_defs.contains(&def) || span.file_id == ast::SYNTHETIC_FILE {
             symbols.push(CompletionSymbol {
                 label: label.clone(),
                 kind,
@@ -3183,6 +3185,213 @@ fn collect_completion_catalog(
         left.label == right.label && left.kind == right.kind && left.detail == right.detail
     });
     (symbols, fields)
+}
+
+fn visible_completion_defs(source_map: &SourceMap) -> HashSet<ast::DefId> {
+    use solar::ast::{ImportKind, TopLevelItem};
+    let mut visible = HashSet::new();
+    let Some(root_file) = source_map.root_file_id() else {
+        return visible;
+    };
+
+    // Every user file receives an implicit wildcard import from the std root.
+    let mut export_cache = HashMap::new();
+    let mut visiting = HashSet::new();
+    visible.extend(exported_completion_defs(
+        0,
+        source_map,
+        &mut export_cache,
+        &mut visiting,
+    ));
+
+    let Some((_, source)) = source_map.get(root_file) else {
+        return visible;
+    };
+    let Ok(parsed) = solar::parser::parse(source) else {
+        return visible;
+    };
+    for item in parsed.items {
+        match item {
+            TopLevelItem::Function(def) | TopLevelItem::Method(def) => {
+                visible.insert(ast::DefId::new(root_file, def.name));
+            }
+            TopLevelItem::Struct(def) => {
+                visible.insert(ast::DefId::new(root_file, def.name));
+            }
+            TopLevelItem::Enum(def) => {
+                visible.insert(ast::DefId::new(root_file, def.name));
+            }
+            TopLevelItem::TypeAlias(def) => {
+                visible.insert(ast::DefId::new(root_file, def.name));
+            }
+            TopLevelItem::Const(def) => {
+                visible.insert(ast::DefId::new(root_file, def.name));
+            }
+            TopLevelItem::Static(def) => {
+                visible.insert(ast::DefId::new(root_file, def.name));
+            }
+            TopLevelItem::Import(import) => match import.kind {
+                ImportKind::Named(names) => {
+                    if let Some(imported_file) =
+                        imported_completion_file(source_map, root_file, &import.path)
+                    {
+                        for name in names {
+                            let Some(defining_file) =
+                                imported_completion_name_file(source_map, imported_file, &name)
+                            else {
+                                continue;
+                            };
+                            visible.extend(
+                                exported_completion_defs(
+                                    defining_file,
+                                    source_map,
+                                    &mut export_cache,
+                                    &mut visiting,
+                                )
+                                .into_iter()
+                                .filter(|def| def.name == name.local_name()),
+                            );
+                        }
+                    }
+                }
+                ImportKind::Wildcard => {
+                    if let Some(file_id) =
+                        imported_completion_file(source_map, root_file, &import.path)
+                    {
+                        visible.extend(exported_completion_defs(
+                            file_id,
+                            source_map,
+                            &mut export_cache,
+                            &mut visiting,
+                        ));
+                    }
+                }
+                ImportKind::Module(_) => {}
+            },
+        }
+    }
+    visible
+}
+
+fn exported_completion_defs(
+    file_id: u32,
+    source_map: &SourceMap,
+    cache: &mut HashMap<u32, HashSet<ast::DefId>>,
+    visiting: &mut HashSet<u32>,
+) -> HashSet<ast::DefId> {
+    use solar::ast::{ImportKind, TopLevelItem};
+    if let Some(names) = cache.get(&file_id) {
+        return names.clone();
+    }
+    if !visiting.insert(file_id) {
+        return HashSet::new();
+    }
+    let mut defs = HashSet::new();
+    if let Some((_, source)) = source_map.get(file_id)
+        && let Ok(parsed) = solar::parser::parse(source)
+    {
+        for item in parsed.items {
+            match item {
+                TopLevelItem::Function(def) | TopLevelItem::Method(def) if def.is_pub => {
+                    defs.insert(ast::DefId::new(file_id, def.name));
+                }
+                TopLevelItem::Struct(def) if def.is_pub => {
+                    defs.insert(ast::DefId::new(file_id, def.name));
+                }
+                TopLevelItem::Enum(def) if def.is_pub => {
+                    defs.insert(ast::DefId::new(file_id, def.name));
+                }
+                TopLevelItem::TypeAlias(def) if def.is_pub => {
+                    defs.insert(ast::DefId::new(file_id, def.name));
+                }
+                TopLevelItem::Const(def) if def.is_pub => {
+                    defs.insert(ast::DefId::new(file_id, def.name));
+                }
+                TopLevelItem::Static(def) if def.is_pub => {
+                    defs.insert(ast::DefId::new(file_id, def.name));
+                }
+                TopLevelItem::Import(import) if import.is_pub => match import.kind {
+                    ImportKind::Named(imported) => {
+                        if let Some(imported_file) =
+                            imported_completion_file(source_map, file_id, &import.path)
+                        {
+                            for name in imported {
+                                let Some(defining_file) =
+                                    imported_completion_name_file(source_map, imported_file, &name)
+                                else {
+                                    continue;
+                                };
+                                defs.extend(
+                                    exported_completion_defs(
+                                        defining_file,
+                                        source_map,
+                                        cache,
+                                        visiting,
+                                    )
+                                    .into_iter()
+                                    .filter(|def| def.name == name.local_name()),
+                                );
+                            }
+                        }
+                    }
+                    ImportKind::Wildcard => {
+                        if let Some(imported_file) =
+                            imported_completion_file(source_map, file_id, &import.path)
+                        {
+                            defs.extend(exported_completion_defs(
+                                imported_file,
+                                source_map,
+                                cache,
+                                visiting,
+                            ));
+                        }
+                    }
+                    ImportKind::Module(_) => {}
+                },
+                _ => {}
+            }
+        }
+    }
+    visiting.remove(&file_id);
+    cache.insert(file_id, defs.clone());
+    defs
+}
+
+fn imported_completion_name_file(
+    source_map: &SourceMap,
+    imported_file: u32,
+    name: &ast::ImportName,
+) -> Option<u32> {
+    use solar::ast::{ImportKind, TopLevelItem};
+    let mut file_id = imported_file;
+    for segment in name.module_segments() {
+        let (_, source) = source_map.get(file_id)?;
+        let parsed = solar::parser::parse(source).ok()?;
+        let module = parsed.items.into_iter().find_map(|item| {
+            let TopLevelItem::Import(import) = item else {
+                return None;
+            };
+            matches!(&import.kind, ImportKind::Module(alias) if alias == segment).then_some(import)
+        })?;
+        file_id = imported_completion_file(source_map, file_id, &module.path)?;
+    }
+    Some(file_id)
+}
+
+fn imported_completion_file(
+    source_map: &SourceMap,
+    from_file: u32,
+    import_path: &str,
+) -> Option<u32> {
+    if import_path == "@std" {
+        return Some(0);
+    }
+    if import_path.starts_with('@') {
+        return None;
+    }
+    let (filename, _) = source_map.get(from_file)?;
+    let base = std::path::Path::new(filename).parent()?;
+    source_map.file_id_for_path(&base.join(import_path))
 }
 
 fn collect_definition_catalog(
@@ -4237,6 +4446,24 @@ fn main() {
                 .any(|item| item["label"] == "Point" && item["kind"] == 22),
             "{items:?}"
         );
+    }
+
+    #[test]
+    fn completion_excludes_functions_from_private_transitive_modules() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/multi_file/transitive_function_visibility/main.solar");
+        let uri = format!("file://{}", path.display());
+        let source = std::fs::read_to_string(path).unwrap();
+        let document = compute(&uri, &source);
+        let labels: HashSet<&str> = document
+            .completion_symbols
+            .iter()
+            .map(|symbol| symbol.label.as_str())
+            .collect();
+
+        assert!(labels.contains("visible_fn"));
+        assert!(labels.contains("reexported_fn"));
+        assert!(!labels.contains("hidden_fn"));
     }
 
     #[test]

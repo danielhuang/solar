@@ -25,6 +25,10 @@ AST, while `ir_interp` and native codegen consume IR.
 
 - Keep identities structural through resolution and type checking. Do not
   encode file provenance in names before `mangled_ast`.
+- Cross-file function references must reach type checking as provenance-bearing
+  `GlobalRef` nodes. Bare-name fallback is reserved for same-file raw
+  type-checking and synthetic numeric constructors; it must not search the
+  transitive import graph by spelling.
 - `types::Type<I>` is shared by the typed and mangled stages: typed types use
   structural `TypeId` identities, while mangled types use final symbol strings.
 - Every method signature must mention a parameter type owned by its declaring
@@ -120,6 +124,9 @@ and range requests must not return hints outside the requested range.
 Completion is type-aware for member access. Method candidates must match the
 compiler's explicit receiver rules and add postfix `&` or `@` edits when a
 value must be referenced or a reference dereferenced to match `self`.
+Top-level completion must follow the root file's imports and public re-export
+chains; loading a private transitive module does not put its declarations in
+scope.
 
 ## Formatter
 

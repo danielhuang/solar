@@ -19,8 +19,8 @@ struct ParsedFile {
     ast: desugared_ast::SourceFile,
 }
 
-fn is_method_export(kind: &ExportKind) -> bool {
-    matches!(kind, ExportKind::Method)
+fn is_method_export(export: &Export) -> bool {
+    matches!(export.kind, ExportKind::Method)
 }
 
 #[derive(Debug, Clone)]
@@ -32,6 +32,12 @@ enum ExportKind {
     TypeAlias,
     Const,
     Static,
+}
+
+#[derive(Debug, Clone)]
+struct Export {
+    kind: ExportKind,
+    def: DefId,
 }
 
 struct Resolver {
@@ -163,56 +169,137 @@ impl Resolver {
         Ok(())
     }
 
-    /// Collect exports from a file (pub items).
-    fn collect_exports(&self, file_id: FileId) -> HashMap<String, Vec<ExportKind>> {
-        let mut exports: HashMap<String, Vec<ExportKind>> = HashMap::new();
+    /// Collect exports from a file, preserving the provenance of re-exported
+    /// definitions.
+    fn collect_exports(
+        &self,
+        file_id: FileId,
+        all_module_aliases: &AllModuleAliases,
+    ) -> HashMap<String, Vec<Export>> {
+        self.collect_exports_inner(file_id, all_module_aliases, &mut HashSet::new())
+    }
+
+    fn collect_exports_inner(
+        &self,
+        file_id: FileId,
+        all_module_aliases: &AllModuleAliases,
+        visiting: &mut HashSet<FileId>,
+    ) -> HashMap<String, Vec<Export>> {
+        if !visiting.insert(file_id) {
+            return HashMap::new();
+        }
+        let mut exports: HashMap<String, Vec<Export>> = HashMap::new();
         for item in &self.files[file_id as usize].ast.items {
             match item {
                 TopLevelItem::Struct(s) if s.is_pub => {
-                    exports
-                        .entry(s.name.clone())
-                        .or_default()
-                        .push(ExportKind::Struct);
+                    exports.entry(s.name.clone()).or_default().push(Export {
+                        kind: ExportKind::Struct,
+                        def: DefId::new(file_id, &s.name),
+                    });
                 }
                 TopLevelItem::Enum(e) if e.is_pub => {
-                    exports
-                        .entry(e.name.clone())
-                        .or_default()
-                        .push(ExportKind::Enum);
+                    exports.entry(e.name.clone()).or_default().push(Export {
+                        kind: ExportKind::Enum,
+                        def: DefId::new(file_id, &e.name),
+                    });
                 }
                 TopLevelItem::Function(f) if f.is_pub => {
-                    exports
-                        .entry(f.name.clone())
-                        .or_default()
-                        .push(ExportKind::Function);
+                    exports.entry(f.name.clone()).or_default().push(Export {
+                        kind: ExportKind::Function,
+                        def: DefId::new(file_id, &f.name),
+                    });
                 }
                 TopLevelItem::Method(m) if m.is_pub => {
-                    exports
-                        .entry(m.name.clone())
-                        .or_default()
-                        .push(ExportKind::Method);
+                    exports.entry(m.name.clone()).or_default().push(Export {
+                        kind: ExportKind::Method,
+                        def: DefId::new(file_id, &m.name),
+                    });
                 }
                 TopLevelItem::TypeAlias(ta) if ta.is_pub => {
-                    exports
-                        .entry(ta.name.clone())
-                        .or_default()
-                        .push(ExportKind::TypeAlias);
+                    exports.entry(ta.name.clone()).or_default().push(Export {
+                        kind: ExportKind::TypeAlias,
+                        def: DefId::new(file_id, &ta.name),
+                    });
                 }
                 TopLevelItem::Const(c) if c.is_pub => {
-                    exports
-                        .entry(c.name.clone())
-                        .or_default()
-                        .push(ExportKind::Const);
+                    exports.entry(c.name.clone()).or_default().push(Export {
+                        kind: ExportKind::Const,
+                        def: DefId::new(file_id, &c.name),
+                    });
                 }
                 TopLevelItem::Static(st) if st.is_pub => {
-                    exports
-                        .entry(st.name.clone())
-                        .or_default()
-                        .push(ExportKind::Static);
+                    exports.entry(st.name.clone()).or_default().push(Export {
+                        kind: ExportKind::Static,
+                        def: DefId::new(file_id, &st.name),
+                    });
                 }
                 _ => {}
             }
         }
+
+        let file = &self.files[file_id as usize];
+        let base_dir = file.path.parent().unwrap_or(Path::new("."));
+        for item in &file.ast.items {
+            let TopLevelItem::Import(import) = item else {
+                continue;
+            };
+            if !import.is_pub || import.path == "@intrinsics" {
+                continue;
+            }
+            let imported_file = if import.path == "@std" {
+                self.std_root_id
+            } else {
+                let path = base_dir.join(&import.path);
+                let canonical = path.canonicalize().unwrap_or(path);
+                self.path_to_id.get(&canonical).copied()
+            };
+            let Some(imported_file) = imported_file else {
+                continue;
+            };
+            let imported_exports =
+                self.collect_exports_inner(imported_file, all_module_aliases, visiting);
+            match &import.kind {
+                ImportKind::Named(names) => {
+                    for name in names {
+                        let local = name.local_name();
+                        let entries = if name.is_path() {
+                            let aliases = all_module_aliases.get(&imported_file);
+                            aliases
+                                .and_then(|aliases| {
+                                    resolve_module_chain_full(
+                                        name.module_segments(),
+                                        aliases,
+                                        all_module_aliases,
+                                    )
+                                })
+                                .and_then(|final_file| {
+                                    self.collect_exports_inner(
+                                        final_file,
+                                        all_module_aliases,
+                                        visiting,
+                                    )
+                                    .remove(local)
+                                })
+                        } else {
+                            imported_exports.get(local).cloned()
+                        };
+                        if let Some(entries) = entries {
+                            exports
+                                .entry(local.to_string())
+                                .or_default()
+                                .extend(entries);
+                        }
+                    }
+                }
+                ImportKind::Wildcard => {
+                    for (name, entries) in imported_exports {
+                        exports.entry(name).or_default().extend(entries);
+                    }
+                }
+                ImportKind::Module(_) => {}
+            }
+        }
+        visiting.remove(&file_id);
         exports
     }
 
@@ -351,7 +438,7 @@ impl Resolver {
                         .unwrap_or_else(|_| resolved_path.clone());
                     self.path_to_id[&canonical]
                 };
-                let exports = self.collect_exports(source_file_id);
+                let exports = self.collect_exports(source_file_id, all_module_aliases);
 
                 match &imp.kind {
                     ImportKind::Named(names) => {
@@ -367,7 +454,8 @@ impl Resolver {
                                 if let Some(final_fid) =
                                     resolve_module_chain_full(mod_segs, aliases, all_module_aliases)
                                 {
-                                    let final_exports = self.collect_exports(final_fid);
+                                    let final_exports =
+                                        self.collect_exports(final_fid, all_module_aliases);
                                     if !final_exports.contains_key(&local) {
                                         return Err(vec![CompileError::new(
                                             format!(
@@ -385,8 +473,8 @@ impl Resolver {
                                             imp.span,
                                         )]);
                                     }
-                                    rename_map
-                                        .insert(local, DefId::new(final_fid, name.local_name()));
+                                    let def = final_exports[&local][0].def.clone();
+                                    rename_map.insert(local, def);
                                 } else {
                                     return Err(vec![CompileError::new(
                                         format!(
@@ -421,8 +509,8 @@ impl Resolver {
                                 if method_overload {
                                     continue;
                                 }
-                                rename_map
-                                    .insert(local.clone(), DefId::new(source_file_id, &local));
+                                let def = exports[&local][0].def.clone();
+                                rename_map.insert(local.clone(), def);
                             }
                         }
                     }
@@ -450,7 +538,7 @@ impl Resolver {
                                     imp.span,
                                 )]);
                             }
-                            rename_map.insert(name.clone(), DefId::new(source_file_id, name));
+                            rename_map.insert(name.clone(), kinds[0].def.clone());
                         }
                         // Propagate pub module re-exports
                         if let Some(source_aliases) = all_module_aliases.get(&source_file_id) {

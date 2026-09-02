@@ -1864,6 +1864,14 @@ impl<'a> Lowerer<'a> {
         name
     }
 
+    /// Whether an unresolved bare function name may use the fallback needed by
+    /// raw type-checking and synthetic numeric constructors. Resolved
+    /// cross-file calls carry a `GlobalRef` and must never arrive here by
+    /// spelling alone.
+    fn bare_function_candidate(def: &DefId, name: &str, source_file: u32) -> bool {
+        def.name == name && (def.file == source_file || def.file == ast::SYNTHETIC_FILE)
+    }
+
     fn require_unsafe_access(
         &self,
         function: &ast::FunctionDef,
@@ -4746,12 +4754,18 @@ impl<'a> Lowerer<'a> {
                         kind: value.kind,
                         span: expr.span,
                     })
-                } else if let Some(def) = source_name
-                    .and_then(|name| self.function_defs.keys().find(|d| d.name == name).cloned())
-                {
+                } else if let Some(def) = source_name.and_then(|name| {
+                    self.function_defs
+                        .keys()
+                        .find(|def| Self::bare_function_candidate(def, name, expr.span.file_id))
+                        .cloned()
+                }) {
                     // A top-level function referenced by bare name: a numeric
-                    // constructor (synthetic), or the resolve-bypassing raw
-                    // typecheck path (real references are `GlobalRef`).
+                    // constructor (synthetic), or a same-file declaration on
+                    // the resolve-bypassing raw typecheck path. Cross-file
+                    // references must have been resolved to `GlobalRef`; a
+                    // spelling match elsewhere in the import graph is not
+                    // visible from this expression's file.
                     self.lower_global_ref(&def, expr.span)
                 } else {
                     Err(CompileError::new(
@@ -5369,10 +5383,15 @@ impl<'a> Lowerer<'a> {
                 }
                 // A call to a top-level function via a bare `Identifier` callee:
                 // a numeric constructor (synthetic), or the resolve-bypassing raw
-                // typecheck path.
+                // typecheck path. Real cross-file calls are `GlobalRef`s; do not
+                // leak declarations from unrelated loaded modules by spelling.
                 if let ast::ExprKind::Identifier(ast::Ident::User(name)) = &function.as_ref().kind
                     && self.lookup_var(&ast::Ident::User(name.clone())).is_none()
-                    && let Some(def) = self.function_defs.keys().find(|d| d.name == *name).cloned()
+                    && let Some(def) = self
+                        .function_defs
+                        .keys()
+                        .find(|def| Self::bare_function_candidate(def, name, function.span.file_id))
+                        .cloned()
                 {
                     let entries = self.function_defs[&def].clone();
                     return self.resolve_overloaded_call(
