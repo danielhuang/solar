@@ -55,6 +55,7 @@ fn main() {
                     "capabilities": {
                         "textDocumentSync": 1,
                         "documentFormattingProvider": true,
+                        "completionProvider": { "triggerCharacters": ["."] },
                         "hoverProvider": true,
                         "definitionProvider": true,
                         "inlayHintProvider": true,
@@ -102,6 +103,22 @@ fn main() {
                     .and_then(|uri| documents.get(uri))
                     .map_or_else(Vec::new, |text| formatting_edits(text));
                 respond(&mut output, id, json!(edits));
+            }
+            Some("textDocument/completion") => {
+                let uri = params.pointer("/textDocument/uri").and_then(Value::as_str);
+                let line = params.pointer("/position/line").and_then(Value::as_u64);
+                let character = params
+                    .pointer("/position/character")
+                    .and_then(Value::as_u64);
+                let target = uri.and_then(|uri| documents.get(uri).map(|text| (uri, text)));
+                let items = match (target, line, character) {
+                    (Some((uri, text)), Some(line), Some(character)) => {
+                        let document = cached(&mut cache, uri, text);
+                        completions(text, line as u32, character as u32, uri, document)
+                    }
+                    _ => Vec::new(),
+                };
+                respond(&mut output, id, json!(items));
             }
             Some("textDocument/semanticTokens/full") => {
                 let uri = params.pointer("/textDocument/uri").and_then(Value::as_str);
@@ -199,6 +216,949 @@ fn formatting_edits(source: &str) -> Vec<Value> {
         },
         "newText": formatted,
     })]
+}
+
+/// Returns type-aware member completions at `receiver.<cursor>`. When the
+/// incomplete member access prevents the current revision from type-checking,
+/// a private probe removes that access and analyzes the receiver expression.
+fn completions(
+    source: &str,
+    line: u32,
+    character: u32,
+    uri: &str,
+    document: &Document,
+) -> Vec<Value> {
+    let Some(context) = member_completion_context(source, line, character) else {
+        return ordinary_completions(source, line, character, uri, document);
+    };
+
+    let current_types = document
+        .analysis
+        .as_ref()
+        .map_or_else(Vec::new, |analysis| {
+            expression_types_at(&analysis.typed, analysis.file_id, context.receiver_span)
+        });
+    let probe;
+    let (receiver_types, tooling_document) = if current_types.is_empty() {
+        let probe_source = completion_probe_source(source, &context);
+        probe = compute(uri, &probe_source);
+        let types = probe.analysis.as_ref().map_or_else(Vec::new, |analysis| {
+            expression_types_at(&analysis.typed, analysis.file_id, context.receiver_span)
+        });
+        (types, &probe)
+    } else {
+        (current_types, document)
+    };
+
+    if receiver_types.is_empty() {
+        return Vec::new();
+    }
+
+    let replace_range = json!({
+        "start": { "line": line, "character": context.prefix_start_character },
+        "end": { "line": line, "character": character },
+    });
+    let dot_position = byte_position(source, context.dot_byte);
+    let mut seen = HashSet::new();
+    let mut items = Vec::new();
+    for receiver_type in &receiver_types {
+        let typed_ast::Type::Struct(id) = receiver_type else {
+            continue;
+        };
+        let Some(fields) = tooling_document.completion_fields.get(&id.def) else {
+            continue;
+        };
+        for field in fields {
+            if !field.name.starts_with(&context.prefix)
+                || (!field.is_pub
+                    && tooling_document.source_map.root_file_id() != Some(field.file_id))
+                || !seen.insert((field.name.clone(), String::new(), field.detail.clone()))
+            {
+                continue;
+            }
+            let mut item = json!({
+                "label": field.name,
+                "kind": 5,
+                "sortText": format!("0{}", field.name),
+                "textEdit": { "range": replace_range, "newText": field.name },
+            });
+            if let Some(detail) = &field.detail {
+                item["detail"] = json!(detail);
+            }
+            items.push(item);
+        }
+    }
+    for method in &tooling_document.completion_methods {
+        if !method.def.name.starts_with(&context.prefix) {
+            continue;
+        }
+        let Some(self_type) = method.def.parameters.first().map(|parameter| &parameter.ty) else {
+            continue;
+        };
+        for receiver_type in &receiver_types {
+            let type_parameters: Vec<String> = method
+                .def
+                .type_params
+                .iter()
+                .chain(&method.def.out_type_params)
+                .cloned()
+                .collect();
+            let self_type =
+                expand_completion_aliases(self_type, &tooling_document.completion_aliases, 0);
+            let Some(adjustment) =
+                method_receiver_adjustment(receiver_type, &self_type, &type_parameters)
+            else {
+                continue;
+            };
+            let key = (
+                method.def.name.clone(),
+                adjustment.clone(),
+                method.detail.clone(),
+            );
+            if !seen.insert(key) {
+                continue;
+            }
+            let mut item = json!({
+                "label": method.def.name,
+                "kind": 2,
+                "sortText": format!("{}{}", if adjustment.is_empty() { 0 } else { 1 }, method.def.name),
+                "textEdit": { "range": replace_range, "newText": method.def.name },
+            });
+            if let Some(detail) = &method.detail {
+                item["detail"] = json!(detail);
+            }
+            if !adjustment.is_empty() {
+                item["additionalTextEdits"] = json!([{
+                    "range": { "start": dot_position, "end": dot_position },
+                    "newText": adjustment,
+                }]);
+            }
+            if let Some(doc) = &method.def.doc {
+                item["documentation"] = json!({ "kind": "markdown", "value": doc });
+            }
+            items.push(item);
+        }
+    }
+    items
+}
+
+struct MemberCompletionContext {
+    receiver_span: SourceSpan,
+    prefix: String,
+    prefix_start_character: u32,
+    dot_byte: usize,
+    probe_end_byte: usize,
+}
+
+fn member_completion_context(
+    source: &str,
+    line: u32,
+    character: u32,
+) -> Option<MemberCompletionContext> {
+    let cursor_byte = position_to_byte(source, line, character)?;
+    let mut prefix_start = cursor_byte;
+    while prefix_start > 0 {
+        let ch = source[..prefix_start].chars().next_back()?;
+        if ch == '_' || ch.is_alphanumeric() {
+            prefix_start -= ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    let mut dot_byte = prefix_start;
+    while dot_byte > 0 && source.as_bytes()[dot_byte - 1].is_ascii_whitespace() {
+        dot_byte -= 1;
+    }
+    dot_byte = dot_byte.checked_sub(1)?;
+    if source.as_bytes().get(dot_byte) != Some(&b'.')
+        || source.as_bytes().get(dot_byte.wrapping_sub(1)) == Some(&b'.')
+    {
+        return None;
+    }
+
+    let mut receiver_end = dot_byte;
+    while receiver_end > 0 && source.as_bytes()[receiver_end - 1].is_ascii_whitespace() {
+        receiver_end -= 1;
+    }
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_solar::LANGUAGE.into())
+        .expect("Solar grammar must load");
+    let tree = parser.parse(source, None)?;
+    let mut node = tree
+        .root_node()
+        .descendant_for_byte_range(receiver_end.saturating_sub(1), receiver_end)?;
+    let mut receiver = is_expression_node(node.kind())
+        .then_some(node)
+        .filter(|node| node.end_byte() == receiver_end);
+    while let Some(parent) = node.parent() {
+        if parent.end_byte() > receiver_end {
+            break;
+        }
+        node = parent;
+        if node.end_byte() == receiver_end && is_expression_node(node.kind()) {
+            receiver = Some(node);
+        }
+    }
+    let receiver = receiver?;
+    let start = receiver.start_position();
+    let end = receiver.end_position();
+
+    Some(MemberCompletionContext {
+        receiver_span: SourceSpan {
+            start: ast::SourcePos {
+                line: start.row as u32,
+                col: start.column as u32,
+            },
+            end: ast::SourcePos {
+                line: end.row as u32,
+                col: end.column as u32,
+            },
+            file_id: 0,
+        },
+        prefix: source[prefix_start..cursor_byte].to_owned(),
+        prefix_start_character: utf16_column(
+            source.lines().nth(line as usize).unwrap_or(""),
+            prefix_start - source_line_offsets(source)[line as usize],
+        ),
+        dot_byte,
+        probe_end_byte: completion_call_end(source, cursor_byte),
+    })
+}
+
+fn is_expression_node(kind: &str) -> bool {
+    kind.ends_with("_expr")
+        || kind.ends_with("_expression")
+        || matches!(
+            kind,
+            "identifier"
+                | "integer_literal"
+                | "float_literal"
+                | "boolean_literal"
+                | "string_literal"
+                | "char_literal"
+                | "struct_literal"
+                | "array_literal"
+                | "tuple_literal"
+                | "block"
+        )
+}
+
+fn completion_call_end(source: &str, cursor_byte: usize) -> usize {
+    let mut start = cursor_byte;
+    while source
+        .as_bytes()
+        .get(start)
+        .is_some_and(u8::is_ascii_whitespace)
+    {
+        start += 1;
+    }
+    if source.as_bytes().get(start) != Some(&b'(') {
+        return cursor_byte;
+    }
+    let mut depth = 0usize;
+    for (offset, ch) in source[start..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return start + offset + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    cursor_byte
+}
+
+fn completion_probe_source(source: &str, context: &MemberCompletionContext) -> String {
+    let after = source[context.probe_end_byte..].trim_start().chars().next();
+    let replacement = if matches!(after, Some(';' | ',' | ')' | ']' | '}')) {
+        ""
+    } else {
+        ";"
+    };
+    let mut probe = source.to_owned();
+    probe.replace_range(context.dot_byte..context.probe_end_byte, replacement);
+    probe
+}
+
+fn byte_position(source: &str, byte: usize) -> Value {
+    let prefix = &source[..byte];
+    let line = prefix.bytes().filter(|byte| *byte == b'\n').count() as u32;
+    let line_start = prefix.rfind('\n').map_or(0, |index| index + 1);
+    json!({
+        "line": line,
+        "character": source[line_start..byte].encode_utf16().count(),
+    })
+}
+
+fn ordinary_completions(
+    source: &str,
+    line: u32,
+    character: u32,
+    uri: &str,
+    document: &Document,
+) -> Vec<Value> {
+    let Some(cursor_byte) = position_to_byte(source, line, character) else {
+        return Vec::new();
+    };
+    if completion_is_in_comment_or_string(source, cursor_byte) {
+        return Vec::new();
+    }
+    let mut prefix_start = cursor_byte;
+    while prefix_start > 0 {
+        let Some(ch) = source[..prefix_start].chars().next_back() else {
+            break;
+        };
+        if ch == '_' || ch.is_alphanumeric() {
+            prefix_start -= ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    let prefix = &source[prefix_start..cursor_byte];
+    let line_start = source[..prefix_start]
+        .rfind('\n')
+        .map_or(0, |index| index + 1);
+    let start_character = source[line_start..prefix_start].encode_utf16().count() as u32;
+    let replace_range = json!({
+        "start": { "line": line, "character": start_character },
+        "end": { "line": line, "character": character },
+    });
+    let probe;
+    let tooling_document = if document.completion_symbols.is_empty() {
+        let line_prefix = &source[line_start..prefix_start];
+        let replacement =
+            if line_prefix.trim().is_empty() && !source[..prefix_start].trim_end().ends_with('{') {
+                ""
+            } else {
+                "0"
+            };
+        let mut probe_source = source.to_owned();
+        probe_source.replace_range(prefix_start..cursor_byte, replacement);
+        probe = compute(uri, &probe_source);
+        &probe
+    } else {
+        document
+    };
+    let mut seen = HashSet::new();
+    let mut items = Vec::new();
+
+    for (label, detail, kind) in visible_bindings(source, cursor_byte, tooling_document) {
+        if label.starts_with(prefix) && seen.insert((label.clone(), kind)) {
+            let mut item = json!({
+                "label": label,
+                "kind": kind,
+                "sortText": format!("0{label}"),
+                "textEdit": { "range": replace_range, "newText": label },
+            });
+            if let Some(detail) = detail {
+                item["detail"] = json!(detail);
+            }
+            items.push(item);
+        }
+    }
+    for symbol in &tooling_document.completion_symbols {
+        if symbol.label.starts_with(prefix) && seen.insert((symbol.label.clone(), symbol.kind)) {
+            let mut item = json!({
+                "label": symbol.label,
+                "kind": symbol.kind,
+                "sortText": format!("1{}", symbol.label),
+                "textEdit": { "range": replace_range, "newText": symbol.label },
+            });
+            if let Some(detail) = &symbol.detail {
+                item["detail"] = json!(detail);
+            }
+            if let Some(doc) = &symbol.documentation {
+                item["documentation"] = json!({ "kind": "markdown", "value": doc });
+            }
+            items.push(item);
+        }
+    }
+
+    if let Ok(parsed) = solar::parser::parse(source) {
+        for item in parsed.items {
+            let ast::TopLevelItem::Import(import) = item else {
+                continue;
+            };
+            let ast::ImportKind::Module(alias) = import.kind else {
+                continue;
+            };
+            if alias.starts_with(prefix) && seen.insert((alias.clone(), 9)) {
+                items.push(json!({
+                    "label": alias,
+                    "kind": 9,
+                    "sortText": format!("1{alias}"),
+                    "textEdit": { "range": replace_range, "newText": alias },
+                }));
+            }
+        }
+    }
+
+    const KEYWORDS: &[&str] = &[
+        "break", "catch", "const", "continue", "else", "enum", "false", "fn", "for", "from", "if",
+        "import", "in", "let", "loop", "match", "method", "out", "pub", "return", "static",
+        "struct", "true", "try", "unsafe", "while",
+    ];
+    for &keyword in KEYWORDS {
+        if keyword.starts_with(prefix) && seen.insert((keyword.to_owned(), 14)) {
+            items.push(json!({
+                "label": keyword,
+                "kind": 14,
+                "sortText": format!("2{keyword}"),
+                "textEdit": { "range": replace_range, "newText": keyword },
+            }));
+        }
+    }
+    items
+}
+
+fn completion_is_in_comment_or_string(source: &str, cursor_byte: usize) -> bool {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_solar::LANGUAGE.into())
+        .expect("Solar grammar must load");
+    let Some(tree) = parser.parse(source, None) else {
+        return false;
+    };
+    let Some(mut node) = tree
+        .root_node()
+        .descendant_for_byte_range(cursor_byte.saturating_sub(1), cursor_byte)
+    else {
+        return false;
+    };
+    loop {
+        if matches!(node.kind(), "comment" | "doc_comment" | "string_literal") {
+            return true;
+        }
+        let Some(parent) = node.parent() else {
+            return false;
+        };
+        node = parent;
+    }
+}
+
+fn visible_bindings(
+    source: &str,
+    cursor_byte: usize,
+    document: &Document,
+) -> Vec<(String, Option<String>, u32)> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_solar::LANGUAGE.into())
+        .expect("Solar grammar must load");
+    let Some(tree) = parser.parse(source, None) else {
+        return Vec::new();
+    };
+    let mut bindings = Vec::new();
+    collect_visible_bindings(
+        tree.root_node(),
+        source,
+        cursor_byte,
+        document,
+        &mut bindings,
+    );
+    bindings.sort_by(|left, right| left.0.cmp(&right.0));
+    bindings.dedup_by(|left, right| left.0 == right.0 && left.2 == right.2);
+    bindings
+}
+
+fn collect_visible_bindings(
+    node: Node<'_>,
+    source: &str,
+    cursor_byte: usize,
+    document: &Document,
+    out: &mut Vec<(String, Option<String>, u32)>,
+) {
+    if node.start_byte() < cursor_byte && is_binding_identifier(node) {
+        if let Some(scope) = binding_scope(node)
+            && scope.start_byte() <= cursor_byte
+            && cursor_byte <= scope.end_byte()
+        {
+            let detail = document
+                .source_map
+                .root_file_id()
+                .and_then(|file_id| {
+                    document
+                        .binding_signatures
+                        .get(&span_key(node_span(node, file_id)))
+                })
+                .map(|signatures| signatures.join(" | "));
+            out.push((source[node.byte_range()].to_owned(), detail, 6));
+        }
+    } else if matches!(node.kind(), "function_def" | "const_def")
+        && node.start_byte() < cursor_byte
+        && node.parent().is_some_and(|parent| parent.kind() == "block")
+        && let Some(name) = node.child_by_field_name("name")
+        && node.parent().is_some_and(|scope| {
+            scope.start_byte() <= cursor_byte && cursor_byte <= scope.end_byte()
+        })
+    {
+        out.push((
+            source[name.byte_range()].to_owned(),
+            None,
+            if node.kind() == "function_def" { 3 } else { 21 },
+        ));
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_visible_bindings(child, source, cursor_byte, document, out);
+    }
+}
+
+fn binding_scope(mut node: Node<'_>) -> Option<Node<'_>> {
+    while let Some(parent) = node.parent() {
+        match parent.kind() {
+            "parameter" => {
+                let function = parent.parent()?.parent()?;
+                return function.child_by_field_name("body");
+            }
+            "let_statement" => {
+                return parent.parent().filter(|scope| scope.kind() == "block");
+            }
+            "closure_param" => {
+                let closure = parent.parent()?.parent()?;
+                return (closure.kind() == "closure_expr")
+                    .then(|| closure.child_by_field_name("body"))
+                    .flatten();
+            }
+            "for_statement"
+            | "reflect_fields_statement"
+            | "reflect_fields_pair_statement"
+            | "reflect_variant_statement"
+            | "reflect_variant_pair_statement" => return parent.child_by_field_name("body"),
+            "try_statement" => return parent.child_by_field_name("handler"),
+            "match_arm" => return parent.child_by_field_name("body"),
+            _ => node = parent,
+        }
+    }
+    None
+}
+
+/// Returns the shortest explicit postfix adjustment that makes `actual` match
+/// a method's declared receiver type.
+fn expand_completion_aliases(
+    ty: &ast::Type,
+    aliases: &HashMap<ast::DefId, (Vec<String>, ast::Type)>,
+    depth: usize,
+) -> ast::Type {
+    fn expand(
+        ty: &ast::Type,
+        aliases: &HashMap<ast::DefId, (Vec<String>, ast::Type)>,
+        substitutions: &HashMap<String, ast::Type>,
+        depth: usize,
+    ) -> ast::Type {
+        if depth > 64 {
+            return ty.clone();
+        }
+        match ty {
+            ast::Type::Named(id) => {
+                if let Some(replacement) = substitutions.get(&id.name) {
+                    return expand(replacement, aliases, substitutions, depth + 1);
+                }
+                aliases.get(id).map_or_else(
+                    || ty.clone(),
+                    |(_, target)| expand(target, aliases, substitutions, depth + 1),
+                )
+            }
+            ast::Type::Generic { name, type_args } => {
+                if let Some((parameters, target)) = aliases.get(name)
+                    && parameters.len() == type_args.len()
+                {
+                    let mut nested = substitutions.clone();
+                    for (parameter, argument) in parameters.iter().zip(type_args) {
+                        nested.insert(
+                            parameter.clone(),
+                            expand(argument, aliases, substitutions, depth + 1),
+                        );
+                    }
+                    return expand(target, aliases, &nested, depth + 1);
+                }
+                ast::Type::Generic {
+                    name: name.clone(),
+                    type_args: type_args
+                        .iter()
+                        .map(|argument| expand(argument, aliases, substitutions, depth + 1))
+                        .collect(),
+                }
+            }
+            ast::Type::Reference(inner) => {
+                ast::Type::Reference(Box::new(expand(inner, aliases, substitutions, depth + 1)))
+            }
+            ast::Type::NullableReference(inner) => ast::Type::NullableReference(Box::new(expand(
+                inner,
+                aliases,
+                substitutions,
+                depth + 1,
+            ))),
+            ast::Type::Unique(inner) => {
+                ast::Type::Unique(Box::new(expand(inner, aliases, substitutions, depth + 1)))
+            }
+            ast::Type::Slice(inner) => {
+                ast::Type::Slice(Box::new(expand(inner, aliases, substitutions, depth + 1)))
+            }
+            ast::Type::FixedArray(inner, size) => ast::Type::FixedArray(
+                Box::new(expand(inner, aliases, substitutions, depth + 1)),
+                *size,
+            ),
+            ast::Type::Function {
+                params,
+                return_type,
+            } => ast::Type::Function {
+                params: params
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), expand(ty, aliases, substitutions, depth + 1)))
+                    .collect(),
+                return_type: return_type
+                    .as_ref()
+                    .map(|ty| Box::new(expand(ty, aliases, substitutions, depth + 1))),
+            },
+            ast::Type::Tuple(types) => ast::Type::Tuple(
+                types
+                    .iter()
+                    .map(|ty| expand(ty, aliases, substitutions, depth + 1))
+                    .collect(),
+            ),
+            ast::Type::Infer => ast::Type::Infer,
+        }
+    }
+
+    expand(ty, aliases, &HashMap::new(), depth)
+}
+
+fn method_receiver_adjustment(
+    actual: &typed_ast::Type,
+    expected: &ast::Type,
+    type_parameters: &[String],
+) -> Option<String> {
+    let candidates = ["", "&", "@", "@@", "@@@"];
+    candidates.into_iter().find_map(|adjustment| {
+        let adjusted = adjusted_receiver_type(actual, adjustment)?;
+        let mut substitutions = HashMap::new();
+        ast_type_matches(expected, &adjusted, type_parameters, &mut substitutions)
+            .then(|| adjustment.to_owned())
+    })
+}
+
+fn adjusted_receiver_type(actual: &typed_ast::Type, adjustment: &str) -> Option<typed_ast::Type> {
+    let mut ty = actual.clone();
+    for operator in adjustment.chars() {
+        ty = match operator {
+            '&' => typed_ast::Type::Ref(Box::new(ty)),
+            '@' => match ty {
+                typed_ast::Type::Ref(inner)
+                | typed_ast::Type::RefUnsized(inner)
+                | typed_ast::Type::NullableRef(inner)
+                | typed_ast::Type::NullableRefUnsized(inner)
+                | typed_ast::Type::Unique(inner)
+                | typed_ast::Type::UniqueUnsized(inner) => *inner,
+                _ => return None,
+            },
+            _ => unreachable!(),
+        };
+    }
+    Some(ty)
+}
+
+fn ast_type_matches(
+    expected: &ast::Type,
+    actual: &typed_ast::Type,
+    type_parameters: &[String],
+    substitutions: &mut HashMap<String, typed_ast::Type>,
+) -> bool {
+    use typed_ast::Type;
+    if *actual == Type::Never {
+        return true;
+    }
+    match expected {
+        ast::Type::Named(id) if type_parameters.contains(&id.name) => {
+            match substitutions.get(&id.name) {
+                Some(bound) => bound == actual,
+                None => {
+                    substitutions.insert(id.name.clone(), actual.clone());
+                    true
+                }
+            }
+        }
+        ast::Type::Named(id) => primitive_type(&id.name).map_or_else(
+            || {
+                matches!(actual, Type::Struct(actual_id) | Type::Enum(actual_id) if actual_id.def == *id && actual_id.args.is_empty())
+            },
+            |primitive| primitive == *actual,
+        ),
+        ast::Type::Generic { name, type_args } => {
+            let actual_id = match actual {
+                Type::Struct(id) | Type::Enum(id) if id.def == *name => id,
+                _ => return false,
+            };
+            type_args.len() == actual_id.args.len()
+                && type_args
+                    .iter()
+                    .zip(&actual_id.args)
+                    .all(|(expected, actual)| {
+                        ast_type_matches(expected, actual, type_parameters, substitutions)
+                    })
+        }
+        ast::Type::Reference(inner) => match actual {
+            Type::Ref(actual) | Type::RefUnsized(actual) => {
+                ast_type_matches(inner, actual, type_parameters, substitutions)
+            }
+            _ => false,
+        },
+        ast::Type::NullableReference(inner) => match actual {
+            Type::NullableRef(actual)
+            | Type::NullableRefUnsized(actual)
+            | Type::Ref(actual)
+            | Type::RefUnsized(actual) => {
+                ast_type_matches(inner, actual, type_parameters, substitutions)
+            }
+            _ => false,
+        },
+        ast::Type::Unique(inner) => match actual {
+            Type::Unique(actual) | Type::UniqueUnsized(actual) => {
+                ast_type_matches(inner, actual, type_parameters, substitutions)
+            }
+            _ => false,
+        },
+        ast::Type::Slice(inner) => match actual {
+            Type::Array(actual) | Type::FixedArray(actual, _) => {
+                ast_type_matches(inner, actual, type_parameters, substitutions)
+            }
+            _ => false,
+        },
+        ast::Type::FixedArray(inner, _) => match actual {
+            Type::Array(actual) | Type::FixedArray(actual, _) => {
+                ast_type_matches(inner, actual, type_parameters, substitutions)
+            }
+            _ => false,
+        },
+        ast::Type::Function {
+            params,
+            return_type,
+        } => match actual {
+            Type::Function {
+                params: actual_params,
+                return_type: actual_return,
+            } => {
+                params.len() == actual_params.len()
+                    && params.iter().zip(actual_params).all(|((_, expected), actual)| {
+                        ast_type_matches(expected, actual, type_parameters, substitutions)
+                    })
+                    && return_type.as_deref().map_or_else(
+                        || **actual_return == Type::Unit,
+                        |expected| {
+                            ast_type_matches(
+                                expected,
+                                actual_return,
+                                type_parameters,
+                                substitutions,
+                            )
+                        },
+                    )
+            }
+            _ => false,
+        },
+        ast::Type::Tuple(expected) => match actual {
+            Type::Struct(id)
+                if id.def.file == ast::SYNTHETIC_FILE
+                    && id.def.name == "0tuple" =>
+            {
+                expected.len() == id.args.len()
+                    && expected.iter().zip(&id.args).all(|(expected, actual)| {
+                        ast_type_matches(expected, actual, type_parameters, substitutions)
+                    })
+            }
+            _ => false,
+        },
+        ast::Type::Infer => true,
+    }
+}
+
+fn primitive_type(name: &str) -> Option<typed_ast::Type> {
+    use typed_ast::Type;
+    Some(match ast::PrimitiveType::from_name(name)? {
+        ast::PrimitiveType::Int8 => Type::Int8,
+        ast::PrimitiveType::Int16 => Type::Int16,
+        ast::PrimitiveType::Int32 => Type::Int32,
+        ast::PrimitiveType::Int64 => Type::Int64,
+        ast::PrimitiveType::Int => Type::Int,
+        ast::PrimitiveType::Uint8 => Type::Uint8,
+        ast::PrimitiveType::Uint16 => Type::Uint16,
+        ast::PrimitiveType::Uint32 => Type::Uint32,
+        ast::PrimitiveType::Uint64 => Type::Uint64,
+        ast::PrimitiveType::Uint => Type::Uint,
+        ast::PrimitiveType::Float32 => Type::Float32,
+        ast::PrimitiveType::Float64 => Type::Float64,
+        ast::PrimitiveType::Bool => Type::Bool,
+        ast::PrimitiveType::FileDesc => Type::FileDesc,
+        ast::PrimitiveType::Any => Type::Any,
+        ast::PrimitiveType::Unit => Type::Unit,
+        ast::PrimitiveType::Never => Type::Never,
+    })
+}
+
+fn expression_types_at(
+    typed: &typed_ast::SourceFile,
+    file_id: u32,
+    mut target: SourceSpan,
+) -> Vec<typed_ast::Type> {
+    target.file_id = file_id;
+    let mut types = HashSet::new();
+    for function in typed.functions.values() {
+        if function.def_span.file_id != file_id {
+            continue;
+        }
+        for statement in &function.body {
+            collect_expression_types(statement, target, &mut types);
+        }
+    }
+    for item in &typed.statics {
+        collect_expression_type(&item.init, target, &mut types);
+    }
+    types.into_iter().collect()
+}
+
+fn collect_expression_types(
+    statement: &typed_ast::Statement,
+    target: SourceSpan,
+    out: &mut HashSet<typed_ast::Type>,
+) {
+    use typed_ast::StatementKind;
+    match &statement.kind {
+        StatementKind::Let { value, .. }
+        | StatementKind::Expression(value)
+        | StatementKind::Return(value) => collect_expression_type(value, target, out),
+        StatementKind::Assignment {
+            target: left,
+            value,
+        } => {
+            collect_expression_type(left, target, out);
+            collect_expression_type(value, target, out);
+        }
+        StatementKind::If {
+            condition,
+            body,
+            else_body,
+        } => {
+            collect_expression_type(condition, target, out);
+            for statement in body.iter().chain(else_body) {
+                collect_expression_types(statement, target, out);
+            }
+        }
+        StatementKind::While { condition, body } => {
+            collect_expression_type(condition, target, out);
+            for statement in body {
+                collect_expression_types(statement, target, out);
+            }
+        }
+        StatementKind::Break(value) => {
+            if let Some(value) = value {
+                collect_expression_type(value, target, out);
+            }
+        }
+        StatementKind::Continue => {}
+    }
+}
+
+fn collect_expression_type(
+    expr: &typed_ast::Expr,
+    target: SourceSpan,
+    out: &mut HashSet<typed_ast::Type>,
+) {
+    use typed_ast::ExprKind;
+    if span_key(expr.span) == span_key(target) {
+        out.insert(expr.ty.clone());
+    }
+    match &expr.kind {
+        ExprKind::Call { arguments, .. } | ExprKind::IntrinsicCall { arguments, .. } => {
+            for argument in arguments {
+                collect_expression_type(argument, target, out);
+            }
+        }
+        ExprKind::CallIndirect { callee, arguments } => {
+            collect_expression_type(callee, target, out);
+            for argument in arguments {
+                collect_expression_type(argument, target, out);
+            }
+        }
+        ExprKind::FieldAccess { object, .. }
+        | ExprKind::Deref(object)
+        | ExprKind::Reference(object)
+        | ExprKind::Unique(object)
+        | ExprKind::Not(object)
+        | ExprKind::ArraySizeCoerce { expr: object, .. } => {
+            collect_expression_type(object, target, out)
+        }
+        ExprKind::Index { object, index } => {
+            collect_expression_type(object, target, out);
+            collect_expression_type(index, target, out);
+        }
+        ExprKind::Slice { object, start, end } => {
+            collect_expression_type(object, target, out);
+            collect_expression_type(start, target, out);
+            collect_expression_type(end, target, out);
+        }
+        ExprKind::StructLiteral { fields, .. } => {
+            for field in fields {
+                collect_expression_type(&field.value, target, out);
+            }
+        }
+        ExprKind::ArrayLiteral(values) => {
+            for value in values {
+                collect_expression_type(value, target, out);
+            }
+        }
+        ExprKind::Block(statements) | ExprKind::Loop(statements) => {
+            for statement in statements {
+                collect_expression_types(statement, target, out);
+            }
+        }
+        ExprKind::ArrayRepeat { element, count }
+        | ExprKind::ArrayInit {
+            init: element,
+            count,
+        } => {
+            collect_expression_type(element, target, out);
+            collect_expression_type(count, target, out);
+        }
+        ExprKind::BinaryOp { left, right, .. } => {
+            collect_expression_type(left, target, out);
+            collect_expression_type(right, target, out);
+        }
+        ExprKind::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            collect_expression_type(condition, target, out);
+            for statement in then_body.iter().chain(else_body) {
+                collect_expression_types(statement, target, out);
+            }
+        }
+        ExprKind::EnumVariant { value, .. } => {
+            if let Some(value) = value {
+                collect_expression_type(value, target, out);
+            }
+        }
+        ExprKind::Match { scrutinee, arms } => {
+            collect_expression_type(scrutinee, target, out);
+            for arm in arms {
+                for statement in &arm.body {
+                    collect_expression_types(statement, target, out);
+                }
+            }
+        }
+        ExprKind::Identifier(_)
+        | ExprKind::FunctionRef(_)
+        | ExprKind::FloatLiteral(_)
+        | ExprKind::Global(_)
+        | ExprKind::IntegerLiteral(_)
+        | ExprKind::BooleanLiteral(_)
+        | ExprKind::NullLiteral
+        | ExprKind::Closure { .. } => {}
+    }
 }
 
 type InlayHintRange = ((u32, u32), (u32, u32));
@@ -1505,7 +2465,16 @@ fn is_binding_identifier(node: Node<'_>) -> bool {
                 return parent.child_by_field_name("pattern").is_some_and(contains);
             }
             "closure_param" => return parent.child_by_field_name("name") == Some(node),
-            "for_statement" => return parent.child_by_field_name("variable") == Some(node),
+            "for_statement"
+            | "reflect_fields_statement"
+            | "reflect_fields_pair_statement"
+            | "reflect_variant_statement"
+            | "reflect_variant_pair_statement" => {
+                return parent
+                    .child_by_field_name("variable")
+                    .or_else(|| parent.child_by_field_name("pattern"))
+                    .is_some_and(contains);
+            }
             "try_statement" => return parent.child_by_field_name("binding") == Some(node),
             "variant_pattern" => return parent.child_by_field_name("binding") == Some(node),
             "wildcard_pattern" => return parent.child_by_field_name("name") == Some(node),
@@ -2006,6 +2975,15 @@ struct Document {
     global_defs: HashMap<ast::DefId, SourceSpan>,
     /// Source ranges of generic functions/methods in the root file.
     generic_bodies: Vec<SourceSpan>,
+    /// Source method declarations used by receiver-aware completion. Unlike
+    /// the monomorphized typed AST, this retains methods that have not yet been
+    /// called and therefore includes every generic candidate.
+    completion_methods: Vec<CompletionMethod>,
+    /// Visible top-level declarations and struct fields used by completion.
+    completion_symbols: Vec<CompletionSymbol>,
+    completion_fields: HashMap<ast::DefId, Vec<CompletionField>>,
+    /// Type aliases expanded while matching method receiver declarations.
+    completion_aliases: HashMap<ast::DefId, (Vec<String>, ast::Type)>,
     /// Module aliases declared throughout the resolved import graph. Each
     /// entry records both the imported file and the import statement so path
     /// fragments can navigate through re-exported modules.
@@ -2023,6 +3001,28 @@ struct Analysis {
     typed: typed_ast::SourceFile,
     file_id: u32,
     names: Names,
+}
+
+#[derive(Clone)]
+struct CompletionMethod {
+    def: ast::FunctionDef,
+    detail: Option<String>,
+}
+
+#[derive(Clone)]
+struct CompletionSymbol {
+    label: String,
+    kind: u32,
+    detail: Option<String>,
+    documentation: Option<String>,
+}
+
+#[derive(Clone)]
+struct CompletionField {
+    name: String,
+    detail: Option<String>,
+    is_pub: bool,
+    file_id: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -2060,6 +3060,34 @@ fn compute_with_diagnostics(uri: &str, source: &str) -> (Document, HashMap<Strin
     let definition_catalog = collect_definition_catalog(&ast, source_map.root_file_id());
     let module_imports = collect_module_imports(&source_map);
     let signatures = collect_signatures(&ast, &source_map);
+    let completion_methods = ast
+        .items
+        .iter()
+        .filter_map(|item| {
+            let ast::TopLevelItem::Method(def) = item else {
+                return None;
+            };
+            Some(CompletionMethod {
+                def: def.clone(),
+                detail: signatures.get(&span_key(def.span)).cloned(),
+            })
+        })
+        .collect();
+    let (completion_symbols, completion_fields) =
+        collect_completion_catalog(&ast, source_map.root_file_id(), &signatures);
+    let completion_aliases = ast
+        .items
+        .iter()
+        .filter_map(|item| {
+            let ast::TopLevelItem::TypeAlias(def) = item else {
+                return None;
+            };
+            Some((
+                ast::DefId::new(def.span.file_id, def.name.clone()),
+                (def.type_params.clone(), def.target_type.clone()),
+            ))
+        })
+        .collect();
     let (analysis, diagnostics) = match typed_ast::lower(&ast) {
         Ok(typed) => (analysis_from_typed(typed, &source_map), HashMap::new()),
         Err(error) => (
@@ -2084,6 +3112,10 @@ fn compute_with_diagnostics(uri: &str, source: &str) -> (Document, HashMap<Strin
         type_defs: definition_catalog.type_defs,
         global_defs: definition_catalog.global_defs,
         generic_bodies: definition_catalog.generic_bodies,
+        completion_methods,
+        completion_symbols,
+        completion_fields,
+        completion_aliases,
         module_imports,
         analysis,
         source_map,
@@ -2100,6 +3132,57 @@ struct DefinitionCatalog {
     type_defs: HashMap<ast::DefId, SourceSpan>,
     global_defs: HashMap<ast::DefId, SourceSpan>,
     generic_bodies: Vec<SourceSpan>,
+}
+
+fn collect_completion_catalog(
+    ast: &solar::resolved_ast::SourceFile,
+    root_file: Option<u32>,
+    signatures: &HashMap<SpanKey, String>,
+) -> (
+    Vec<CompletionSymbol>,
+    HashMap<ast::DefId, Vec<CompletionField>>,
+) {
+    use solar::ast::TopLevelItem;
+    let mut symbols = Vec::new();
+    let mut fields = HashMap::<ast::DefId, Vec<CompletionField>>::new();
+    for item in &ast.items {
+        let (label, kind, is_pub, doc, span) = match item {
+            TopLevelItem::Function(def) => (&def.name, 3, def.is_pub, &def.doc, def.span),
+            TopLevelItem::Struct(def) => {
+                fields.insert(
+                    def.def_id.clone(),
+                    def.fields
+                        .iter()
+                        .map(|field| CompletionField {
+                            name: field.name.clone(),
+                            detail: signatures.get(&span_key(field.span)).cloned(),
+                            is_pub: field.is_pub,
+                            file_id: field.span.file_id,
+                        })
+                        .collect(),
+                );
+                (&def.name, 22, def.is_pub, &def.doc, def.span)
+            }
+            TopLevelItem::Enum(def) => (&def.name, 13, def.is_pub, &def.doc, def.span),
+            TopLevelItem::TypeAlias(def) => (&def.name, 7, def.is_pub, &def.doc, def.span),
+            TopLevelItem::Const(def) => (&def.name, 21, def.is_pub, &def.doc, def.span),
+            TopLevelItem::Static(def) => (&def.name, 6, def.is_pub, &def.doc, def.span),
+            TopLevelItem::Method(_) | TopLevelItem::Import(_) => continue,
+        };
+        if root_file == Some(span.file_id) || is_pub || span.file_id == ast::SYNTHETIC_FILE {
+            symbols.push(CompletionSymbol {
+                label: label.clone(),
+                kind,
+                detail: signatures.get(&span_key(span)).cloned(),
+                documentation: doc.clone(),
+            });
+        }
+    }
+    symbols.sort_by(|left, right| left.label.cmp(&right.label));
+    symbols.dedup_by(|left, right| {
+        left.label == right.label && left.kind == right.kind && left.detail == right.detail
+    });
+    (symbols, fields)
 }
 
 fn collect_definition_catalog(
@@ -3016,6 +4099,144 @@ mod tests {
             .iter()
             .map(|hint| hint["label"].as_str().unwrap())
             .collect()
+    }
+
+    fn completion_items(source: &str, needle: &str) -> Vec<Value> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/runtime/completion_probe.solar");
+        let uri = format!("file://{}", path.display());
+        let document = compute(&uri, source);
+        let (line, character) = occurrence_position(source, needle, 0);
+        completions(
+            source,
+            line,
+            character + needle.encode_utf16().count() as u32,
+            &uri,
+            &document,
+        )
+    }
+
+    #[test]
+    fn completion_suggests_receiver_reference_and_dereference_edits() {
+        let source = r#"
+struct Point { x: Int }
+method inspect(self: Point) -> Int { self.x }
+method set_x(self: &Point, value: Int) { self@.x = value; }
+fn main() {
+    let point = Point { x: 1 };
+    point.se;
+}
+"#;
+        let items = completion_items(source, "point.se");
+        let set_x = items
+            .iter()
+            .find(|item| item["label"] == "set_x")
+            .expect("set_x completion");
+        assert_eq!(set_x["additionalTextEdits"][0]["newText"], "&");
+
+        let source = source.replace("point.se;", "let reference = point&;\n    reference.ins;");
+        let items = completion_items(&source, "reference.ins");
+        let inspect = items
+            .iter()
+            .find(|item| item["label"] == "inspect")
+            .expect("inspect completion");
+        assert_eq!(inspect["additionalTextEdits"][0]["newText"], "@");
+    }
+
+    #[test]
+    fn completion_includes_uninstantiated_generic_methods() {
+        let source = r#"
+struct Box#[T] { value: T }
+method get#[T](self: Box#[T]) -> T { self.value }
+fn main() {
+    let boxed = Box#[Int] { value: 1 };
+    boxed.ge;
+}
+"#;
+        let items = completion_items(source, "boxed.ge");
+        let get = items
+            .iter()
+            .find(|item| item["label"] == "get")
+            .expect("generic get completion");
+        assert!(get.get("additionalTextEdits").is_none());
+        assert!(
+            get["detail"]
+                .as_str()
+                .unwrap()
+                .starts_with("method get#[T]")
+        );
+
+        let source = r#"
+struct Item { value: Int }
+type ItemRef = &Item;
+method read(self: ItemRef) -> Int { self@.value }
+fn main() {
+    let item = Item { value: 1 };
+    item.re;
+}
+"#;
+        let items = completion_items(source, "item.re");
+        let read = items
+            .iter()
+            .find(|item| item["label"] == "read")
+            .expect("aliased receiver completion");
+        assert_eq!(read["additionalTextEdits"][0]["newText"], "&");
+    }
+
+    #[test]
+    fn completion_includes_fields_locals_globals_and_keywords() {
+        let source = r#"
+struct Point { x_coordinate: Int }
+fn helper() {}
+fn main() {
+    let point = Point { x_coordinate: 1 };
+    point.x_co;
+}
+"#;
+        let items = completion_items(source, "point.x_co");
+        assert!(
+            items
+                .iter()
+                .any(|item| item["label"] == "x_coordinate" && item["kind"] == 5)
+        );
+
+        let local_source = source.replace("point.x_co;", "poi;");
+        let items = completion_items(&local_source, "poi");
+        assert!(
+            items
+                .iter()
+                .any(|item| item["label"] == "point" && item["kind"] == 6)
+        );
+
+        let global_source = source.replace("point.x_co;", "help;");
+        let items = completion_items(&global_source, "help");
+        assert!(
+            items
+                .iter()
+                .any(|item| item["label"] == "helper" && item["kind"] == 3)
+        );
+
+        let keyword_source = source.replace("point.x_co;", "ret;");
+        let items = completion_items(&keyword_source, "ret");
+        assert!(
+            items
+                .iter()
+                .any(|item| item["label"] == "return" && item["kind"] == 14)
+        );
+
+        let source = "struct Point {}\nPoi";
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/runtime/completion_probe.solar");
+        let uri = format!("file://{}", path.display());
+        let document = compute(&uri, source);
+        let (line, character) = occurrence_position(source, "Poi", 1);
+        let items = completions(source, line, character + 3, &uri, &document);
+        assert!(
+            items
+                .iter()
+                .any(|item| item["label"] == "Point" && item["kind"] == 22),
+            "{items:?}"
+        );
     }
 
     #[test]

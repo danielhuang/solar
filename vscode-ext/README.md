@@ -9,7 +9,8 @@ highlighting.
 ## Features
 
 - Compiler diagnostics while editing; each open file is checked as a program root.
-- Semantic syntax highlighting, hover documentation, and go-to-definition.
+- Autocomplete, semantic syntax highlighting, hover documentation, and
+  go-to-definition.
 - Powered by `solar-lsp`, using the same tree-sitter grammar as the compiler.
 - Line-comment toggling and bracket matching / auto-closing.
 

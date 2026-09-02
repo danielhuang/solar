@@ -117,6 +117,9 @@ request.
 Inlay hints show compiler-inferred binding and non-unit return types only where
 the source annotation is omitted. Their positions use LSP UTF-16 coordinates
 and range requests must not return hints outside the requested range.
+Completion is type-aware for member access. Method candidates must match the
+compiler's explicit receiver rules and add postfix `&` or `@` edits when a
+value must be referenced or a reference dereferenced to match `self`.
 
 ## Formatter
 
