@@ -138,6 +138,9 @@ must also reject candidates whose resulting monomorphized body does not
 type-check.
 Completion after a module path such as `process::` lists that namespace's public
 declarations and public submodules, including named and module re-exports.
+Signature help inside function and method argument lists includes every overload
+whose parameter prefix can still accept the completed arguments, and highlights
+the active parameter (accounting for a method's implicit `self` argument).
 When a type-aware completion probe fails, retry after successively promoting the
 cursor's enclosing block contents into their parent block, stopping at the
 function boundary. Probe rewrites must preserve source positions.

@@ -58,6 +58,10 @@ fn main() {
                         "textDocumentSync": 1,
                         "documentFormattingProvider": true,
                         "completionProvider": { "triggerCharacters": [".", ":"] },
+                        "signatureHelpProvider": {
+                            "triggerCharacters": ["(", ","],
+                            "retriggerCharacters": [","]
+                        },
                         "hoverProvider": true,
                         "definitionProvider": true,
                         "inlayHintProvider": true,
@@ -121,6 +125,22 @@ fn main() {
                     _ => Vec::new(),
                 };
                 respond(&mut output, id, json!(items));
+            }
+            Some("textDocument/signatureHelp") => {
+                let uri = params.pointer("/textDocument/uri").and_then(Value::as_str);
+                let line = params.pointer("/position/line").and_then(Value::as_u64);
+                let character = params
+                    .pointer("/position/character")
+                    .and_then(Value::as_u64);
+                let target = uri.and_then(|uri| documents.get(uri).map(|text| (uri, text)));
+                let result = match (target, line, character) {
+                    (Some((uri, text)), Some(line), Some(character)) => {
+                        let document = cached(&mut cache, uri, text);
+                        signature_help(text, line as u32, character as u32, uri, document)
+                    }
+                    _ => None,
+                };
+                respond(&mut output, id, result.unwrap_or(Value::Null));
             }
             Some("textDocument/semanticTokens/full") => {
                 let uri = params.pointer("/textDocument/uri").and_then(Value::as_str);
@@ -218,6 +238,671 @@ fn formatting_edits(source: &str) -> Vec<Value> {
         },
         "newText": formatted,
     })]
+}
+
+#[derive(Clone)]
+struct SignatureArgument {
+    ordinal: usize,
+    keyword: Option<String>,
+    value_span: SourceSpan,
+    argument_start_byte: usize,
+}
+
+struct SignatureHelpContext {
+    name: String,
+    namespace_segments: Vec<String>,
+    call_start_byte: usize,
+    call_end_byte: usize,
+    has_close: bool,
+    open_byte: usize,
+    active_argument: usize,
+    active_keyword: Option<String>,
+    explicit_type_argument_count: Option<usize>,
+    receiver_span: Option<SourceSpan>,
+    receiver_end_byte: Option<usize>,
+    arguments: Vec<SignatureArgument>,
+    commas: Vec<usize>,
+    probe_cutoff: usize,
+}
+
+/// Returns LSP signature help for the innermost function or method call whose
+/// argument list contains the cursor. Completed arguments narrow the overload
+/// set; an incomplete argument is deliberately treated as unknown.
+fn signature_help(
+    source: &str,
+    line: u32,
+    character: u32,
+    uri: &str,
+    document: &Document,
+) -> Option<Value> {
+    let context = signature_help_context(source, line, character).or_else(|| {
+        let cursor_byte = position_to_byte(source, line, character)?;
+        let mut repaired = source.to_owned();
+        repaired.insert(cursor_byte, ')');
+        let mut context = signature_help_context(&repaired, line, character)?;
+        context.call_end_byte = cursor_byte;
+        context.has_close = false;
+        Some(context)
+    })?;
+    let probe_documents = if document.analysis.is_some()
+        && (!document.completion_functions.is_empty() || !document.completion_methods.is_empty())
+    {
+        Vec::new()
+    } else {
+        let probe_source = signature_argument_probe_source(source, &context);
+        completion_probe_documents(uri, &probe_source, context.open_byte + 2)
+    };
+    let probe_document = probe_documents
+        .iter()
+        .find(|probe| probe.analysis.is_some());
+    let tooling_document =
+        if !document.completion_functions.is_empty() || !document.completion_methods.is_empty() {
+            document
+        } else {
+            probe_document?
+        };
+
+    let argument_types = context
+        .arguments
+        .iter()
+        .map(|argument| {
+            expression_types_for_signature(
+                argument.value_span,
+                document.analysis.as_ref(),
+                probe_document.and_then(|probe| probe.analysis.as_ref()),
+                source,
+                context.open_byte,
+            )
+        })
+        .collect::<Vec<_>>();
+    let receiver_types = context.receiver_span.map_or_else(Vec::new, |span| {
+        let current = document
+            .analysis
+            .as_ref()
+            .map_or_else(Vec::new, |analysis| {
+                expression_types_at(&analysis.typed, analysis.file_id, span)
+            });
+        if !current.is_empty() {
+            return current;
+        }
+        let Some(receiver_end_byte) = context.receiver_end_byte else {
+            return Vec::new();
+        };
+        let member_context = MemberCompletionContext {
+            receiver_span: span,
+            dot_byte: receiver_end_byte,
+            probe_end_byte: context.call_end_byte,
+            prefix: String::new(),
+            prefix_start_character: 0,
+        };
+        let receiver_probe = completion_probe_source(source, &member_context);
+        completion_probe_documents(uri, &receiver_probe, receiver_end_byte)
+            .iter()
+            .find_map(|probe| {
+                let analysis = probe.analysis.as_ref()?;
+                let types = expression_types_at(&analysis.typed, analysis.file_id, span);
+                (!types.is_empty()).then_some(types)
+            })
+            .unwrap_or_default()
+    });
+
+    let mut signatures = Vec::new();
+    let mut seen = HashSet::new();
+    if context.receiver_span.is_some() {
+        for candidate in &tooling_document.completion_methods {
+            if candidate.def.name != context.name
+                || !signature_candidate_matches(
+                    &candidate.def,
+                    true,
+                    &context,
+                    &argument_types,
+                    &receiver_types,
+                    &tooling_document.completion_aliases,
+                )
+            {
+                continue;
+            }
+            let signature = signature_information(&candidate.def, true, &context);
+            if seen.insert(signature["label"].as_str()?.to_owned()) {
+                signatures.push(signature);
+            }
+        }
+    } else {
+        let namespace_defs = if context.namespace_segments.is_empty() {
+            None
+        } else {
+            let file_id = namespace_file(tooling_document, &context.namespace_segments)?;
+            Some(exported_completion_defs(
+                file_id,
+                &tooling_document.source_map,
+                &mut HashMap::new(),
+                &mut HashSet::new(),
+            ))
+        };
+        for candidate in &tooling_document.completion_functions {
+            let in_scope = namespace_defs
+                .as_ref()
+                .map_or(candidate.visible_unqualified, |defs| {
+                    defs.contains(&candidate.id)
+                });
+            if !in_scope
+                || candidate.def.name != context.name && candidate.def.display_name != context.name
+                || !signature_candidate_matches(
+                    &candidate.def,
+                    false,
+                    &context,
+                    &argument_types,
+                    &receiver_types,
+                    &tooling_document.completion_aliases,
+                )
+            {
+                continue;
+            }
+            let signature = signature_information(&candidate.def, false, &context);
+            if seen.insert(signature["label"].as_str()?.to_owned()) {
+                signatures.push(signature);
+            }
+        }
+    }
+    (!signatures.is_empty()).then(|| {
+        let active_parameter = signatures[0]["activeParameter"].clone();
+        json!({
+            "signatures": signatures,
+            "activeSignature": 0,
+            "activeParameter": active_parameter,
+        })
+    })
+}
+
+fn expression_types_for_signature(
+    span: SourceSpan,
+    current: Option<&Analysis>,
+    probe: Option<&Analysis>,
+    source: &str,
+    open_byte: usize,
+) -> Vec<typed_ast::Type> {
+    for (analysis, target) in [
+        current.map(|analysis| (analysis, span)),
+        probe.map(|analysis| (analysis, signature_probe_span(span, source, open_byte))),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let types = expression_types_at(&analysis.typed, analysis.file_id, target);
+        if !types.is_empty() {
+            return types;
+        }
+    }
+    Vec::new()
+}
+
+fn signature_help_context(source: &str, line: u32, character: u32) -> Option<SignatureHelpContext> {
+    let cursor_byte = position_to_byte(source, line, character)?;
+    if completion_is_in_comment_or_string(source, cursor_byte) {
+        return None;
+    }
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_solar::LANGUAGE.into())
+        .expect("Solar grammar must load");
+    let tree = parser.parse(source, None)?;
+    let mut node = tree
+        .root_node()
+        .descendant_for_byte_range(cursor_byte.saturating_sub(1), cursor_byte.min(source.len()))?;
+    while !matches!(
+        node.kind(),
+        "call_expr" | "generic_call_expr" | "generic_method_call"
+    ) {
+        node = node.parent()?;
+    }
+
+    let (name_node, receiver, namespace_segments) = match node.kind() {
+        "generic_method_call" => (
+            node.child_by_field_name("method")?,
+            Some(node.child_by_field_name("receiver")?),
+            Vec::new(),
+        ),
+        "generic_call_expr" => (node.child_by_field_name("function")?, None, Vec::new()),
+        "call_expr" => {
+            let function = node.child_by_field_name("function")?;
+            if function.kind() == "field_access"
+                && function
+                    .child_by_field_name("field")
+                    .is_some_and(|field| field.kind() == "identifier")
+            {
+                (
+                    function.child_by_field_name("field")?,
+                    Some(function.child_by_field_name("object")?),
+                    Vec::new(),
+                )
+            } else {
+                let name_node = last_identifier(function)?;
+                let namespace_segments = if function.kind() == "path_expr" {
+                    let mut walk = function.walk();
+                    function
+                        .named_children(&mut walk)
+                        .filter(|child| child.kind() == "path_segment")
+                        .filter_map(|segment| segment.child_by_field_name("name"))
+                        .filter(|name| *name != name_node)
+                        .map(|name| source[name.byte_range()].to_owned())
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                (name_node, None, namespace_segments)
+            }
+        }
+        _ => unreachable!(),
+    };
+    let head_end = node
+        .child_by_field_name("type_args")
+        .map_or(name_node.end_byte(), |type_args| type_args.end_byte());
+    let explicit_type_argument_count = node.child_by_field_name("type_args").map(|type_args| {
+        let mut walk = type_args.walk();
+        type_args.named_children(&mut walk).count()
+    });
+    let open_byte = head_end
+        + source
+            .get(head_end..node.end_byte().max(cursor_byte).min(source.len()))?
+            .find('(')?;
+    let mut walk = node.walk();
+    let close_byte = node
+        .children(&mut walk)
+        .find(|child| child.kind() == ")" && child.start_byte() > open_byte)
+        .map(|child| child.start_byte());
+    if cursor_byte <= open_byte || close_byte.is_some_and(|close| cursor_byte > close) {
+        return None;
+    }
+
+    let argument_list = named_child(node, "argument_list");
+    let mut arguments = Vec::new();
+    let mut commas = Vec::new();
+    if let Some(argument_list) = argument_list {
+        let mut walk = argument_list.walk();
+        for child in argument_list.children(&mut walk) {
+            match child.kind() {
+                "," => commas.push(child.start_byte()),
+                "argument" => {
+                    let value = child.child_by_field_name("value")?;
+                    arguments.push(SignatureArgument {
+                        ordinal: arguments.len(),
+                        keyword: child
+                            .child_by_field_name("name")
+                            .map(|name| source[name.byte_range()].to_owned()),
+                        value_span: node_span(value, 0),
+                        argument_start_byte: child.start_byte(),
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+    let active_argument = commas.iter().filter(|comma| **comma < cursor_byte).count();
+    let active_keyword = arguments
+        .iter()
+        .find(|argument| argument.ordinal == active_argument)
+        .and_then(|argument| argument.keyword.clone());
+    let completed_arguments = arguments
+        .iter()
+        .filter(|argument| {
+            let end = span_end_byte(source, argument.value_span);
+            end <= cursor_byte && argument.ordinal <= active_argument
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let probe_cutoff = arguments
+        .iter()
+        .find(|argument| {
+            argument.ordinal == active_argument
+                && span_end_byte(source, argument.value_span) > cursor_byte
+        })
+        .map_or(cursor_byte, |argument| argument.argument_start_byte);
+
+    Some(SignatureHelpContext {
+        name: source[name_node.byte_range()].to_owned(),
+        namespace_segments,
+        call_start_byte: node.start_byte(),
+        call_end_byte: close_byte.map_or(node.end_byte().max(cursor_byte), |close| close + 1),
+        has_close: close_byte.is_some(),
+        open_byte,
+        active_argument,
+        active_keyword,
+        explicit_type_argument_count,
+        receiver_span: receiver.map(|receiver| node_span(receiver, 0)),
+        receiver_end_byte: receiver.map(|receiver| receiver.end_byte()),
+        arguments: completed_arguments,
+        commas,
+        probe_cutoff,
+    })
+}
+
+fn last_identifier(mut node: Node<'_>) -> Option<Node<'_>> {
+    loop {
+        if node.kind() == "identifier" {
+            return Some(node);
+        }
+        let mut walk = node.walk();
+        node = node.named_children(&mut walk).last()?;
+    }
+}
+
+fn span_end_byte(source: &str, span: SourceSpan) -> usize {
+    let offsets = source_line_offsets(source);
+    offsets[span.end.line as usize] + span.end.col as usize
+}
+
+fn signature_argument_probe_source(source: &str, context: &SignatureHelpContext) -> String {
+    let mut probe = source.as_bytes().to_vec();
+    blank_probe_range(&mut probe, context.call_start_byte, context.open_byte);
+    probe.insert(context.open_byte + 1, b'{');
+    for comma in &context.commas {
+        if *comma < context.probe_cutoff {
+            probe[*comma + 1] = b';';
+        }
+    }
+    for argument in &context.arguments {
+        if argument.keyword.is_some() {
+            let value_start = source_line_offsets(source)[argument.value_span.start.line as usize]
+                + argument.value_span.start.col as usize;
+            blank_probe_range(
+                &mut probe,
+                argument.argument_start_byte + 1,
+                value_start + 1,
+            );
+        }
+    }
+    let probe_cutoff = context.probe_cutoff + 1;
+    let call_end = context.call_end_byte.min(source.len()) + 1 - usize::from(context.has_close);
+    blank_probe_range(&mut probe, probe_cutoff, call_end);
+    let has_argument = !context.arguments.is_empty();
+    let already_separated = probe[context.open_byte + 2..probe_cutoff]
+        .iter()
+        .rev()
+        .find(|byte| !byte.is_ascii_whitespace())
+        .is_some_and(|byte| *byte == b';');
+    let tail = if !has_argument || already_separated {
+        " loop {}}"
+    } else {
+        "; loop {}}"
+    };
+    let tail = if context.has_close {
+        tail.to_owned()
+    } else {
+        format!("{tail})")
+    };
+    probe.splice(probe_cutoff..probe_cutoff, tail.bytes());
+    String::from_utf8(probe).unwrap()
+}
+
+fn signature_probe_span(mut span: SourceSpan, source: &str, open_byte: usize) -> SourceSpan {
+    let prefix = &source[..open_byte];
+    let open = (
+        prefix.bytes().filter(|byte| *byte == b'\n').count() as u32,
+        prefix
+            .rfind('\n')
+            .map_or(open_byte, |line| open_byte - line - 1) as u32,
+    );
+    if span.start.line == open.0 && span.start.col > open.1 {
+        span.start.col += 1;
+    }
+    if span.end.line == open.0 && span.end.col > open.1 {
+        span.end.col += 1;
+    }
+    span
+}
+
+fn signature_candidate_matches(
+    def: &ast::FunctionDef,
+    method: bool,
+    context: &SignatureHelpContext,
+    argument_types: &[Vec<typed_ast::Type>],
+    receiver_types: &[typed_ast::Type],
+    aliases: &HashMap<ast::DefId, (Vec<String>, ast::Type)>,
+) -> bool {
+    match context.explicit_type_argument_count {
+        Some(count) if count != def.out_type_params.len() => return false,
+        None if !def.out_type_params.is_empty() => return false,
+        _ => {}
+    }
+    let offset = usize::from(method);
+    if def.parameters.len() < offset {
+        return false;
+    }
+    let type_parameters = def
+        .type_params
+        .iter()
+        .chain(&def.out_type_params)
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut states = vec![HashMap::new()];
+    if method {
+        let Some(receiver_parameter) = def.parameters.first() else {
+            return false;
+        };
+        if !receiver_types.is_empty() {
+            states = signature_match_type(
+                states,
+                &receiver_parameter.ty,
+                receiver_types,
+                &type_parameters,
+                aliases,
+            );
+            if states.is_empty() {
+                return false;
+            }
+        }
+    }
+
+    let supplied = &def.parameters[offset..];
+    let required = supplied
+        .iter()
+        .take_while(|parameter| parameter.default.is_none())
+        .count();
+    let mut positional = 0;
+    let mut keyword_parameters = HashSet::new();
+    for (argument, types) in context.arguments.iter().zip(argument_types) {
+        let parameter_index = if let Some(keyword) = &argument.keyword {
+            let Some(index) = supplied.iter().position(|parameter| {
+                parameter_name(&parameter.pattern).is_some_and(|name| name == keyword)
+            }) else {
+                return false;
+            };
+            if index < required || !keyword_parameters.insert(index) {
+                return false;
+            }
+            index
+        } else {
+            let index = positional;
+            positional += 1;
+            if index >= required {
+                return false;
+            }
+            index
+        };
+        if !types.is_empty() {
+            states = signature_match_type(
+                states,
+                &supplied[parameter_index].ty,
+                types,
+                &type_parameters,
+                aliases,
+            );
+            if states.is_empty() {
+                return false;
+            }
+        }
+    }
+
+    let active_parameter = if let Some(keyword) = &context.active_keyword {
+        supplied.iter().position(|parameter| {
+            parameter_name(&parameter.pattern).is_some_and(|name| name == keyword)
+        })
+    } else {
+        Some(
+            context
+                .arguments
+                .iter()
+                .filter(|argument| {
+                    argument.ordinal < context.active_argument && argument.keyword.is_none()
+                })
+                .count(),
+        )
+    };
+    active_parameter.is_some_and(|index| index < supplied.len()) || supplied.is_empty()
+}
+
+fn signature_match_type(
+    states: Vec<HashMap<String, typed_ast::Type>>,
+    expected: &ast::Type,
+    actual_types: &[typed_ast::Type],
+    type_parameters: &[String],
+    aliases: &HashMap<ast::DefId, (Vec<String>, ast::Type)>,
+) -> Vec<HashMap<String, typed_ast::Type>> {
+    let expected = expand_completion_aliases(expected, aliases, 0);
+    let mut matched = Vec::new();
+    for state in states {
+        for actual in actual_types {
+            let mut next = state.clone();
+            if ast_type_matches(&expected, actual, type_parameters, &mut next) {
+                matched.push(next);
+            }
+        }
+    }
+    matched
+}
+
+fn signature_information(
+    def: &ast::FunctionDef,
+    method: bool,
+    context: &SignatureHelpContext,
+) -> Value {
+    let parameter_labels = def
+        .parameters
+        .iter()
+        .map(|parameter| {
+            format!(
+                "{}: {}",
+                parameter_name(&parameter.pattern).unwrap_or("_"),
+                ast_type_label(&parameter.ty)
+            )
+        })
+        .collect::<Vec<_>>();
+    let kind = match (def.is_unsafe, method) {
+        (true, true) => "unsafe method",
+        (true, false) => "unsafe fn",
+        (false, true) => "method",
+        (false, false) => "fn",
+    };
+    let mut generic_parameters = def.type_params.clone();
+    generic_parameters.extend(
+        def.out_type_params
+            .iter()
+            .map(|parameter| format!("out {parameter}")),
+    );
+    let generics = if generic_parameters.is_empty() {
+        String::new()
+    } else {
+        format!("#[{}]", generic_parameters.join(", "))
+    };
+    let mut label = format!(
+        "{kind} {}{generics}({})",
+        def.display_name,
+        parameter_labels.join(", ")
+    );
+    if let Some(return_type) = &def.return_type {
+        label.push_str(&format!(" -> {}", ast_type_label(return_type)));
+    }
+    let offset = usize::from(method);
+    let supplied = &def.parameters[offset..];
+    let active_supplied = context
+        .active_keyword
+        .as_ref()
+        .and_then(|keyword| {
+            supplied.iter().position(|parameter| {
+                parameter_name(&parameter.pattern).is_some_and(|name| name == keyword)
+            })
+        })
+        .unwrap_or_else(|| {
+            context
+                .arguments
+                .iter()
+                .filter(|argument| {
+                    argument.ordinal < context.active_argument && argument.keyword.is_none()
+                })
+                .count()
+        });
+    let active_parameter = (offset + active_supplied).min(parameter_labels.len().saturating_sub(1));
+    let parameters = parameter_labels
+        .into_iter()
+        .map(|label| json!({ "label": label }))
+        .collect::<Vec<_>>();
+    let mut result = json!({
+        "label": label,
+        "parameters": parameters,
+        "activeParameter": active_parameter,
+    });
+    if let Some(doc) = &def.doc {
+        result["documentation"] = json!({ "kind": "markdown", "value": doc });
+    }
+    result
+}
+
+fn parameter_name(pattern: &ast::DestructurePattern) -> Option<&str> {
+    match pattern {
+        ast::DestructurePattern::Name(ast::Ident::User(name) | ast::Ident::Synthetic(name)) => {
+            Some(name)
+        }
+        _ => None,
+    }
+}
+
+fn ast_type_label(ty: &ast::Type) -> String {
+    match ty {
+        ast::Type::Named(name) => name.to_string(),
+        ast::Type::Generic { name, type_args } => format!(
+            "{}#[{}]",
+            name,
+            type_args
+                .iter()
+                .map(ast_type_label)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        ast::Type::Reference(inner) => format!("&{}", ast_type_label(inner)),
+        ast::Type::NullableReference(inner) => format!("&?{}", ast_type_label(inner)),
+        ast::Type::Unique(inner) => format!("^{}", ast_type_label(inner)),
+        ast::Type::Slice(inner) => format!("[{}]", ast_type_label(inner)),
+        ast::Type::FixedArray(inner, size) => format!("[{}; {size}]", ast_type_label(inner)),
+        ast::Type::Function {
+            params,
+            return_type,
+        } => {
+            let mut label = format!(
+                "fn({})",
+                params
+                    .iter()
+                    .map(|(name, ty)| name.as_ref().map_or_else(
+                        || ast_type_label(ty),
+                        |name| format!("{name}: {}", ast_type_label(ty))
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            if let Some(return_type) = return_type {
+                label.push_str(&format!(" -> {}", ast_type_label(return_type)));
+            }
+            label
+        }
+        ast::Type::Tuple(types) => format!(
+            "({})",
+            types
+                .iter()
+                .map(ast_type_label)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        ast::Type::Infer => "_".to_owned(),
+    }
 }
 
 /// Returns type-aware member completions at `receiver.<cursor>`. When the
@@ -3384,6 +4069,9 @@ struct Document {
     /// the monomorphized typed AST, this retains methods that have not yet been
     /// called and therefore includes every generic candidate.
     completion_methods: Vec<CompletionMethod>,
+    /// Visible free-function declarations retained separately so signature
+    /// help can present every overload before a partial call type-checks.
+    completion_functions: Vec<CompletionFunction>,
     /// Visible top-level declarations and struct fields used by completion.
     completion_symbols: Vec<CompletionSymbol>,
     completion_fields: HashMap<ast::DefId, Vec<CompletionField>>,
@@ -3475,6 +4163,13 @@ struct CompletionMethod {
 }
 
 #[derive(Clone)]
+struct CompletionFunction {
+    id: ast::DefId,
+    def: ast::FunctionDef,
+    visible_unqualified: bool,
+}
+
+#[derive(Clone)]
 struct CompletionSymbol {
     label: String,
     kind: u32,
@@ -3556,6 +4251,7 @@ fn compute_with_diagnostics(uri: &str, source: &str) -> (Document, HashMap<Strin
             })
         })
         .collect();
+    let completion_functions = collect_completion_functions(&ast, &source_map);
     let CompletionCatalog {
         symbols: completion_symbols,
         fields: completion_fields,
@@ -3601,6 +4297,7 @@ fn compute_with_diagnostics(uri: &str, source: &str) -> (Document, HashMap<Strin
         global_defs: definition_catalog.global_defs,
         generic_bodies: definition_catalog.generic_bodies,
         completion_methods,
+        completion_functions,
         completion_symbols,
         completion_fields,
         namespace_symbols,
@@ -3623,6 +4320,28 @@ struct DefinitionCatalog {
     type_defs: HashMap<ast::DefId, SourceSpan>,
     global_defs: HashMap<ast::DefId, SourceSpan>,
     generic_bodies: Vec<SourceSpan>,
+}
+
+fn collect_completion_functions(
+    ast: &solar::resolved_ast::SourceFile,
+    source_map: &SourceMap,
+) -> Vec<CompletionFunction> {
+    let visible_defs = visible_completion_defs(source_map);
+    ast.items
+        .iter()
+        .filter_map(|item| {
+            let ast::TopLevelItem::Function(def) = item else {
+                return None;
+            };
+            let id = ast::DefId::new(def.span.file_id, def.name.clone());
+            Some(CompletionFunction {
+                visible_unqualified: visible_defs.contains(&id)
+                    || def.span.file_id == ast::SYNTHETIC_FILE,
+                id,
+                def: def.clone(),
+            })
+        })
+        .collect()
 }
 
 fn collect_completion_catalog(
@@ -4908,6 +5627,95 @@ mod tests {
             &uri,
             &document,
         )
+    }
+
+    fn signatures_at(source: &str, needle: &str) -> Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/runtime/signature_help_probe.solar");
+        signatures_at_for_path(&path, source, needle)
+    }
+
+    fn signatures_at_for_path(path: &std::path::Path, source: &str, needle: &str) -> Value {
+        let uri = format!("file://{}", path.display());
+        let document = compute(&uri, source);
+        let (line, character) = occurrence_position(source, needle, 0);
+        signature_help(
+            source,
+            line,
+            character + needle.encode_utf16().count() as u32,
+            &uri,
+            &document,
+        )
+        .expect("signature help")
+    }
+
+    #[test]
+    fn signature_help_filters_function_overloads_by_completed_arguments() {
+        let source = r#"
+fn select(prefix: Int, value: Bool) {}
+fn select(prefix: Bool, value: Int) {}
+fn select(prefix: Int, value: Uint) {}
+fn main() { select(1, ); }
+"#;
+        let help = signatures_at(source, "select(1, ");
+        let signatures = help["signatures"].as_array().unwrap();
+
+        assert_eq!(signatures.len(), 2, "{help}");
+        assert!(
+            signatures
+                .iter()
+                .any(|signature| signature["parameters"][1]["label"] == "value: Bool"),
+            "{help}"
+        );
+        assert!(
+            signatures
+                .iter()
+                .any(|signature| signature["parameters"][1]["label"] == "value: Uint"),
+            "{help}"
+        );
+        assert!(signatures.iter().all(|signature| {
+            signature["activeParameter"] == 1
+                && signature["parameters"][0]["label"] == "prefix: Int"
+        }));
+
+        let help = signatures_at(source, "main() { select(");
+        assert_eq!(help["signatures"].as_array().unwrap().len(), 3, "{help}");
+
+        let source = source.replace("select(1, );", "select(1, ");
+        let help = signatures_at(&source, "select(1, ");
+        assert_eq!(help["signatures"].as_array().unwrap().len(), 2, "{help}");
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/multi_file/pub_field/signature_help.solar");
+        let source = "import lib from \"lib.solar\";\nfn main() { lib::make_pair(1, }\n";
+        let help = signatures_at_for_path(&path, source, "lib::make_pair(1, ");
+        assert_eq!(help["signatures"].as_array().unwrap().len(), 1, "{help}");
+        assert_eq!(help["signatures"][0]["parameters"][1]["label"], "b: Int");
+    }
+
+    #[test]
+    fn signature_help_filters_method_overloads_and_accounts_for_self() {
+        let source = r#"
+struct Box { value: Int }
+struct Other { value: Int }
+method update(self: Box, prefix: Int, value: Bool) {}
+method update(self: Box, prefix: Bool, value: Int) {}
+method update(self: Other, prefix: Int, value: Uint) {}
+fn main() {
+    let boxed = Box { value: 1 };
+    boxed.update(1, );
+}
+"#;
+        let help = signatures_at(source, "boxed.update(1, ");
+        let signatures = help["signatures"].as_array().unwrap();
+
+        assert_eq!(signatures.len(), 1, "{help}");
+        assert_eq!(signatures[0]["parameters"][2]["label"], "value: Bool");
+        assert_eq!(signatures[0]["activeParameter"], 2);
+
+        let source = source.replace("boxed.update(1, );", "boxed.update(1, ");
+        let help = signatures_at(&source, "boxed.update(1, ");
+        assert_eq!(help["signatures"].as_array().unwrap().len(), 1, "{help}");
     }
 
     #[test]
