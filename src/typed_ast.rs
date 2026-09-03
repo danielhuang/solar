@@ -1113,17 +1113,20 @@ pub enum TypedPattern {
     Wildcard(ast::Ident, Type),
 }
 
+#[derive(Clone)]
 struct CaptureContext {
     scope_depth_barrier: usize,
     captures: Vec<CapturedVar>,
     captured_names: HashSet<ast::Ident>,
 }
 
+#[derive(Clone)]
 struct GenericStructDef {
     type_params: Vec<String>,
     ast_def: ast::StructDef,
 }
 
+#[derive(Clone)]
 struct GenericEnumDef {
     type_params: Vec<String>,
     ast_def: ast::EnumDef,
@@ -1169,7 +1172,7 @@ fn all_function_type_params(def: &ast::FunctionDef) -> Vec<String> {
 /// the overloads whose receiver type can possibly match, instead of scanning
 /// every same-named method in the program (which was quadratic: #call-sites ×
 /// #methods-with-that-name).
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct MethodIndex {
     /// Concrete entries (indices into `method_defs[name]`) whose first param's
     /// resolved type has a struct/enum base name, grouped by that name.
@@ -1441,6 +1444,7 @@ fn type_param_appears_in(ty: &ast::Type, param: &str) -> bool {
     }
 }
 
+#[derive(Clone)]
 struct Lowerer<'a> {
     structs: HashMap<DefId, &'a ast::StructDef>,
     enums: HashMap<DefId, &'a ast::EnumDef>,
@@ -1534,6 +1538,7 @@ struct LoopCtx {
     break_ty: Option<Type>,
 }
 
+#[derive(Clone)]
 struct TryBlockContext {
     result_name: ast::Ident,
     result_id: TypeId,
@@ -9565,6 +9570,87 @@ pub fn lower(source: &resolved_ast::SourceFile) -> Result<SourceFile, CompileErr
                 lowerer.lower_all()
             })
             .expect("failed to spawn lowering thread")
+            .join()
+            .unwrap_or_else(|p| std::panic::resume_unwind(p))
+    })
+}
+
+/// A generic method specialization requested by type-aware tooling.
+#[derive(Debug, Clone)]
+pub struct MethodMonomorphization {
+    /// The declaration span that identifies the method overload.
+    pub definition_span: ast::SourceSpan,
+    /// Concrete arguments for the method's inferred type parameters, in
+    /// declaration order.
+    pub type_arguments: Vec<Type>,
+}
+
+/// Reports whether each requested generic method body type-checks after its
+/// inferred type parameters are substituted.
+///
+/// Every specialization is checked in an isolated copy of the prepared
+/// lowering state. A rejected speculative instance therefore cannot affect a
+/// later request or the program's ordinary compiler analysis.
+pub fn method_monomorphizations_typecheck(
+    source: &resolved_ast::SourceFile,
+    requests: &[MethodMonomorphization],
+) -> Result<Vec<bool>, CompileError> {
+    const LOWER_STACK_SIZE: usize = 512 << 20;
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .name("solar-tooling-monomorphization".to_string())
+            .stack_size(LOWER_STACK_SIZE)
+            .spawn_scoped(s, || {
+                let mut base = Lowerer::new(source)?;
+                base.lower_all()?;
+                Ok(requests
+                    .iter()
+                    .map(|request| {
+                        let entry = base.method_defs.iter().find_map(|(name, entries)| {
+                            entries
+                                .iter()
+                                .find(|entry| {
+                                    let actual = entry.ast_def.span;
+                                    let expected = request.definition_span;
+                                    actual.file_id == expected.file_id
+                                        && actual.start.line == expected.start.line
+                                        && actual.start.col == expected.start.col
+                                        && actual.end.line == expected.end.line
+                                        && actual.end.col == expected.end.col
+                                })
+                                .map(|entry| {
+                                    let generic_count = entries
+                                        .iter()
+                                        .filter(|entry| !entry.type_params.is_empty())
+                                        .count();
+                                    (name.clone(), entry.clone(), generic_count)
+                                })
+                        });
+                        let Some((name, entry, generic_count)) = entry else {
+                            return false;
+                        };
+                        if entry.type_params.len() != request.type_arguments.len() {
+                            return false;
+                        }
+                        let mut trial = base.clone();
+                        let type_arguments = request
+                            .type_arguments
+                            .iter()
+                            .map(|ty| trial.concrete_type_to_ast_type(ty))
+                            .collect::<Vec<_>>();
+                        trial
+                            .ensure_function_monomorphized_with_def(
+                                &name,
+                                &entry,
+                                &type_arguments,
+                                generic_count,
+                                "__method_",
+                            )
+                            .is_ok()
+                    })
+                    .collect())
+            })
+            .expect("failed to spawn tooling lowering thread")
             .join()
             .unwrap_or_else(|p| std::panic::resume_unwind(p))
     })

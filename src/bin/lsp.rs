@@ -249,7 +249,6 @@ fn completions(
     } else {
         (current_types, document)
     };
-
     if receiver_types.is_empty() {
         return Vec::new();
     }
@@ -288,6 +287,60 @@ fn completions(
             items.push(item);
         }
     }
+    let mut monomorphization_requests = Vec::new();
+    let mut monomorphization_keys = Vec::new();
+    let mut requested = HashSet::new();
+    for method in &tooling_document.completion_methods {
+        if !method.def.name.starts_with(&context.prefix)
+            || method.def.type_params.is_empty()
+            || !method.def.out_type_params.is_empty()
+        {
+            continue;
+        }
+        let Some(self_type) = method.def.parameters.first().map(|parameter| &parameter.ty) else {
+            continue;
+        };
+        let self_type =
+            expand_completion_aliases(self_type, &tooling_document.completion_aliases, 0);
+        for receiver_type in &receiver_types {
+            let Some(receiver_match) =
+                method_receiver_match(receiver_type, &self_type, &method.def.type_params)
+            else {
+                continue;
+            };
+            let Some(type_arguments) = method
+                .def
+                .type_params
+                .iter()
+                .map(|parameter| receiver_match.substitutions.get(parameter).cloned())
+                .collect::<Option<Vec<_>>>()
+            else {
+                // A later call argument could bind the remaining parameter, so
+                // this specialization still has the potential to type-check.
+                continue;
+            };
+            let key = (span_key(method.def.span), type_arguments.clone());
+            if requested.insert(key.clone()) {
+                monomorphization_keys.push(key);
+                monomorphization_requests.push(typed_ast::MethodMonomorphization {
+                    definition_span: method.def.span,
+                    type_arguments,
+                });
+            }
+        }
+    }
+    let mut rejected_monomorphizations = HashSet::new();
+    if !monomorphization_requests.is_empty()
+        && let Some(resolved) = &tooling_document.resolved
+        && let Ok(results) =
+            typed_ast::method_monomorphizations_typecheck(resolved, &monomorphization_requests)
+    {
+        for (key, typechecks) in monomorphization_keys.into_iter().zip(results) {
+            if !typechecks {
+                rejected_monomorphizations.insert(key);
+            }
+        }
+    }
     for method in &tooling_document.completion_methods {
         if !method.def.name.starts_with(&context.prefix) {
             continue;
@@ -305,11 +358,23 @@ fn completions(
                 .collect();
             let self_type =
                 expand_completion_aliases(self_type, &tooling_document.completion_aliases, 0);
-            let Some(adjustment) =
-                method_receiver_adjustment(receiver_type, &self_type, &type_parameters)
+            let Some(receiver_match) =
+                method_receiver_match(receiver_type, &self_type, &type_parameters)
             else {
                 continue;
             };
+            if method.def.out_type_params.is_empty()
+                && let Some(type_arguments) = method
+                    .def
+                    .type_params
+                    .iter()
+                    .map(|parameter| receiver_match.substitutions.get(parameter).cloned())
+                    .collect::<Option<Vec<_>>>()
+                && rejected_monomorphizations.contains(&(span_key(method.def.span), type_arguments))
+            {
+                continue;
+            }
+            let adjustment = receiver_match.adjustment;
             let key = (
                 method.def.name.clone(),
                 adjustment.clone(),
@@ -828,17 +893,26 @@ fn expand_completion_aliases(
     expand(ty, aliases, &HashMap::new(), depth)
 }
 
-fn method_receiver_adjustment(
+struct MethodReceiverMatch {
+    adjustment: String,
+    substitutions: HashMap<String, typed_ast::Type>,
+}
+
+fn method_receiver_match(
     actual: &typed_ast::Type,
     expected: &ast::Type,
     type_parameters: &[String],
-) -> Option<String> {
+) -> Option<MethodReceiverMatch> {
     let candidates = ["", "&", "@", "@@", "@@@"];
     candidates.into_iter().find_map(|adjustment| {
         let adjusted = adjusted_receiver_type(actual, adjustment)?;
         let mut substitutions = HashMap::new();
-        ast_type_matches(expected, &adjusted, type_parameters, &mut substitutions)
-            .then(|| adjustment.to_owned())
+        ast_type_matches(expected, &adjusted, type_parameters, &mut substitutions).then(|| {
+            MethodReceiverMatch {
+                adjustment: adjustment.to_owned(),
+                substitutions,
+            }
+        })
     })
 }
 
@@ -2984,6 +3058,9 @@ struct Document {
     completion_fields: HashMap<ast::DefId, Vec<CompletionField>>,
     /// Type aliases expanded while matching method receiver declarations.
     completion_aliases: HashMap<ast::DefId, (Vec<String>, ast::Type)>,
+    /// The resolved program retained for speculative generic-method
+    /// monomorphization during member completion.
+    resolved: Option<solar::resolved_ast::SourceFile>,
     /// Module aliases declared throughout the resolved import graph. Each
     /// entry records both the imported file and the import statement so path
     /// fragments can navigate through re-exported modules.
@@ -3116,6 +3193,7 @@ fn compute_with_diagnostics(uri: &str, source: &str) -> (Document, HashMap<Strin
         completion_symbols,
         completion_fields,
         completion_aliases,
+        resolved: Some(ast),
         module_imports,
         analysis,
         source_map,
@@ -4390,6 +4468,41 @@ fn main() {
             .find(|item| item["label"] == "read")
             .expect("aliased receiver completion");
         assert_eq!(read["additionalTextEdits"][0]["newText"], "&");
+    }
+
+    #[test]
+    fn completion_excludes_generic_methods_whose_specialization_does_not_typecheck() {
+        let source = r#"
+fn main() {
+    [1, 2, 3].count_;
+    println(0);
+}
+"#;
+        let items = completion_items(source, "[1, 2, 3].count_");
+        assert!(
+            items
+                .iter()
+                .all(|item| !item["label"].as_str().unwrap().starts_with("count_"))
+        );
+
+        let blank_source = source.replace("[1, 2, 3].count_", "[1, 2, 3].");
+        let items = completion_items(&blank_source, "[1, 2, 3].");
+        assert!(
+            items
+                .iter()
+                .all(|item| !item["label"].as_str().unwrap().starts_with("count_"))
+        );
+        assert!(items.iter().any(|item| item["label"] == "len"));
+
+        let valid_source = source.replace("[1, 2, 3].count_", "[1, 2, 3].le");
+        let items = completion_items(&valid_source, "[1, 2, 3].le");
+        assert!(items.iter().any(|item| item["label"] == "len"));
+
+        let source = source.replace("[1, 2, 3].count_", "1.count_");
+        let items = completion_items(&source, "1.count_");
+        for name in ["count_leading_zeros", "count_trailing_zeros", "count_ones"] {
+            assert!(items.iter().any(|item| item["label"] == name), "{name}");
+        }
     }
 
     #[test]

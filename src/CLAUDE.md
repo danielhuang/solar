@@ -123,7 +123,10 @@ the source annotation is omitted. Their positions use LSP UTF-16 coordinates
 and range requests must not return hints outside the requested range.
 Completion is type-aware for member access. Method candidates must match the
 compiler's explicit receiver rules and add postfix `&` or `@` edits when a
-value must be referenced or a reference dereferenced to match `self`.
+value must be referenced or a reference dereferenced to match `self`. When the
+receiver binds every inferred type parameter of a generic method, completion
+must also reject candidates whose resulting monomorphized body does not
+type-check.
 Top-level completion must follow the root file's imports and public re-export
 chains; loading a private transitive module does not put its declarations in
 scope.

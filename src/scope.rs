@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 
 /// A stack of lexical scopes.
+#[derive(Clone)]
 pub struct ScopeStack<V, K = String> {
     scopes: Vec<HashMap<K, V>>,
 }
