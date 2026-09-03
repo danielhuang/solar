@@ -64,7 +64,10 @@ AST, while `ir_interp` and native codegen consume IR.
   `Ident` variants until `mangled_ast` renders them into disjoint strings.
 - Keep mangling and `solar-system/src/panic.rs` demangling in sync.
 - User program errors must use `CompileError` and the reporting system in
-  `error.rs`; malformed input must not panic the compiler or LSP.
+  `error.rs`; malformed input must not panic the compiler or LSP. Preserve
+  post-monomorphization call failures as cause chains: terminal diagnostics
+  render the innermost cause first and the outermost call error last, while LSP
+  marks only the outermost diagnostic as an error and its causes as information.
 - Escape analysis is conservative: uncertainty means the value may escape.
 - Compile-time field reflection evaluates its object once.
 - Keep integer matches as flat match nodes through typed AST, mangling, and IR;

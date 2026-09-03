@@ -1,9 +1,23 @@
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/typecheck")
         .join(name)
+}
+
+fn error_chain(error: &solar::error::CompileError) -> String {
+    let mut messages = error
+        .caused_by
+        .as_deref()
+        .map(error_chain)
+        .unwrap_or_default();
+    if !messages.is_empty() {
+        messages.push('\n');
+    }
+    messages.push_str(&error.message);
+    messages
 }
 
 /// Compile a single file without stdlib (for testing raw type errors).
@@ -16,7 +30,7 @@ fn compile(file_path: &Path) {
     };
     match solar::typed_ast::lower(&resolved) {
         Ok(_) => {}
-        Err(e) => panic!("{}", e.message),
+        Err(error) => panic!("{}", error_chain(&error)),
     }
 }
 
@@ -24,7 +38,7 @@ fn compile(file_path: &Path) {
 fn compile_with_pipeline(file_path: &Path) {
     match solar::pipeline::compile(file_path) {
         Ok(_) => {}
-        Err((errors, _)) => panic!("{}", errors[0].message),
+        Err((errors, _)) => panic!("{}", error_chain(&errors[0])),
     }
 }
 
@@ -32,6 +46,37 @@ fn compile_with_pipeline(file_path: &Path) {
 fn example_typechecks() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/example.solar");
     compile_with_pipeline(&path);
+}
+
+#[test]
+fn monomorphization_error_retains_and_prints_the_call_chain() {
+    let path = fixture("monomorphization_error_chain.solar");
+    let (errors, _) = match solar::pipeline::compile(&path) {
+        Ok(_) => panic!("expected type-check failure"),
+        Err(error) => error,
+    };
+    let outer = &errors[0];
+    assert!(outer.message.contains("`outer`"));
+    assert_eq!(outer.span.start.line, 4);
+    let middle = outer.caused_by.as_ref().expect("outer call cause");
+    assert!(middle.message.contains("`inner`"));
+    assert_eq!(middle.span.start.line, 2);
+    let inner = middle.caused_by.as_ref().expect("inner call cause");
+    assert!(inner.message.contains("got Bool"));
+    assert_eq!(inner.span.start.line, 0);
+    assert!(inner.caused_by.is_none());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_solar"))
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let inner_position = stderr.find(&inner.message).expect("inner diagnostic");
+    let middle_position = stderr.find(&middle.message).expect("middle diagnostic");
+    let outer_position = stderr.find(&outer.message).expect("outer diagnostic");
+    assert!(inner_position < middle_position);
+    assert!(middle_position < outer_position);
 }
 
 #[test]

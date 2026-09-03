@@ -1684,32 +1684,62 @@ fn diagnostics_from_errors(
 ) -> HashMap<String, Vec<Value>> {
     let mut diagnostics = HashMap::<String, Vec<Value>>::new();
     let root_path = file_uri_to_path(root_uri).map(|path| path.canonicalize().unwrap_or(path));
+    let context = DiagnosticContext {
+        root_uri,
+        root_source,
+        root_path: root_path.as_deref(),
+        source_map,
+    };
     for error in errors {
-        // Parsing can fail before resolve_source has recorded root_file_id, so
-        // also recognize the root by its canonical filename in the SourceMap.
-        let mapped_source = source_map.get(error.span.file_id);
-        let is_root = source_map.root_file_id() == Some(error.span.file_id)
-            || mapped_source.is_some_and(|(filename, _)| {
-                let path = PathBuf::from(filename);
-                let path = path.canonicalize().unwrap_or(path);
-                root_path.as_ref() == Some(&path)
-            });
-        let (uri, file_source) = if is_root {
-            (root_uri.to_owned(), root_source)
-        } else if let Some((filename, source)) = mapped_source {
-            (path_to_file_uri(filename), source)
-        } else {
-            (root_uri.to_owned(), root_source)
-        };
-        diagnostics
-            .entry(uri)
-            .or_default()
-            .push(compile_error_diagnostic(error, file_source));
+        push_compile_error_diagnostics(&mut diagnostics, error, true, &context);
     }
     diagnostics
 }
 
-fn compile_error_diagnostic(error: &CompileError, source: &str) -> Value {
+struct DiagnosticContext<'a> {
+    root_uri: &'a str,
+    root_source: &'a str,
+    root_path: Option<&'a std::path::Path>,
+    source_map: &'a SourceMap,
+}
+
+fn push_compile_error_diagnostics(
+    diagnostics: &mut HashMap<String, Vec<Value>>,
+    error: &CompileError,
+    outermost: bool,
+    context: &DiagnosticContext,
+) {
+    if let Some(cause) = &error.caused_by {
+        push_compile_error_diagnostics(diagnostics, cause, false, context);
+    }
+
+    // Parsing can fail before resolve_source has recorded root_file_id, so
+    // also recognize the root by its canonical filename in the SourceMap.
+    let mapped_source = context.source_map.get(error.span.file_id);
+    let is_root = context.source_map.root_file_id() == Some(error.span.file_id)
+        || mapped_source.is_some_and(|(filename, _)| {
+            let path = PathBuf::from(filename);
+            let path = path.canonicalize().unwrap_or(path);
+            context.root_path == Some(path.as_path())
+        });
+    let (uri, file_source) = if is_root {
+        (context.root_uri.to_owned(), context.root_source)
+    } else if let Some((filename, source)) = mapped_source {
+        (path_to_file_uri(filename), source)
+    } else {
+        (context.root_uri.to_owned(), context.root_source)
+    };
+    diagnostics
+        .entry(uri)
+        .or_default()
+        .push(compile_error_diagnostic(
+            error,
+            file_source,
+            if outermost { 1 } else { 3 },
+        ));
+}
+
+fn compile_error_diagnostic(error: &CompileError, source: &str, severity: u32) -> Value {
     let position = |pos: ast::SourcePos| {
         let line = source.lines().nth(pos.line as usize).unwrap_or("");
         json!({
@@ -1722,7 +1752,7 @@ fn compile_error_diagnostic(error: &CompileError, source: &str) -> Value {
             "start": position(error.span.start),
             "end": position(error.span.end),
         },
-        "severity": 1,
+        "severity": severity,
         "source": "solar",
         "message": error.message,
     })
@@ -4659,6 +4689,24 @@ fn main() {
     }
 
     #[test]
+    fn diagnostics_report_monomorphization_causes_as_information() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/typecheck/monomorphization_error_chain.solar");
+        let uri = format!("file://{}", path.display());
+        let source = std::fs::read_to_string(path).unwrap();
+
+        let diagnostics = check_document(&uri, &source);
+        let root = diagnostics.get(&uri).expect("root diagnostics");
+        assert_eq!(root.len(), 3);
+        assert_eq!(root[0]["severity"], 3);
+        assert!(root[0]["message"].as_str().unwrap().contains("got Bool"));
+        assert_eq!(root[1]["severity"], 3);
+        assert!(root[1]["message"].as_str().unwrap().contains("`inner`"));
+        assert_eq!(root[2]["severity"], 1);
+        assert!(root[2]["message"].as_str().unwrap().contains("`outer`"));
+    }
+
+    #[test]
     fn check_document_reports_root_parse_errors() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/multi_file/bad_qualified_intrinsic/main.solar");
@@ -4706,7 +4754,7 @@ fn main() {
             },
         );
 
-        let diagnostic = compile_error_diagnostic(&error, "éx");
+        let diagnostic = compile_error_diagnostic(&error, "éx", 1);
 
         assert_eq!(diagnostic["range"]["start"]["character"], 1);
         assert_eq!(diagnostic["range"]["end"]["character"], 2);

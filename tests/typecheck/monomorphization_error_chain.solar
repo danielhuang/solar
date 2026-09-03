@@ -1,0 +1,5 @@
+fn inner#[T](value: T) -> T { value + value }
+
+fn outer#[T](value: T) -> T { inner(value) }
+
+fn main() { outer(true); }

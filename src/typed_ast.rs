@@ -1869,6 +1869,22 @@ impl<'a> Lowerer<'a> {
         name
     }
 
+    fn monomorphization_call_error(
+        &self,
+        name: &str,
+        span: ast::SourceSpan,
+        caused_by: CompileError,
+    ) -> CompileError {
+        CompileError::new(
+            format!(
+                "failed to type-check call to `{}` after monomorphization",
+                self.display_name(name)
+            ),
+            span,
+        )
+        .with_cause(caused_by)
+    }
+
     /// Whether an unresolved bare function name may use the fallback needed by
     /// raw type-checking and synthetic numeric constructors. Resolved
     /// cross-file calls carry a `GlobalRef` and must never arrive here by
@@ -7916,13 +7932,15 @@ impl<'a> Lowerer<'a> {
             self.require_unsafe_access(&gdef.ast_def, span)?;
             let (effective_type_args, pre_lowered_args) =
                 self.bind_output_generic_call(name, &gdef, type_args, &full_args)?;
-            let mangled = self.ensure_function_monomorphized_with_def(
-                name,
-                &gdef,
-                &effective_type_args,
-                num_generic_overloads,
-                mangle_prefix,
-            )?;
+            let mangled = self
+                .ensure_function_monomorphized_with_def(
+                    name,
+                    &gdef,
+                    &effective_type_args,
+                    num_generic_overloads,
+                    mangle_prefix,
+                )
+                .map_err(|cause| self.monomorphization_call_error(name, span, cause))?;
             let mono_fn = self.monomorphized_functions[&mangled].clone();
             if full_args.len() != mono_fn.parameters.len() {
                 return Err(CompileError::new(
@@ -8269,13 +8287,15 @@ impl<'a> Lowerer<'a> {
                 }
                 Candidate::Generic(gdef, inferred, lowered_args) => {
                     self.require_unsafe_access(&gdef.ast_def, span)?;
-                    let mangled = self.ensure_function_monomorphized_with_def(
-                        name,
-                        &gdef,
-                        &inferred,
-                        num_generic_overloads,
-                        mangle_prefix,
-                    )?;
+                    let mangled = self
+                        .ensure_function_monomorphized_with_def(
+                            name,
+                            &gdef,
+                            &inferred,
+                            num_generic_overloads,
+                            mangle_prefix,
+                        )
+                        .map_err(|cause| self.monomorphization_call_error(name, span, cause))?;
                     let mono_fn = self.monomorphized_functions[&mangled].clone();
                     let mut coerced_args: Vec<Expr> = Vec::new();
                     for (lowered, param) in lowered_args.into_iter().zip(mono_fn.parameters.iter())
@@ -8386,13 +8406,15 @@ impl<'a> Lowerer<'a> {
                 let inferred =
                     self.infer_type_args(name, &type_params, &param_ast_types, &arg_types)?;
 
-                let mangled = self.ensure_function_monomorphized_with_def(
-                    name,
-                    gdef,
-                    &inferred,
-                    num_generic_overloads,
-                    mangle_prefix,
-                )?;
+                let mangled = self
+                    .ensure_function_monomorphized_with_def(
+                        name,
+                        gdef,
+                        &inferred,
+                        num_generic_overloads,
+                        mangle_prefix,
+                    )
+                    .map_err(|cause| self.monomorphization_call_error(name, span, cause))?;
                 let mono_fn = self.monomorphized_functions[&mangled].clone();
 
                 let mut coerced_args: Vec<Expr> = Vec::new();

@@ -144,6 +144,8 @@ pub struct CompileError {
     pub span: SourceSpan,
     /// Secondary annotations.
     pub labels: Vec<Label>,
+    /// The lower-level diagnostic that caused this error, if any.
+    pub caused_by: Option<Box<CompileError>>,
 }
 
 impl CompileError {
@@ -153,6 +155,7 @@ impl CompileError {
             message,
             span,
             labels: vec![],
+            caused_by: None,
         }
     }
 
@@ -162,6 +165,12 @@ impl CompileError {
             message: message.into(),
             span,
         });
+        self
+    }
+
+    /// Attaches the lower-level diagnostic that caused this error.
+    pub fn with_cause(mut self, caused_by: CompileError) -> Self {
+        self.caused_by = Some(Box::new(caused_by));
         self
     }
 }
@@ -210,8 +219,7 @@ fn span_to_byte_range(span: &SourceSpan, offsets: &[usize]) -> std::ops::Range<u
     }
 }
 
-/// Render a CompileError with source context using annotate-snippets.
-pub fn render_error(err: &CompileError, source: &str, filename: &str) {
+fn render_single_error(err: &CompileError, source: &str, filename: &str) {
     use annotate_snippets::{AnnotationKind, Group, Level, Renderer, Snippet};
 
     let offsets = line_offsets(source);
@@ -247,10 +255,24 @@ pub fn render_error(err: &CompileError, source: &str, filename: &str) {
     eprintln!("{}", renderer.render(report));
 }
 
-/// Render a CompileError using a SourceMap to look up the correct file.
+/// Render a CompileError and its causes with source context using
+/// annotate-snippets. Causes are printed first, leaving the outermost error
+/// closest to the command prompt.
+pub fn render_error(err: &CompileError, source: &str, filename: &str) {
+    if let Some(cause) = &err.caused_by {
+        render_error(cause, source, filename);
+    }
+    render_single_error(err, source, filename);
+}
+
+/// Render a CompileError and its causes using a SourceMap to look up each
+/// diagnostic's source file.
 pub fn render_error_with_source_map(err: &CompileError, source_map: &SourceMap) {
+    if let Some(cause) = &err.caused_by {
+        render_error_with_source_map(cause, source_map);
+    }
     if let Some((filename, source)) = source_map.get(err.span.file_id) {
-        render_error(err, source, filename);
+        render_single_error(err, source, filename);
     } else {
         eprintln!("error: {}", err.message);
     }
