@@ -136,6 +136,8 @@ value must be referenced or a reference dereferenced to match `self`. When the
 receiver binds every inferred type parameter of a generic method, completion
 must also reject candidates whose resulting monomorphized body does not
 type-check.
+Completion after a module path such as `process::` lists that namespace's public
+declarations and public submodules, including named and module re-exports.
 Top-level completion must follow the root file's imports and public re-export
 chains; loading a private transitive module does not put its declarations in
 scope.

@@ -57,7 +57,7 @@ fn main() {
                     "capabilities": {
                         "textDocumentSync": 1,
                         "documentFormattingProvider": true,
-                        "completionProvider": { "triggerCharacters": ["."] },
+                        "completionProvider": { "triggerCharacters": [".", ":"] },
                         "hoverProvider": true,
                         "definitionProvider": true,
                         "inlayHintProvider": true,
@@ -230,6 +230,9 @@ fn completions(
     uri: &str,
     document: &Document,
 ) -> Vec<Value> {
+    if let Some(context) = namespace_completion_context(source, line, character) {
+        return namespace_completions(source, line, character, uri, document, &context);
+    }
     let Some(context) = member_completion_context(source, line, character) else {
         return ordinary_completions(source, line, character, uri, document);
     };
@@ -427,6 +430,146 @@ fn completions(
         }
     }
     items
+}
+
+struct NamespaceCompletionContext {
+    segments: Vec<String>,
+    prefix: String,
+    path_start_byte: usize,
+    prefix_start_character: u32,
+}
+
+fn namespace_completion_context(
+    source: &str,
+    line: u32,
+    character: u32,
+) -> Option<NamespaceCompletionContext> {
+    let cursor_byte = position_to_byte(source, line, character)?;
+    if completion_is_in_comment_or_string(source, cursor_byte) {
+        return None;
+    }
+
+    let mut prefix_start = cursor_byte;
+    while prefix_start > 0 {
+        let ch = source[..prefix_start].chars().next_back()?;
+        if ch == '_' || ch.is_alphanumeric() {
+            prefix_start -= ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    let qualifier_end = prefix_start.checked_sub(2)?;
+    if source.get(qualifier_end..prefix_start)? != "::" {
+        return None;
+    }
+
+    let mut path_start = qualifier_end;
+    while path_start > 0 {
+        let ch = source[..path_start].chars().next_back()?;
+        if ch == '_' || ch == ':' || ch.is_alphanumeric() {
+            path_start -= ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    let qualifier = source.get(path_start..qualifier_end)?;
+    let segments = qualifier
+        .split("::")
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if segments.is_empty() || segments.join("::") != qualifier {
+        return None;
+    }
+
+    let line_start = source[..prefix_start]
+        .rfind('\n')
+        .map_or(0, |index| index + 1);
+    Some(NamespaceCompletionContext {
+        segments,
+        prefix: source[prefix_start..cursor_byte].to_owned(),
+        path_start_byte: path_start,
+        prefix_start_character: source[line_start..prefix_start].encode_utf16().count() as u32,
+    })
+}
+
+fn namespace_completions(
+    source: &str,
+    line: u32,
+    character: u32,
+    uri: &str,
+    document: &Document,
+    context: &NamespaceCompletionContext,
+) -> Vec<Value> {
+    let probe;
+    let statement_probe;
+    let (file_id, tooling_document) =
+        if let Some(file_id) = namespace_file(document, &context.segments) {
+            (file_id, document)
+        } else {
+            let cursor_byte = position_to_byte(source, line, character).unwrap();
+            let mut probe_source = source.to_owned();
+            probe_source.replace_range(context.path_start_byte..cursor_byte, "Int");
+            probe = compute(uri, &probe_source);
+            if let Some(file_id) = namespace_file(&probe, &context.segments) {
+                (file_id, &probe)
+            } else {
+                // A qualified path at the end of a statement needs a delimiter
+                // before the following line can parse. Keep the delimiter out
+                // of the first probe so completion inside calls and other value
+                // positions continues to work.
+                probe_source.replace_range(
+                    context.path_start_byte..context.path_start_byte + "Int".len(),
+                    "Int;",
+                );
+                statement_probe = compute(uri, &probe_source);
+                let Some(file_id) = namespace_file(&statement_probe, &context.segments) else {
+                    return Vec::new();
+                };
+                (file_id, &statement_probe)
+            }
+        };
+    let Some(symbols) = tooling_document.namespace_symbols.get(&file_id) else {
+        return Vec::new();
+    };
+
+    let replace_range = json!({
+        "start": { "line": line, "character": context.prefix_start_character },
+        "end": { "line": line, "character": character },
+    });
+    symbols
+        .iter()
+        .filter(|symbol| symbol.label.starts_with(&context.prefix))
+        .map(|symbol| {
+            let mut item = json!({
+                "label": symbol.label,
+                "kind": symbol.kind,
+                "textEdit": { "range": replace_range, "newText": symbol.label },
+            });
+            if let Some(detail) = &symbol.detail {
+                item["detail"] = json!(detail);
+            }
+            if let Some(documentation) = &symbol.documentation {
+                item["documentation"] = json!({
+                    "kind": "markdown",
+                    "value": documentation,
+                });
+            }
+            item
+        })
+        .collect()
+}
+
+fn namespace_file(document: &Document, segments: &[String]) -> Option<u32> {
+    let mut file_id = document.source_map.root_file_id()?;
+    for (index, segment) in segments.iter().enumerate() {
+        let module = document.module_imports.get(&(file_id, segment.clone()))?;
+        if index > 0 && !module.is_pub {
+            return None;
+        }
+        file_id = module.file_id;
+    }
+    Some(file_id)
 }
 
 struct MemberCompletionContext {
@@ -662,6 +805,26 @@ fn ordinary_completions(
                 item["documentation"] = json!({ "kind": "markdown", "value": doc });
             }
             items.push(item);
+        }
+    }
+
+    if let Some(root_file) = tooling_document.source_map.root_file_id() {
+        let mut aliases = tooling_document
+            .module_imports
+            .keys()
+            .filter_map(|(file_id, alias)| (*file_id == root_file).then_some(alias))
+            .collect::<Vec<_>>();
+        aliases.sort();
+        aliases.dedup();
+        for alias in aliases {
+            if alias.starts_with(prefix) && seen.insert((alias.clone(), 9)) {
+                items.push(json!({
+                    "label": alias,
+                    "kind": 9,
+                    "sortText": format!("1{alias}"),
+                    "textEdit": { "range": replace_range, "newText": alias },
+                }));
+            }
         }
     }
 
@@ -3146,6 +3309,8 @@ struct Document {
     /// Visible top-level declarations and struct fields used by completion.
     completion_symbols: Vec<CompletionSymbol>,
     completion_fields: HashMap<ast::DefId, Vec<CompletionField>>,
+    /// Public declarations and nested namespaces keyed by module file.
+    namespace_symbols: HashMap<u32, Vec<CompletionSymbol>>,
     /// Type aliases expanded while matching method receiver declarations.
     completion_aliases: HashMap<ast::DefId, (Vec<String>, ast::Type)>,
     /// The resolved program retained for speculative generic-method
@@ -3247,10 +3412,17 @@ struct CompletionField {
     file_id: u32,
 }
 
+struct CompletionCatalog {
+    symbols: Vec<CompletionSymbol>,
+    fields: HashMap<ast::DefId, Vec<CompletionField>>,
+    definitions: HashMap<ast::DefId, Vec<CompletionSymbol>>,
+}
+
 #[derive(Clone, Copy)]
 struct ModuleImport {
     file_id: u32,
     span: SourceSpan,
+    is_pub: bool,
 }
 
 /// Returns cached analysis for a document.
@@ -3306,8 +3478,13 @@ fn compute_with_diagnostics(uri: &str, source: &str) -> (Document, HashMap<Strin
             })
         })
         .collect();
-    let (completion_symbols, completion_fields) =
-        collect_completion_catalog(&ast, &source_map, &signatures);
+    let CompletionCatalog {
+        symbols: completion_symbols,
+        fields: completion_fields,
+        definitions: all_completion_symbols,
+    } = collect_completion_catalog(&ast, &source_map, &signatures);
+    let namespace_symbols =
+        collect_namespace_completion_catalog(&source_map, &module_imports, &all_completion_symbols);
     let completion_aliases = ast
         .items
         .iter()
@@ -3348,6 +3525,7 @@ fn compute_with_diagnostics(uri: &str, source: &str) -> (Document, HashMap<Strin
         completion_methods,
         completion_symbols,
         completion_fields,
+        namespace_symbols,
         completion_aliases,
         resolved: Some(ast),
         module_imports,
@@ -3373,14 +3551,12 @@ fn collect_completion_catalog(
     ast: &solar::resolved_ast::SourceFile,
     source_map: &SourceMap,
     signatures: &HashMap<SpanKey, String>,
-) -> (
-    Vec<CompletionSymbol>,
-    HashMap<ast::DefId, Vec<CompletionField>>,
-) {
+) -> CompletionCatalog {
     use solar::ast::TopLevelItem;
     let visible_defs = visible_completion_defs(source_map);
     let mut symbols = Vec::new();
     let mut fields = HashMap::<ast::DefId, Vec<CompletionField>>::new();
+    let mut all_symbols = HashMap::<ast::DefId, Vec<CompletionSymbol>>::new();
     for item in &ast.items {
         let (label, kind, doc, span) = match item {
             TopLevelItem::Function(def) => (&def.name, 3, &def.doc, def.span),
@@ -3406,20 +3582,71 @@ fn collect_completion_catalog(
             TopLevelItem::Method(_) | TopLevelItem::Import(_) => continue,
         };
         let def = ast::DefId::new(span.file_id, label);
+        let symbol = CompletionSymbol {
+            label: label.clone(),
+            kind,
+            detail: signatures.get(&span_key(span)).cloned(),
+            documentation: doc.clone(),
+        };
+        all_symbols
+            .entry(def.clone())
+            .or_default()
+            .push(symbol.clone());
         if visible_defs.contains(&def) || span.file_id == ast::SYNTHETIC_FILE {
-            symbols.push(CompletionSymbol {
-                label: label.clone(),
-                kind,
-                detail: signatures.get(&span_key(span)).cloned(),
-                documentation: doc.clone(),
-            });
+            symbols.push(symbol);
         }
     }
     symbols.sort_by(|left, right| left.label.cmp(&right.label));
     symbols.dedup_by(|left, right| {
         left.label == right.label && left.kind == right.kind && left.detail == right.detail
     });
-    (symbols, fields)
+    CompletionCatalog {
+        symbols,
+        fields,
+        definitions: all_symbols,
+    }
+}
+
+fn collect_namespace_completion_catalog(
+    source_map: &SourceMap,
+    module_imports: &HashMap<(u32, String), ModuleImport>,
+    definitions: &HashMap<ast::DefId, Vec<CompletionSymbol>>,
+) -> HashMap<u32, Vec<CompletionSymbol>> {
+    let namespace_files: HashSet<u32> = module_imports
+        .values()
+        .map(|module| module.file_id)
+        .collect();
+    let mut export_cache = HashMap::new();
+    let mut catalog = HashMap::new();
+    for file_id in namespace_files {
+        let mut symbols = Vec::new();
+        for def in
+            exported_completion_defs(file_id, source_map, &mut export_cache, &mut HashSet::new())
+        {
+            if let Some(entries) = definitions.get(&def) {
+                symbols.extend(entries.iter().cloned());
+            }
+        }
+        symbols.extend(
+            module_imports
+                .iter()
+                .filter(|((owner_file, _), module)| *owner_file == file_id && module.is_pub)
+                .map(|((_, alias), _)| CompletionSymbol {
+                    label: alias.clone(),
+                    kind: 9,
+                    detail: None,
+                    documentation: None,
+                }),
+        );
+        symbols.sort_by(|left, right| {
+            (&left.label, left.kind, &left.detail).cmp(&(&right.label, right.kind, &right.detail))
+        });
+        symbols.dedup_by(|left, right| {
+            left.label == right.label && left.kind == right.kind && left.detail == right.detail
+        });
+        catalog.insert(file_id, symbols);
+    }
+    catalog
 }
 
 fn visible_completion_defs(source_map: &SourceMap) -> HashSet<ast::DefId> {
@@ -3691,31 +3918,29 @@ fn collect_module_imports(source_map: &SourceMap) -> HashMap<(u32, String), Modu
     let Some(root_file) = source_map.root_file_id() else {
         return modules;
     };
-    let mut pending = vec![root_file];
+    let mut pending = vec![root_file, 0];
     let mut visited = HashSet::new();
 
     while let Some(file_id) = pending.pop() {
         if !visited.insert(file_id) {
             continue;
         }
-        let Some((filename, source)) = source_map.get(file_id) else {
+        let Some((_, source)) = source_map.get(file_id) else {
             continue;
         };
         let Ok(parsed) = solar::parser::parse(source) else {
             continue;
         };
-        let base = std::path::Path::new(filename)
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."));
 
         for item in parsed.items {
             let TopLevelItem::Import(mut import) = item else {
                 continue;
             };
-            if import.path.starts_with('@') {
+            if import.path == "@intrinsics" {
                 continue;
             }
-            let Some(imported_file) = source_map.file_id_for_path(&base.join(&import.path)) else {
+            let Some(imported_file) = imported_completion_file(source_map, file_id, &import.path)
+            else {
                 continue;
             };
             pending.push(imported_file);
@@ -3726,8 +3951,51 @@ fn collect_module_imports(source_map: &SourceMap) -> HashMap<(u32, String), Modu
                     ModuleImport {
                         file_id: imported_file,
                         span: import.span,
+                        is_pub: import.is_pub,
                     },
                 );
+            }
+        }
+    }
+
+    // User files implicitly wildcard-import the standard-library root. Module
+    // aliases are not ordinary exported definitions, so mirror the resolver's
+    // propagation of public module imports into the root namespace. Do the same
+    // for explicit wildcard imports in the root file.
+    let mut wildcard_sources = vec![0];
+    if let Some((_, source)) = source_map.get(root_file)
+        && let Ok(parsed) = solar::parser::parse(source)
+    {
+        for item in parsed.items {
+            let TopLevelItem::Import(import) = item else {
+                continue;
+            };
+            if matches!(import.kind, ImportKind::Wildcard)
+                && let Some(file_id) = imported_completion_file(source_map, root_file, &import.path)
+            {
+                wildcard_sources.push(file_id);
+            }
+        }
+    }
+    for source_file in wildcard_sources {
+        let Some((_, source)) = source_map.get(source_file) else {
+            continue;
+        };
+        let Ok(parsed) = solar::parser::parse(source) else {
+            continue;
+        };
+        for item in parsed.items {
+            let TopLevelItem::Import(import) = item else {
+                continue;
+            };
+            if !import.is_pub {
+                continue;
+            }
+            let ImportKind::Module(alias) = import.kind else {
+                continue;
+            };
+            if let Some(module) = modules.get(&(source_file, alias.clone())).copied() {
+                modules.entry((root_file, alias)).or_insert(module);
             }
         }
     }
@@ -4548,6 +4816,10 @@ mod tests {
     fn completion_items(source: &str, needle: &str) -> Vec<Value> {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/runtime/completion_probe.solar");
+        completion_items_for_path(&path, source, needle)
+    }
+
+    fn completion_items_for_path(path: &std::path::Path, source: &str, needle: &str) -> Vec<Value> {
         let uri = format!("file://{}", path.display());
         let document = compute(&uri, source);
         let (line, character) = occurrence_position(source, needle, 0);
@@ -4716,6 +4988,67 @@ fn main() {
                 .any(|item| item["label"] == "Point" && item["kind"] == 22),
             "{items:?}"
         );
+    }
+
+    #[test]
+    fn completion_lists_namespace_exports_and_reexported_modules() {
+        let source = "fn main() { process::a; }\n";
+        let items = completion_items(source, "process::a");
+        assert!(
+            items.iter().any(|item| {
+                item["label"] == "args"
+                    && item["kind"] == 3
+                    && item["detail"] == "pub fn args() -> &[&[Uint8]]"
+            }),
+            "{items:?}"
+        );
+        assert!(items.iter().all(|item| item["label"] != "env"));
+
+        let items = completion_items(
+            "fn main() {\n    process::\n    println(0);\n}\n",
+            "process::",
+        );
+        let labels = items
+            .iter()
+            .map(|item| item["label"].as_str().unwrap())
+            .collect::<HashSet<_>>();
+        assert_eq!(labels, HashSet::from(["args", "env"]));
+
+        let items = completion_items("fn main() { pro; }\n", "pro");
+        assert!(
+            items
+                .iter()
+                .any(|item| { item["label"] == "process" && item["kind"] == 9 }),
+            "{items:?}"
+        );
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/multi_file/many_modules/main.solar");
+        let source = "import d from \"d.solar\";\nfn main() { d::c::b::a::; }\n";
+        let items = completion_items_for_path(&path, source, "d::c::b::a::");
+        assert!(
+            items
+                .iter()
+                .any(|item| { item["label"] == "Enum" && item["kind"] == 13 }),
+            "{items:?}"
+        );
+    }
+
+    #[test]
+    fn namespace_completion_excludes_private_transitive_declarations() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/multi_file/transitive_function_visibility/main.solar");
+        let source = "import lib from \"lib.solar\";\nfn main() { lib::; }\n";
+        let items = completion_items_for_path(&path, source, "lib::");
+        let labels = items
+            .iter()
+            .map(|item| item["label"].as_str().unwrap())
+            .collect::<HashSet<_>>();
+
+        assert!(labels.contains("visible_fn"), "{items:?}");
+        assert!(labels.contains("reexported_fn"), "{items:?}");
+        assert!(!labels.contains("hidden_fn"), "{items:?}");
+        assert!(!labels.contains("hidden"), "{items:?}");
     }
 
     #[test]
