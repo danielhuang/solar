@@ -138,6 +138,9 @@ must also reject candidates whose resulting monomorphized body does not
 type-check.
 Completion after a module path such as `process::` lists that namespace's public
 declarations and public submodules, including named and module re-exports.
+When a type-aware completion probe fails, retry after successively promoting the
+cursor's enclosing block contents into their parent block, stopping at the
+function boundary. Probe rewrites must preserve source positions.
 Top-level completion must follow the root file's imports and public re-export
 chains; loading a private transitive module does not put its declarations in
 scope.

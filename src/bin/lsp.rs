@@ -243,14 +243,18 @@ fn completions(
         .map_or_else(Vec::new, |analysis| {
             expression_types_at(&analysis.typed, analysis.file_id, context.receiver_span)
         });
-    let probe;
+    let probe_documents;
     let (receiver_types, tooling_document) = if current_types.is_empty() {
         let probe_source = completion_probe_source(source, &context);
-        probe = compute(uri, &probe_source);
-        let types = probe.analysis.as_ref().map_or_else(Vec::new, |analysis| {
-            expression_types_at(&analysis.typed, analysis.file_id, context.receiver_span)
-        });
-        if types.is_empty() {
+        probe_documents = completion_probe_documents(uri, &probe_source, context.dot_byte);
+        if let Some((types, probe)) = probe_documents.iter().find_map(|probe| {
+            let types = probe.analysis.as_ref().map_or_else(Vec::new, |analysis| {
+                expression_types_at(&analysis.typed, analysis.file_id, context.receiver_span)
+            });
+            (!types.is_empty()).then_some((types, probe))
+        }) {
+            (types, probe)
+        } else {
             let cached_types =
                 document
                     .last_successful_types
@@ -265,11 +269,9 @@ fn completions(
             let tooling_document = if document.resolved.is_some() {
                 document
             } else {
-                &probe
+                &probe_documents[0]
             };
             (cached_types, tooling_document)
-        } else {
-            (types, &probe)
         }
     } else {
         (current_types, document)
@@ -712,6 +714,82 @@ fn completion_probe_source(source: &str, context: &MemberCompletionContext) -> S
     let mut probe = source.to_owned();
     probe.replace_range(context.dot_byte..context.probe_end_byte, replacement);
     probe
+}
+
+fn completion_probe_documents(uri: &str, source: &str, cursor_byte: usize) -> Vec<Document> {
+    let mut documents = vec![compute(uri, source)];
+    if documents[0].analysis.is_some() {
+        return documents;
+    }
+    for probe in completion_scope_probe_sources(source, cursor_byte) {
+        let document = compute(uri, &probe);
+        let succeeded = document.analysis.is_some();
+        documents.push(document);
+        if succeeded {
+            break;
+        }
+    }
+    documents
+}
+
+fn completion_scope_probe_sources(source: &str, cursor_byte: usize) -> Vec<String> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_solar::LANGUAGE.into())
+        .expect("Solar grammar must load");
+    let Some(tree) = parser.parse(source, None) else {
+        return Vec::new();
+    };
+    let Some(mut node) = tree
+        .root_node()
+        .descendant_for_byte_range(cursor_byte.saturating_sub(1), cursor_byte.min(source.len()))
+    else {
+        return Vec::new();
+    };
+    while node.kind() != "block" {
+        let Some(parent) = node.parent() else {
+            return Vec::new();
+        };
+        node = parent;
+    }
+
+    let mut block = node;
+    let mut probe = source.as_bytes().to_vec();
+    let mut sources = Vec::new();
+    loop {
+        let mut owner = block;
+        let outer_block = loop {
+            let Some(parent) = owner.parent() else {
+                return sources;
+            };
+            if matches!(
+                parent.kind(),
+                "function_def" | "method_def" | "closure_expr"
+            ) {
+                return sources;
+            }
+            if parent.kind() == "block" {
+                break parent;
+            }
+            owner = parent;
+        };
+
+        blank_probe_range(&mut probe, owner.start_byte(), block.start_byte() + 1);
+        blank_probe_range(&mut probe, block.end_byte() - 1, owner.end_byte());
+        if block.child_by_field_name("tail").is_some() {
+            probe[block.end_byte() - 1] = b';';
+        }
+        sources.push(String::from_utf8(probe.clone()).unwrap());
+        block = outer_block;
+    }
+}
+
+fn blank_probe_range(source: &mut [u8], start: usize, end: usize) {
+    for byte in &mut source[start..end] {
+        if !matches!(*byte, b'\n' | b'\r') {
+            *byte = b' ';
+        }
+    }
 }
 
 fn byte_position(source: &str, byte: usize) -> Value {
@@ -4857,6 +4935,40 @@ fn main() {
             .find(|item| item["label"] == "inspect")
             .expect("inspect completion");
         assert_eq!(inspect["additionalTextEdits"][0]["newText"], "@");
+    }
+
+    #[test]
+    fn completion_unwraps_failed_enclosing_blocks_until_the_function_body() {
+        let source = r#"
+struct Point { value: Int }
+method read(self: Point) -> Int { self.value }
+fn main() {
+    for ignored in true {
+        while 1 {
+            let point = Point { value: 1 };
+            point.re;
+        }
+    }
+}
+"#;
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/runtime/completion_probe.solar");
+        let uri = format!("file://{}", path.display());
+        let document = compute(&uri, source);
+        assert!(document.analysis.is_none());
+
+        let (line, character) = occurrence_position(source, "point.re", 0);
+        let items = completions(
+            source,
+            line,
+            character + "point.re".len() as u32,
+            &uri,
+            &document,
+        );
+        assert!(
+            items.iter().any(|item| item["label"] == "read"),
+            "{items:?}"
+        );
     }
 
     #[test]
