@@ -1,0 +1,3 @@
+fn main() {
+	let word = transmute#[Uint64](1u32);
+}

@@ -304,6 +304,108 @@ fn assign_value_in_place(dst: &Slot, src: Value) {
     }
 }
 
+fn ast_type_layout(
+    ty: &Type,
+    structs: &HashMap<String, StructDef>,
+    enums: &HashMap<String, EnumDef>,
+) -> Option<(usize, usize)> {
+    match ty {
+        Type::Bool | Type::Int8 | Type::Uint8 => Some((1, 1)),
+        Type::Int16 | Type::Uint16 => Some((2, 2)),
+        Type::Int32 | Type::Uint32 | Type::Float32 => Some((4, 4)),
+        Type::Int64
+        | Type::Uint64
+        | Type::Int
+        | Type::Uint
+        | Type::Float64
+        | Type::Ref(_)
+        | Type::NullableRef(_)
+        | Type::Unique(_)
+        | Type::FileDesc => Some((8, 8)),
+        Type::RefUnsized(_)
+        | Type::NullableRefUnsized(_)
+        | Type::UniqueUnsized(_)
+        | Type::Function { .. }
+        | Type::Any => Some((16, 16)),
+        Type::Unit | Type::Never => Some((0, 1)),
+        Type::Array(_) => None,
+        Type::FixedArray(inner, count) => {
+            let (size, align) = ast_type_layout(inner, structs, enums)?;
+            Some((size * *count as usize, align))
+        }
+        Type::Struct(name) => {
+            let def = structs.get(name)?;
+            let layouts = def
+                .fields
+                .iter()
+                .map(|field| ast_type_layout(&field.ty, structs, enums))
+                .collect::<Option<Vec<_>>>()?;
+            let align = layouts.iter().map(|(_, align)| *align).max().unwrap_or(1);
+            let extent = if def.repr_c {
+                crate::types::layout_fields_in_order(&layouts).1
+            } else {
+                crate::types::pack_fields(&layouts, 0).1
+            };
+            Some((ast_align_to(extent, align), align))
+        }
+        Type::Enum(name) => {
+            let layouts = enums
+                .get(name)?
+                .variants
+                .iter()
+                .filter_map(|variant| variant.inner_type.as_ref())
+                .map(|ty| ast_type_layout(ty, structs, enums))
+                .collect::<Option<Vec<_>>>()?;
+            let align = layouts
+                .iter()
+                .map(|(_, align)| *align)
+                .max()
+                .unwrap_or(8)
+                .max(8);
+            let extent = crate::types::pack_fields(&layouts, 8).1;
+            Some((ast_align_to(extent, align), align))
+        }
+    }
+}
+
+fn ast_struct_field_offsets(
+    def: &StructDef,
+    structs: &HashMap<String, StructDef>,
+    enums: &HashMap<String, EnumDef>,
+) -> Option<Vec<usize>> {
+    let layouts = def
+        .fields
+        .iter()
+        .map(|field| ast_type_layout(&field.ty, structs, enums))
+        .collect::<Option<Vec<_>>>()?;
+    Some(if def.repr_c {
+        crate::types::layout_fields_in_order(&layouts).0
+    } else {
+        crate::types::pack_fields(&layouts, 0).0
+    })
+}
+
+fn ast_align_to(value: usize, alignment: usize) -> usize {
+    (value + alignment - 1) & !(alignment - 1)
+}
+
+fn ast_unsized_metadata(value: &Value, ty: &Type, structs: &HashMap<String, StructDef>) -> usize {
+    match (value, ty) {
+        (Value::Array(elements), Type::Array(_)) => elements.len(),
+        (Value::Struct { fields, .. }, Type::Struct(name)) => {
+            let tail = structs[name].fields.last().unwrap();
+            ast_unsized_metadata(&fields[tail.name.as_str()].borrow(), &tail.ty, structs)
+        }
+        _ => unreachable!("unsized reference has an unsized referent"),
+    }
+}
+
+fn read_transmute_u64(bytes: &[u8]) -> u64 {
+    let mut raw = [0; 8];
+    raw.copy_from_slice(&bytes[..8]);
+    u64::from_le_bytes(raw)
+}
+
 /// A non-local exit unwinding through evaluation as the `Err` of `Eval`.
 /// Carrying `return`/`break`/`continue` in the error channel (not just a
 /// `throw`) lets them propagate out of *value-position* bodies — `let x =
@@ -332,12 +434,18 @@ type Eval<T> = Result<T, Unwind>;
 
 struct Interpreter<'a, 'io> {
     functions: HashMap<String, &'a FunctionDef>,
+    structs: &'a HashMap<String, StructDef>,
+    enums: &'a HashMap<String, EnumDef>,
     scopes: ScopeStack<Slot>,
     files: FileTable<'io>,
     /// Top-level `static` slots, by name. Initialized from their literal init
     /// expressions in `run` before `main`'s body executes.
     globals: HashMap<String, Slot>,
     statics: &'a [StaticItem],
+    transmute_slots: HashMap<u64, Slot>,
+    transmute_values: HashMap<u64, Value>,
+    transmute_any_types: HashMap<u64, Type>,
+    next_transmute_id: u64,
 }
 
 impl<'a, 'io> Interpreter<'a, 'io> {
@@ -349,10 +457,305 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             .collect();
         Interpreter {
             functions,
+            structs: &source.structs,
+            enums: &source.enums,
             scopes: ScopeStack::default(),
             files: FileTable::new(stdin, stdout),
             globals: HashMap::new(),
             statics: &source.statics,
+            transmute_slots: HashMap::new(),
+            transmute_values: HashMap::new(),
+            transmute_any_types: HashMap::new(),
+            next_transmute_id: 1,
+        }
+    }
+
+    fn transmute_id(&mut self) -> u64 {
+        let id = self.next_transmute_id;
+        self.next_transmute_id += 1;
+        id
+    }
+
+    fn remember_slot(&mut self, slot: &Slot) -> u64 {
+        let address = Rc::as_ptr(slot) as *const () as usize as u64;
+        self.transmute_slots.insert(address, Rc::clone(slot));
+        address
+    }
+
+    fn encode_transmute_value(&mut self, value: &Value, ty: &Type) -> Vec<u8> {
+        let (size, _) = ast_type_layout(ty, self.structs, self.enums).unwrap();
+        let mut bytes = vec![0; size];
+        match ty {
+            Type::Int8
+            | Type::Int16
+            | Type::Int32
+            | Type::Int64
+            | Type::Int
+            | Type::Uint8
+            | Type::Uint16
+            | Type::Uint32
+            | Type::Uint64
+            | Type::Uint
+            | Type::Float32
+            | Type::Float64
+            | Type::Bool
+            | Type::FileDesc => {
+                let Value::Int(value) = value else {
+                    unreachable!("scalar transmute source has a scalar value")
+                };
+                bytes.copy_from_slice(&value.to_le_bytes()[..size]);
+            }
+            Type::FixedArray(inner, count) => {
+                let Value::Array(elements) = value else {
+                    unreachable!("fixed-array transmute source has an array value")
+                };
+                assert_eq!(elements.len(), *count as usize);
+                let element_size = ast_type_layout(inner, self.structs, self.enums).unwrap().0;
+                for (index, element) in elements.iter().enumerate() {
+                    let encoded = self.encode_transmute_value(&element.borrow(), inner);
+                    bytes[index * element_size..(index + 1) * element_size]
+                        .copy_from_slice(&encoded);
+                }
+            }
+            Type::Struct(name) => {
+                let Value::Struct { fields, .. } = value else {
+                    unreachable!("struct transmute source has a struct value")
+                };
+                let def = self.structs[name].clone();
+                let offsets = ast_struct_field_offsets(&def, self.structs, self.enums).unwrap();
+                for (field, offset) in def.fields.iter().zip(offsets) {
+                    let encoded = self
+                        .encode_transmute_value(&fields[field.name.as_str()].borrow(), &field.ty);
+                    bytes[offset..offset + encoded.len()].copy_from_slice(&encoded);
+                }
+            }
+            Type::Enum(name) => {
+                let Value::Enum {
+                    variant_index,
+                    value,
+                    ..
+                } = value
+                else {
+                    unreachable!("enum transmute source has an enum value")
+                };
+                bytes[..8].copy_from_slice(&(*variant_index as u64).to_le_bytes());
+                let def = self.enums[name].clone();
+                let payloads: Vec<_> = def
+                    .variants
+                    .iter()
+                    .filter_map(|variant| variant.inner_type.clone())
+                    .collect();
+                let layouts: Vec<_> = payloads
+                    .iter()
+                    .map(|ty| ast_type_layout(ty, self.structs, self.enums).unwrap())
+                    .collect();
+                let offsets = crate::types::pack_fields(&layouts, 8).0;
+                let mut payload_index = 0;
+                for variant in &def.variants {
+                    if let Some(inner) = &variant.inner_type {
+                        if variant.index == *variant_index {
+                            let encoded = self
+                                .encode_transmute_value(&value.as_ref().unwrap().borrow(), inner);
+                            let offset = offsets[payload_index];
+                            bytes[offset..offset + encoded.len()].copy_from_slice(&encoded);
+                            break;
+                        }
+                        payload_index += 1;
+                    }
+                }
+            }
+            Type::Ref(_) | Type::NullableRef(_) | Type::Unique(_) => match value {
+                Value::Ref(slot) | Value::Unique(slot) => {
+                    bytes.copy_from_slice(&self.remember_slot(slot).to_le_bytes());
+                }
+                Value::Null => bytes.copy_from_slice(&0u64.to_le_bytes()),
+                _ => unreachable!("reference transmute source has a reference value"),
+            },
+            Type::RefUnsized(inner)
+            | Type::NullableRefUnsized(inner)
+            | Type::UniqueUnsized(inner) => match value {
+                Value::Ref(slot) | Value::Unique(slot) => {
+                    bytes[..8].copy_from_slice(&self.remember_slot(slot).to_le_bytes());
+                    let metadata = ast_unsized_metadata(&slot.borrow(), inner, self.structs);
+                    bytes[8..].copy_from_slice(&(metadata as u64).to_le_bytes());
+                }
+                Value::Null => bytes.fill(0),
+                _ => unreachable!("fat-reference transmute source has a reference value"),
+            },
+            Type::Any => {
+                let Value::Any { target, ty } = value else {
+                    unreachable!("Any transmute source has an Any value")
+                };
+                bytes[..8].copy_from_slice(&self.remember_slot(target).to_le_bytes());
+                let tag = self.transmute_id();
+                self.transmute_any_types.insert(tag, ty.clone());
+                bytes[8..].copy_from_slice(&tag.to_le_bytes());
+            }
+            Type::Function { .. } => {
+                let id = self.transmute_id();
+                self.transmute_values.insert(id, deep_copy_value(value));
+                bytes[..8].copy_from_slice(&id.to_le_bytes());
+            }
+            Type::Unit => {}
+            Type::Array(_) | Type::Never => unreachable!("unsized or uninhabited transmute source"),
+        }
+        bytes
+    }
+
+    fn decode_transmute_value(&mut self, bytes: &[u8], ty: &Type) -> Value {
+        match ty {
+            Type::Int8
+            | Type::Int16
+            | Type::Int32
+            | Type::Int64
+            | Type::Int
+            | Type::Uint8
+            | Type::Uint16
+            | Type::Uint32
+            | Type::Uint64
+            | Type::Uint
+            | Type::Float32
+            | Type::Float64
+            | Type::Bool
+            | Type::FileDesc => {
+                let mut raw = [0; 8];
+                raw[..bytes.len()].copy_from_slice(bytes);
+                let raw = u64::from_le_bytes(raw);
+                Value::Int(if ty.is_integer() {
+                    truncate_int(raw, ty)
+                } else {
+                    raw as i64
+                })
+            }
+            Type::FixedArray(inner, count) => {
+                let element_size = ast_type_layout(inner, self.structs, self.enums).unwrap().0;
+                let elements = (0..*count as usize)
+                    .map(|index| {
+                        Rc::new(RefCell::new(self.decode_transmute_value(
+                            &bytes[index * element_size..(index + 1) * element_size],
+                            inner,
+                        )))
+                    })
+                    .collect();
+                Value::Array(elements)
+            }
+            Type::Struct(name) => {
+                let def = self.structs[name].clone();
+                let offsets = ast_struct_field_offsets(&def, self.structs, self.enums).unwrap();
+                let fields = def
+                    .fields
+                    .iter()
+                    .zip(offsets)
+                    .map(|(field, offset)| {
+                        let size = ast_type_layout(&field.ty, self.structs, self.enums)
+                            .unwrap()
+                            .0;
+                        (
+                            field.name.clone(),
+                            Rc::new(RefCell::new(self.decode_transmute_value(
+                                &bytes[offset..offset + size],
+                                &field.ty,
+                            ))),
+                        )
+                    })
+                    .collect();
+                Value::Struct {
+                    name: name.clone(),
+                    fields,
+                }
+            }
+            Type::Enum(name) => {
+                let discriminant = read_transmute_u64(&bytes[..8]) as usize;
+                let def = self.enums[name].clone();
+                let variant = def
+                    .variants
+                    .iter()
+                    .find(|variant| variant.index == discriminant)
+                    .unwrap_or_else(|| panic!("transmute produced invalid {name} discriminant"));
+                let payload_types: Vec<_> = def
+                    .variants
+                    .iter()
+                    .filter_map(|variant| variant.inner_type.clone())
+                    .collect();
+                let payload_layouts: Vec<_> = payload_types
+                    .iter()
+                    .map(|ty| ast_type_layout(ty, self.structs, self.enums).unwrap())
+                    .collect();
+                let payload_offsets = crate::types::pack_fields(&payload_layouts, 8).0;
+                let payload_index = def.variants[..variant.index]
+                    .iter()
+                    .filter(|variant| variant.inner_type.is_some())
+                    .count();
+                let value = variant.inner_type.as_ref().map(|inner| {
+                    let size = ast_type_layout(inner, self.structs, self.enums).unwrap().0;
+                    let offset = payload_offsets[payload_index];
+                    Rc::new(RefCell::new(
+                        self.decode_transmute_value(&bytes[offset..offset + size], inner),
+                    ))
+                });
+                Value::Enum {
+                    enum_name: name.clone(),
+                    variant_name: variant.name.clone(),
+                    variant_index: variant.index,
+                    value,
+                }
+            }
+            Type::Ref(_) | Type::RefUnsized(_) => {
+                let address = read_transmute_u64(bytes);
+                Value::Ref(Rc::clone(
+                    self.transmute_slots
+                        .get(&address)
+                        .unwrap_or_else(|| panic!("transmute produced an invalid reference")),
+                ))
+            }
+            Type::NullableRef(_) | Type::NullableRefUnsized(_) => {
+                let address = read_transmute_u64(bytes);
+                if address == 0 {
+                    Value::Null
+                } else {
+                    Value::Ref(Rc::clone(
+                        self.transmute_slots.get(&address).unwrap_or_else(|| {
+                            panic!("transmute produced an invalid nullable reference")
+                        }),
+                    ))
+                }
+            }
+            Type::Unique(_) | Type::UniqueUnsized(_) => {
+                let address = read_transmute_u64(bytes);
+                Value::Unique(Rc::clone(
+                    self.transmute_slots.get(&address).unwrap_or_else(|| {
+                        panic!("transmute produced an invalid unique reference")
+                    }),
+                ))
+            }
+            Type::Any => {
+                let address = read_transmute_u64(bytes);
+                let tag = read_transmute_u64(&bytes[8..]);
+                Value::Any {
+                    target: Rc::clone(
+                        self.transmute_slots.get(&address).unwrap_or_else(|| {
+                            panic!("transmute produced an invalid Any reference")
+                        }),
+                    ),
+                    ty: self
+                        .transmute_any_types
+                        .get(&tag)
+                        .unwrap_or_else(|| panic!("transmute produced an invalid Any type tag"))
+                        .clone(),
+                }
+            }
+            Type::Function { .. } => {
+                let id = read_transmute_u64(bytes);
+                deep_copy_value(
+                    self.transmute_values
+                        .get(&id)
+                        .unwrap_or_else(|| panic!("transmute produced an invalid function value")),
+                )
+            }
+            Type::Unit => Value::Unit,
+            Type::Array(_) | Type::Never => {
+                unreachable!("unsized or uninhabited transmute destination")
+            }
         }
     }
 
@@ -1205,6 +1608,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 std::process::exit(code);
             }
             Intrinsic::SizeOf => unreachable!("size_of is lowered before interpretation"),
+            Intrinsic::Transmute | Intrinsic::TransmuteUnchecked => {
+                let value = self.eval_expr(&arguments[0])?;
+                let bytes = self.encode_transmute_value(&value, &arguments[0].ty);
+                self.decode_transmute_value(&bytes, result_ty)
+            }
             Intrinsic::ArrayLen => {
                 let arr = self.eval_expr(&arguments[0])?;
                 match arr {

@@ -2947,6 +2947,20 @@ impl<'a> Codegen<'a> {
                 self.linef(format!("*({c_ty}*){dst} = ({c_ty}){f}();"));
             }
             Intrinsic::SizeOf => unreachable!("size_of is lowered before code generation"),
+            Intrinsic::Transmute | Intrinsic::TransmuteUnchecked => {
+                let source_ty = nodes[args[0].0].ty.clone();
+                let size = self.type_size(&source_ty);
+                if size == 0 {
+                    self.emit_into(nodes, args[0], "((uint8_t*)0)");
+                    return;
+                }
+                let align = self.type_align(&source_ty);
+                let mark = self.mark_fn_expr(&source_ty);
+                let temporary = self.fresh_tmp();
+                self.emit_alloc(&temporary, size, align, &mark);
+                self.emit_into(nodes, args[0], &temporary);
+                self.emit_plain_copy(dst, &temporary, result_ty, &size.to_string());
+            }
             Intrinsic::ArrayLen => {
                 let len = if let Type::FixedArray(_, n) = &nodes[args[0].0].ty {
                     format!("{n}")

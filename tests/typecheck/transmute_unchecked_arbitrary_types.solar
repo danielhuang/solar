@@ -1,0 +1,12 @@
+import intrinsics from "@intrinsics";
+
+struct(repr(C)) Padded { byte: Uint8, word: Uint64 }
+
+fn main() {
+	unsafe {
+		let bytes = intrinsics::transmute_unchecked#[[Uint8; 16]](
+			Padded { byte: 1u8, word: 2u64 },
+		);
+		let boolean = transmute_unchecked#[Bool](2u8);
+	}
+}

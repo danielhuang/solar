@@ -1140,3 +1140,9 @@ fn unsafe_access_and_safe_function_values() {
     let output = run(&fixture("unsafe.solar"), "unsafe");
     assert_eq!(output, "2\n4\n6\n8\n10\n101\n");
 }
+
+#[test]
+fn transmute_preserves_bytes_across_backends() {
+    let output = run(&fixture("transmute.solar"), "transmute");
+    assert_eq!(output, "67305985\n1\n2\n3\n4\n1065353216\n1\n1\n4660\n");
+}

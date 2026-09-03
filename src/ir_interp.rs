@@ -1559,6 +1559,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 std::process::exit(code);
             }
             Intrinsic::SizeOf => unreachable!("size_of is lowered before IR generation"),
+            Intrinsic::Transmute | Intrinsic::TransmuteUnchecked => {
+                self.eval_into(nodes, args[0], dst)?;
+            }
             Intrinsic::ArrayLen => {
                 let len = if let Type::FixedArray(_, n) = &nodes[args[0].0].ty {
                     *n as usize

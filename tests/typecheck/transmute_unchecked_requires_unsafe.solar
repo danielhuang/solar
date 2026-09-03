@@ -1,0 +1,3 @@
+fn main() {
+	let boolean = transmute_unchecked#[Bool](1u8);
+}

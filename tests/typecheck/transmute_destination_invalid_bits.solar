@@ -1,0 +1,3 @@
+fn main() {
+	let boolean = transmute#[Bool](2u8);
+}

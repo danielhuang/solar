@@ -10,6 +10,10 @@ there. Imports are resolved relative to `src/std`, including subdirectories.
   `@std`.
 - `size_of#[T]()` returns the laid-out byte size of a statically sized type,
   including C-compatible padding for `struct(repr(C))`.
+- `transmute#[T, out U](T) -> U` is safe only when the compiler can prove that the
+  equal-sized source has no padding or uninitialized regions and the destination
+  accepts every bit pattern. `transmute_unchecked` bypasses those validity
+  checks but remains size-checked and requires an explicit unsafe block.
 - `black_box(T)` returns its input after passing a non-escaping reference to
   Rust's optimizer barrier.
 - `gc_keepalive(&T)` keeps its argument reachable through the call without

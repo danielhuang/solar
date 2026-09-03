@@ -1,0 +1,5 @@
+enum Payload { Empty, Word(Uint64) }
+
+fn main() {
+	let bytes = transmute#[[Uint8; 16]](Payload::Empty);
+}

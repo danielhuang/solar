@@ -8821,6 +8821,82 @@ impl<'a> Lowerer<'a> {
                 span,
             });
         }
+        if matches!(
+            intrinsic,
+            Intrinsic::Transmute | Intrinsic::TransmuteUnchecked
+        ) {
+            if type_args.len() != 1 {
+                return Err(CompileError::new(
+                    format!("{name}: expected 1 type argument, got {}", type_args.len()),
+                    span,
+                ));
+            }
+            if arguments.len() != 1 {
+                return Err(CompileError::new(
+                    format!("{name}: expected 1 argument, got {}", arguments.len()),
+                    span,
+                ));
+            }
+
+            let destination_ty = self.resolve_ast_type(&type_args[0])?;
+            let argument = self.lower_expr(&arguments[0])?;
+            let source_ty = argument.ty.clone();
+            let Some((source_size, _)) =
+                type_layout(&source_ty, &self.lowered_structs, &self.lowered_enums)
+            else {
+                return Err(CompileError::new(
+                    format!("{name}: source type {source_ty} is unsized"),
+                    span,
+                ));
+            };
+            let Some((destination_size, _)) =
+                type_layout(&destination_ty, &self.lowered_structs, &self.lowered_enums)
+            else {
+                return Err(CompileError::new(
+                    format!("{name}: destination type {destination_ty} is unsized"),
+                    span,
+                ));
+            };
+            if source_size != destination_size {
+                return Err(CompileError::new(
+                    format!(
+                        "{name}: source type {source_ty} is {source_size} bytes, but destination type {destination_ty} is {destination_size} bytes"
+                    ),
+                    span,
+                ));
+            }
+            if matches!(intrinsic, Intrinsic::Transmute) {
+                if !type_has_no_uninitialized_bytes(
+                    &source_ty,
+                    &self.lowered_structs,
+                    &self.lowered_enums,
+                ) {
+                    return Err(CompileError::new(
+                        format!(
+                            "transmute: source type {source_ty} may contain padding or uninitialized regions"
+                        ),
+                        span,
+                    ));
+                }
+                if !type_accepts_any_bit_pattern(&destination_ty, &self.lowered_structs) {
+                    return Err(CompileError::new(
+                        format!(
+                            "transmute: destination type {destination_ty} does not accept every bit pattern"
+                        ),
+                        span,
+                    ));
+                }
+            }
+
+            return Ok(Expr {
+                ty: destination_ty,
+                kind: ExprKind::IntrinsicCall {
+                    intrinsic: intrinsic.clone(),
+                    arguments: vec![argument],
+                },
+                span,
+            });
+        }
         let any_downcast_type = if matches!(intrinsic, Intrinsic::AnyDowncast) {
             if type_args.len() != 1 {
                 return Err(CompileError::new(
@@ -9183,6 +9259,9 @@ fn intrinsic_spec(intrinsic: &Intrinsic) -> IntrinsicSpec {
             ret: Fixed(Type::Uint),
         },
         Intrinsic::SizeOf => unreachable!("size_of is lowered to a monomorphized function"),
+        Intrinsic::Transmute | Intrinsic::TransmuteUnchecked => {
+            unreachable!("transmute intrinsics are lowered specially")
+        }
         Intrinsic::AssertArrayLen => IntrinsicSpec {
             params: vec![IsArray, Exact(Type::Uint)],
             ret: Fixed(Type::Unit),
@@ -9415,6 +9494,139 @@ fn type_layout(
             let (_, extent) = crate::types::pack_fields(&payloads, 8);
             Some((align_to(extent, align), align))
         }
+    }
+}
+
+/// Whether every byte in every value of `ty` is initialized. This is stricter
+/// than being sized: aggregate padding and inactive enum payload storage fail.
+fn type_has_no_uninitialized_bytes(
+    ty: &Type,
+    structs: &HashMap<TypeId, StructDef>,
+    enums: &HashMap<TypeId, EnumDef>,
+) -> bool {
+    match ty {
+        Type::Array(_) => false,
+        Type::FixedArray(inner, _) => type_has_no_uninitialized_bytes(inner, structs, enums),
+        Type::Struct(id) => {
+            let Some(def) = structs.get(id) else {
+                return false;
+            };
+            let Some(layouts) = def
+                .fields
+                .iter()
+                .map(|field| type_layout(&field.ty, structs, enums))
+                .collect::<Option<Vec<_>>>()
+            else {
+                return false;
+            };
+            if !def
+                .fields
+                .iter()
+                .all(|field| type_has_no_uninitialized_bytes(&field.ty, structs, enums))
+            {
+                return false;
+            }
+            let offsets = if def.repr_c {
+                crate::types::layout_fields_in_order(&layouts).0
+            } else {
+                crate::types::pack_fields(&layouts, 0).0
+            };
+            let size = type_layout(ty, structs, enums).unwrap().0;
+            ranges_cover_layout(
+                size,
+                offsets
+                    .into_iter()
+                    .zip(layouts)
+                    .map(|(offset, (field_size, _))| (offset, offset + field_size)),
+            )
+        }
+        Type::Enum(id) => {
+            let Some(def) = enums.get(id) else {
+                return false;
+            };
+            let Some(payload_layouts) = def
+                .variants
+                .iter()
+                .filter_map(|variant| variant.inner_type.as_ref())
+                .map(|inner| type_layout(inner, structs, enums))
+                .collect::<Option<Vec<_>>>()
+            else {
+                return false;
+            };
+            let payload_offsets = crate::types::pack_fields(&payload_layouts, 8).0;
+            let size = type_layout(ty, structs, enums).unwrap().0;
+            let mut payload_index = 0;
+            def.variants.iter().all(|variant| {
+                let mut ranges = vec![(0, 8)];
+                if let Some(inner) = &variant.inner_type {
+                    let (payload_size, _) = payload_layouts[payload_index];
+                    let payload_offset = payload_offsets[payload_index];
+                    payload_index += 1;
+                    if !type_has_no_uninitialized_bytes(inner, structs, enums) {
+                        return false;
+                    }
+                    ranges.push((payload_offset, payload_offset + payload_size));
+                }
+                ranges_cover_layout(size, ranges)
+            })
+        }
+        _ => type_layout(ty, structs, enums).is_some(),
+    }
+}
+
+fn ranges_cover_layout(size: usize, ranges: impl IntoIterator<Item = (usize, usize)>) -> bool {
+    let mut ranges: Vec<_> = ranges
+        .into_iter()
+        .filter(|(start, end)| start != end)
+        .collect();
+    ranges.sort_unstable();
+    let mut covered_until = 0;
+    for (start, end) in ranges {
+        if start > covered_until {
+            return false;
+        }
+        covered_until = covered_until.max(end);
+    }
+    covered_until == size
+}
+
+/// Whether interpreting arbitrary initialized bytes as `ty` always creates a
+/// valid value. Aggregate padding is unconstrained, while each field's value
+/// bytes must independently accept every pattern.
+fn type_accepts_any_bit_pattern(ty: &Type, structs: &HashMap<TypeId, StructDef>) -> bool {
+    match ty {
+        Type::Int8
+        | Type::Int16
+        | Type::Int32
+        | Type::Int64
+        | Type::Int
+        | Type::Uint8
+        | Type::Uint16
+        | Type::Uint32
+        | Type::Uint64
+        | Type::Uint
+        | Type::Float32
+        | Type::Float64
+        | Type::Unit => true,
+        Type::FixedArray(inner, _) => type_accepts_any_bit_pattern(inner, structs),
+        Type::Struct(id) => structs.get(id).is_some_and(|def| {
+            def.fields
+                .iter()
+                .all(|field| type_accepts_any_bit_pattern(&field.ty, structs))
+        }),
+        Type::Bool
+        | Type::Enum(_)
+        | Type::Array(_)
+        | Type::Ref(_)
+        | Type::RefUnsized(_)
+        | Type::NullableRef(_)
+        | Type::NullableRefUnsized(_)
+        | Type::Unique(_)
+        | Type::UniqueUnsized(_)
+        | Type::Function { .. }
+        | Type::FileDesc
+        | Type::Any
+        | Type::Never => false,
     }
 }
 

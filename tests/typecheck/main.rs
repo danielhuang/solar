@@ -386,6 +386,43 @@ fn size_of_unsized_type() {
 }
 
 #[test]
+#[should_panic(expected = "source type Padded may contain padding or uninitialized regions")]
+fn transmute_rejects_source_padding() {
+    compile_with_pipeline(&fixture("transmute_source_padding.solar"));
+}
+
+#[test]
+#[should_panic(expected = "source type Payload may contain padding or uninitialized regions")]
+fn transmute_rejects_inactive_enum_payloads() {
+    compile_with_pipeline(&fixture("transmute_source_inactive_enum_payload.solar"));
+}
+
+#[test]
+#[should_panic(expected = "destination type Bool does not accept every bit pattern")]
+fn transmute_rejects_destination_value_invariants() {
+    compile_with_pipeline(&fixture("transmute_destination_invalid_bits.solar"));
+}
+
+#[test]
+#[should_panic(expected = "source type Uint32 is 4 bytes, but destination type Uint64 is 8 bytes")]
+fn transmute_rejects_different_sizes() {
+    compile_with_pipeline(&fixture("transmute_size_mismatch.solar"));
+}
+
+#[test]
+#[should_panic(
+    expected = "access to unsafe function `transmute_unchecked` requires an unsafe block"
+)]
+fn transmute_unchecked_requires_an_unsafe_block() {
+    compile_with_pipeline(&fixture("transmute_unchecked_requires_unsafe.solar"));
+}
+
+#[test]
+fn transmute_unchecked_accepts_arbitrary_equal_sized_types() {
+    compile_with_pipeline(&fixture("transmute_unchecked_arbitrary_types.solar"));
+}
+
+#[test]
 #[should_panic(expected = "any_new: expected &T, got &[Int]")]
 fn any_rejects_unsized_referents() {
     compile_with_pipeline(&fixture("any_rejects_unsized.solar"));
