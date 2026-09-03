@@ -47,11 +47,17 @@ AST, while `ir_interp` and native codegen consume IR.
 - `size_of#[T]()` accepts only sized types. Each concrete type produces a
   zero-argument monomorphized function whose constant body uses the same size
   and alignment rules as IR layout.
-- `transmute#[T, out U](T) -> U` requires equal-sized types, a source layout with
-  every byte initialized (including no aggregate padding or inactive enum
+- `mem::transmute#[T, out U](T) -> U` requires equal-sized types, a source layout
+  with every byte initialized (including no aggregate padding or inactive enum
   payload storage), and a destination whose value invariants accept every bit
-  pattern. `transmute_unchecked` enforces only sized, equal-width storage and is
-  unsafe. All backends preserve the bytes rather than performing a numeric cast.
+  pattern. `mem::transmute_unchecked` enforces only sized, equal-width storage
+  and is unsafe. All backends preserve the bytes rather than performing a
+  numeric cast.
+- `mem::transmute_ref#[T, out U](&T, Uint) -> &U` preserves the source address
+  and uses the explicit `Uint` as unsized destination metadata. Both source and
+  destination pointees may be unsized.
+- `mem::offset_ref(&T, Int) -> &T` is unsafe element-wise reference arithmetic:
+  `T` must be sized and the signed offset is scaled by its static size.
 - `black_box_ref(&T)` accepts a sized reference, passes its pointer through the
   native runtime's Rust optimizer barrier, and never retains the reference.
   Escape analysis must therefore treat its argument as non-escaping.

@@ -1441,6 +1441,29 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let b = self.mem.load(b_place, 8);
                 self.scalar_store(dst, (a == b) as u64, result_ty);
             }
+            Intrinsic::OffsetRef => {
+                let reference_ty = &nodes[args[0].0].ty;
+                let inner = match reference_ty {
+                    Type::Ref(inner) => &**inner,
+                    _ => unreachable!("offset_ref argument must be a reference"),
+                };
+                let (reference, _) = self.eval_place(nodes, args[0])?;
+                let address = self.mem.load(reference, 8);
+                let offset = self.eval_load(nodes, args[1])? as i64;
+                let unit_size = type_size(inner, &self.module.datatypes);
+                let byte_offset = offset.wrapping_mul(unit_size as i64);
+                self.mem
+                    .store(dst, address.wrapping_add_signed(byte_offset), 8);
+            }
+            Intrinsic::TransmuteRef => {
+                let (reference, _) = self.eval_place(nodes, args[0])?;
+                let address = self.mem.load(reference, 8);
+                let size = self.eval_load(nodes, args[1])?;
+                self.mem.store(dst, address, 8);
+                if matches!(result_ty, Type::RefUnsized(_)) {
+                    self.mem.store(dst + 8, size, 8);
+                }
+            }
             Intrinsic::BlackBoxRef => {
                 let _ = self.eval_load(nodes, args[0])?;
             }

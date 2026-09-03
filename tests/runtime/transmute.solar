@@ -5,20 +5,22 @@ struct Bytes4 { a: Uint8, b: Uint8, c: Uint8, d: Uint8 }
 enum Flag { Off, On }
 
 fn main() {
-	let word = transmute#[Uint32](Bytes4 { a: 1u8, b: 2u8, c: 3u8, d: 4u8 });
+	let word = mem::transmute#[
+		Uint32,
+	](Bytes4 { a: 1u8, b: 2u8, c: 3u8, d: 4u8 });
 	println(Int(word));
 
-	let bytes = transmute#[[Uint8; 4]](word);
+	let bytes = mem::transmute#[[Uint8; 4]](word);
 	println(Int(bytes[0u]));
 	println(Int(bytes[1u]));
 	println(Int(bytes[2u]));
 	println(Int(bytes[3u]));
 
-	let float_bits = transmute#[Float32](1065353216u32);
-	println(Int(transmute#[Uint32](float_bits)));
-	println(Int(transmute#[Uint64](Flag::On)));
+	let float_bits = mem::transmute#[Float32](1065353216u32);
+	println(Int(mem::transmute#[Uint32](float_bits)));
+	println(Int(mem::transmute#[Uint64](Flag::On)));
 
-	let checked_bool = unsafe { transmute_unchecked#[Bool](1u8) };
+	let checked_bool = unsafe { mem::transmute_unchecked#[Bool](1u8) };
 	println(if checked_bool { 1 } else { 0 });
 	let little_endian: [Uint8; 2] = [52u8, 18u8];
 	println(Int(intrinsics::transmute#[Uint16](little_endian)));

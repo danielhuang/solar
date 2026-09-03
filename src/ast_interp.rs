@@ -11,6 +11,15 @@ use std::rc::Rc;
 
 type Slot = Rc<RefCell<Value>>;
 
+#[derive(Clone)]
+struct ArrayRegion {
+    /// Retain the semantic array place so its identity cannot be recycled.
+    _owner: Slot,
+    elements: Rc<Vec<Slot>>,
+    start: usize,
+    len: usize,
+}
+
 #[derive(Debug)]
 enum Value {
     Int(i64),
@@ -385,6 +394,55 @@ fn ast_struct_field_offsets(
     })
 }
 
+fn ast_type_align(
+    ty: &Type,
+    structs: &HashMap<String, StructDef>,
+    enums: &HashMap<String, EnumDef>,
+) -> usize {
+    if let Some((_, align)) = ast_type_layout(ty, structs, enums) {
+        return align;
+    }
+    match ty {
+        Type::Array(inner) => ast_type_align(inner, structs, enums),
+        Type::Struct(name) => structs[name]
+            .fields
+            .iter()
+            .map(|field| ast_type_align(&field.ty, structs, enums))
+            .max()
+            .unwrap_or(1),
+        _ => unreachable!("only arrays and structs can be unsized"),
+    }
+}
+
+fn ast_unsized_struct_field_offsets(
+    def: &StructDef,
+    structs: &HashMap<String, StructDef>,
+    enums: &HashMap<String, EnumDef>,
+) -> Vec<usize> {
+    let has_unsized_tail = def
+        .fields
+        .last()
+        .is_some_and(|field| ast_type_layout(&field.ty, structs, enums).is_none());
+    let sized_len = def.fields.len() - usize::from(has_unsized_tail);
+    let layouts: Vec<_> = def.fields[..sized_len]
+        .iter()
+        .map(|field| ast_type_layout(&field.ty, structs, enums).unwrap())
+        .collect();
+    let (mut offsets, extent) = if def.repr_c {
+        crate::types::layout_fields_in_order(&layouts)
+    } else {
+        crate::types::pack_fields(&layouts, 0)
+    };
+    if has_unsized_tail {
+        let tail = &def.fields[sized_len];
+        offsets.push(ast_align_to(
+            extent,
+            ast_type_align(&tail.ty, structs, enums),
+        ));
+    }
+    offsets
+}
+
 fn ast_align_to(value: usize, alignment: usize) -> usize {
     (value + alignment - 1) & !(alignment - 1)
 }
@@ -404,6 +462,10 @@ fn read_transmute_u64(bytes: &[u8]) -> u64 {
     let mut raw = [0; 8];
     raw.copy_from_slice(&bytes[..8]);
     u64::from_le_bytes(raw)
+}
+
+fn slot_address(slot: &Slot) -> u64 {
+    Rc::as_ptr(slot) as *const () as usize as u64
 }
 
 /// A non-local exit unwinding through evaluation as the `Err` of `Eval`.
@@ -446,6 +508,8 @@ struct Interpreter<'a, 'io> {
     transmute_values: HashMap<u64, Value>,
     transmute_any_types: HashMap<u64, Type>,
     next_transmute_id: u64,
+    reference_sequences: HashMap<u64, (Rc<Vec<Slot>>, usize)>,
+    array_regions: HashMap<u64, ArrayRegion>,
 }
 
 impl<'a, 'io> Interpreter<'a, 'io> {
@@ -467,6 +531,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             transmute_values: HashMap::new(),
             transmute_any_types: HashMap::new(),
             next_transmute_id: 1,
+            reference_sequences: HashMap::new(),
+            array_regions: HashMap::new(),
         }
     }
 
@@ -477,9 +543,156 @@ impl<'a, 'io> Interpreter<'a, 'io> {
     }
 
     fn remember_slot(&mut self, slot: &Slot) -> u64 {
-        let address = Rc::as_ptr(slot) as *const () as usize as u64;
+        let address = slot_address(slot);
         self.transmute_slots.insert(address, Rc::clone(slot));
         address
+    }
+
+    fn remember_sequence(&mut self, elements: &Rc<Vec<Slot>>) {
+        for (index, slot) in elements.iter().enumerate() {
+            self.reference_sequences
+                .insert(slot_address(slot), (Rc::clone(elements), index));
+        }
+    }
+
+    fn ensure_array_region(
+        &mut self,
+        slot: &Slot,
+        elements: Vec<Slot>,
+    ) -> (Rc<Vec<Slot>>, usize, usize) {
+        if let Some(region) = self.array_regions.get(&slot_address(slot)) {
+            return (Rc::clone(&region.elements), region.start, region.len);
+        }
+        let len = elements.len();
+        let backing = Rc::new(elements);
+        self.remember_sequence(&backing);
+        self.array_regions.insert(
+            slot_address(slot),
+            ArrayRegion {
+                _owner: Rc::clone(slot),
+                elements: Rc::clone(&backing),
+                start: 0,
+                len,
+            },
+        );
+        (backing, 0, len)
+    }
+
+    fn remember_array(&mut self, slot: &Slot) {
+        let elements = match &*slot.borrow() {
+            Value::Array(elements) => elements.clone(),
+            _ => return,
+        };
+        self.ensure_array_region(slot, elements);
+    }
+
+    fn offset_reference(&mut self, slot: Slot, offset: i64) -> Value {
+        if offset == 0 {
+            return Value::Ref(slot);
+        }
+        let (elements, index) = self
+            .reference_sequences
+            .get(&slot_address(&slot))
+            .cloned()
+            .unwrap_or_else(|| panic!("offset_ref moved a reference without array provenance"));
+        let target_index = (index as i64)
+            .checked_add(offset)
+            .and_then(|index| usize::try_from(index).ok())
+            .filter(|index| *index < elements.len())
+            .unwrap_or_else(|| panic!("offset_ref produced an invalid reference"));
+        Value::Ref(Rc::clone(&elements[target_index]))
+    }
+
+    fn transmute_reference_view(
+        &mut self,
+        source: Slot,
+        source_ty: &Type,
+        destination_ty: &Type,
+        metadata: usize,
+    ) -> Slot {
+        match destination_ty {
+            Type::Array(_) => {
+                let elements = match &*source.borrow() {
+                    Value::Array(elements) => elements.clone(),
+                    _ => {
+                        let (elements, start) = self
+                            .reference_sequences
+                            .get(&slot_address(&source))
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                assert_eq!(
+                                    metadata, 1,
+                                    "transmute_ref slice lacks array provenance"
+                                );
+                                (Rc::new(vec![Rc::clone(&source)]), 0)
+                            });
+                        elements[start..].iter().take(metadata).cloned().collect()
+                    }
+                };
+                assert!(
+                    metadata <= elements.len(),
+                    "transmute_ref slice exceeds its source array"
+                );
+                let target = Rc::new(RefCell::new(Value::Array(elements[..metadata].to_vec())));
+                self.remember_array(&target);
+                target
+            }
+            Type::Struct(destination_name) => {
+                let Type::Struct(source_name) = source_ty else {
+                    return source;
+                };
+                let source_fields = {
+                    let value = source.borrow();
+                    match &*value {
+                        Value::Struct { fields, .. } => Some(fields.clone()),
+                        _ => None,
+                    }
+                };
+                let Some(source_fields) = source_fields else {
+                    return source;
+                };
+                let source_def = self.structs[source_name].clone();
+                let destination_def = self.structs[destination_name].clone();
+                let source_offsets =
+                    ast_unsized_struct_field_offsets(&source_def, self.structs, self.enums);
+                let destination_offsets =
+                    ast_unsized_struct_field_offsets(&destination_def, self.structs, self.enums);
+                let mut fields = HashMap::new();
+                for (destination_field, destination_offset) in
+                    destination_def.fields.iter().zip(destination_offsets)
+                {
+                    let source_index = source_offsets
+                        .iter()
+                        .position(|offset| *offset == destination_offset)
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "transmute_ref destination field has no source storage at offset {destination_offset}"
+                            )
+                        });
+                    let source_field = &source_def.fields[source_index];
+                    let source_slot = Rc::clone(&source_fields[source_field.name.as_str()]);
+                    let destination_slot =
+                        if ast_type_layout(&destination_field.ty, self.structs, self.enums)
+                            .is_none()
+                        {
+                            self.transmute_reference_view(
+                                source_slot,
+                                &source_field.ty,
+                                &destination_field.ty,
+                                metadata,
+                            )
+                        } else {
+                            source_slot
+                        };
+                    fields.insert(destination_field.name.clone(), destination_slot);
+                }
+                Rc::new(RefCell::new(Value::Struct {
+                    name: destination_name.clone(),
+                    fields,
+                }))
+            }
+            _ => source,
+        }
     }
 
     fn encode_transmute_value(&mut self, value: &Value, ty: &Type) -> Vec<u8> {
@@ -810,19 +1023,18 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     Value::Int(n) => n as u64,
                     _ => unreachable!("type checker guarantees integer index"),
                 };
-                let arr_ref = arr_slot.borrow();
-                match &*arr_ref {
-                    Value::Array(elements) => {
-                        let len = elements.len();
-                        if idx >= len as u64 {
-                            return Err(thrown(&format!(
-                                "index out of bounds: index is {idx} but length is {len}"
-                            )));
-                        }
-                        Rc::clone(&elements[idx as usize])
-                    }
+                let elements = match &*arr_slot.borrow() {
+                    Value::Array(elements) => elements.clone(),
                     _ => unreachable!("type checker guarantees array"),
+                };
+                let len = elements.len();
+                if idx >= len as u64 {
+                    return Err(thrown(&format!(
+                        "index out of bounds: index is {idx} but length is {len}"
+                    )));
                 }
+                let (backing, start, _) = self.ensure_array_region(&arr_slot, elements);
+                Rc::clone(&backing[start + idx as usize])
             }
             ExprKind::Slice { object, start, end } => {
                 let arr_slot = self.eval_place(object)?;
@@ -834,9 +1046,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     Value::Int(n) => n as usize,
                     _ => unreachable!(),
                 };
-                let arr_ref = arr_slot.borrow();
-                let elements = match &*arr_ref {
-                    Value::Array(elements) => elements,
+                let elements = match &*arr_slot.borrow() {
+                    Value::Array(elements) => elements.clone(),
                     _ => unreachable!("type checker guarantees array"),
                 };
                 let len = elements.len();
@@ -846,8 +1057,20 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 if e > len {
                     return Err(thrown(&format!("slice end ({e}) > length ({len})")));
                 }
-                let sub_slots: Vec<Slot> = elements[s..e].to_vec();
-                Rc::new(RefCell::new(Value::Array(sub_slots)))
+                let (backing, parent_start, _) = self.ensure_array_region(&arr_slot, elements);
+                let start = parent_start + s;
+                let sub_slots = backing[start..parent_start + e].to_vec();
+                let slice = Rc::new(RefCell::new(Value::Array(sub_slots)));
+                self.array_regions.insert(
+                    slot_address(&slice),
+                    ArrayRegion {
+                        _owner: Rc::clone(&slice),
+                        elements: Rc::clone(&backing),
+                        start,
+                        len: e - s,
+                    },
+                );
+                slice
             }
             ExprKind::If {
                 condition,
@@ -953,6 +1176,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             ExprKind::NullLiteral => Value::Null,
             ExprKind::Reference(inner) => {
                 let slot = self.eval_place(inner)?;
+                self.remember_array(&slot);
                 Value::Ref(slot)
             }
             ExprKind::Unique(inner) => {
@@ -1482,6 +1706,43 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     (Value::Ref(a), Value::Ref(b)) => Value::Int(Rc::ptr_eq(&a, &b) as i64),
                     _ => unreachable!("ref_eq arguments must be references"),
                 }
+            }
+            Intrinsic::OffsetRef => {
+                let reference = self.eval_expr(&arguments[0])?;
+                let offset = match self.eval_expr(&arguments[1])? {
+                    Value::Int(offset) => offset,
+                    _ => unreachable!("offset_ref offset must be Int"),
+                };
+                let Value::Ref(slot) = reference else {
+                    unreachable!("offset_ref argument must be a reference")
+                };
+                self.remember_array(&slot);
+                self.offset_reference(slot, offset)
+            }
+            Intrinsic::TransmuteRef => {
+                let reference = self.eval_expr(&arguments[0])?;
+                let metadata = match self.eval_expr(&arguments[1])? {
+                    Value::Int(size) => size as usize,
+                    _ => unreachable!("transmute_ref size must be Uint"),
+                };
+                let Value::Ref(source) = reference else {
+                    unreachable!("transmute_ref argument must be a reference")
+                };
+                self.remember_array(&source);
+                let source_ty = match &arguments[0].ty {
+                    Type::Ref(inner) | Type::RefUnsized(inner) => &**inner,
+                    _ => unreachable!("transmute_ref argument must be a reference"),
+                };
+                let destination_ty = match result_ty {
+                    Type::Ref(inner) | Type::RefUnsized(inner) => &**inner,
+                    _ => unreachable!("transmute_ref result must be a reference"),
+                };
+                Value::Ref(self.transmute_reference_view(
+                    source,
+                    source_ty,
+                    destination_ty,
+                    metadata,
+                ))
             }
             Intrinsic::BlackBoxRef | Intrinsic::GcKeepAlive => {
                 self.eval_expr(&arguments[0])?;

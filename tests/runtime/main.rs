@@ -1146,3 +1146,15 @@ fn transmute_preserves_bytes_across_backends() {
     let output = run(&fixture("transmute.solar"), "transmute");
     assert_eq!(output, "67305985\n1\n2\n3\n4\n1065353216\n1\n1\n4660\n");
 }
+
+#[test]
+fn transmute_ref_reinterprets_sized_and_unsized_references() {
+    let output = run(&fixture("transmute_ref.solar"), "transmute_ref");
+    assert_eq!(output, "3\n10\n30\n25\n7\n3\n50\n9\n70\n");
+}
+
+#[test]
+fn offset_ref_scales_by_sized_pointee() {
+    let output = run(&fixture("offset_ref.solar"), "offset_ref");
+    assert_eq!(output, "30\n10\n40\n");
+}

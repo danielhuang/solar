@@ -1,5 +1,5 @@
 struct(repr(C)) Padded { byte: Uint8, word: Uint64 }
 
 fn main() {
-	let bytes = transmute#[[Uint8; 16]](Padded { byte: 1u8, word: 2u64 });
+	let bytes = mem::transmute#[[Uint8; 16]](Padded { byte: 1u8, word: 2u64 });
 }

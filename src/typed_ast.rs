@@ -8897,6 +8897,60 @@ impl<'a> Lowerer<'a> {
                 span,
             });
         }
+        if matches!(intrinsic, Intrinsic::TransmuteRef) {
+            if type_args.len() != 1 {
+                return Err(CompileError::new(
+                    format!(
+                        "transmute_ref: expected 1 type argument, got {}",
+                        type_args.len()
+                    ),
+                    span,
+                ));
+            }
+            if arguments.len() != 2 {
+                return Err(CompileError::new(
+                    format!(
+                        "transmute_ref: expected 2 arguments, got {}",
+                        arguments.len()
+                    ),
+                    span,
+                ));
+            }
+
+            let destination_ty = self.resolve_ast_type(&type_args[0])?;
+            let source = self.lower_expr(&arguments[0])?;
+            if !matches!(source.ty, Type::Ref(_) | Type::RefUnsized(_)) {
+                return Err(CompileError::new(
+                    format!("transmute_ref: expected &T, got {}", source.ty),
+                    span,
+                ));
+            }
+            let size = self.lower_expr(&arguments[1])?;
+            let size = self.try_coerce(size, &Type::Uint);
+            if size.ty != Type::Uint {
+                return Err(CompileError::new(
+                    format!("transmute_ref: expected Uint, got {}", size.ty),
+                    span,
+                ));
+            }
+            let destination_ref =
+                if type_layout(&destination_ty, &self.lowered_structs, &self.lowered_enums)
+                    .is_some()
+                {
+                    Type::Ref(Box::new(destination_ty))
+                } else {
+                    Type::RefUnsized(Box::new(destination_ty))
+                };
+
+            return Ok(Expr {
+                ty: destination_ref,
+                kind: ExprKind::IntrinsicCall {
+                    intrinsic: intrinsic.clone(),
+                    arguments: vec![source, size],
+                },
+                span,
+            });
+        }
         let any_downcast_type = if matches!(intrinsic, Intrinsic::AnyDowncast) {
             if type_args.len() != 1 {
                 return Err(CompileError::new(
@@ -9035,6 +9089,7 @@ impl<'a> Lowerer<'a> {
                             span,
                         ));
                     }
+                    ref_ty = Some(arg.ty.clone());
                 }
                 ParamRequirement::IsRef => {
                     if !matches!(arg.ty, Type::Ref(_) | Type::RefUnsized(_)) {
@@ -9078,6 +9133,7 @@ impl<'a> Lowerer<'a> {
         let return_ty = match spec.ret {
             ReturnSpec::Fixed(ty) => ty,
             ReturnSpec::RefInner => ref_inner.unwrap(),
+            ReturnSpec::RefArg => ref_ty.unwrap(),
             ReturnSpec::FloatArg => float_ty.unwrap(),
             ReturnSpec::NullableRefTypeArg => {
                 Type::NullableRef(Box::new(any_downcast_type.unwrap()))
@@ -9173,6 +9229,8 @@ enum ParamRequirement {
 enum ReturnSpec {
     Fixed(Type),
     RefInner,
+    /// The reference type captured by an `IsRef` parameter.
+    RefArg,
     /// The type captured by the `IsFloat` param (float math returns its
     /// operand's type).
     FloatArg,
@@ -9231,6 +9289,10 @@ fn intrinsic_spec(intrinsic: &Intrinsic) -> IntrinsicSpec {
             params: vec![IsRef, MatchesRef],
             ret: Fixed(Type::Bool),
         },
+        Intrinsic::OffsetRef => IntrinsicSpec {
+            params: vec![IsSizedRef, Exact(Type::Int)],
+            ret: RefArg,
+        },
         Intrinsic::BlackBoxRef => IntrinsicSpec {
             params: vec![IsSizedRef],
             ret: Fixed(Type::Unit),
@@ -9259,7 +9321,7 @@ fn intrinsic_spec(intrinsic: &Intrinsic) -> IntrinsicSpec {
             ret: Fixed(Type::Uint),
         },
         Intrinsic::SizeOf => unreachable!("size_of is lowered to a monomorphized function"),
-        Intrinsic::Transmute | Intrinsic::TransmuteUnchecked => {
+        Intrinsic::Transmute | Intrinsic::TransmuteUnchecked | Intrinsic::TransmuteRef => {
             unreachable!("transmute intrinsics are lowered specially")
         }
         Intrinsic::AssertArrayLen => IntrinsicSpec {

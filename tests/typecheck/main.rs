@@ -423,6 +423,24 @@ fn transmute_unchecked_accepts_arbitrary_equal_sized_types() {
 }
 
 #[test]
+#[should_panic(expected = "access to unsafe function `transmute_ref` requires an unsafe block")]
+fn transmute_ref_requires_an_unsafe_block() {
+    compile_with_pipeline(&fixture("transmute_ref_requires_unsafe.solar"));
+}
+
+#[test]
+#[should_panic(expected = "access to unsafe function `offset_ref` requires an unsafe block")]
+fn offset_ref_requires_an_unsafe_block() {
+    compile_with_pipeline(&fixture("offset_ref_requires_unsafe.solar"));
+}
+
+#[test]
+#[should_panic(expected = "offset_ref: expected &T, got &[Int]")]
+fn offset_ref_requires_a_sized_pointee() {
+    compile_with_pipeline(&fixture("offset_ref_rejects_unsized.solar"));
+}
+
+#[test]
 #[should_panic(expected = "any_new: expected &T, got &[Int]")]
 fn any_rejects_unsized_referents() {
     compile_with_pipeline(&fixture("any_rejects_unsized.solar"));

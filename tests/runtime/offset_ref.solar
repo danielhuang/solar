@@ -1,0 +1,9 @@
+import intrinsics from "@intrinsics";
+
+fn main() {
+	let values: [Int] = [10, 20, 30, 40];
+	let middle = values[1u]&;
+	println(unsafe { mem::offset_ref(middle, 1) }@);
+	println(unsafe { mem::offset_ref(middle, 0 - 1) }@);
+	println(unsafe { intrinsics::offset_ref(values[2u]&, 1) }@);
+}

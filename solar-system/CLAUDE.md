@@ -25,6 +25,9 @@ STW root scan -> concurrent mark -> STW remark -> concurrent arena sweep
 - Arena sweeping and mutator allocation must operate on disjoint bitmap words.
 - GC-San clears dead allocation bits but never moves an arena allocation
   frontier backward, keeping swept addresses permanently poisoned.
+- `sol_offset_ref` checks under GC-San that managed source and result addresses
+  belong to the same allocation; unmanaged addresses retain unchecked pointer
+  arithmetic semantics.
 - A mutator may only call `sol_alloc` after thread registration.
 - Generated descriptors for thread-local static cells are attached during
   thread registration and scanned with that thread's stack roots.

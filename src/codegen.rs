@@ -853,6 +853,9 @@ impl<'a> Codegen<'a> {
         self.line("extern void sol_gc_keepalive(uint8_t* value);");
         self.line("extern void sol_gc_mark(void* ctx, uint8_t* ptr);");
         self.line("extern void sol_memcpy(uint8_t* dst, const uint8_t* src, size_t size);");
+        self.line(
+            "extern uint8_t* sol_offset_ref(uint8_t* address, int64_t offset, size_t unit_size);",
+        );
         self.line("extern uint8_t* sol_fd_from_raw(int32_t fd);");
         self.line("extern int32_t sol_fd_to_raw(uint8_t* fd);");
         self.line("extern void sol_file_close(uint8_t* fd);");
@@ -2716,6 +2719,36 @@ impl<'a> Codegen<'a> {
                 self.linef(format!(
                     "*(uint8_t*){dst} = (*(uint8_t**){a} == *(uint8_t**){b});"
                 ));
+            }
+            Intrinsic::OffsetRef => {
+                let reference_ty = nodes[args[0].0].ty.clone();
+                let inner = match &reference_ty {
+                    Type::Ref(inner) => (**inner).clone(),
+                    _ => unreachable!("offset_ref argument must be a reference"),
+                };
+                let (reference, _) = self.emit_place(nodes, args[0]);
+                let address = self.fresh_tmp();
+                self.linef(format!("uint8_t* {address} = *(uint8_t**){reference};"));
+                let offset = self.emit_load(nodes, args[1]);
+                let unit_size = self.type_size(&inner);
+                self.linef(format!(
+                    "*(uint8_t**){dst} = sol_offset_ref({address}, (int64_t)({offset}), {unit_size});"
+                ));
+            }
+            Intrinsic::TransmuteRef => {
+                let (reference, _) = self.emit_place(nodes, args[0]);
+                let address = self.fresh_tmp();
+                self.linef(format!("uint8_t* {address} = *(uint8_t**){reference};"));
+                let size = self.emit_load(nodes, args[1]);
+                if matches!(result_ty, Type::RefUnsized(_)) {
+                    let result = self.fresh_tmp();
+                    self.linef(format!("_Alignas(16) uint8_t {result}[16];"));
+                    self.linef(format!("*(uint8_t**){result} = {address};"));
+                    self.linef(format!("*(uint64_t*)({result} + 8) = {size};"));
+                    self.linef(format!("sol_store_128_unordered({dst}, {result});"));
+                } else {
+                    self.linef(format!("*(uint8_t**){dst} = {address};"));
+                }
             }
             Intrinsic::BlackBoxRef => {
                 let value = if let NodeKind::Ref(inner) = &nodes[args[0].0].kind

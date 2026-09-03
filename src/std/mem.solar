@@ -1,0 +1,34 @@
+import intrinsics from "@intrinsics";
+
+/// Reinterprets a value's bytes as another type of the same size.
+///
+/// The source type must have no padding or uninitialized regions, and every
+/// bit pattern must be valid for the destination type.
+pub fn transmute#[T, out U](x: T) -> U {
+	intrinsics::transmute#[U](x)
+}
+
+/// Reinterprets a value's bytes without checking either type's validity rules.
+///
+/// The source and destination types must have the same size. The caller must
+/// ensure that reading every source byte and constructing the destination value
+/// are valid.
+pub unsafe fn transmute_unchecked#[T, out U](x: T) -> U {
+	unsafe { intrinsics::transmute_unchecked#[U](x) }
+}
+
+/// Reinterprets a reference's address as a reference to `U`.
+///
+/// `size` becomes the metadata of an unsized destination reference. The caller
+/// must ensure that the destination reference is valid, aligned, and describes
+/// storage that belongs to the source allocation.
+pub unsafe fn transmute_ref#[T, out U](x: &T, size: Uint) -> &U {
+	unsafe { intrinsics::transmute_ref#[U](x, size) }
+}
+
+/// Returns a reference offset by `offset` consecutive values of `T`.
+///
+/// The caller must ensure the resulting reference is valid and aligned.
+pub unsafe fn offset_ref#[T](x: &T, offset: Int) -> &T {
+	unsafe { intrinsics::offset_ref(x, offset) }
+}

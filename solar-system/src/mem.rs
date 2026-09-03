@@ -207,6 +207,47 @@ pub unsafe extern "C" fn sol_memcpy(dst: *mut u8, src: *const u8, size: usize) {
     unsafe { std::ptr::copy(src, dst, size) };
 }
 
+/// Offsets a reference address by `offset` objects of `unit_size` bytes.
+///
+/// GC-San additionally requires a managed source and result to belong to the
+/// same allocation. Addresses outside the managed heap have no runtime
+/// allocation metadata and retain unchecked pointer-arithmetic semantics.
+#[unsafe(no_mangle)]
+pub extern "C" fn sol_offset_ref(address: *mut u8, offset: i64, unit_size: usize) -> *mut u8 {
+    let byte_offset = offset.wrapping_mul(unit_size as i64) as isize;
+    let result = address.wrapping_offset(byte_offset);
+
+    if crate::gc::GC_SAN.get() {
+        gc_san_assert_same_allocation(address as usize, result as usize);
+    }
+
+    result
+}
+
+fn gc_san_assert_same_allocation(source: usize, destination: usize) {
+    if heap::classify(source).is_some() {
+        let source_allocation = unsafe { heap::lookup_arena(source) };
+        let Some((source_class, source_slot, _, _)) = source_allocation else {
+            panic!("GC-San: offset_ref source is not in a live allocation at {source:#x}");
+        };
+        let destination_allocation = unsafe { heap::lookup_arena(destination) };
+        let same_allocation = destination_allocation
+            .is_some_and(|(class, slot, _, _)| class == source_class && slot == source_slot);
+        assert!(
+            same_allocation,
+            "GC-San: offset_ref result at {destination:#x} is outside its source allocation at {source:#x}"
+        );
+        return;
+    }
+
+    if let Some(same_allocation) = unsafe { crate::gc::same_big_allocation(source, destination) } {
+        assert!(
+            same_allocation,
+            "GC-San: offset_ref result at {destination:#x} is outside its source allocation at {source:#x}"
+        );
+    }
+}
+
 /// Checks a slice range and returns its starting address.
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn sol_slice_range(

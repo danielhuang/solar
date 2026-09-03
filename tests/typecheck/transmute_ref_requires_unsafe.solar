@@ -1,0 +1,4 @@
+fn main() {
+	let value = 1;
+	let slice = mem::transmute_ref#[[Int]](value&, 1u);
+}

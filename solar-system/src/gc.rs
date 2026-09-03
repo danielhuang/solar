@@ -304,6 +304,34 @@ pub(crate) struct BigAlloc {
 /// writes it (holding `GC_LOCK.read()`, so never during a cycle).
 pub(crate) static BIG_ALLOCS: Mutex<BTreeMap<usize, BigAlloc>> = Mutex::new(BTreeMap::new());
 
+/// If `source` belongs to a big allocation visible to this mutator, returns
+/// whether `destination` belongs to that same allocation. Returns `None` when
+/// `source` is not part of a big allocation.
+///
+/// Newly-created big allocations live in the allocating thread's unpublished
+/// list until the next stop-the-world pause; older allocations live in the
+/// global registry. Defer the GC signal while consulting either collection so
+/// the collector cannot drain or sweep it underneath this lookup.
+pub(crate) unsafe fn same_big_allocation(source: usize, destination: usize) -> Option<bool> {
+    unsafe {
+        with_signal_deferred(|slot| {
+            let state = &*slot.alloc.get();
+            if let Some(allocation) = state
+                .big_allocs
+                .iter()
+                .find(|allocation| source.wrapping_sub(allocation.base) < allocation.size)
+            {
+                return Some(destination.wrapping_sub(allocation.base) < allocation.size);
+            }
+
+            let allocations = BIG_ALLOCS.lock().unwrap();
+            let (&base, allocation) = allocations.range(..=source).next_back()?;
+            (source.wrapping_sub(base) < allocation.size)
+                .then(|| destination.wrapping_sub(base) < allocation.size)
+        })
+    }
+}
+
 /// Accumulated `total_allocations` from exited threads (for stats printing).
 pub(crate) static ORPHANED_TOTAL_ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 

@@ -33,6 +33,9 @@ pub import process from "process.solar";
 /// SIMD helpers.
 pub import simd from "simd.solar";
 
+/// Memory representation and reference operations.
+pub import mem from "mem.solar";
+
 /// Hash maps.
 pub import hashbrown from "hashbrown/map.solar";
 
@@ -42,23 +45,6 @@ pub enum Option#[T] { Some(T), None }
 /// Returns the byte size of a statically sized type.
 pub fn size_of#[out T]() -> Uint {
 	intrinsics::size_of#[T]()
-}
-
-/// Reinterprets a value's bytes as another type of the same size.
-///
-/// The source type must have no padding or uninitialized regions, and every
-/// bit pattern must be valid for the destination type.
-pub fn transmute#[T, out U](x: T) -> U {
-	intrinsics::transmute#[U](x)
-}
-
-/// Reinterprets a value's bytes without checking either type's validity rules.
-///
-/// The source and destination types must have the same size. The caller must
-/// ensure that reading every source byte and constructing the destination value
-/// are valid.
-pub unsafe fn transmute_unchecked#[T, out U](x: T) -> U {
-	unsafe { intrinsics::transmute_unchecked#[U](x) }
 }
 
 /// Prevents the compiler from treating a value as statically known.

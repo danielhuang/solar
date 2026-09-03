@@ -16,6 +16,8 @@ pub enum Intrinsic {
     SizeOf,
     Transmute,
     TransmuteUnchecked,
+    TransmuteRef,
+    OffsetRef,
     AssertArrayLen,
     ThreadSpawn,
     AtomicLoad,
@@ -77,6 +79,8 @@ const INTRINSIC_NAMES: &[(&str, Intrinsic)] = &[
     ("size_of", Intrinsic::SizeOf),
     ("transmute", Intrinsic::Transmute),
     ("transmute_unchecked", Intrinsic::TransmuteUnchecked),
+    ("transmute_ref", Intrinsic::TransmuteRef),
+    ("offset_ref", Intrinsic::OffsetRef),
     ("assert_array_len", Intrinsic::AssertArrayLen),
     ("thread_spawn", Intrinsic::ThreadSpawn),
     ("atomic_load", Intrinsic::AtomicLoad),
@@ -157,7 +161,11 @@ impl Intrinsic {
     pub fn is_unsafe(&self) -> bool {
         matches!(
             self,
-            Intrinsic::FdFromRaw | Intrinsic::Syscall | Intrinsic::TransmuteUnchecked
+            Intrinsic::FdFromRaw
+                | Intrinsic::Syscall
+                | Intrinsic::TransmuteUnchecked
+                | Intrinsic::TransmuteRef
+                | Intrinsic::OffsetRef
         )
     }
 }

@@ -1,0 +1,4 @@
+fn main() {
+	let value = 1;
+	let shifted = mem::offset_ref(value&, 0);
+}

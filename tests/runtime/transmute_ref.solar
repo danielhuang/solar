@@ -1,0 +1,25 @@
+struct SourceTail { tag: Int, values: [Int] }
+
+struct DestinationTail { header: Int, items: [Int] }
+
+fn main() {
+	let values: [Int] = [10, 20, 30];
+	let slice = unsafe { mem::transmute_ref#[[Int]](values[0u]&, 3u) };
+	println(slice.len());
+	println(slice@[0u]);
+	println(slice@[2u]);
+	slice@[1u] = 25;
+	println(values[1u]);
+
+	let source: SourceTail = SourceTail { tag: 7, values: [40, 50, 60] };
+	let destination = unsafe {
+		mem::transmute_ref#[DestinationTail](source&, 3u)
+	};
+	println(destination@.header);
+	println(destination@.items&.len());
+	println(destination@.items[1u]);
+	destination@.header = 9;
+	destination@.items[2u] = 70;
+	println(source.tag);
+	println(source.values[2u]);
+}
