@@ -127,7 +127,7 @@ fn numeric_constructor_syntax_remains_a_normal_call() {
 #[test]
 fn for_in_becomes_duck_typed_iterator_loop() {
     let surface =
-        parse("fn main() { let values = [1, 2]; for value in values { println(value); } }");
+        parse("fn main() { let values = [1, 2]; for value in values { println(value); value } }");
     assert!(matches!(
         function(&surface.items, 0).body[1].kind,
         StatementKind::ForIn { .. }
@@ -183,6 +183,24 @@ fn for_in_becomes_duck_typed_iterator_loop() {
             binding: Some(ast::Ident::User(name)),
             ..
         } if variant_name == "Some" && name == "value"
+    ));
+    assert!(matches!(
+        &arms[0].body.kind,
+        ExprKind::Block(statements)
+            if matches!(
+                &statements[..],
+                [ast::Statement {
+                    kind: StatementKind::If {
+                        condition: ast::Expr {
+                            kind: ExprKind::BooleanLiteral(true),
+                            ..
+                        },
+                        body,
+                        else_body,
+                    },
+                    ..
+                }] if body.len() == 2 && else_body.is_empty()
+            )
     ));
     assert!(matches!(
         &arms[1].pattern,

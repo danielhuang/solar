@@ -452,6 +452,14 @@ impl Desugarer {
         // means break and continue need no special for-in handling downstream.
         let option_type_args = vec![ast::Type::Infer];
         let next = method_call(reference(identifier(&iterator)), "next");
+        let ignored_body = vec![statement(ast::StatementKind::If {
+            condition: ast::Expr {
+                kind: ast::ExprKind::BooleanLiteral(true),
+                span,
+            },
+            body,
+            else_body: Vec::new(),
+        })];
         let match_next = ast::Expr {
             kind: ast::ExprKind::Match {
                 scrutinee: Box::new(next),
@@ -465,7 +473,7 @@ impl Desugarer {
                             binding: Some(variable),
                         },
                         body: ast::Expr {
-                            kind: ast::ExprKind::Block(body),
+                            kind: ast::ExprKind::Block(ignored_body),
                             span,
                         },
                     },
