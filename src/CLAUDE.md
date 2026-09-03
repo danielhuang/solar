@@ -68,6 +68,8 @@ AST, while `ir_interp` and native codegen consume IR.
   post-monomorphization call failures as cause chains: terminal diagnostics
   render the innermost cause first and the outermost call error last, while LSP
   marks only the outermost diagnostic as an error and its causes as information.
+  Every LSP diagnostic links to the rest of its chain as related information;
+  outward call frames from an inner diagnostic use the message `from`.
 - Escape analysis is conservative: uncertainty means the value may escape.
 - Compile-time field reflection evaluates its object once.
 - Keep integer matches as flat match nodes through typed AST, mangling, and IR;

@@ -1691,7 +1691,39 @@ fn diagnostics_from_errors(
         source_map,
     };
     for error in errors {
-        push_compile_error_diagnostics(&mut diagnostics, error, true, &context);
+        let mut chain = Vec::new();
+        collect_compile_error_chain(error, &mut chain);
+        for (index, error) in chain.iter().enumerate() {
+            let related = chain
+                .iter()
+                .enumerate()
+                .filter(|(related_index, _)| *related_index != index)
+                .map(|(related_index, related_error)| {
+                    let (uri, source) = diagnostic_source(related_error, &context);
+                    json!({
+                        "location": {
+                            "uri": uri,
+                            "range": compile_error_range(related_error.span, source),
+                        },
+                        "message": if related_index < index {
+                            related_error.message.as_str()
+                        } else {
+                            "from"
+                        },
+                    })
+                })
+                .collect();
+            let (uri, source) = diagnostic_source(error, &context);
+            diagnostics
+                .entry(uri)
+                .or_default()
+                .push(compile_error_diagnostic(
+                    error,
+                    source,
+                    if index + 1 == chain.len() { 1 } else { 3 },
+                    related,
+                ));
+        }
     }
     diagnostics
 }
@@ -1703,16 +1735,17 @@ struct DiagnosticContext<'a> {
     source_map: &'a SourceMap,
 }
 
-fn push_compile_error_diagnostics(
-    diagnostics: &mut HashMap<String, Vec<Value>>,
-    error: &CompileError,
-    outermost: bool,
-    context: &DiagnosticContext,
-) {
+fn collect_compile_error_chain<'a>(error: &'a CompileError, chain: &mut Vec<&'a CompileError>) {
     if let Some(cause) = &error.caused_by {
-        push_compile_error_diagnostics(diagnostics, cause, false, context);
+        collect_compile_error_chain(cause, chain);
     }
+    chain.push(error);
+}
 
+fn diagnostic_source<'a>(
+    error: &CompileError,
+    context: &DiagnosticContext<'a>,
+) -> (String, &'a str) {
     // Parsing can fail before resolve_source has recorded root_file_id, so
     // also recognize the root by its canonical filename in the SourceMap.
     let mapped_source = context.source_map.get(error.span.file_id);
@@ -1729,17 +1762,10 @@ fn push_compile_error_diagnostics(
     } else {
         (context.root_uri.to_owned(), context.root_source)
     };
-    diagnostics
-        .entry(uri)
-        .or_default()
-        .push(compile_error_diagnostic(
-            error,
-            file_source,
-            if outermost { 1 } else { 3 },
-        ));
+    (uri, file_source)
 }
 
-fn compile_error_diagnostic(error: &CompileError, source: &str, severity: u32) -> Value {
+fn compile_error_range(span: SourceSpan, source: &str) -> Value {
     let position = |pos: ast::SourcePos| {
         let line = source.lines().nth(pos.line as usize).unwrap_or("");
         json!({
@@ -1748,14 +1774,27 @@ fn compile_error_diagnostic(error: &CompileError, source: &str, severity: u32) -
         })
     };
     json!({
-        "range": {
-            "start": position(error.span.start),
-            "end": position(error.span.end),
-        },
+        "start": position(span.start),
+        "end": position(span.end),
+    })
+}
+
+fn compile_error_diagnostic(
+    error: &CompileError,
+    source: &str,
+    severity: u32,
+    related: Vec<Value>,
+) -> Value {
+    let mut diagnostic = json!({
+        "range": compile_error_range(error.span, source),
         "severity": severity,
         "source": "solar",
         "message": error.message,
-    })
+    });
+    if !related.is_empty() {
+        diagnostic["relatedInformation"] = json!(related);
+    }
+    diagnostic
 }
 
 fn respond(output: &mut impl Write, id: Option<Value>, result: Value) {
@@ -4704,6 +4743,40 @@ fn main() {
         assert!(root[1]["message"].as_str().unwrap().contains("`inner`"));
         assert_eq!(root[2]["severity"], 1);
         assert!(root[2]["message"].as_str().unwrap().contains("`outer`"));
+
+        let inner_related = root[0]["relatedInformation"].as_array().unwrap();
+        assert_eq!(inner_related.len(), 2);
+        assert!(inner_related.iter().all(|item| item["message"] == "from"));
+        assert_eq!(inner_related[0]["location"]["uri"], uri);
+        assert_eq!(inner_related[0]["location"]["range"]["start"]["line"], 2);
+        assert_eq!(inner_related[1]["location"]["range"]["start"]["line"], 4);
+
+        let middle_related = root[1]["relatedInformation"].as_array().unwrap();
+        assert!(
+            middle_related[0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("got Bool")
+        );
+        assert_eq!(middle_related[1]["message"], "from");
+        assert_eq!(middle_related[1]["location"]["range"]["start"]["line"], 4);
+
+        let outer_related = root[2]["relatedInformation"].as_array().unwrap();
+        assert!(
+            outer_related[0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("got Bool")
+        );
+        assert!(
+            outer_related[1]["message"]
+                .as_str()
+                .unwrap()
+                .contains("`inner`")
+        );
+        assert_eq!(outer_related[0]["location"]["uri"], uri);
+        assert_eq!(outer_related[0]["location"]["range"]["start"]["line"], 0);
+        assert_eq!(outer_related[1]["location"]["range"]["start"]["line"], 2);
     }
 
     #[test]
@@ -4754,7 +4827,7 @@ fn main() {
             },
         );
 
-        let diagnostic = compile_error_diagnostic(&error, "éx", 1);
+        let diagnostic = compile_error_diagnostic(&error, "éx", 1, Vec::new());
 
         assert_eq!(diagnostic["range"]["start"]["character"], 1);
         assert_eq!(diagnostic["range"]["end"]["character"], 2);
