@@ -36,7 +36,9 @@ fn main() {
     let mut documents = HashMap::<String, String>::new();
     // Per-document analysis, replaced whenever the buffer changes. Resolving
     // reparses the stdlib, so diagnostics, navigation, hover, and semantic
-    // tokens share one resolve and type-check per document revision.
+    // tokens share one resolve and type-check per document revision. Type facts
+    // from the last successful revision survive failed edits for completion and
+    // inlay hints.
     let mut cache = HashMap::<String, Document>::new();
     // Root document URI → every URI to which its last check published
     // diagnostics. Used to clear errors that disappear after an edit.
@@ -73,7 +75,7 @@ fn main() {
             Some("textDocument/didOpen") => {
                 if let Some((uri, text)) = document_and_text(&params) {
                     let (document, diagnostics) = compute_with_diagnostics(&uri, &text);
-                    cache.insert(uri.clone(), document);
+                    update_cached_document(&mut cache, &uri, document);
                     documents.insert(uri.clone(), text.clone());
                     publish_check_diagnostics(&mut output, &uri, diagnostics, &mut diagnostic_uris);
                 }
@@ -85,7 +87,7 @@ fn main() {
                     .and_then(Value::as_str);
                 if let (Some(uri), Some(text)) = (uri, text) {
                     let (document, diagnostics) = compute_with_diagnostics(uri, text);
-                    cache.insert(uri.to_owned(), document);
+                    update_cached_document(&mut cache, uri, document);
                     documents.insert(uri.to_owned(), text.to_owned());
                     publish_check_diagnostics(&mut output, uri, diagnostics, &mut diagnostic_uris);
                 }
@@ -245,7 +247,27 @@ fn completions(
         let types = probe.analysis.as_ref().map_or_else(Vec::new, |analysis| {
             expression_types_at(&analysis.typed, analysis.file_id, context.receiver_span)
         });
-        (types, &probe)
+        if types.is_empty() {
+            let cached_types =
+                document
+                    .last_successful_types
+                    .as_ref()
+                    .map_or_else(Vec::new, |types| {
+                        expression_types_at(
+                            &types.analysis.typed,
+                            types.analysis.file_id,
+                            context.receiver_span,
+                        )
+                    });
+            let tooling_document = if document.resolved.is_some() {
+                document
+            } else {
+                &probe
+            };
+            (cached_types, tooling_document)
+        } else {
+            (types, &probe)
+        }
     } else {
         (current_types, document)
     };
@@ -743,11 +765,10 @@ fn collect_visible_bindings(
             && cursor_byte <= scope.end_byte()
         {
             let detail = document
-                .source_map
-                .root_file_id()
+                .completion_type_file_id()
                 .and_then(|file_id| {
                     document
-                        .binding_signatures
+                        .completion_binding_signatures()
                         .get(&span_key(node_span(node, file_id)))
                 })
                 .map(|signatures| signatures.join(" | "));
@@ -1252,7 +1273,7 @@ fn inlay_hint_range(params: &Value) -> Option<InlayHintRange> {
 
 /// Returns inferred-type hints for declarations whose annotations are omitted.
 fn inlay_hints(source: &str, document: &Document, range: Option<InlayHintRange>) -> Vec<Value> {
-    let Some(analysis) = &document.analysis else {
+    let Some((analysis, inferred_binding_types)) = document.inlay_type_facts() else {
         return Vec::new();
     };
     let mut parser = Parser::new();
@@ -1286,7 +1307,7 @@ fn inlay_hints(source: &str, document: &Document, range: Option<InlayHintRange>)
     let context = InlayHintContext {
         source,
         file_id: analysis.file_id,
-        binding_types: &document.inferred_binding_types,
+        binding_types: inferred_binding_types,
         return_types: &return_types,
         static_types: &static_types,
         range,
@@ -3140,6 +3161,61 @@ struct Document {
     /// Type-check-derived facts for semantic highlighting. `None` when the
     /// buffer resolves but does not type-check — hover's docs survive either way.
     analysis: Option<Analysis>,
+    /// Type-check-derived facts from the most recent successful revision. This
+    /// is populated only while the current revision fails and is consulted only
+    /// by completion and inlay hints.
+    last_successful_types: Option<ResolvedTypeCache>,
+}
+
+struct ResolvedTypeCache {
+    analysis: Analysis,
+    binding_signatures: HashMap<SpanKey, Vec<String>>,
+    inferred_binding_types: HashMap<SpanKey, Vec<String>>,
+}
+
+impl Document {
+    fn take_resolved_types(&mut self) -> Option<ResolvedTypeCache> {
+        if let Some(analysis) = self.analysis.take() {
+            Some(ResolvedTypeCache {
+                analysis,
+                binding_signatures: std::mem::take(&mut self.binding_signatures),
+                inferred_binding_types: std::mem::take(&mut self.inferred_binding_types),
+            })
+        } else {
+            self.last_successful_types.take()
+        }
+    }
+
+    fn completion_binding_signatures(&self) -> &HashMap<SpanKey, Vec<String>> {
+        if self.analysis.is_some() {
+            &self.binding_signatures
+        } else {
+            self.last_successful_types
+                .as_ref()
+                .map_or(&self.binding_signatures, |types| &types.binding_signatures)
+        }
+    }
+
+    fn completion_type_file_id(&self) -> Option<u32> {
+        self.analysis
+            .as_ref()
+            .map(|analysis| analysis.file_id)
+            .or_else(|| {
+                self.last_successful_types
+                    .as_ref()
+                    .map(|types| types.analysis.file_id)
+            })
+    }
+
+    fn inlay_type_facts(&self) -> Option<(&Analysis, &HashMap<SpanKey, Vec<String>>)> {
+        if let Some(analysis) = &self.analysis {
+            Some((analysis, &self.inferred_binding_types))
+        } else {
+            self.last_successful_types
+                .as_ref()
+                .map(|types| (&types.analysis, &types.inferred_binding_types))
+        }
+    }
 }
 
 /// Type-checker facts used by semantic highlighting.
@@ -3181,9 +3257,20 @@ struct ModuleImport {
 fn cached<'a>(cache: &'a mut HashMap<String, Document>, uri: &str, source: &str) -> &'a Document {
     if !cache.contains_key(uri) {
         let document = compute(uri, source);
-        cache.insert(uri.to_owned(), document);
+        update_cached_document(cache, uri, document);
     }
     &cache[uri]
+}
+
+fn update_cached_document(
+    cache: &mut HashMap<String, Document>,
+    uri: &str,
+    mut document: Document,
+) {
+    if document.analysis.is_none() {
+        document.last_successful_types = cache.get_mut(uri).and_then(Document::take_resolved_types);
+    }
+    cache.insert(uri.to_owned(), document);
 }
 
 /// Analyzes an in-memory document.
@@ -3265,6 +3352,7 @@ fn compute_with_diagnostics(uri: &str, source: &str) -> (Document, HashMap<Strin
         resolved: Some(ast),
         module_imports,
         analysis,
+        last_successful_types: None,
         source_map,
     };
     (document, diagnostics)
@@ -4628,6 +4716,71 @@ fn main() {
                 .any(|item| item["label"] == "Point" && item["kind"] == 22),
             "{items:?}"
         );
+    }
+
+    #[test]
+    fn failed_revision_reuses_last_successful_types_for_completion_and_inlay_hints() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/runtime/completion_probe.solar");
+        let uri = format!("file://{}", path.display());
+        let successful_source = r#"
+struct Point { x: Int }
+method read(self: Point) -> Int { self.x }
+fn main() {
+    let point = Point { x: 1 };
+    point.read();
+}
+"#;
+        let failed_source = successful_source.replace(
+            "point.read();",
+            "point.re;\n    poi;\n    let broken: Int = true;",
+        );
+        let mut cache = HashMap::new();
+        update_cached_document(&mut cache, &uri, compute(&uri, successful_source));
+        update_cached_document(&mut cache, &uri, compute(&uri, &failed_source));
+
+        let document = cached(&mut cache, &uri, &failed_source);
+        assert!(document.analysis.is_none());
+        assert!(document.last_successful_types.is_some());
+
+        let (line, character) = occurrence_position(&failed_source, "point.re", 0);
+        let items = completions(
+            &failed_source,
+            line,
+            character + "point.re".encode_utf16().count() as u32,
+            &uri,
+            document,
+        );
+        assert!(
+            items.iter().any(|item| item["label"] == "read"),
+            "{items:?}"
+        );
+
+        let (line, character) = occurrence_position(&failed_source, "poi", 0);
+        let items = completions(
+            &failed_source,
+            line,
+            character + "poi".len() as u32,
+            &uri,
+            document,
+        );
+        assert!(
+            items
+                .iter()
+                .any(|item| { item["label"] == "point" && item["detail"] == "point: Point" }),
+            "{items:?}"
+        );
+
+        let hints = inlay_hints(&failed_source, document, None);
+        let point_position = occurrence_position(&failed_source, "point", 0);
+        assert!(hints.iter().any(|hint| {
+            hint["position"]
+                == json!({
+                    "line": point_position.0,
+                    "character": point_position.1 + "point".len() as u32,
+                })
+                && hint["label"] == ": Point"
+        }));
     }
 
     #[test]
