@@ -821,6 +821,60 @@ mod tests {
     }
 
     #[test]
+    fn let_referenced_by_static_inside_try_is_not_noescape() {
+        // A static can retain the reference after both the try closure and the
+        // initializing function return. The pointee must therefore remain a
+        // heap allocation even though the assignment is nested in a try body.
+        let m = ir_of(
+            "struct Large { value: Int, padding: Int, }\n\
+             static SAVED: &?Large = null#[Large];\n\
+             fn initialize() {\n\
+               try {\n\
+                 let value = Large { value: 41, padding: 99, };\n\
+                 SAVED = value&;\n\
+               } catch (error) { throw(error); }\n\
+             }\n\
+             fn churn(n: Int) -> Int {\n\
+               let value = Large { value: n, padding: n + 1, };\n\
+               value.value + value.padding\n\
+             }\n\
+             fn main() { initialize(); println(churn(7)); println(SAVED@.value); }\n",
+        );
+        let (body, escaped) = m
+            .functions
+            .iter()
+            .find_map(|function| {
+                function.nodes.iter().find_map(|node| {
+                    let ir::NodeKind::Let {
+                        value, noescape, ..
+                    } = &node.kind
+                    else {
+                        return None;
+                    };
+                    let ir::NodeKind::StructLiteral { name, fields } =
+                        &function.nodes[value.0].kind
+                    else {
+                        return None;
+                    };
+                    (name.contains("Large")
+                        && fields.iter().any(|(_, field)| {
+                            matches!(
+                                function.nodes[field.0].kind,
+                                ir::NodeKind::IntegerLiteral(41)
+                            )
+                        }))
+                    .then_some((function, *noescape))
+                })
+            })
+            .expect("try body containing Large local");
+        assert!(
+            !escaped,
+            "static-referenced local must escape: {:#?}",
+            body.nodes
+        );
+    }
+
+    #[test]
     fn match_call_scrutinee_is_stack_allocated_when_binding_does_not_escape() {
         let m = ir_of(
             "fn find(x: Int) -> Option#[Int] { Option#[Int]::Some(x) }\n\

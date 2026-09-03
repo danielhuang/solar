@@ -1,0 +1,12 @@
+pub struct Collection#[T] { pub value: T, pub count: Uint }
+
+pub fn Collection#[T](sample: T) -> Collection#[T] {
+	Collection#[T] { value: sample, count: 0u }
+}
+
+pub method add#[T](self: &Collection#[T], value: T) {
+	self@.value = value;
+	self@.count = self@.count + 1u;
+}
+
+pub method size#[T](self: &Collection#[T]) -> Uint { self@.count }

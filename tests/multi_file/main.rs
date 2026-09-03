@@ -8,6 +8,15 @@ fn fixture(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn nested_generic_method_receiver_infers_inner_type() {
+    let output = run(
+        &fixture("nested_generic_method/main.solar"),
+        "nested_generic_method_receiver_infers_inner_type",
+    );
+    assert_eq!(output, "1\n");
+}
+
+#[test]
 fn named_import() {
     let output = run(&fixture("named_import/main.solar"), "named_import");
     assert_eq!(output, "7\n30\n");
@@ -47,6 +56,12 @@ fn diamond_dependency() {
 #[should_panic(expected = "field `hidden` is private")]
 fn private_field_access() {
     run(&fixture("private_field/main.solar"), "private_field");
+}
+
+#[test]
+fn compiler_reflection_can_read_private_imported_fields() {
+    let output = run(&fixture("reflect_private/main.solar"), "reflect_private");
+    assert_eq!(output, "true\nfalse\n");
 }
 
 #[test]

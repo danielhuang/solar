@@ -1933,6 +1933,7 @@ impl<'a> Lowerer<'a> {
         access_span: ast::SourceSpan,
     ) -> Result<(), CompileError> {
         if let Some(ast_def) = self.ast_struct_def(struct_id)
+            && access_span.file_id != ast::SYNTHETIC_FILE
             && access_span.file_id != ast_def.span.file_id
             && let Some(field) = ast_def.fields.iter().find(|f| f.name == field_name)
             && !field.is_pub
@@ -2903,9 +2904,16 @@ impl<'a> Lowerer<'a> {
                 _ => {}
             },
             ast::Type::Reference(inner) => {
-                if let Type::Ref(c_inner) | Type::RefUnsized(c_inner) = concrete
-                    && !self.try_unify_type(inner, c_inner, type_params, bindings)
-                {
+                // Method-call receiver lowering supplies the value type and
+                // `try_coerce` inserts the implicit shared borrow later. Infer
+                // generic arguments through that borrow as well; otherwise a
+                // receiver such as `List#[Wrapper#[Int32]]` cannot bind `T` in
+                // `self: &List#[T]`, so even `size()` has no viable overload.
+                let concrete_inner = match concrete {
+                    Type::Ref(c_inner) | Type::RefUnsized(c_inner) => c_inner.as_ref(),
+                    other => other,
+                };
+                if !self.try_unify_type(inner, concrete_inner, type_params, bindings) {
                     return false;
                 }
             }
@@ -6681,21 +6689,25 @@ impl<'a> Lowerer<'a> {
                 })),
                 span,
             };
+            let reflected_span = ast::SourceSpan {
+                file_id: ast::SYNTHETIC_FILE,
+                ..span
+            };
             let field_ref = ast::Expr {
                 kind: ast::ExprKind::Reference(Box::new(ast::Expr {
                     kind: ast::ExprKind::FieldAccess {
                         object: Box::new(ast::Expr {
                             kind: ast::ExprKind::Deref(Box::new(ast::Expr {
                                 kind: ast::ExprKind::Identifier(tmp_name.clone()),
-                                span,
+                                span: reflected_span,
                             })),
-                            span,
+                            span: reflected_span,
                         }),
                         field: fname.clone(),
                     },
-                    span,
+                    span: reflected_span,
                 })),
-                span,
+                span: reflected_span,
             };
             let components = [name_ref, field_ref];
             let mut block_stmts = Self::direct_reflect_bindings(
@@ -6857,21 +6869,25 @@ impl<'a> Lowerer<'a> {
         };
         let mut outer_stmts = vec![let_tmp(&tmp0, obj0), let_tmp(&tmp1, obj1)];
 
+        let reflected_span = ast::SourceSpan {
+            file_id: ast::SYNTHETIC_FILE,
+            ..span
+        };
         let field_ref = |tmp: &ast::Ident, fname: &str| ast::Expr {
             kind: ast::ExprKind::Reference(Box::new(ast::Expr {
                 kind: ast::ExprKind::FieldAccess {
                     object: Box::new(ast::Expr {
                         kind: ast::ExprKind::Deref(Box::new(ast::Expr {
                             kind: ast::ExprKind::Identifier(tmp.clone()),
-                            span,
+                            span: reflected_span,
                         })),
-                        span,
+                        span: reflected_span,
                     }),
                     field: fname.to_string(),
                 },
-                span,
+                span: reflected_span,
             })),
-            span,
+            span: reflected_span,
         };
 
         for fname in field_names {

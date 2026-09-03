@@ -20,11 +20,12 @@ impl Memory {
     }
 
     fn alloc(&mut self, size: usize, align: usize) -> usize {
-        if size == 0 {
-            return 0;
-        }
         let addr = (self.next_addr + align - 1) & !(align - 1);
-        self.next_addr = addr + size;
+        // Address zero is the null pointer. Even a zero-sized value needs a
+        // distinct non-null address when a Solar reference points to it (most
+        // notably an empty unsized array behind `&?[]`). Reserve one byte while
+        // retaining the logical size of zero for all copies and layouts.
+        self.next_addr = addr + size.max(1);
         self.data.resize(self.next_addr, 0);
         addr
     }
@@ -2156,5 +2157,39 @@ pub(crate) fn time_ns(intrinsic: &Intrinsic) -> u64 {
             .unwrap()
             .as_nanos() as u64,
         _ => unreachable!(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::pipeline;
+
+    #[test]
+    fn nullable_reference_to_empty_array_is_non_null() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static N: AtomicU64 = AtomicU64::new(0);
+        let uniq = N.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "ir_interp_empty_array_ref_{}_{uniq}.solar",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "static VALUES: &?[Int32] = null#[[Int32]];\n\
+             fn main() {\n\
+               VALUES = []#[Int32]&;\n\
+               VALUES = (VALUES@ + [7i32])&;\n\
+               println(Int(VALUES@[0u]));\n\
+             }\n",
+        )
+        .unwrap();
+        let result = pipeline::compile(&path);
+        let _ = std::fs::remove_file(&path);
+        let typed = result.unwrap_or_else(|(errors, _)| panic!("compile failed: {errors:?}"));
+        let module = typed.to_mangled().to_ir().optimized().ir;
+        let mut output = Vec::new();
+        super::interpret_to(&module, std::io::empty(), &mut output);
+        assert_eq!(String::from_utf8(output).unwrap(), "7\n");
     }
 }

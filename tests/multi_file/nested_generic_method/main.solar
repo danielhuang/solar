@@ -1,0 +1,9 @@
+import c from "collection.solar";
+
+pub struct Wrapper#[T] { pub value: T }
+
+fn main() {
+	let values = c::Collection(Wrapper#[Int32] { value: 0i32 });
+	values&.add(Wrapper#[Int32] { value: 7i32 });
+	println(Int(values&.size()));
+}

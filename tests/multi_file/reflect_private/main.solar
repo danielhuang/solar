@@ -1,0 +1,9 @@
+import owner from "owner.solar";
+
+fn main() {
+	let a = owner::private_pair(1i32, 2i32);
+	let b = owner::private_pair(1i32, 2i32);
+	let c = owner::private_pair(1i32, 3i32);
+	if a& == b& { println("true"&); } else { println("false"&); }
+	if a& == c& { println("true"&); } else { println("false"&); }
+}

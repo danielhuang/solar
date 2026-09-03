@@ -199,7 +199,11 @@ fn line_offsets(source: &str) -> Vec<usize> {
 }
 
 /// Convert a SourceSpan (line/col) to a byte range in the source string.
-fn span_to_byte_range(span: &SourceSpan, offsets: &[usize]) -> std::ops::Range<usize> {
+fn span_to_byte_range(
+    span: &SourceSpan,
+    offsets: &[usize],
+    source: &str,
+) -> std::ops::Range<usize> {
     let start_line = span.start.line as usize;
     let end_line = span.end.line as usize;
     let start = if start_line < offsets.len() {
@@ -212,8 +216,20 @@ fn span_to_byte_range(span: &SourceSpan, offsets: &[usize]) -> std::ops::Range<u
     } else {
         offsets.last().copied().unwrap_or(0)
     };
+    let mut start = start.min(source.len());
+    while start > 0 && !source.is_char_boundary(start) {
+        start -= 1;
+    }
+    let mut end = end.min(source.len());
+    while end < source.len() && !source.is_char_boundary(end) {
+        end += 1;
+    }
     if start >= end {
-        start..start + 1
+        let mut next = (start + 1).min(source.len());
+        while next < source.len() && !source.is_char_boundary(next) {
+            next += 1;
+        }
+        start..next
     } else {
         start..end
     }
@@ -223,7 +239,7 @@ fn render_single_error(err: &CompileError, source: &str, filename: &str) {
     use annotate_snippets::{AnnotationKind, Group, Level, Renderer, Snippet};
 
     let offsets = line_offsets(source);
-    let range = span_to_byte_range(&err.span, &offsets);
+    let range = span_to_byte_range(&err.span, &offsets, source);
 
     let range = range.start.min(source.len())..range.end.min(source.len());
 
@@ -233,7 +249,7 @@ fn render_single_error(err: &CompileError, source: &str, filename: &str) {
         .annotation(AnnotationKind::Primary.span(range));
 
     for label in &err.labels {
-        let label_range = span_to_byte_range(&label.span, &offsets);
+        let label_range = span_to_byte_range(&label.span, &offsets, source);
         let label_range = label_range.start.min(source.len())..label_range.end.min(source.len());
         if label.span.start.line > 0
             || label.span.start.col > 0

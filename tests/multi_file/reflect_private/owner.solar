@@ -1,0 +1,5 @@
+pub struct PrivatePair { left: Int32, right: Int32 }
+
+pub fn private_pair(left: Int32, right: Int32) -> PrivatePair {
+	PrivatePair { left: left, right: right }
+}
