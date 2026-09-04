@@ -28,8 +28,8 @@ pub struct SourceSpan {
 pub struct DefId {
     /// Source-map identifier of the defining file.
     pub file: u32,
-    /// Unmangled source name.
-    pub name: String,
+    /// Unmangled definition name, retaining whether it is user-written.
+    pub name: Ident,
 }
 
 /// File identifier reserved for compiler-generated definitions.
@@ -40,13 +40,18 @@ impl DefId {
     pub fn new(file: u32, name: impl Into<String>) -> Self {
         DefId {
             file,
-            name: name.into(),
+            name: Ident::User(name.into()),
         }
+    }
+
+    /// Creates a definition identity with an explicit user/synthetic name.
+    pub fn with_ident(file: u32, name: Ident) -> Self {
+        DefId { file, name }
     }
 
     /// Creates an identity for a compiler-generated definition.
     pub fn synthetic(name: impl Into<String>) -> Self {
-        DefId::new(SYNTHETIC_FILE, name)
+        DefId::with_ident(SYNTHETIC_FILE, Ident::Synthetic(name.into()))
     }
 }
 
@@ -56,7 +61,7 @@ impl std::fmt::Display for DefId {
     }
 }
 
-/// The identity of a local binding.
+/// The identity of a source or compiler-generated name.
 ///
 /// User-written and compiler-generated identifiers remain distinct until the
 /// mangled AST, even when their descriptive names are the same.
@@ -77,6 +82,66 @@ impl Ident {
     /// Creates a compiler-generated identifier.
     pub fn synthetic(name: impl Into<String>) -> Self {
         Self::Synthetic(name.into())
+    }
+
+    /// Returns the identifier's descriptive spelling.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::User(name) | Self::Synthetic(name) => name,
+        }
+    }
+}
+
+impl Default for Ident {
+    fn default() -> Self {
+        Self::User(String::new())
+    }
+}
+
+impl std::ops::Deref for Ident {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Display for Ident {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl PartialEq<str> for Ident {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for Ident {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<String> for Ident {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DefId, Ident, SYNTHETIC_FILE};
+
+    #[test]
+    fn definition_ids_preserve_user_and_synthetic_names() {
+        let user = DefId::new(SYNTHETIC_FILE, "generated");
+        let synthetic = DefId::synthetic("generated");
+
+        assert_eq!(user.name, Ident::User("generated".to_string()));
+        assert_eq!(synthetic.name, Ident::Synthetic("generated".to_string()));
+        assert_ne!(user, synthetic);
     }
 }
 
@@ -268,6 +333,10 @@ pub struct VariantDef {
 /// A function or method declaration.
 #[derive(Debug, Clone)]
 pub struct FunctionDef {
+    /// Universally quantified parameters used by the associated owner type.
+    pub associated_type_params: Vec<String>,
+    /// Type owning this associated function, or `None` for a free function.
+    pub associated_type: Option<Type>,
     /// Resolved function name.
     pub name: String,
     /// Original name used in diagnostics.
@@ -567,6 +636,13 @@ pub enum ExprKind {
         enum_name: DefId,
         type_args: Vec<Type>,
         variant_name: String,
+    },
+    /// A function selected from a type, such as `T::make`.
+    AssociatedFunction {
+        /// Owner type, retained structurally for generic substitution.
+        ty: Type,
+        /// Associated name; empty for constructor-like functions.
+        name: String,
     },
     Match {
         scrutinee: Box<Expr>,

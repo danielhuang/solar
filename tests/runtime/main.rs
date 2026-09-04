@@ -657,6 +657,15 @@ fn fn_name_same_as_struct() {
 }
 
 #[test]
+fn associated_functions() {
+    let output = run(
+        &fixture("associated_functions.solar"),
+        "associated_functions",
+    );
+    assert_eq!(output, "1\n2\n3\n4\n9\n5\n6\n7\n8\n10\n11\n12\n");
+}
+
+#[test]
 fn numeric_constructors() {
     let output = run(
         &fixture("numeric_constructors.solar"),

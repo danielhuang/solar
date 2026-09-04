@@ -10,6 +10,7 @@ module.exports = grammar({
   conflicts: ($) => [
     [$.if_statement, $.if_expression],
     [$.fn_type_param, $.named_type],
+    [$.function_type_params, $.named_type],
     [$.closure_param_list],
     [$.function_type],
     [$.named_type],
@@ -146,7 +147,15 @@ module.exports = grammar({
         optional(field("unsafe", "unsafe")),
         "fn",
         optional(field("attr", $.inline_attr)),
-        field("name", $.identifier),
+        choice(
+          field("name", $.identifier),
+          seq(
+            optional(field("associated_type_params", $.type_params)),
+            field("associated_type", $.named_type),
+            "::",
+            optional(field("name", $.identifier)),
+          ),
+        ),
         optional(field("type_params", $.function_type_params)),
         "(",
         optional($.parameter_list),

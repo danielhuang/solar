@@ -116,6 +116,13 @@ fn def_id_of_def(name: &str, span: ast::SourceSpan) -> DefId {
     DefId::new(span.file_id, name)
 }
 
+fn def_id_of_function(def: &ast::FunctionDef) -> DefId {
+    if def.associated_type.is_none() {
+        return def_id_of_def(&def.name, def.span);
+    }
+    DefId::with_ident(def.span.file_id, ast::Ident::Synthetic(def.name.clone()))
+}
+
 fn from_ast_type(ty: &ast::Type) -> Type {
     from_ast_type_with_subst(ty, &HashMap::new())
 }
@@ -124,7 +131,7 @@ fn from_ast_type_with_subst(ty: &ast::Type, subst: &HashMap<String, Type>) -> Ty
     match ty {
         ast::Type::Named(name) => {
             // A type-parameter substitution (keyed by the bare parameter name).
-            if let Some(concrete) = subst.get(&name.name) {
+            if let Some(concrete) = subst.get(name.name.as_str()) {
                 return concrete.clone();
             }
             if let Some(primitive) = ast::PrimitiveType::from_name(&name.name) {
@@ -204,7 +211,7 @@ fn from_ast_type_with_subst(ty: &ast::Type, subst: &HashMap<String, Type>) -> Ty
 fn apply_subst_to_ast_type(ty: &ast::Type, subst: &HashMap<String, ast::Type>) -> ast::Type {
     match ty {
         ast::Type::Named(name) => {
-            if let Some(replacement) = subst.get(&name.name) {
+            if let Some(replacement) = subst.get(name.name.as_str()) {
                 replacement.clone()
             } else {
                 ty.clone()
@@ -254,6 +261,35 @@ fn apply_subst_to_ast_type(ty: &ast::Type, subst: &HashMap<String, ast::Type>) -
     }
 }
 
+fn apply_subst_to_function_def(
+    definition: &ast::FunctionDef,
+    subst: &HashMap<String, ast::Type>,
+) -> ast::FunctionDef {
+    let mut definition = definition.clone();
+    definition.associated_type_params.clear();
+    definition.associated_type = definition
+        .associated_type
+        .as_ref()
+        .map(|ty| apply_subst_to_ast_type(ty, subst));
+    for parameter in &mut definition.parameters {
+        parameter.ty = apply_subst_to_ast_type(&parameter.ty, subst);
+        parameter.default = parameter
+            .default
+            .as_ref()
+            .map(|value| Box::new(apply_subst_to_ast_expr(value, subst)));
+    }
+    definition.return_type = definition
+        .return_type
+        .as_ref()
+        .map(|ty| apply_subst_to_ast_type(ty, subst));
+    definition.body = definition
+        .body
+        .iter()
+        .map(|statement| apply_subst_to_ast_statement(statement, subst))
+        .collect();
+    definition
+}
+
 fn apply_subst_to_ast_expr(expr: &ast::Expr, subst: &HashMap<String, ast::Type>) -> ast::Expr {
     let kind = match &expr.kind {
         ast::ExprKind::Identifier(_)
@@ -282,13 +318,42 @@ fn apply_subst_to_ast_expr(expr: &ast::Expr, subst: &HashMap<String, ast::Type>)
         ast::ExprKind::NullLiteral(ty) => {
             ast::ExprKind::NullLiteral(apply_subst_to_ast_type(ty, subst))
         }
+        ast::ExprKind::AssociatedFunction { ty, name } => ast::ExprKind::AssociatedFunction {
+            ty: apply_subst_to_ast_type(ty, subst),
+            name: name.clone(),
+        },
         ast::ExprKind::Call {
             function,
             type_args,
             arguments,
             kwargs,
         } => ast::ExprKind::Call {
-            function: Box::new(apply_subst_to_ast_expr(function, subst)),
+            function: Box::new(match &function.kind {
+                ast::ExprKind::Identifier(ast::Ident::User(name)) if subst.contains_key(name) => {
+                    ast::Expr {
+                        kind: ast::ExprKind::AssociatedFunction {
+                            ty: subst[name].clone(),
+                            name: String::new(),
+                        },
+                        span: function.span,
+                    }
+                }
+                ast::ExprKind::EnumVariant {
+                    module_path,
+                    enum_name,
+                    variant_name,
+                    ..
+                } if module_path.is_empty() && subst.contains_key(enum_name.name.as_str()) => {
+                    ast::Expr {
+                        kind: ast::ExprKind::AssociatedFunction {
+                            ty: subst[enum_name.name.as_str()].clone(),
+                            name: variant_name.clone(),
+                        },
+                        span: function.span,
+                    }
+                }
+                _ => apply_subst_to_ast_expr(function, subst),
+            }),
             type_args: type_args
                 .iter()
                 .map(|t| apply_subst_to_ast_type(t, subst))
@@ -621,6 +686,11 @@ fn apply_subst_to_ast_statement(
         ast::StatementKind::Continue => ast::StatementKind::Continue,
         ast::StatementKind::NestedFunction(fdef) => {
             ast::StatementKind::NestedFunction(ast::FunctionDef {
+                associated_type_params: fdef.associated_type_params.clone(),
+                associated_type: fdef
+                    .associated_type
+                    .as_ref()
+                    .map(|ty| apply_subst_to_ast_type(ty, subst)),
                 name: fdef.name.clone(),
                 display_name: fdef.display_name.clone(),
                 type_params: fdef.type_params.clone(),
@@ -1134,6 +1204,8 @@ struct GenericEnumDef {
 
 #[derive(Clone)]
 struct FunctionEntry {
+    /// Universally quantified parameters matched against the owner type.
+    associated_type_params: Vec<String>,
     /// All type parameters in substitution order: inferred parameters first,
     /// followed by caller-specified output parameters.
     type_params: Vec<String>,
@@ -1203,8 +1275,8 @@ fn compare_type_specificity(
     b: &ast::Type,
     b_type_params: &[String],
 ) -> Ordering {
-    let a_is_param = matches!(a, ast::Type::Named(n) if a_type_params.contains(&n.name));
-    let b_is_param = matches!(b, ast::Type::Named(n) if b_type_params.contains(&n.name));
+    let a_is_param = matches!(a, ast::Type::Named(n) if a_type_params.iter().any(|parameter| parameter == n.name.as_str()));
+    let b_is_param = matches!(b, ast::Type::Named(n) if b_type_params.iter().any(|parameter| parameter == n.name.as_str()));
     match (a_is_param, b_is_param) {
         (true, false) => Ordering::Less,    // b is more specific
         (false, true) => Ordering::Greater, // a is more specific
@@ -1291,17 +1363,17 @@ fn types_alpha_equivalent(
     mapping: &mut HashMap<String, String>,
     reverse: &mut HashMap<String, String>,
 ) -> bool {
-    let a_is_param = matches!(a, ast::Type::Named(n) if a_type_params.contains(&n.name));
-    let b_is_param = matches!(b, ast::Type::Named(n) if b_type_params.contains(&n.name));
+    let a_is_param = matches!(a, ast::Type::Named(n) if a_type_params.iter().any(|parameter| parameter == n.name.as_str()));
+    let b_is_param = matches!(b, ast::Type::Named(n) if b_type_params.iter().any(|parameter| parameter == n.name.as_str()));
     match (a_is_param, b_is_param) {
         (true, true) => {
             let a_name = if let ast::Type::Named(n) = a {
-                &n.name
+                n.name.as_str()
             } else {
                 unreachable!()
             };
             let b_name = if let ast::Type::Named(n) = b {
-                &n.name
+                n.name.as_str()
             } else {
                 unreachable!()
             };
@@ -1310,8 +1382,8 @@ fn types_alpha_equivalent(
             } else if let Some(rev) = reverse.get(b_name) {
                 rev == a_name
             } else {
-                mapping.insert(a_name.clone(), b_name.clone());
-                reverse.insert(b_name.clone(), a_name.clone());
+                mapping.insert(a_name.to_owned(), b_name.to_owned());
+                reverse.insert(b_name.to_owned(), a_name.to_owned());
                 true
             }
         }
@@ -1418,6 +1490,124 @@ fn params_alpha_equivalent(
     })
 }
 
+fn match_associated_owner_pattern(
+    pattern: &ast::Type,
+    concrete: &ast::Type,
+    type_params: &[String],
+    bindings: &mut HashMap<String, ast::Type>,
+) -> bool {
+    if let ast::Type::Named(name) = pattern
+        && type_params
+            .iter()
+            .any(|parameter| parameter == name.name.as_str())
+    {
+        return match bindings.get(name.name.as_str()) {
+            Some(existing) => existing == concrete,
+            None => {
+                bindings.insert(name.name.to_string(), concrete.clone());
+                true
+            }
+        };
+    }
+
+    match (pattern, concrete) {
+        (ast::Type::Named(a), ast::Type::Named(b)) => a == b,
+        (
+            ast::Type::Generic {
+                name: a_name,
+                type_args: a_args,
+            },
+            ast::Type::Generic {
+                name: b_name,
+                type_args: b_args,
+            },
+        ) => {
+            a_name == b_name
+                && a_args.len() == b_args.len()
+                && a_args
+                    .iter()
+                    .zip(b_args)
+                    .all(|(a, b)| match_associated_owner_pattern(a, b, type_params, bindings))
+        }
+        (ast::Type::Reference(a), ast::Type::Reference(b))
+        | (ast::Type::NullableReference(a), ast::Type::NullableReference(b))
+        | (ast::Type::Unique(a), ast::Type::Unique(b))
+        | (ast::Type::Slice(a), ast::Type::Slice(b)) => {
+            match_associated_owner_pattern(a, b, type_params, bindings)
+        }
+        (ast::Type::FixedArray(a, a_len), ast::Type::FixedArray(b, b_len)) => {
+            a_len == b_len && match_associated_owner_pattern(a, b, type_params, bindings)
+        }
+        (
+            ast::Type::Function {
+                params: a_params,
+                return_type: a_return,
+            },
+            ast::Type::Function {
+                params: b_params,
+                return_type: b_return,
+            },
+        ) => {
+            a_params.len() == b_params.len()
+                && a_params.iter().zip(b_params).all(|((_, a), (_, b))| {
+                    match_associated_owner_pattern(a, b, type_params, bindings)
+                })
+                && match (a_return, b_return) {
+                    (Some(a), Some(b)) => {
+                        match_associated_owner_pattern(a, b, type_params, bindings)
+                    }
+                    (None, None) => true,
+                    _ => false,
+                }
+        }
+        (ast::Type::Tuple(a), ast::Type::Tuple(b)) => {
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b)
+                    .all(|(a, b)| match_associated_owner_pattern(a, b, type_params, bindings))
+        }
+        (ast::Type::Infer, ast::Type::Infer) => true,
+        _ => false,
+    }
+}
+
+/// Pre-order structural specificity. A concrete type constructor sorts before
+/// a universally quantified parameter at the first differing owner position.
+fn associated_owner_specificity(ty: &ast::Type, type_params: &[String], out: &mut Vec<u8>) {
+    if matches!(ty, ast::Type::Named(name) if type_params.iter().any(|parameter| parameter == name.name.as_str()))
+    {
+        out.push(0);
+        return;
+    }
+    out.push(1);
+    match ty {
+        ast::Type::Generic { type_args, .. } | ast::Type::Tuple(type_args) => {
+            for argument in type_args {
+                associated_owner_specificity(argument, type_params, out);
+            }
+        }
+        ast::Type::Reference(inner)
+        | ast::Type::NullableReference(inner)
+        | ast::Type::Unique(inner)
+        | ast::Type::Slice(inner)
+        | ast::Type::FixedArray(inner, _) => {
+            associated_owner_specificity(inner, type_params, out);
+        }
+        ast::Type::Function {
+            params,
+            return_type,
+        } => {
+            for (_, parameter) in params {
+                associated_owner_specificity(parameter, type_params, out);
+            }
+            if let Some(return_type) = return_type {
+                associated_owner_specificity(return_type, type_params, out);
+            }
+        }
+        ast::Type::Named(_) | ast::Type::Infer => {}
+    }
+}
+
 /// Check that every type param appears somewhere in the parameter types.
 fn type_param_appears_in(ty: &ast::Type, param: &str) -> bool {
     match ty {
@@ -1451,6 +1641,7 @@ struct Lowerer<'a> {
     generic_structs: HashMap<DefId, GenericStructDef>,
     generic_enums: HashMap<DefId, GenericEnumDef>,
     function_defs: HashMap<DefId, Vec<FunctionEntry>>,
+    associated_function_defs: HashMap<String, Vec<FunctionEntry>>,
     method_defs: HashMap<String, Vec<FunctionEntry>>,
     /// Lazily-built per-name receiver index over `method_defs` (see `MethodIndex`).
     method_index: HashMap<String, MethodIndex>,
@@ -1569,11 +1760,29 @@ enum ArgShape {
 
 impl<'a> Lowerer<'a> {
     fn new(source: &'a resolved_ast::SourceFile) -> Result<Self, CompileError> {
+        let declared_types: HashMap<(u32, String), (&ast::SourceSpan, bool)> = source
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ast::TopLevelItem::Struct(def) => Some((
+                    (def.span.file_id, def.name.clone()),
+                    (&def.span, def.is_tuple),
+                )),
+                ast::TopLevelItem::Enum(def) => {
+                    Some(((def.span.file_id, def.name.clone()), (&def.span, false)))
+                }
+                ast::TopLevelItem::TypeAlias(def) => {
+                    Some(((def.span.file_id, def.name.clone()), (&def.span, false)))
+                }
+                _ => None,
+            })
+            .collect();
         let mut structs: HashMap<DefId, &ast::StructDef> = HashMap::new();
         let mut enums: HashMap<DefId, &ast::EnumDef> = HashMap::new();
         let mut generic_structs: HashMap<DefId, GenericStructDef> = HashMap::new();
         let mut generic_enums: HashMap<DefId, GenericEnumDef> = HashMap::new();
         let mut function_defs: HashMap<DefId, Vec<FunctionEntry>> = HashMap::new();
+        let mut associated_function_defs: HashMap<String, Vec<FunctionEntry>> = HashMap::new();
         let mut method_defs: HashMap<String, Vec<FunctionEntry>> = HashMap::new();
         let mut consts: HashMap<DefId, &ast::ConstDef> = HashMap::new();
         let mut static_defs: Vec<&ast::StaticDef> = Vec::new();
@@ -1634,13 +1843,52 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 ast::TopLevelItem::Function(f) => {
+                    if f.associated_type.is_none() {
+                        if let Some((type_span, _)) =
+                            declared_types.get(&(f.span.file_id, f.name.clone()))
+                        {
+                            return Err(CompileError::new(
+                                format!("function `{}` collides with a type name", f.name),
+                                f.span,
+                            )
+                            .with_label("type defined here", **type_span));
+                        }
+                        if ast::PrimitiveType::from_name(&f.name).is_some() {
+                            return Err(CompileError::new(
+                                format!("function `{}` collides with a type name", f.name),
+                                f.span,
+                            ));
+                        }
+                    }
+                    if f.name.is_empty()
+                        && let Some(
+                            ast::Type::Named(owner) | ast::Type::Generic { name: owner, .. },
+                        ) = &f.associated_type
+                        && declared_types
+                            .get(&(owner.file, owner.name.to_string()))
+                            .is_some_and(|(_, is_tuple)| *is_tuple)
+                    {
+                        return Err(CompileError::new(
+                            format!(
+                                "tuple struct `{}` cannot have an empty-name associated function",
+                                owner.name
+                            ),
+                            f.span,
+                        ));
+                    }
                     let mut f = f.clone();
                     prepare_keyword_params(&mut f)?;
-                    let entries = function_defs
-                        .entry(def_id_of_def(&f.name, f.span))
-                        .or_default();
+                    let entries = if f.associated_type.is_some() {
+                        let key = format!("{:?}::{}", f.associated_type, f.name);
+                        associated_function_defs.entry(key).or_default()
+                    } else {
+                        function_defs
+                            .entry(def_id_of_def(&f.name, f.span))
+                            .or_default()
+                    };
                     let overload_index = entries.len();
                     entries.push(FunctionEntry {
+                        associated_type_params: f.associated_type_params.clone(),
                         type_params: all_function_type_params(&f),
                         out_type_param_count: f.out_type_params.len(),
                         ast_def: Rc::new(f),
@@ -1662,6 +1910,7 @@ impl<'a> Lowerer<'a> {
                     let entries = method_defs.entry(m.name.clone()).or_default();
                     let overload_index = entries.len();
                     entries.push(FunctionEntry {
+                        associated_type_params: Vec::new(),
                         type_params: all_function_type_params(&m),
                         out_type_param_count: m.out_type_params.len(),
                         ast_def: Rc::new(m),
@@ -1723,12 +1972,90 @@ impl<'a> Lowerer<'a> {
             }
         }
 
+        // Associated owner binders are separate from function binders: they
+        // must be recoverable from the owner pattern and may not shadow one
+        // another. Check signature equivalence across owner-pattern buckets as
+        // well, so alpha-renamed declarations cannot evade duplicate checks.
+        let associated_entries: Vec<&FunctionEntry> = associated_function_defs
+            .values()
+            .flat_map(|entries| entries.iter())
+            .collect();
+        for entry in &associated_entries {
+            let name = &entry.ast_def.name;
+            let owner = entry.ast_def.associated_type.as_ref().unwrap();
+            let mut seen = HashSet::new();
+            for parameter in entry
+                .associated_type_params
+                .iter()
+                .chain(entry.type_params.iter())
+            {
+                if !seen.insert(parameter) {
+                    return Err(CompileError::new(
+                        format!(
+                            "duplicate type parameter `{parameter}` in associated function `{name}`"
+                        ),
+                        entry.ast_def.span,
+                    ));
+                }
+            }
+            for parameter in &entry.associated_type_params {
+                if !type_param_appears_in(owner, parameter) {
+                    return Err(CompileError::new(
+                        format!(
+                            "associated type parameter `{parameter}` is not used in the owner type of associated function `{name}`"
+                        ),
+                        entry.ast_def.span,
+                    ));
+                }
+            }
+        }
+        for (index, a) in associated_entries.iter().enumerate() {
+            for b in associated_entries.iter().skip(index + 1) {
+                if a.ast_def.name != b.ast_def.name
+                    || a.out_type_param_count != b.out_type_param_count
+                {
+                    continue;
+                }
+                let mut a_signature = vec![a.ast_def.associated_type.clone().unwrap()];
+                a_signature.extend(a.ast_def.parameters.iter().map(|p| p.ty.clone()));
+                let mut b_signature = vec![b.ast_def.associated_type.clone().unwrap()];
+                b_signature.extend(b.ast_def.parameters.iter().map(|p| p.ty.clone()));
+                let a_binders: Vec<String> = a
+                    .associated_type_params
+                    .iter()
+                    .chain(a.type_params.iter())
+                    .cloned()
+                    .collect();
+                let b_binders: Vec<String> = b
+                    .associated_type_params
+                    .iter()
+                    .chain(b.type_params.iter())
+                    .cloned()
+                    .collect();
+                if params_alpha_equivalent(&a_signature, &a_binders, &b_signature, &b_binders) {
+                    return Err(CompileError::new(
+                        format!(
+                            "associated function `{}` has an identical signature",
+                            b.ast_def.name
+                        ),
+                        b.ast_def.span,
+                    )
+                    .with_label("first definition here", a.ast_def.span));
+                }
+            }
+        }
+
         // Validate function and method entries: duplicate concrete overloads, unused type params,
         // alpha-equivalent collision detection
-        let function_entries: Vec<(String, &Vec<FunctionEntry>)> = function_defs
+        let mut function_entries: Vec<(String, &Vec<FunctionEntry>)> = function_defs
             .iter()
-            .map(|(d, e)| (d.name.clone(), e))
+            .map(|(d, e)| (d.name.to_string(), e))
             .collect();
+        function_entries.extend(
+            associated_function_defs
+                .values()
+                .map(|entries| (entries[0].ast_def.name.clone(), entries)),
+        );
         let method_entries: Vec<(String, &Vec<FunctionEntry>)> =
             method_defs.iter().map(|(n, e)| (n.clone(), e)).collect();
         for (kind, defs) in [("function", function_entries), ("method", method_entries)] {
@@ -1828,6 +2155,7 @@ impl<'a> Lowerer<'a> {
             generic_structs,
             generic_enums,
             function_defs,
+            associated_function_defs,
             method_defs,
             method_index: HashMap::new(),
             concrete_ast_defs: HashMap::new(),
@@ -2385,7 +2713,7 @@ impl<'a> Lowerer<'a> {
     ) -> Result<Type, CompileError> {
         match ty {
             ast::Type::Named(name) => {
-                if let Some(replacement) = subst.get(&name.name) {
+                if let Some(replacement) = subst.get(name.name.as_str()) {
                     self.resolve_ast_type(replacement)
                 } else {
                     self.resolve_ast_type(ty)
@@ -2880,14 +3208,18 @@ impl<'a> Lowerer<'a> {
         bindings: &mut HashMap<String, ast::Type>,
     ) -> bool {
         match pattern {
-            ast::Type::Named(name) if type_params.contains(&name.name) => {
+            ast::Type::Named(name)
+                if type_params
+                    .iter()
+                    .any(|parameter| parameter == name.name.as_str()) =>
+            {
                 let inferred = self.concrete_type_to_ast_type(concrete);
-                if let Some(existing) = bindings.get(&name.name) {
+                if let Some(existing) = bindings.get(name.name.as_str()) {
                     if *existing != inferred {
                         return false;
                     }
                 } else {
-                    bindings.insert(name.name.clone(), inferred);
+                    bindings.insert(name.name.to_string(), inferred);
                 }
             }
             ast::Type::Named(_) => {}
@@ -3028,7 +3360,7 @@ impl<'a> Lowerer<'a> {
         gdef: &FunctionEntry,
         type_args: &[ast::Type],
         num_overloads: usize,
-        mangle_prefix: &str,
+        is_method: bool,
     ) -> Result<FuncId, CompileError> {
         assert!(
             gdef.type_params.len() == type_args.len(),
@@ -3043,15 +3375,18 @@ impl<'a> Lowerer<'a> {
 
         // Structural instance identity: the base def + concrete type args (+
         // overload disambiguation + method flag). `mangled_ast` renders it.
-        let concrete_args: Vec<Type> = type_args
+        let mut concrete_args: Vec<Type> = type_args
             .iter()
             .map(|t| self.resolve_ast_type(t))
             .collect::<Result<Vec<_>, _>>()?;
+        if let Some(owner) = &ast_def_clone.associated_type {
+            concrete_args.insert(0, self.resolve_ast_type(owner)?);
+        }
         let mangled = FuncId {
-            def: def_id_of_def(&ast_def_clone.name, ast_def_clone.span),
+            def: def_id_of_function(&ast_def_clone),
             args: concrete_args,
             overload: (num_overloads > 1).then_some(overload_index),
-            method: mangle_prefix == "__method_",
+            method: is_method,
         };
 
         // Already monomorphized (or a signature stub for an in-progress
@@ -3321,7 +3656,7 @@ impl<'a> Lowerer<'a> {
         // Register all concrete (non-generic) functions and lower them. Each
         // concrete overload's identity is a `FuncId` whose args are its
         // parameter types (which disambiguate overloads).
-        let concrete_funcs: Vec<(DefId, Vec<ast::Type>, Rc<ast::FunctionDef>)> = self
+        let mut concrete_funcs: Vec<(DefId, Vec<ast::Type>, Rc<ast::FunctionDef>)> = self
             .function_defs
             .iter()
             .flat_map(|(def, entries)| {
@@ -3336,13 +3671,30 @@ impl<'a> Lowerer<'a> {
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
+        concrete_funcs.extend(self.associated_function_defs.values().flat_map(|entries| {
+            entries
+                .iter()
+                .filter(|entry| {
+                    entry.associated_type_params.is_empty() && entry.type_params.is_empty()
+                })
+                .map(|entry| {
+                    let ast_def = entry.ast_def.clone();
+                    let params = ast_def.parameters.iter().map(|p| p.ty.clone()).collect();
+                    (def_id_of_function(&ast_def), params, ast_def)
+                })
+                .collect::<Vec<_>>()
+        }));
         let mut func_to_lower: Vec<(FuncId, Rc<ast::FunctionDef>)> = Vec::new();
         for (def, ast_param_types, ast_def) in concrete_funcs {
             let param_types: Vec<Type> = ast_param_types
                 .iter()
                 .map(|t| self.resolve_ast_type(t))
                 .collect::<Result<Vec<_>, _>>()?;
-            let fid = FuncId::free(def, param_types);
+            let mut identity_args = param_types;
+            if let Some(owner) = &ast_def.associated_type {
+                identity_args.insert(0, self.resolve_ast_type(owner)?);
+            }
+            let fid = FuncId::free(def, identity_args);
             self.concrete_ast_defs.insert(fid.clone(), ast_def.clone());
             func_to_lower.push((fid, ast_def));
         }
@@ -3371,7 +3723,7 @@ impl<'a> Lowerer<'a> {
                     .map(|parameter| self.resolve_ast_type(&parameter.ty))
                     .collect::<Result<Vec<_>, _>>()?;
                 let fid = FuncId {
-                    def: def_id_of_def(&ast_def.name, ast_def.span),
+                    def: def_id_of_function(&ast_def),
                     args: param_types,
                     overload: None,
                     method: true,
@@ -4607,6 +4959,7 @@ impl<'a> Lowerer<'a> {
                         let entries = registry.entry(fdef.name.clone()).or_default();
                         let overload_index = entries.len();
                         entries.push(FunctionEntry {
+                            associated_type_params: Vec::new(),
                             type_params: all_function_type_params(fdef),
                             out_type_param_count: fdef.out_type_params.len(),
                             ast_def: Rc::new(fdef.clone()),
@@ -4621,6 +4974,7 @@ impl<'a> Lowerer<'a> {
                 if let Some(registry) = self.nested_function_defs.last_mut() {
                     let entries = registry.entry(fdef.name.clone()).or_default();
                     entries.push(FunctionEntry {
+                        associated_type_params: Vec::new(),
                         type_params: vec![],
                         out_type_param_count: 0,
                         ast_def: Rc::new(fdef.clone()),
@@ -4731,6 +5085,66 @@ impl<'a> Lowerer<'a> {
         ))
     }
 
+    fn associated_call_entries(
+        &mut self,
+        owner: &ast::Type,
+        name: &str,
+        call_span: ast::SourceSpan,
+    ) -> Result<Vec<FunctionEntry>, CompileError> {
+        let entries = self
+            .associated_function_defs
+            .values()
+            .flat_map(|entries| entries.iter())
+            .filter(|entry| entry.ast_def.name == name)
+            .cloned()
+            .collect::<Vec<_>>();
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Ok(concrete_owner) = self.resolve_ast_type(owner) else {
+            return Ok(Vec::new());
+        };
+        let concrete_owner = self.concrete_type_to_ast_type(&concrete_owner);
+        let mut matches = Vec::new();
+        for entry in entries {
+            if !(entry.ast_def.is_pub
+                || entry.ast_def.span.file_id == call_span.file_id
+                || entry.ast_def.span.file_id == ast::SYNTHETIC_FILE)
+            {
+                continue;
+            }
+            let Some(pattern) = entry.ast_def.associated_type.as_ref() else {
+                continue;
+            };
+            let mut bindings = HashMap::new();
+            if !match_associated_owner_pattern(
+                pattern,
+                &concrete_owner,
+                &entry.associated_type_params,
+                &mut bindings,
+            ) || entry
+                .associated_type_params
+                .iter()
+                .any(|parameter| !bindings.contains_key(parameter))
+            {
+                continue;
+            }
+            let mut specificity = Vec::new();
+            associated_owner_specificity(pattern, &entry.associated_type_params, &mut specificity);
+            let mut instantiated = entry.clone();
+            instantiated.associated_type_params.clear();
+            instantiated.ast_def = Rc::new(apply_subst_to_function_def(&entry.ast_def, &bindings));
+            matches.push((specificity, instantiated));
+        }
+        let Some(best) = matches.iter().map(|(key, _)| key).max().cloned() else {
+            return Ok(Vec::new());
+        };
+        Ok(matches
+            .into_iter()
+            .filter_map(|(key, entry)| (key == best).then_some(entry))
+            .collect())
+    }
+
     fn lower_expr(&mut self, expr: &ast::Expr) -> Result<Expr, CompileError> {
         match &expr.kind {
             ast::ExprKind::Identifier(name) => {
@@ -4807,6 +5221,10 @@ impl<'a> Lowerer<'a> {
                 }
             }
             ast::ExprKind::GlobalRef(def) => self.lower_global_ref(def, expr.span),
+            ast::ExprKind::AssociatedFunction { ty: _, name } => Err(CompileError::new(
+                format!("associated function `{name}` must be called directly"),
+                expr.span,
+            )),
             ast::ExprKind::FloatLiteral(v, float_ty) => Ok(Expr {
                 ty: match float_ty {
                     ast::FloatType::Float32 => Type::Float32,
@@ -5035,6 +5453,9 @@ impl<'a> Lowerer<'a> {
                 if matches!(
                     function.as_ref().kind,
                     ast::ExprKind::Identifier(_) | ast::ExprKind::GlobalRef(_)
+                ) || matches!(
+                    &function.as_ref().kind,
+                    ast::ExprKind::AssociatedFunction { name, .. } if name.is_empty()
                 ) {
                     // Calls are value expressions, so resolver intentionally
                     // leaves a struct name as an Identifier. Recover its
@@ -5047,27 +5468,46 @@ impl<'a> Lowerer<'a> {
                                     .get(def)
                                     .is_some_and(|s| s.ast_def.is_tuple) =>
                         {
-                            Some(def.clone())
+                            Some((def.clone(), type_args.clone()))
                         }
                         ast::ExprKind::Identifier(ast::Ident::User(name)) => self
                             .structs
                             .iter()
                             .find(|(_, s)| s.name == *name && s.is_tuple)
-                            .map(|(def, _)| def.clone())
+                            .map(|(def, _)| (def.clone(), type_args.clone()))
                             .or_else(|| {
                                 self.generic_structs
                                     .iter()
                                     .find(|(_, s)| s.ast_def.name == *name && s.ast_def.is_tuple)
-                                    .map(|(def, _)| def.clone())
+                                    .map(|(def, _)| (def.clone(), type_args.clone()))
                             }),
+                        ast::ExprKind::AssociatedFunction { ty, name } if name.is_empty() => {
+                            let (def, args) = match ty {
+                                ast::Type::Named(def) => (def, Vec::new()),
+                                ast::Type::Generic { name, type_args } => (name, type_args.clone()),
+                                _ => {
+                                    return Err(CompileError::new(
+                                        "tuple constructor requires a named struct type"
+                                            .to_string(),
+                                        expr.span,
+                                    ));
+                                }
+                            };
+                            (self.structs.get(def).is_some_and(|s| s.is_tuple)
+                                || self
+                                    .generic_structs
+                                    .get(def)
+                                    .is_some_and(|s| s.ast_def.is_tuple))
+                            .then(|| (def.clone(), args))
+                        }
                         _ => None,
                     };
-                    if let Some(def) = tuple_def {
+                    if let Some((def, struct_type_args)) = tuple_def {
                         let tuple_name = &def.name;
                         if !kwargs.is_empty() {
                             return Err(reject_kwargs(expr.span));
                         }
-                        let id = self.resolve_struct_name(&def, type_args)?;
+                        let id = self.resolve_struct_name(&def, &struct_type_args)?;
                         let struct_def = self.lowered_structs.get(&id).unwrap().clone();
                         if arguments.len() != struct_def.fields.len() {
                             return Err(CompileError::new(
@@ -5103,6 +5543,76 @@ impl<'a> Lowerer<'a> {
                             kind: ExprKind::StructLiteral { id, fields },
                             span: expr.span,
                         });
+                    }
+                }
+                // Associated functions use the owner type as their namespace.
+                // An empty associated name is invoked with type-call syntax,
+                // after tuple-struct construction has had priority above.
+                let mut associated = match &function.as_ref().kind {
+                    ast::ExprKind::AssociatedFunction { ty, name } => {
+                        vec![(ty.clone(), name.clone(), type_args.as_slice())]
+                    }
+                    ast::ExprKind::EnumVariant {
+                        module_path,
+                        enum_name,
+                        type_args: owner_args,
+                        variant_name,
+                    } if module_path.is_empty() => {
+                        let owner = if owner_args.is_empty() {
+                            ast::Type::Named(enum_name.clone())
+                        } else {
+                            ast::Type::Generic {
+                                name: enum_name.clone(),
+                                type_args: owner_args.clone(),
+                            }
+                        };
+                        vec![(owner, variant_name.clone(), type_args.as_slice())]
+                    }
+                    ast::ExprKind::GlobalRef(def) => vec![(
+                        ast::Type::Named(def.clone()),
+                        String::new(),
+                        type_args.as_slice(),
+                    )],
+                    ast::ExprKind::Identifier(ast::Ident::User(name)) => vec![(
+                        ast::Type::Named(ast::DefId::new(function.span.file_id, name)),
+                        String::new(),
+                        type_args.as_slice(),
+                    )],
+                    _ => Vec::new(),
+                };
+                if !type_args.is_empty()
+                    && let Some((ast::Type::Named(owner), name, _)) = associated.first()
+                    && name.is_empty()
+                {
+                    associated.insert(
+                        0,
+                        (
+                            ast::Type::Generic {
+                                name: owner.clone(),
+                                type_args: type_args.clone(),
+                            },
+                            String::new(),
+                            &[],
+                        ),
+                    );
+                }
+                for (owner, associated_name, function_type_args) in associated {
+                    let entries =
+                        self.associated_call_entries(&owner, &associated_name, expr.span)?;
+                    if !entries.is_empty() {
+                        let display_name = if associated_name.is_empty() {
+                            "associated constructor".to_string()
+                        } else {
+                            format!("associated function `{associated_name}`")
+                        };
+                        return self.resolve_overloaded_call(
+                            CandidateSource::Entries(entries),
+                            &display_name,
+                            arguments,
+                            kwargs,
+                            function_type_args,
+                            expr.span,
+                        );
                     }
                 }
                 // Intercept enum variant construction: EnumVariant(value)
@@ -5407,7 +5917,6 @@ impl<'a> Lowerer<'a> {
                         kwargs,
                         type_args,
                         expr.span,
-                        "",
                     );
                 }
                 // A call to a top-level function via a bare `Identifier` callee:
@@ -5430,7 +5939,6 @@ impl<'a> Lowerer<'a> {
                         kwargs,
                         type_args,
                         expr.span,
-                        "",
                     );
                 }
 
@@ -7647,7 +8155,7 @@ impl<'a> Lowerer<'a> {
             | ast::Type::NullableReference(inner)
             | ast::Type::Unique(inner) => Self::ast_type_base_def(inner, type_params),
             ast::Type::Named(def) | ast::Type::Generic { name: def, .. } => {
-                if type_params.iter().any(|p| p == &def.name) {
+                if type_params.iter().any(|p| p == def.name.as_str()) {
                     None
                 } else {
                     Some(def.clone())
@@ -7676,7 +8184,7 @@ impl<'a> Lowerer<'a> {
             ast::Type::Function { .. } => ArgShape::Function,
             ast::Type::Tuple(_) => ArgShape::Tuple,
             ast::Type::Named(def) | ast::Type::Generic { name: def, .. } => {
-                if type_params.iter().any(|p| p == &def.name) {
+                if type_params.iter().any(|p| p == def.name.as_str()) {
                     ArgShape::Unknown
                 } else {
                     ArgShape::Named(def.clone())
@@ -7860,7 +8368,6 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Shared overload resolution for both function calls and method calls.
-    /// `mangle_prefix` is "" for functions, "__method_" for methods.
     #[allow(clippy::too_many_arguments)]
     fn resolve_overloaded_call(
         &mut self,
@@ -7870,8 +8377,8 @@ impl<'a> Lowerer<'a> {
         kwargs: &[(String, ast::Expr)],
         type_args: &[ast::Type],
         span: ast::SourceSpan,
-        mangle_prefix: &str,
     ) -> Result<Expr, CompileError> {
+        let is_method = matches!(&source, CandidateSource::Methods);
         let has_infer_closures = arguments.iter().any(Self::has_infer_params);
 
         let generic_entries: Vec<FunctionEntry> = match &source {
@@ -7954,7 +8461,7 @@ impl<'a> Lowerer<'a> {
                     &gdef,
                     &effective_type_args,
                     num_generic_overloads,
-                    mangle_prefix,
+                    is_method,
                 )
                 .map_err(|cause| self.monomorphization_call_error(name, span, cause))?;
             let mono_fn = self.monomorphized_functions[&mangled].clone();
@@ -8279,11 +8786,15 @@ impl<'a> Lowerer<'a> {
             match best_candidate {
                 Candidate::Concrete(param_types, ast_def, lowered_args) => {
                     self.require_unsafe_access(&ast_def, span)?;
+                    let mut identity_args = param_types.clone();
+                    if let Some(owner) = &ast_def.associated_type {
+                        identity_args.insert(0, self.resolve_ast_type(owner)?);
+                    }
                     let mangled = FuncId {
-                        def: def_id_of_def(&ast_def.name, ast_def.span),
-                        args: param_types.clone(),
+                        def: def_id_of_function(&ast_def),
+                        args: identity_args,
                         overload: None,
-                        method: mangle_prefix == "__method_",
+                        method: is_method,
                     };
                     self.ensure_concrete_lowered(&mangled, &ast_def)?;
                     let ret_ty = self.resolve_return_type(&mangled)?;
@@ -8309,7 +8820,7 @@ impl<'a> Lowerer<'a> {
                             &gdef,
                             &inferred,
                             num_generic_overloads,
-                            mangle_prefix,
+                            is_method,
                         )
                         .map_err(|cause| self.monomorphization_call_error(name, span, cause))?;
                     let mono_fn = self.monomorphized_functions[&mangled].clone();
@@ -8428,7 +8939,7 @@ impl<'a> Lowerer<'a> {
                         gdef,
                         &inferred,
                         num_generic_overloads,
-                        mangle_prefix,
+                        is_method,
                     )
                     .map_err(|cause| self.monomorphization_call_error(name, span, cause))?;
                 let mono_fn = self.monomorphized_functions[&mangled].clone();
@@ -8498,10 +9009,10 @@ impl<'a> Lowerer<'a> {
 
                 self.require_unsafe_access(&entry.ast_def, span)?;
                 let mangled = FuncId {
-                    def: def_id_of_def(&entry.ast_def.name, entry.ast_def.span),
+                    def: def_id_of_function(&entry.ast_def),
                     args: param_types.clone(),
                     overload: None,
-                    method: mangle_prefix == "__method_",
+                    method: is_method,
                 };
                 self.ensure_concrete_lowered(&mangled, &entry.ast_def)?;
                 let ret_ty = self.resolve_return_type(&mangled)?;
@@ -8545,7 +9056,6 @@ impl<'a> Lowerer<'a> {
             kwargs,
             type_args,
             span,
-            "__method_",
         )
     }
 
@@ -9956,7 +10466,7 @@ pub fn method_monomorphizations_typecheck(
                                 &entry,
                                 &type_arguments,
                                 generic_count,
-                                "__method_",
+                                true,
                             )
                             .is_ok()
                     })

@@ -99,7 +99,7 @@ fn empty_sqe(_index: Uint) -> Sqe {
 	}
 }
 
-fn Ring() -> Ring {
+fn Ring::() -> Ring {
 	// NO_MMAP requires page-aligned contiguous storage. Solar's 4096-byte arena
 	// size class supplies that for these two exactly-page-sized allocations.
 	// The kernel places both SQ and CQ structures in ring_storage.
@@ -268,7 +268,7 @@ struct Executor {
 	completion_result: Int64,
 }
 
-fn Executor() -> Executor {
+fn Executor::() -> Executor {
 	Executor {
 		ring: Ring(),
 		completion_state: CompletionState::Empty,

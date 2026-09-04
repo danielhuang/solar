@@ -1,0 +1,7 @@
+struct Value {}
+
+fn Value() -> Value {
+	Value {}
+}
+
+fn main() {}

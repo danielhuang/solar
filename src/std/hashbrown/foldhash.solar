@@ -20,7 +20,7 @@ pub struct Hasher {
 }
 
 /// A fresh hasher seeded with foldhash's fixed global seed.
-pub fn Hasher() -> Hasher {
+pub fn Hasher::() -> Hasher {
 	Hasher {
 		accumulator: ARBITRARY3,
 		sponge_lo: 0u64,

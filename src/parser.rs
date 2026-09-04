@@ -388,7 +388,17 @@ fn convert_field_def(node: tree_sitter::Node, source: &str) -> FieldDef {
 }
 
 fn convert_function_def(node: tree_sitter::Node, source: &str) -> FunctionDef {
-    let name = node_text(node.child_by_field_name("name").unwrap(), source).to_string();
+    let name = node
+        .child_by_field_name("name")
+        .map(|name| node_text(name, source).to_string())
+        .unwrap_or_default();
+    let associated_type = node
+        .child_by_field_name("associated_type")
+        .map(|owner| convert_type(owner, source));
+    let associated_type_params = node
+        .child_by_field_name("associated_type_params")
+        .map(|params| convert_type_params(params, source))
+        .unwrap_or_default();
     let is_pub = has_pub_keyword(node, source);
     let is_unsafe = node.child_by_field_name("unsafe").is_some();
     let (type_params, out_type_params) = node
@@ -416,6 +426,8 @@ fn convert_function_def(node: tree_sitter::Node, source: &str) -> FunctionDef {
     let inline_hint = node.child_by_field_name("attr").is_some();
 
     FunctionDef {
+        associated_type_params,
+        associated_type,
         display_name: name.clone(),
         name,
         type_params,

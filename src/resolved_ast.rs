@@ -34,7 +34,9 @@ fn generate_numeric_constructors(items: &mut Vec<ast::TopLevelItem>) {
             }
             let intrinsic = Intrinsic::Cast(from, target);
             items.push(ast::TopLevelItem::Function(ast::FunctionDef {
-                name: target_name.to_string(),
+                associated_type_params: Vec::new(),
+                associated_type: Some(ast::Type::Named(ast::DefId::new(0, target_name))),
+                name: String::new(),
                 display_name: target_name.to_string(),
                 type_params: Vec::new(),
                 out_type_params: Vec::new(),

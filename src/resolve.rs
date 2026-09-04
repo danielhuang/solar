@@ -203,11 +203,31 @@ impl Resolver {
                         def: DefId::new(file_id, &e.name),
                     });
                 }
-                TopLevelItem::Function(f) if f.is_pub => {
+                TopLevelItem::Function(f) if f.is_pub && f.associated_type.is_none() => {
                     exports.entry(f.name.clone()).or_default().push(Export {
                         kind: ExportKind::Function,
                         def: DefId::new(file_id, &f.name),
                     });
+                }
+                TopLevelItem::Function(f)
+                    if f.is_pub
+                        && f.name.is_empty()
+                        && matches!(
+                            &f.associated_type,
+                            Some(Type::Named(owner))
+                                if crate::ast::PrimitiveType::from_name(&owner.name).is_some()
+                        ) =>
+                {
+                    let Some(Type::Named(owner)) = &f.associated_type else {
+                        unreachable!()
+                    };
+                    exports
+                        .entry(owner.name.to_string())
+                        .or_default()
+                        .push(Export {
+                            kind: ExportKind::Function,
+                            def: DefId::new(file_id, owner.name.as_str()),
+                        });
                 }
                 TopLevelItem::Method(m) if m.is_pub => {
                     exports.entry(m.name.clone()).or_default().push(Export {
@@ -344,6 +364,39 @@ impl Resolver {
         let mut rename_map: HashMap<String, DefId> = HashMap::new();
         let mut module_aliases: ModuleAliasMap = HashMap::new();
 
+        let local_types: HashMap<&str, SourceSpan> = file
+            .ast
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                TopLevelItem::Struct(def) => Some((def.name.as_str(), def.span)),
+                TopLevelItem::Enum(def) => Some((def.name.as_str(), def.span)),
+                TopLevelItem::TypeAlias(def) => Some((def.name.as_str(), def.span)),
+                _ => None,
+            })
+            .collect();
+        for item in &file.ast.items {
+            if let TopLevelItem::Function(function) = item
+                && function.associated_type.is_none()
+            {
+                if let Some(type_span) = local_types.get(function.name.as_str()) {
+                    return Err(vec![
+                        CompileError::new(
+                            format!("function `{}` collides with a type name", function.name),
+                            function.span,
+                        )
+                        .with_label("type defined here", *type_span),
+                    ]);
+                }
+                if crate::ast::PrimitiveType::from_name(&function.name).is_some() {
+                    return Err(vec![CompileError::new(
+                        format!("function `{}` collides with a type name", function.name),
+                        function.span,
+                    )]);
+                }
+            }
+        }
+
         let mut local_defs: HashSet<String> = HashSet::new();
         let mut local_method_defs: HashSet<String> = HashSet::new();
         for item in &file.ast.items {
@@ -357,8 +410,10 @@ impl Resolver {
                     rename_map.insert(e.name.clone(), DefId::new(file_id, e.name.clone()));
                 }
                 TopLevelItem::Function(f) => {
-                    local_defs.insert(f.name.clone());
-                    rename_map.insert(f.name.clone(), DefId::new(file_id, f.name.clone()));
+                    if f.associated_type.is_none() {
+                        local_defs.insert(f.name.clone());
+                        rename_map.insert(f.name.clone(), DefId::new(file_id, f.name.clone()));
+                    }
                 }
                 TopLevelItem::Method(m) => {
                     local_defs.insert(m.name.clone());
@@ -599,6 +654,39 @@ impl Resolver {
                     let mut f = f.clone();
                     rewrite_function_body(&mut f, &rewrite_ctx);
                     set_file_id_span(&mut f.span, file_id);
+                    if let Some(owner) = &f.associated_type {
+                        let owner_id = match owner {
+                            Type::Named(id) | Type::Generic { name: id, .. } => id,
+                            _ => unreachable!("parser only accepts named associated owners"),
+                        };
+                        let primitive =
+                            crate::ast::PrimitiveType::from_name(&owner_id.name).is_some();
+                        let is_std = (file_id as usize) < std_file_count;
+                        let local_owner = local_types.contains_key(owner_id.name.as_str());
+                        if (primitive && !is_std)
+                            || (!primitive && (owner_id.file != file_id || !local_owner))
+                        {
+                            rewrite_errors.borrow_mut().push(CompileError::new(
+                                format!(
+                                    "associated function must be defined in the same file as type `{}`",
+                                    owner_id.name
+                                ),
+                                f.span,
+                            ));
+                        }
+                        let tuple_owner = file.ast.items.iter().any(|item| {
+                            matches!(item, TopLevelItem::Struct(def) if owner_id.name == def.name && def.is_tuple)
+                        });
+                        if f.name.is_empty() && tuple_owner {
+                            rewrite_errors.borrow_mut().push(CompileError::new(
+                                format!(
+                                    "tuple struct `{}` cannot have an empty-name associated function",
+                                    owner_id.name
+                                ),
+                                f.span,
+                            ));
+                        }
+                    }
                     rewritten.push(TopLevelItem::Function(f));
                 }
                 TopLevelItem::Method(m) => {
@@ -700,11 +788,14 @@ fn resolve_type_ref(
             None => name.clone(),
         };
     }
-    if type_params.contains(&name.name) {
+    if type_params
+        .iter()
+        .any(|parameter| parameter == name.name.as_str())
+    {
         return name.clone();
     }
     rename_map
-        .get(&name.name)
+        .get(name.name.as_str())
         .cloned()
         .unwrap_or_else(|| name.clone())
 }
@@ -719,11 +810,11 @@ fn resolve_qualified_def(
     match module {
         Some(m) => {
             if let Some(fid) = module_aliases.get(&m) {
-                *name = DefId::new(*fid, &name.name);
+                *name = DefId::new(*fid, name.name.as_str());
             }
         }
         None => {
-            if let Some(defid) = rename_map.get(&name.name) {
+            if let Some(defid) = rename_map.get(name.name.as_str()) {
                 *name = defid.clone();
             }
         }
@@ -824,13 +915,17 @@ fn method_type_has_local_anchor(
             name.file == file_id
                 || (is_std
                     && (PrimitiveType::from_name(&name.name).is_some()
-                        || type_params.contains(&name.name)))
+                        || type_params
+                            .iter()
+                            .any(|parameter| parameter == name.name.as_str())))
         }
         Type::Generic { name, type_args } => {
             name.file == file_id
                 || (is_std
                     && (PrimitiveType::from_name(&name.name).is_some()
-                        || type_params.contains(&name.name)))
+                        || type_params
+                            .iter()
+                            .any(|parameter| parameter == name.name.as_str())))
                 || type_args
                     .iter()
                     .any(|ty| method_type_has_local_anchor(ty, file_id, type_params, is_std))
@@ -877,8 +972,18 @@ struct RewriteCtx<'a> {
 
 /// Resolves names within a function.
 fn rewrite_function_body(f: &mut FunctionDef, parent_ctx: &RewriteCtx<'_>) {
-    let mut type_params = f.type_params.clone();
+    let mut type_params = f.associated_type_params.clone();
+    type_params.extend(f.type_params.iter().cloned());
     type_params.extend(f.out_type_params.iter().cloned());
+
+    if let Some(owner) = &mut f.associated_type {
+        *owner = rewrite_type(
+            owner,
+            parent_ctx.rename_map,
+            parent_ctx.module_aliases,
+            &type_params,
+        );
+    }
 
     // Collect locally-bound names to avoid renaming them
     let mut locals: HashSet<Ident> = HashSet::new();
@@ -1103,6 +1208,9 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<Ident>) {
             }
         }
         ExprKind::GlobalRef(_) => {}
+        ExprKind::AssociatedFunction { ty, .. } => {
+            *ty = rewrite_type(ty, ctx.rename_map, ctx.module_aliases, ctx.type_params);
+        }
         ExprKind::IntegerLiteral(_, _)
         | ExprKind::FloatLiteral(_, _)
         | ExprKind::BooleanLiteral(_) => {}
@@ -1288,7 +1396,7 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<Ident>) {
                     ctx.module_aliases,
                     ctx.all_module_aliases,
                 ) {
-                    *enum_name = DefId::new(fid, &enum_name.name);
+                    *enum_name = DefId::new(fid, enum_name.name.as_str());
                 }
                 module_path.clear();
             } else if ctx.intrinsic_modules.contains(enum_name.name.as_str()) {
@@ -1401,7 +1509,7 @@ fn rewrite_pattern(
                 if let Some(fid) =
                     resolve_module_chain_full(module_path, module_aliases, all_module_aliases)
                 {
-                    *enum_name = DefId::new(fid, &enum_name.name);
+                    *enum_name = DefId::new(fid, enum_name.name.as_str());
                 }
                 module_path.clear();
             } else if let Some(defid) = rename_map.get(enum_name.name.as_str()) {

@@ -1,0 +1,79 @@
+struct Value { inner: Int }
+
+fn Value::new(inner: Int) -> Value {
+	Value { inner: inner }
+}
+
+fn Value::(inner: Int) -> Value {
+	Value::new(inner)
+}
+
+fn Value::identity(value: Value) -> Value {
+	value
+}
+
+fn Value::symbol_identity() -> Int {
+	11
+}
+
+fn symbol_identity(value: Value) -> Int {
+	value.inner
+}
+
+fn identity#[T](value: T) -> T {
+	T::identity(value)
+}
+
+fn construct#[out T](inner: Int) -> T {
+	T(inner)
+}
+
+struct Pair(Int);
+
+struct Generic#[T] { value: T }
+
+fn#[T] Generic#[T]::identity#[U](value: U) -> U {
+	value
+}
+
+fn#[T] Generic#[T]::(value: T) -> Generic#[T] {
+	Generic#[T] { value: value }
+}
+
+fn Generic#[Int]::test() -> Int {
+	5
+}
+
+fn#[T] Generic#[T]::test() -> Int {
+	6
+}
+
+struct Specific#[T] {}
+
+fn#[T] Specific#[Vec#[T]]::test() -> Int {
+	7
+}
+
+fn#[T] Specific#[T]::test() -> Int {
+	8
+}
+
+fn main() {
+	let named = Value::new(1);
+	let empty = Value(2);
+	let generic_named = identity(named);
+	let generic_empty = construct#[Value](3);
+	let tuple = construct#[Pair](4);
+	println(generic_named.inner);
+	println(empty.inner);
+	println(generic_empty.inner);
+	println(tuple.0);
+	println(Generic#[Int]::identity(9));
+	println(Generic#[Int]::test());
+	println(Generic#[Bool]::test());
+	println(Specific#[Vec#[Int]]::test());
+	println(Specific#[Int]::test());
+	println(Generic#[Int](10).value);
+	println(Value::symbol_identity());
+	println(symbol_identity(Value(12)));
+}

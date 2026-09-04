@@ -17,3 +17,8 @@ changes.
 
 Struct representation attributes follow the declaration keyword:
 `struct(repr(C)) Name { ... }`. Only that exact optional attribute is accepted.
+
+Associated functions place their owner before `::` in a function declaration:
+`fn Type::name(...)`. The name after `::` is optional. Generic owner binders
+appear immediately after `fn`, separately from function binders:
+`fn#[T] Generic#[T]::identity#[U](value: U) -> U`.

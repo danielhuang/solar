@@ -18,6 +18,7 @@
 
 ; ── Definitions ────────────────────────────────────────────────────────────
 (function_def name: (identifier) @function)
+(function_def associated_type: (identifier) @type)
 (method_def name: (identifier) @function.method)
 
 (struct_def name: (identifier) @type)

@@ -1767,7 +1767,7 @@ fn expand_completion_aliases(
         }
         match ty {
             ast::Type::Named(id) => {
-                if let Some(replacement) = substitutions.get(&id.name) {
+                if let Some(replacement) = substitutions.get(id.name.as_str()) {
                     return expand(replacement, aliases, substitutions, depth + 1);
                 }
                 aliases.get(id).map_or_else(
@@ -1894,11 +1894,15 @@ fn ast_type_matches(
         return true;
     }
     match expected {
-        ast::Type::Named(id) if type_parameters.contains(&id.name) => {
-            match substitutions.get(&id.name) {
+        ast::Type::Named(id)
+            if type_parameters
+                .iter()
+                .any(|parameter| parameter == id.name.as_str()) =>
+        {
+            match substitutions.get(id.name.as_str()) {
                 Some(bound) => bound == actual,
                 None => {
-                    substitutions.insert(id.name.clone(), actual.clone());
+                    substitutions.insert(id.name.to_string(), actual.clone());
                     true
                 }
             }
@@ -3633,26 +3637,6 @@ struct DefFinder<'a> {
     out: &'a mut Vec<SymbolTarget>,
 }
 
-fn function_signature(function: &typed_ast::FunctionDef) -> String {
-    let kind = match (function.is_unsafe, function.id.method) {
-        (true, true) => "unsafe method",
-        (true, false) => "unsafe fn",
-        (false, true) => "method",
-        (false, false) => "fn",
-    };
-    call_signature(
-        kind,
-        &function.id.def.name,
-        function.parameters.iter().map(|parameter| {
-            let name = match &parameter.name {
-                ast::Ident::User(name) | ast::Ident::Synthetic(name) => name.as_str(),
-            };
-            (name, &parameter.ty)
-        }),
-        &function.return_type,
-    )
-}
-
 fn call_signature<'a>(
     kind: &str,
     name: &str,
@@ -3672,10 +3656,23 @@ fn call_signature<'a>(
 }
 
 impl DefFinder<'_> {
+    fn function_name_matches(&self, function: &typed_ast::FuncId) -> bool {
+        if function.def.name == self.name {
+            return true;
+        }
+        if !matches!(function.def.name, ast::Ident::Synthetic(_)) {
+            return false;
+        }
+        function.args.first().is_some_and(|owner| match owner {
+            typed_ast::Type::Struct(id) | typed_ast::Type::Enum(id) => id.def.name == self.name,
+            owner => owner.to_string() == self.name,
+        })
+    }
+
     fn record(&mut self, function: &typed_ast::FuncId) {
         if self.generic_site {
             let candidates = if function.method {
-                self.method_defs.get(&function.def.name)
+                self.method_defs.get(function.def.name.as_str())
             } else {
                 self.function_defs.get(&function.def)
             };
@@ -3694,8 +3691,17 @@ impl DefFinder<'_> {
         }
         if let Some(def) = self.typed.functions.get(function) {
             if def.def_span.file_id == ast::SYNTHETIC_FILE {
-                self.out
-                    .push(SymbolTarget::BuiltIn(function_signature(def)));
+                self.out.push(SymbolTarget::BuiltIn(call_signature(
+                    "fn",
+                    self.name,
+                    def.parameters.iter().map(|parameter| {
+                        let name = match &parameter.name {
+                            ast::Ident::User(name) | ast::Ident::Synthetic(name) => name.as_str(),
+                        };
+                        (name, &parameter.ty)
+                    }),
+                    &def.return_type,
+                )));
             } else {
                 self.out.push(SymbolTarget::Source(def.def_span));
             }
@@ -3746,7 +3752,7 @@ impl DefFinder<'_> {
         match &expr.kind {
             ExprKind::FunctionRef(function) => {
                 if self.at(expr.span, self.anchor.unwrap_or(self.cursor))
-                    && function.def.name == self.name
+                    && self.function_name_matches(function)
                 {
                     self.record(function);
                 }
@@ -3756,7 +3762,7 @@ impl DefFinder<'_> {
                 arguments,
             } => {
                 if self.at(expr.span, self.anchor.unwrap_or(self.cursor))
-                    && function.def.name == self.name
+                    && self.function_name_matches(function)
                 {
                     self.record(function);
                 }
@@ -4809,10 +4815,10 @@ fn analysis_from_typed(typed: typed_ast::SourceFile, source_map: &SourceMap) -> 
     // consistently too).
     let mut names = Names::default();
     for struct_def in typed.structs.values() {
-        names.types.insert(struct_def.id.def.name.clone());
+        names.types.insert(struct_def.id.def.name.to_string());
     }
     for enum_def in typed.enums.values() {
-        names.types.insert(enum_def.id.def.name.clone());
+        names.types.insert(enum_def.id.def.name.to_string());
         for variant in &enum_def.variants {
             names.variants.insert(variant.name.clone());
         }

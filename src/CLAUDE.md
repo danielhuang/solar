@@ -25,6 +25,10 @@ AST, while `ir_interp` and native codegen consume IR.
 
 - Keep identities structural through resolution and type checking. Do not
   encode file provenance in names before `mangled_ast`.
+- Definition names retain `Ident::User` versus `Ident::Synthetic` in `DefId`;
+  do not encode compiler identity with source-name prefixes.
+- Method identity is carried by `FuncId::method`; overload resolution and
+  monomorphization must not pass linker-name prefixes through typed lowering.
 - Cross-file function references must reach type checking as provenance-bearing
   `GlobalRef` nodes. Bare-name fallback is reserved for same-file raw
   type-checking and synthetic numeric constructors; it must not search the
@@ -34,6 +38,16 @@ AST, while `ir_interp` and native codegen consume IR.
 - Every method signature must mention a parameter type owned by its declaring
   file. The standard library may additionally define methods on primitive and
   structural built-in types.
+- Associated functions use `fn Type::name(...)` and must be declared in the
+  same file as their owner type. The standard library may additionally attach
+  them to built-in types. An empty associated name provides `Type(...)` call
+  syntax, except that tuple structs reserve that syntax for their constructor.
+  Type-parameter calls (`T::name(...)` and `T(...)`) resolve after substitution.
+  Generic owner patterns bind parameters before the owner
+  (`fn#[T] Box#[T]::name(...)`); concrete specializations may coexist with
+  universal definitions. Matching owner patterns are ordered lexicographically
+  by structural specificity before ordinary parameter overload resolution.
+- Free functions and types cannot share a name.
 - `ast::PRIMITIVE_TYPES` is the single registry of primitive type names; name
   parsing, numeric-constructor generation, and coherence checks derive from it.
 - Eagerly lower concrete top-level functions and methods so their bodies are

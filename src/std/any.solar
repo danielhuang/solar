@@ -1,7 +1,7 @@
 import intrinsics from "@intrinsics";
 
 /// Erases the concrete type of a reference to a sized value.
-pub fn Any#[T](x: &T) -> Any {
+pub fn Any::#[T](x: &T) -> Any {
 	intrinsics::any_new(x)
 }
 

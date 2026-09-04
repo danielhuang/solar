@@ -645,3 +645,37 @@ fn doc_comment_empty_body() {
     };
     assert_eq!(func.doc.as_deref(), Some(""));
 }
+
+#[test]
+fn associated_function_names_are_preserved() {
+    let ast = parse("fn Value::make() {} fn Value::() {}");
+    let functions = ast.items.iter().map(|item| match item {
+        TopLevelItem::Function(function) => function,
+        _ => panic!("expected function"),
+    });
+    let names = functions
+        .map(|function| {
+            let Type::Named(owner) = function.associated_type.as_ref().unwrap() else {
+                panic!("expected named owner")
+            };
+            (owner.name.as_str(), function.name.as_str())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(names, [("Value", "make"), ("Value", "")]);
+}
+
+#[test]
+fn associated_owner_and_function_generics_are_separate() {
+    let ast = parse("fn#[T] Generic#[T]::identity#[U](value: U) -> U { value }");
+    let TopLevelItem::Function(function) = &ast.items[0] else {
+        panic!("expected function");
+    };
+    assert_eq!(function.associated_type_params, ["T"]);
+    assert_eq!(function.type_params, ["U"]);
+    let Type::Generic { name, type_args } = function.associated_type.as_ref().unwrap() else {
+        panic!("expected generic owner");
+    };
+    assert_eq!(name.name, "Generic");
+    assert_eq!(type_args.len(), 1);
+    assert_eq!(function.name, "identity");
+}

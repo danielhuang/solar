@@ -50,7 +50,7 @@ pub struct RawTable#[K, V] {
 }
 
 /// Creates an empty table.
-pub fn RawTable#[out K, out V]() -> RawTable#[K, V] {
+pub fn RawTable::#[out K, out V]() -> RawTable#[K, V] {
 	let empty_ctrl: [Uint8] = [tag::EMPTY; GROUP_WIDTH];
 	let empty_slots: [Entry#[K, V]] = []#[Entry#[K, V]];
 

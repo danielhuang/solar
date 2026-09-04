@@ -30,6 +30,8 @@ there. Imports are resolved relative to `src/std`, including subdirectories.
 - The blanket `operator_eq(self: &&T, other: &&T)` compares referenced values.
 - Reflective equality and hashing for structs and enums require public fields.
 - HashMap keys must be sized.
+- Constructor-like APIs are empty-name associated functions (`fn Type::(...)`)
+  and are invoked as `Type(...)`.
 
 Arrays are value types. Dereferencing an array reference copies the array, so
 mutating code should keep the reference and index through it:

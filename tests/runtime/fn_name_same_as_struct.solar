@@ -1,8 +1,8 @@
-// A function is allowed to have the same name as a struct
+// Empty-name associated functions provide constructor-like call syntax.
 
 struct Foo { x: Int }
 
-fn Foo(x: Int) -> Foo {
+fn Foo::(x: Int) -> Foo {
 	Foo { x: x }
 }
 

@@ -1,0 +1,1 @@
+pub struct Foreign { pub value: Int }

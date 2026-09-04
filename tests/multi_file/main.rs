@@ -235,6 +235,15 @@ fn orphan_method() {
 }
 
 #[test]
+#[should_panic(expected = "associated function must be defined in the same file as type `Foreign`")]
+fn orphan_associated_function() {
+    run(
+        &fixture("orphan_associated_function/main.solar"),
+        "orphan_associated_function",
+    );
+}
+
+#[test]
 #[should_panic(
     expected = "method `doubled` must use a type defined in the same file in at least one parameter"
 )]

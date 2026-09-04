@@ -54,7 +54,7 @@ pub struct Mutex {
 }
 
 /// Creates an unlocked mutex.
-pub fn Mutex() -> Mutex {
+pub fn Mutex::() -> Mutex {
 	Mutex { futex: 0u32 }
 }
 
@@ -121,7 +121,7 @@ pub struct Channel#[T] {
 }
 
 /// Creates an empty channel.
-pub fn Channel#[out T]() -> Channel#[T] {
+pub fn Channel::#[out T]() -> Channel#[T] {
 	Channel#[T] {
 		send_lock: Mutex(),
 		recv_lock: Mutex(),

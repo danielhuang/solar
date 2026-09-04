@@ -680,3 +680,23 @@ fn syscall_rejects_other_argument_types() {
 fn syscall_rejects_too_many_arguments() {
     compile_with_pipeline(&fixture("syscall_too_many_arguments.solar"));
 }
+
+#[test]
+#[should_panic(expected = "function `Value` collides with a type name")]
+fn function_cannot_collide_with_type_name() {
+    compile(&fixture("associated_function_name_collision.solar"));
+}
+
+#[test]
+#[should_panic(expected = "tuple struct `Pair` cannot have an empty-name associated function")]
+fn tuple_struct_cannot_have_empty_associated_function() {
+    compile(&fixture("associated_function_tuple_empty.solar"));
+}
+
+#[test]
+#[should_panic(expected = "associated function `test` has an identical signature")]
+fn associated_function_generic_owner_signatures_must_be_distinct() {
+    compile(&fixture(
+        "associated_function_duplicate_generic_owner.solar",
+    ));
+}

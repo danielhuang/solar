@@ -479,11 +479,22 @@ fn function_doc(definition: &FunctionDef, keyword: &str, context: &SourceContext
         },
         Doc::text(keyword),
         if definition.inline_hint {
-            Doc::text("(inline) ")
+            Doc::text("(inline)")
         } else {
-            Doc::text(" ")
+            Doc::Nil
         },
-        Doc::text(&definition.display_name),
+        type_parameters(&definition.associated_type_params),
+        Doc::text(" "),
+        definition.associated_type.as_ref().map_or_else(
+            || Doc::text(&definition.display_name),
+            |ty| {
+                Doc::concat([
+                    type_doc(ty),
+                    Doc::text("::"),
+                    Doc::text(&definition.display_name),
+                ])
+            },
+        ),
         function_type_parameters(&definition.type_params, &definition.out_type_params),
         delimited("(", parameter_docs, ")", false, false),
         definition.return_type.as_ref().map_or(Doc::Nil, |ty| {
@@ -835,7 +846,10 @@ fn statement_doc(statement: &Statement, context: &SourceContext<'_>) -> Doc {
 fn expr_doc(expression: &Expr, context: &SourceContext<'_>) -> Doc {
     let doc = match &expression.kind {
         ExprKind::Identifier(identifier) => ident_doc(identifier),
-        ExprKind::GlobalRef(definition) => Doc::text(&definition.name),
+        ExprKind::GlobalRef(definition) => Doc::text(definition.name.as_str()),
+        ExprKind::AssociatedFunction { ty, name } => {
+            Doc::concat([type_doc(ty), Doc::text("::"), Doc::text(name)])
+        }
         ExprKind::IntegerLiteral(value, ty) => literal_doc(expression, context, || {
             format!("{value}{}", integer_suffix(*ty))
         }),
@@ -888,7 +902,7 @@ fn expr_doc(expression: &Expr, context: &SourceContext<'_>) -> Doc {
                 module
                     .as_ref()
                     .map_or(Doc::Nil, |module| Doc::text(format!("{module}::"))),
-                Doc::text(&name.name),
+                Doc::text(name.name.as_str()),
                 type_arguments(type_args),
                 Doc::text(" "),
                 list_with_padding(fields, "{", "}", true),
@@ -974,7 +988,7 @@ fn expr_doc(expression: &Expr, context: &SourceContext<'_>) -> Doc {
             variant_name,
         } => {
             let mut path = module_path.clone();
-            path.push(enum_name.name.clone());
+            path.push(enum_name.name.to_string());
             Doc::concat([
                 Doc::text(path.join("::")),
                 type_arguments(type_args),
@@ -1171,9 +1185,9 @@ fn type_arguments(arguments: &[Type]) -> Doc {
 
 fn type_doc(ty: &Type) -> Doc {
     match ty {
-        Type::Named(name) => Doc::text(&name.name),
+        Type::Named(name) => Doc::text(name.name.as_str()),
         Type::Generic { name, type_args } => {
-            Doc::concat([Doc::text(&name.name), type_arguments(type_args)])
+            Doc::concat([Doc::text(name.name.as_str()), type_arguments(type_args)])
         }
         Type::Reference(inner) => Doc::concat([Doc::text("&"), type_doc(inner)]),
         Type::NullableReference(inner) => Doc::concat([Doc::text("&?"), type_doc(inner)]),
@@ -1223,7 +1237,7 @@ fn destructure_doc(pattern: &DestructurePattern) -> Doc {
             module
                 .as_ref()
                 .map_or(Doc::Nil, |module| Doc::text(format!("{module}::"))),
-            Doc::text(&name.name),
+            Doc::text(name.name.as_str()),
             Doc::text(" "),
             list_with_padding(
                 fields.iter().map(|field| {
@@ -1259,7 +1273,7 @@ fn pattern_doc(pattern: &Pattern) -> Doc {
             binding,
         } => {
             let mut path = module_path.clone();
-            path.push(enum_name.name.clone());
+            path.push(enum_name.name.to_string());
             Doc::concat([
                 Doc::text(path.join("::")),
                 type_arguments(type_args),
@@ -1540,6 +1554,14 @@ mod tests {
         assert_eq!(
             formatted("struct Pair { left:Int,right:Int, }\nfn f(a:Int){let x=a+1;x}\n"),
             "struct Pair { left: Int, right: Int }\nfn f(a: Int) { let x = a + 1; x }\n"
+        );
+    }
+
+    #[test]
+    fn formats_associated_owner_generics_separately() {
+        assert_eq!(
+            formatted("fn#[T] Generic#[T]::identity#[U](x:U)->U{x}\n"),
+            "fn#[T] Generic#[T]::identity#[U](x: U) -> U { x }\n"
         );
     }
 

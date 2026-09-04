@@ -1,0 +1,7 @@
+struct Pair(Int);
+
+fn Pair::(value: Int) -> Pair {
+	Pair(value)
+}
+
+fn main() {}

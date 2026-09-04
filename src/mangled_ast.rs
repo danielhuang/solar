@@ -362,13 +362,14 @@ impl Renderer<'_> {
     }
 
     /// The base identifier of a definition, module-prefixed by its defining
-    /// file. Root definitions stay bare; synthetic definitions receive the
-    /// source-impossible synthetic prefix.
+    /// file. Root definitions stay bare; synthetic identifiers receive the
+    /// source-impossible synthetic prefix independently of their provenance.
     fn base_name(&self, def: &ast::DefId) -> String {
+        let name = self.ident_name(&def.name);
         if def.file == ast::SYNTHETIC_FILE {
-            self.synthetic_name(&def.name)
+            name
         } else {
-            format!("{}{}", self.module_prefix(def.file), def.name)
+            format!("{}{}", self.module_prefix(def.file), name)
         }
     }
 
@@ -390,7 +391,7 @@ impl Renderer<'_> {
         // Methods render their bare base name (`__method_`-prefixed); free
         // functions get the module prefix.
         let base = if fid.method {
-            fid.def.name.clone()
+            fid.def.name.to_string()
         } else {
             self.base_name(&fid.def)
         };

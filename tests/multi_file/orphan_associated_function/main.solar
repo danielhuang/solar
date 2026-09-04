@@ -1,0 +1,7 @@
+import {Foreign} from "foreign.solar";
+
+fn Foreign::new(value: Int) -> Foreign {
+	Foreign { value: value }
+}
+
+fn main() {}

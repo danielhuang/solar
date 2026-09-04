@@ -1,6 +1,6 @@
 pub struct Collection#[T] { pub value: T, pub count: Uint }
 
-pub fn Collection#[T](sample: T) -> Collection#[T] {
+pub fn Collection::#[T](sample: T) -> Collection#[T] {
 	Collection#[T] { value: sample, count: 0u }
 }
 

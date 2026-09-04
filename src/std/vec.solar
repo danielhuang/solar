@@ -5,7 +5,7 @@ import slice from "slice.solar";
 pub struct Vec#[T] { len: Uint, inner: ^[T] }
 
 /// Creates a vector containing a copy of `src`.
-pub fn Vec#[T](src: &[T]) -> Vec#[T] {
+pub fn Vec::#[T](src: &[T]) -> Vec#[T] {
 	Vec#[T] { len: src.len(), inner: src@^ }
 }
 

@@ -198,6 +198,9 @@ impl Desugarer {
         let kind = match expr.kind {
             ast::ExprKind::Identifier(name) => ast::ExprKind::Identifier(name),
             ast::ExprKind::GlobalRef(def) => ast::ExprKind::GlobalRef(def),
+            ast::ExprKind::AssociatedFunction { ty, name } => {
+                ast::ExprKind::AssociatedFunction { ty, name }
+            }
             ast::ExprKind::IntegerLiteral(value, ty) => ast::ExprKind::IntegerLiteral(value, ty),
             ast::ExprKind::FloatLiteral(value, ty) => ast::ExprKind::FloatLiteral(value, ty),
             ast::ExprKind::BooleanLiteral(value) => ast::ExprKind::BooleanLiteral(value),

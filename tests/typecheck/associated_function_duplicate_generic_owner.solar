@@ -1,0 +1,6 @@
+struct Generic#[T] {}
+
+fn#[T] Generic#[T]::test(value: T) {}
+fn#[U] Generic#[U]::test(value: U) {}
+
+fn main() {}
