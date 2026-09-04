@@ -14,7 +14,7 @@ if ! command -v "$vscode_cli" >/dev/null 2>&1; then
 fi
 
 cd "$extension_dir"
-npm ci
-npm run build:lsp
-npx --yes @vscode/vsce package --allow-missing-repository --out "$vsix_path"
+bun install
+bun run build:lsp
+bunx @vscode/vsce package --allow-missing-repository --out "$vsix_path"
 "$vscode_cli" --install-extension "$vsix_path" --force
