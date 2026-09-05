@@ -1589,7 +1589,11 @@ impl<'a> Codegen<'a> {
                 let c_ty = self.c_int_type(&result_ty);
                 format!("*({c_ty}*)(uint8_t*)&{tmp}")
             }
-            NodeKind::IntrinsicCall { intrinsic, args } => {
+            NodeKind::IntrinsicCall {
+                intrinsic,
+                type_args,
+                args,
+            } => {
                 let intrinsic = intrinsic.clone();
                 let args: Vec<NodeId> = args.clone();
                 let result_ty = nodes[id.0].ty.clone();
@@ -1598,7 +1602,7 @@ impl<'a> Codegen<'a> {
                 let mf = self.mark_fn_expr(&result_ty);
                 let tmp = self.fresh_tmp();
                 self.emit_alloc(&tmp, s, a, &mf);
-                self.emit_intrinsic(nodes, &intrinsic, &args, &result_ty, &tmp);
+                self.emit_intrinsic(nodes, &intrinsic, type_args, &args, &result_ty, &tmp);
                 let c_ty = self.c_int_type(&result_ty);
                 format!("*({c_ty}*){tmp}")
             }
@@ -2559,11 +2563,15 @@ impl<'a> Codegen<'a> {
                 }
                 self.linef(format!("sol_store_128_unordered({dst}, {wide_tmp});"));
             }
-            NodeKind::IntrinsicCall { intrinsic, args } => {
+            NodeKind::IntrinsicCall {
+                intrinsic,
+                type_args,
+                args,
+            } => {
                 let intrinsic = intrinsic.clone();
                 let args: Vec<NodeId> = args.clone();
                 let result_ty = nodes[id.0].ty.clone();
-                self.emit_intrinsic(nodes, &intrinsic, &args, &result_ty, dst);
+                self.emit_intrinsic(nodes, &intrinsic, type_args, &args, &result_ty, dst);
             }
             NodeKind::Call { function, args } => {
                 let function = function.clone();
@@ -2707,6 +2715,7 @@ impl<'a> Codegen<'a> {
         &mut self,
         nodes: &[Node],
         intrinsic: &Intrinsic,
+        type_args: &[Type],
         args: &[NodeId],
         result_ty: &Type,
         dst: &str,
@@ -2979,9 +2988,38 @@ impl<'a> Codegen<'a> {
                 self.linef(format!("*({c_ty}*){dst} = ({c_ty}){f}();"));
             }
             Intrinsic::ArrayIndex => {
-                unreachable!("array_index is lowered before backend execution")
+                // Materialize the reference once; fat references are copied with
+                // the ordinary tear-free load before evaluating the index.
+                let reference = self.fresh_tmp();
+                self.linef(format!("_Alignas(16) uint8_t {reference}[16];"));
+                self.emit_into(nodes, args[0], &reference);
+                let base = self.fresh_tmp();
+                self.linef(format!("uint8_t* {base} = *(uint8_t**){reference};"));
+                let len = match &nodes[args[0].0].ty {
+                    Type::Ref(inner) => match &**inner {
+                        Type::FixedArray(_, len) => len.to_string(),
+                        _ => unreachable!("thin array reference must have fixed length"),
+                    },
+                    Type::RefUnsized(_) => {
+                        let len = self.fresh_tmp();
+                        self.linef(format!("uint64_t {len} = *(uint64_t*)({reference} + 8);"));
+                        len
+                    }
+                    _ => unreachable!("array_index argument must be an array reference"),
+                };
+                let index = self.emit_load(nodes, args[1]);
+                let Type::Ref(element) = result_ty else {
+                    unreachable!("array_index result must be a reference")
+                };
+                let size = self.type_size(element);
+                self.linef(format!(
+                    "*(uint8_t**){dst} = sol_slice_index({base}, (uint64_t){index}, {len}, {size});"
+                ));
             }
-            Intrinsic::SizeOf => unreachable!("size_of is lowered before code generation"),
+            Intrinsic::SizeOf => {
+                let size = self.type_size(&type_args[0]);
+                self.linef(format!("*(uint64_t*){dst} = UINT64_C({size});"));
+            }
             Intrinsic::Transmute | Intrinsic::TransmuteUnchecked => {
                 let source_ty = nodes[args[0].0].ty.clone();
                 let size = self.type_size(&source_ty);
@@ -3441,14 +3479,17 @@ impl<'a> Codegen<'a> {
                             let s = self.type_size(ty);
                             let a = self.type_align(ty);
                             let mf = self.mark_fn_expr(ty);
-                            if let NodeKind::IntrinsicCall { intrinsic, args } =
-                                &nodes[inner.0].kind
+                            if let NodeKind::IntrinsicCall {
+                                intrinsic,
+                                type_args,
+                                args,
+                            } = &nodes[inner.0].kind
                             {
                                 let intrinsic = intrinsic.clone();
                                 let args: Vec<NodeId> = args.clone();
                                 let tmp = self.fresh_tmp();
                                 self.emit_alloc(&tmp, s, a, &mf);
-                                self.emit_intrinsic(nodes, &intrinsic, &args, ty, &tmp);
+                                self.emit_intrinsic(nodes, &intrinsic, type_args, &args, ty, &tmp);
                             } else if let NodeKind::Call { function, args } = &nodes[inner.0].kind {
                                 let function = function.clone();
                                 let args: Vec<NodeId> = args.clone();

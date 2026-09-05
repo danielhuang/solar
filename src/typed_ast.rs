@@ -1119,6 +1119,8 @@ pub enum ExprKind {
     },
     IntrinsicCall {
         intrinsic: Intrinsic,
+        /// Concrete type arguments retained for backend implementation.
+        type_args: Vec<Type>,
         arguments: Vec<Expr>,
     },
 }
@@ -4217,6 +4219,7 @@ impl<'a> Lowerer<'a> {
             ty: Type::Unit,
             kind: ExprKind::IntrinsicCall {
                 intrinsic: Intrinsic::Try,
+                type_args: vec![],
                 arguments: lowered_arguments,
             },
             span,
@@ -9201,6 +9204,7 @@ impl<'a> Lowerer<'a> {
                                 ty: Type::Unit,
                                 kind: ExprKind::IntrinsicCall {
                                     intrinsic: Intrinsic::AssertArrayLen,
+                                    type_args: vec![],
                                     arguments: vec![
                                         base_expr.clone(),
                                         Expr {
@@ -9305,22 +9309,13 @@ impl<'a> Lowerer<'a> {
                     span,
                 ));
             }
-            // Keep the checked element place as a compiler primitive, while
-            // surface indexing uses ordinary method dispatch for every type.
             return Ok(Expr {
-                ty: Type::Ref(Box::new(elem_ty.clone())),
-                kind: ExprKind::Reference(Box::new(Expr {
-                    ty: elem_ty,
-                    kind: ExprKind::Index {
-                        object: Box::new(Expr {
-                            ty: array_ty,
-                            kind: ExprKind::Deref(Box::new(source)),
-                            span,
-                        }),
-                        index: Box::new(index),
-                    },
-                    span,
-                })),
+                ty: Type::Ref(Box::new(elem_ty)),
+                kind: ExprKind::IntrinsicCall {
+                    intrinsic: intrinsic.clone(),
+                    type_args: vec![],
+                    arguments: vec![source, index],
+                },
                 span,
             });
         }
@@ -9338,48 +9333,18 @@ impl<'a> Lowerer<'a> {
                 ));
             }
             let ty = self.resolve_ast_type(&type_args[0])?;
-            let Some((size, _)) = type_layout(&ty, &self.lowered_structs, &self.lowered_enums)
-            else {
+            if type_layout(&ty, &self.lowered_structs, &self.lowered_enums).is_none() {
                 return Err(CompileError::new(
                     format!("size_of: type {ty} is unsized"),
                     span,
                 ));
-            };
-            // A generic function is already being materialized as a concrete
-            // instance, so put the constant directly in that instance's body.
-            // A direct intrinsic call from concrete code instead targets the
-            // synthetic per-type function below, keeping its call site intact.
-            if self.mono_depth != 0 {
-                return Ok(Expr {
-                    ty: Type::Uint,
-                    kind: ExprKind::IntegerLiteral(size as i64),
-                    span,
-                });
             }
-            let function = FuncId::free(ast::DefId::synthetic("size_of"), vec![ty]);
-            self.monomorphized_functions
-                .entry(function.clone())
-                .or_insert_with(|| FunctionDef {
-                    id: function.clone(),
-                    parameters: Vec::new(),
-                    return_type: Type::Uint,
-                    body: vec![Statement {
-                        kind: StatementKind::Expression(Expr {
-                            ty: Type::Uint,
-                            kind: ExprKind::IntegerLiteral(size as i64),
-                            span,
-                        }),
-                        span,
-                    }],
-                    is_unsafe: false,
-                    inline_hint: false,
-                    def_span: span,
-                });
             return Ok(Expr {
                 ty: Type::Uint,
-                kind: ExprKind::Call {
-                    function,
-                    arguments: Vec::new(),
+                kind: ExprKind::IntrinsicCall {
+                    intrinsic: intrinsic.clone(),
+                    type_args: vec![ty],
+                    arguments: vec![],
                 },
                 span,
             });
@@ -9452,9 +9417,10 @@ impl<'a> Lowerer<'a> {
             }
 
             return Ok(Expr {
-                ty: destination_ty,
+                ty: destination_ty.clone(),
                 kind: ExprKind::IntrinsicCall {
                     intrinsic: intrinsic.clone(),
+                    type_args: vec![destination_ty],
                     arguments: vec![argument],
                 },
                 span,
@@ -9500,15 +9466,16 @@ impl<'a> Lowerer<'a> {
                 if type_layout(&destination_ty, &self.lowered_structs, &self.lowered_enums)
                     .is_some()
                 {
-                    Type::Ref(Box::new(destination_ty))
+                    Type::Ref(Box::new(destination_ty.clone()))
                 } else {
-                    Type::RefUnsized(Box::new(destination_ty))
+                    Type::RefUnsized(Box::new(destination_ty.clone()))
                 };
 
             return Ok(Expr {
                 ty: destination_ref,
                 kind: ExprKind::IntrinsicCall {
                     intrinsic: intrinsic.clone(),
+                    type_args: vec![destination_ty],
                     arguments: vec![source, size],
                 },
                 span,
@@ -9693,6 +9660,7 @@ impl<'a> Lowerer<'a> {
             lowered_args.push(arg);
         }
 
+        let lowered_type_args = any_downcast_type.iter().cloned().collect();
         let return_ty = match spec.ret {
             ReturnSpec::Fixed(ty) => ty,
             ReturnSpec::RefInner => ref_inner.unwrap(),
@@ -9707,6 +9675,7 @@ impl<'a> Lowerer<'a> {
             ty: return_ty,
             kind: ExprKind::IntrinsicCall {
                 intrinsic: intrinsic.clone(),
+                type_args: lowered_type_args,
                 arguments: lowered_args,
             },
             span,
@@ -9766,6 +9735,7 @@ impl<'a> Lowerer<'a> {
             ty: Type::Int64,
             kind: ExprKind::IntrinsicCall {
                 intrinsic: Intrinsic::Syscall,
+                type_args: vec![],
                 arguments: lowered_args,
             },
             span,
@@ -9893,11 +9863,11 @@ fn intrinsic_spec(intrinsic: &Intrinsic) -> IntrinsicSpec {
             ret: Fixed(Type::Uint),
         },
         Intrinsic::ArrayIndex => {
-            unreachable!("array_index is lowered to a checked element reference")
+            unreachable!("array_index has a dependent signature")
         }
-        Intrinsic::SizeOf => unreachable!("size_of is lowered to a monomorphized function"),
+        Intrinsic::SizeOf => unreachable!("size_of requires a type argument"),
         Intrinsic::Transmute | Intrinsic::TransmuteUnchecked | Intrinsic::TransmuteRef => {
-            unreachable!("transmute intrinsics are lowered specially")
+            unreachable!("transmute intrinsics have dependent signatures")
         }
         Intrinsic::AssertArrayLen => IntrinsicSpec {
             params: vec![IsArray, Exact(Type::Uint)],

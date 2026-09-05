@@ -3896,6 +3896,7 @@ impl DefFinder<'_> {
             ExprKind::IntrinsicCall {
                 intrinsic,
                 arguments,
+                ..
             } => {
                 let name_matches = self.name == intrinsic.name()
                     || matches!(intrinsic, Intrinsic::Cast(..)) && self.name.starts_with("cast_");

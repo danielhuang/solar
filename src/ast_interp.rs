@@ -1641,8 +1641,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             }
             ExprKind::IntrinsicCall {
                 intrinsic,
+                type_args,
                 arguments,
-            } => self.exec_intrinsic(intrinsic, arguments, &expr.ty)?,
+            } => self.exec_intrinsic(intrinsic, type_args, arguments, &expr.ty)?,
             ExprKind::Closure {
                 synthetic_fn,
                 captures,
@@ -1695,6 +1696,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
     fn exec_intrinsic(
         &mut self,
         intrinsic: &Intrinsic,
+        type_args: &[Type],
         arguments: &[Expr],
         result_ty: &Type,
     ) -> Eval<Value> {
@@ -1871,9 +1873,31 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 std::process::exit(code);
             }
             Intrinsic::ArrayIndex => {
-                unreachable!("array_index is lowered before backend execution")
+                let Value::Ref(array) = self.eval_expr(&arguments[0])? else {
+                    unreachable!("array_index argument must be an array reference")
+                };
+                let Value::Int(index) = self.eval_expr(&arguments[1])? else {
+                    unreachable!("array_index index must be Uint")
+                };
+                let index = index as u64;
+                let elements = match &*array.borrow() {
+                    Value::Array(elements) => elements.clone(),
+                    _ => unreachable!("array_index pointee must be an array"),
+                };
+                let len = elements.len();
+                if index >= len as u64 {
+                    return Err(thrown(&format!(
+                        "index out of bounds: index is {index} but length is {len}"
+                    )));
+                }
+                let (backing, start, _) = self.ensure_array_region(&array, elements);
+                Value::Ref(Rc::clone(&backing[start + index as usize]))
             }
-            Intrinsic::SizeOf => unreachable!("size_of is lowered before interpretation"),
+            Intrinsic::SizeOf => Value::Int(
+                ast_type_layout(&type_args[0], self.structs, self.enums)
+                    .unwrap()
+                    .0 as i64,
+            ),
             Intrinsic::Transmute | Intrinsic::TransmuteUnchecked => {
                 let value = self.eval_expr(&arguments[0])?;
                 let bytes = self.encode_transmute_value(&value, &arguments[0].ty);

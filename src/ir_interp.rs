@@ -1347,11 +1347,15 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let args: Vec<NodeId> = args.clone();
                 self.call_function_by_name(nodes, &function, &args, 0, dst)?;
             }
-            NodeKind::IntrinsicCall { intrinsic, args } => {
+            NodeKind::IntrinsicCall {
+                intrinsic,
+                type_args,
+                args,
+            } => {
                 let intrinsic = intrinsic.clone();
                 let args: Vec<NodeId> = args.clone();
                 let result_ty = nodes[id.0].ty.clone();
-                self.exec_intrinsic(nodes, &intrinsic, &args, &result_ty, dst)?;
+                self.exec_intrinsic(nodes, &intrinsic, type_args, &args, &result_ty, dst)?;
             }
             NodeKind::CallIndirect { callee, args } => {
                 let callee = *callee;
@@ -1430,6 +1434,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         &mut self,
         nodes: &[Node],
         intrinsic: &Intrinsic,
+        type_args: &[Type],
         args: &[NodeId],
         result_ty: &Type,
         dst: usize,
@@ -1585,9 +1590,35 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 std::process::exit(code);
             }
             Intrinsic::ArrayIndex => {
-                unreachable!("array_index is lowered before backend execution")
+                let reference_ty = &nodes[args[0].0].ty;
+                let reference = self.alloc_ty(reference_ty);
+                self.eval_into(nodes, args[0], reference)?;
+                let base = self.mem.load(reference, 8) as usize;
+                let len = match reference_ty {
+                    Type::Ref(inner) => match &**inner {
+                        Type::FixedArray(_, len) => *len as usize,
+                        _ => unreachable!("thin array reference must have fixed length"),
+                    },
+                    Type::RefUnsized(_) => self.mem.load(reference + 8, 8) as usize,
+                    _ => unreachable!("array_index argument must be an array reference"),
+                };
+                let index = self.eval_load(nodes, args[1])?;
+                if index >= len as u64 {
+                    return Err(self.thrown(&format!(
+                        "index out of bounds: index is {index} but length is {len}"
+                    )));
+                }
+                let Type::Ref(element) = result_ty else {
+                    unreachable!("array_index result must be a reference")
+                };
+                let size = type_size(element, &self.module.datatypes);
+                self.mem
+                    .store(dst, (base + index as usize * size) as u64, 8);
             }
-            Intrinsic::SizeOf => unreachable!("size_of is lowered before IR generation"),
+            Intrinsic::SizeOf => {
+                let size = type_size(&type_args[0], &self.module.datatypes);
+                self.scalar_store(dst, size as u64, result_ty);
+            }
             Intrinsic::Transmute | Intrinsic::TransmuteUnchecked => {
                 self.eval_into(nodes, args[0], dst)?;
             }

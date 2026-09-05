@@ -104,28 +104,23 @@ fn out_generics_and_size_of() {
         .filter(|(id, _)| id.def.name == "size_of")
         .collect();
     assert!(!instances.is_empty());
-    assert!(
-        instances
-            .iter()
-            .any(|(id, _)| id.def.file != solar::ast::SYNTHETIC_FILE)
-    );
-    assert!(
-        instances
-            .iter()
-            .any(|(id, _)| id.def.file == solar::ast::SYNTHETIC_FILE)
-    );
     for (id, function) in instances {
+        assert_ne!(id.def.file, solar::ast::SYNTHETIC_FILE);
         assert_eq!(id.args.len(), 1);
         assert!(function.parameters.is_empty());
         assert!(matches!(
             function.body.as_slice(),
             [solar::typed_ast::Statement {
                 kind: solar::typed_ast::StatementKind::Expression(solar::typed_ast::Expr {
-                    kind: solar::typed_ast::ExprKind::IntegerLiteral(_),
+                    kind: solar::typed_ast::ExprKind::IntrinsicCall {
+                        intrinsic: solar::intrinsics::Intrinsic::SizeOf,
+                        type_args,
+                        arguments,
+                    },
                     ..
                 }),
                 ..
-            }]
+            }] if type_args == &id.args && arguments.is_empty()
         ));
     }
 }

@@ -221,6 +221,8 @@ pub enum ExprKind {
     },
     IntrinsicCall {
         intrinsic: Intrinsic,
+        /// Concrete type arguments retained for backend implementation.
+        type_args: Vec<Type>,
         arguments: Vec<Expr>,
     },
 }
@@ -679,9 +681,11 @@ impl Renderer<'_> {
             },
             K::IntrinsicCall {
                 intrinsic,
+                type_args,
                 arguments,
             } => ExprKind::IntrinsicCall {
                 intrinsic: intrinsic.clone(),
+                type_args: type_args.iter().map(|ty| self.conv_type(ty)).collect(),
                 arguments: arguments.iter().map(|a| self.conv_expr(a)).collect(),
             },
         }

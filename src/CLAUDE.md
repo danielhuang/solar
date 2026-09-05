@@ -58,9 +58,11 @@ AST, while `ir_interp` and native codegen consume IR.
   parameters cannot be written at a call site: they are always inferred and
   must occur in at least one parameter type. Output parameters need not occur
   in the signature.
-- `size_of#[T]()` accepts only sized types. Each concrete type produces a
-  zero-argument monomorphized function whose constant body uses the same size
-  and alignment rules as IR layout.
+- Intrinsics remain intrinsic calls through typed AST, mangling, and IR.
+  Type checking validates their signatures and retains concrete type arguments;
+  codegen and the interpreters implement their behavior.
+- `size_of#[T]()` accepts only sized types. Backends compute its constant result
+  using the same size and alignment rules as IR layout.
 - `mem::transmute#[T, out U](T) -> U` requires equal-sized types, a source layout
   with every byte initialized (including no aggregate padding or inactive enum
   payload storage), and a destination whose value invariants accept every bit
@@ -104,9 +106,9 @@ AST, while `ir_interp` and native codegen consume IR.
 - Indexing desugars to `a&.operator_index(b)@` before type checking.
   The index is passed by value and the returned reference supplies the indexed
   place for reads, assignments, and references. The standard library's array
-  method uses `array_index(&[T], Uint) -> &T`, which lowers to a checked element
-  reference. Only this intrinsic and array destructuring create primitive
-  indexing nodes.
+  method uses `array_index(&[T], Uint) -> &T`, which the backends implement as a
+  checked element reference. Only array destructuring creates primitive indexing
+  nodes before the backends.
 - Keep integer matches as flat match nodes through typed AST, mangling, and IR;
   expanding their arms into nested `if` expressions makes compiler stack usage
   proportional to the number of arms.

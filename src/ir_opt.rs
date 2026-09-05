@@ -45,6 +45,7 @@ fn good_call_args(nodes: &[Node], noescape_params: &HashMap<String, Vec<bool>>) 
             NodeKind::IntrinsicCall {
                 intrinsic: Intrinsic::BlackBoxRef | Intrinsic::GcKeepAlive,
                 args,
+                ..
             } => {
                 good.insert(args[0].0);
             }

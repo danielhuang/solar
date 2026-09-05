@@ -209,6 +209,8 @@ pub enum NodeKind {
 
     IntrinsicCall {
         intrinsic: Intrinsic,
+        /// Concrete type arguments retained for backend implementation.
+        type_args: Vec<Type>,
         args: Vec<NodeId>,
     },
 
@@ -1195,6 +1197,7 @@ impl<'a> FunctionLowerer<'a> {
             }
             mangled_ast::ExprKind::IntrinsicCall {
                 intrinsic,
+                type_args,
                 arguments,
             } => {
                 let args: Vec<NodeId> = arguments.iter().map(|a| self.lower_expr(a)).collect();
@@ -1202,6 +1205,7 @@ impl<'a> FunctionLowerer<'a> {
                     ty: expr.ty.clone(),
                     kind: NodeKind::IntrinsicCall {
                         intrinsic: intrinsic.clone(),
+                        type_args: type_args.clone(),
                         args,
                     },
                     span: expr.span,
