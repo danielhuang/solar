@@ -351,6 +351,12 @@ fn binop_array_eq() {
 }
 
 #[test]
+fn operator_index() {
+    let output = run(&fixture("operator_index.solar"), "operator_index");
+    assert_eq!(output, "10\n30\n40\n50\n2\n60\n3\n");
+}
+
+#[test]
 fn operator_overload() {
     let output = run(&fixture("operator_overload.solar"), "operator_overload");
     assert_eq!(output, "11\n22\n9\n18\n3\n6\n1\n0\n3\n3\n1\n");

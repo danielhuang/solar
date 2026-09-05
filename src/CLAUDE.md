@@ -101,6 +101,9 @@ AST, while `ir_interp` and native codegen consume IR.
   outward call frames from an inner diagnostic use the message `from`.
 - Escape analysis is conservative: uncertainty means the value may escape.
 - Compile-time field reflection evaluates its object once.
+- Indexing non-array values dispatches through `a&.operator_index(b)@`.
+  The index is passed by value and the returned reference supplies the indexed
+  place for reads, assignments, and references. Arrays retain built-in indexing.
 - Keep integer matches as flat match nodes through typed AST, mangling, and IR;
   expanding their arms into nested `if` expressions makes compiler stack usage
   proportional to the number of arms.

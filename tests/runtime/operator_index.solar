@@ -1,0 +1,40 @@
+struct Slots#[T] { first: T, second: T }
+
+method operator_index#[T](self: &Slots#[T], index: Bool) -> &T {
+	if index { self@.second& } else { self@.first& }
+}
+
+method operator_index#[T](self: &Slots#[T], index: Int) -> &T {
+	self@[index != 0]&
+}
+
+fn receiver(slots: &Slots#[Int], calls: &Int) -> &Slots#[Int] {
+	calls@ = calls@ + 1;
+	slots
+}
+
+fn index(calls: &Int) -> Bool {
+	calls@ = calls@ + 1;
+	true
+}
+
+fn main() {
+	let slots = Slots#[Int] { first: 10, second: 20 };
+	println(slots[false]);
+	assert(slots[1] == 20);
+	slots[true] = 30;
+	println(slots.second);
+	let element = slots[false]&;
+	element@ = 40;
+	println(slots.first);
+	let calls = 0;
+	receiver(slots&, calls&)@[index(calls&)] = 50;
+	println(slots.second);
+	println(calls);
+	let nested = Slots#[Slots#[Int]] { first: slots, second: slots };
+	nested[true][false] = 60;
+	println(nested.second.first);
+	let array = [1, 2];
+	array[0u] = 3;
+	println(array[0u]);
+}

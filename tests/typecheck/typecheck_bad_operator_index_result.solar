@@ -1,0 +1,10 @@
+struct Container { value: Int }
+
+method operator_index(self: &Container, index: Int) -> Int {
+	self@.value + index
+}
+
+fn main() {
+	let container = Container { value: 1 };
+	let value = container[0];
+}

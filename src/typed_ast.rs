@@ -6169,6 +6169,25 @@ impl<'a> Lowerer<'a> {
             }
             ast::ExprKind::Index { object, index } => {
                 let obj = self.lower_expr(object)?;
+                if Self::array_inner(&obj.ty).is_none()
+                    && self.method_defs.contains_key("operator_index")
+                {
+                    // Preserve place semantics by dereferencing the result of
+                    // `a&.operator_index(b)`, including for assignment and `&`.
+                    return self.lower_expr(&ast::Expr {
+                        kind: ast::ExprKind::Deref(Box::new(ast::Expr {
+                            kind: ast::ExprKind::MethodCall {
+                                receiver: Box::new(Self::auto_reference(object)),
+                                method: "operator_index".to_owned(),
+                                type_args: vec![],
+                                arguments: vec![(**index).clone()],
+                                kwargs: vec![],
+                            },
+                            span: expr.span,
+                        })),
+                        span: expr.span,
+                    });
+                }
                 let elem_ty = Self::array_inner(&obj.ty)
                     .ok_or_else(|| {
                         CompileError::new(format!("index on non-array type {}", obj.ty), expr.span)

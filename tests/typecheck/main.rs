@@ -266,6 +266,12 @@ fn bad_return_mismatch() {
 }
 
 #[test]
+#[should_panic(expected = "cannot deref non-reference type Int")]
+fn bad_operator_index_result() {
+    compile(&fixture("typecheck_bad_operator_index_result.solar"));
+}
+
+#[test]
 #[should_panic(expected = "index on non-array type Int")]
 fn bad_index_non_array() {
     compile(&fixture("typecheck_bad_index_non_array.solar"));
