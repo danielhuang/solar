@@ -16,7 +16,10 @@ fn main() {
         .to_mangled()
         .to_ir()
         .to_c(filename)
-        .to_binary(test_name, CompileOptions::DEBUG);
+        .to_binary(
+            Path::new("target/solar").join(test_name),
+            CompileOptions::DEBUG,
+        );
 
     let status = Command::new(binary.path.canonicalize().unwrap())
         .env("ASAN_OPTIONS", "detect_leaks=0")

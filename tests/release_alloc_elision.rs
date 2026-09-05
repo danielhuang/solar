@@ -42,7 +42,10 @@ fn specialized_allocators_retain_allocation_elision() {
         .to_ir()
         .optimized()
         .to_c(&src_path.display().to_string())
-        .to_binary("release_alloc_elision", CompileOptions::RELEASE)
+        .to_binary(
+            test_utils::binary_output_path("release_alloc_elision"),
+            CompileOptions::RELEASE,
+        )
         .path;
     let out = Command::new(bin)
         .env("SOLAR_PRINT_ALLOCS", "1")

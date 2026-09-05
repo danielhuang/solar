@@ -50,7 +50,10 @@ fn release_branch_merge_preserves_gc_allocation_provenance() {
         .to_ir()
         .optimized()
         .to_c(&src_path.display().to_string())
-        .to_binary("release_alloc_metadata", CompileOptions::RELEASE)
+        .to_binary(
+            test_utils::binary_output_path("release_alloc_metadata"),
+            CompileOptions::RELEASE,
+        )
         .path;
     let out = Command::new(bin).output().unwrap();
     assert!(

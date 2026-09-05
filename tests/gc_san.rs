@@ -49,7 +49,10 @@ fn gc_san_runs_collections_without_rejecting_live_objects() {
         .to_ir()
         .optimized()
         .to_c(&source.display().to_string())
-        .to_binary("gc_san", CompileOptions::GC_SAN);
+        .to_binary(
+            test_utils::binary_output_path("gc_san"),
+            CompileOptions::GC_SAN,
+        );
     let result = Command::new(binary.path.canonicalize().unwrap())
         .env("SOLAR_PRINT_GC_STATS", "1")
         .output()
@@ -89,7 +92,10 @@ fn gc_san_runs_without_lto_or_optimization() {
         .to_mangled()
         .to_ir()
         .to_c(&source.display().to_string())
-        .to_binary("gc_san_unoptimized", options);
+        .to_binary(
+            test_utils::binary_output_path("gc_san_unoptimized"),
+            options,
+        );
     let result = Command::new(binary.path.canonicalize().unwrap())
         .env("ASAN_OPTIONS", "detect_leaks=0")
         .env("SOLAR_PRINT_GC_STATS", "1")
@@ -107,7 +113,7 @@ fn gc_san_runs_without_lto_or_optimization() {
         stderr.contains("memory used:") && !stderr.contains("gc was disabled"),
         "expected collection to be enabled in unoptimized GC-San: {stderr}"
     );
-    let artifacts = binary.path.parent().unwrap();
+    let artifacts = &binary.artifacts_dir;
     assert!(artifacts.join("debug_wb.bc").exists());
     assert!(artifacts.join("debug_gc_san.bc").exists());
 }
@@ -139,7 +145,7 @@ fn gc_san_rejects_offset_ref_outside_its_source_allocation() {
         gc_san: true,
         optimize: false,
     };
-    let binary = c_source.to_binary("gc_san_offset_ref", options);
+    let binary = c_source.to_binary(test_utils::binary_output_path("gc_san_offset_ref"), options);
     let result = Command::new(binary.path.canonicalize().unwrap())
         .env("ASAN_OPTIONS", "detect_leaks=0")
         .output()
@@ -176,7 +182,7 @@ fn gc_runs_without_lto_gc_san_or_optimization() {
         .to_mangled()
         .to_ir()
         .to_c(&source.display().to_string())
-        .to_binary("gc_unoptimized", options);
+        .to_binary(test_utils::binary_output_path("gc_unoptimized"), options);
     let result = Command::new(binary.path.canonicalize().unwrap())
         .env("ASAN_OPTIONS", "detect_leaks=0")
         .env("SOLAR_PRINT_GC_STATS", "1")
@@ -194,7 +200,7 @@ fn gc_runs_without_lto_gc_san_or_optimization() {
         stderr.contains("memory used:") && !stderr.contains("gc was disabled"),
         "expected collection to be enabled in unoptimized build: {stderr}"
     );
-    let artifacts = binary.path.parent().unwrap();
+    let artifacts = &binary.artifacts_dir;
     assert!(artifacts.join("debug_wb.bc").exists());
     assert!(!artifacts.join("debug_gc_san.bc").exists());
 }

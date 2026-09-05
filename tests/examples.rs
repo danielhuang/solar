@@ -45,6 +45,9 @@ fn all_examples_compile_debug() {
             .to_ir()
             .optimized()
             .to_c(&path.display().to_string())
-            .to_binary(&test_name, CompileOptions::DEBUG);
+            .to_binary(
+                test_utils::binary_output_path(&test_name),
+                CompileOptions::DEBUG,
+            );
     }
 }

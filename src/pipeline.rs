@@ -138,28 +138,42 @@ impl CompileOptions {
 }
 
 impl CSource {
-    /// Compiles the generated C to a native binary.
+    /// Compiles the generated C directly to `output_path`, creating parent directories.
+    ///
+    /// Relative paths are resolved against the current working directory. Intermediate
+    /// artifacts are retained separately in `Binary::artifacts_dir`.
     ///
     /// # Panics
     ///
-    /// Panics when GC-San or optimization is requested without GC.
-    pub fn to_binary(self, name: &str, options: CompileOptions) -> Binary {
+    /// Panics when GC-San or optimization is requested without GC, or compilation
+    /// or filesystem operations fail.
+    pub fn to_binary(self, output_path: impl AsRef<Path>, options: CompileOptions) -> Binary {
         options.validate();
+        let output_path = output_path.as_ref();
+        assert!(
+            output_path.file_name().is_some(),
+            "output path must name a binary"
+        );
+        if let Some(parent) = output_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent).unwrap();
+        }
         let unique: u64 = rand::random();
-        let slug = format!("{name}_{unique:x}");
-        let dir = Path::new("target/solar").join(&slug);
+        let dir = Path::new("target/solar").join(format!("build_{unique:x}"));
         std::fs::create_dir_all(&dir).unwrap();
 
-        let c_path = dir.join(format!("{name}.c"));
+        let c_path = dir.join("program.c");
         std::fs::write(&c_path, &self.c_source).unwrap();
 
-        let bin_path = if options.optimize {
-            compile_optimized(&c_path, &dir, name, options.gc_san)
+        if options.optimize {
+            compile_optimized(&c_path, &dir, output_path, options.gc_san);
         } else {
-            compile_unoptimized(&c_path, &dir, name, options)
-        };
+            compile_unoptimized(&c_path, &dir, output_path, options);
+        }
 
-        Binary { path: bin_path }
+        Binary {
+            path: output_path.to_owned(),
+            artifacts_dir: dir,
+        }
     }
 }
 
@@ -167,6 +181,8 @@ impl CSource {
 pub struct Binary {
     /// Executable path.
     pub path: PathBuf,
+    /// Directory containing generated C and intermediate LLVM artifacts.
+    pub artifacts_dir: PathBuf,
 }
 
 impl Binary {
@@ -232,11 +248,9 @@ fn specialize_gc_alloc(in_bc: &Path, out_bc: &Path) {
     run_solar_pass("solar-specialize-gc-alloc", in_bc, out_bc);
 }
 
-fn compile_unoptimized(c_path: &Path, dir: &Path, name: &str, options: CompileOptions) -> PathBuf {
-    let bin_path = dir.join(name);
-
+fn compile_unoptimized(c_path: &Path, dir: &Path, bin_path: &Path, options: CompileOptions) {
     if options.enable_gc {
-        let c_bc = dir.join(format!("{name}_c.bc"));
+        let c_bc = dir.join("program_c.bc");
         let mut clang_args = vec![
             "-emit-llvm",
             "-c",
@@ -262,7 +276,7 @@ fn compile_unoptimized(c_path: &Path, dir: &Path, name: &str, options: CompileOp
             &wb_bc
         };
 
-        run_cmd(
+        run_cmd_to_path(
             "clang",
             &[
                 "-O0",
@@ -274,11 +288,10 @@ fn compile_unoptimized(c_path: &Path, dir: &Path, name: &str, options: CompileOp
                 "-lm",
                 "-lpthread",
                 "-ldl",
-                "-o",
-                bin_path.to_str().unwrap(),
             ],
+            bin_path,
         );
-        return bin_path;
+        return;
     }
 
     // Without write barriers, collection must remain disabled.
@@ -308,18 +321,17 @@ fn compile_unoptimized(c_path: &Path, dir: &Path, name: &str, options: CompileOp
             "-lm",
             "-lpthread",
             "-ldl",
-            "-o",
-            bin_path.to_str().unwrap(),
         ])
+        .arg("-o")
+        .arg(bin_path)
         .output()
         .unwrap();
     assert!(
         out.status.success(),
-        "debug compile/link failed for {name}:\n{}",
+        "debug compile/link failed for {}:\n{}",
+        bin_path.display(),
         String::from_utf8_lossy(&out.stderr)
     );
-
-    bin_path
 }
 
 // ---------------------------------------------------------------------------
@@ -337,6 +349,20 @@ fn run_cmd(cmd: &str, args: &[&str]) {
         .status()
         .unwrap_or_else(|e| panic!("failed to run {cmd}: {e}"));
     assert!(status.success(), "{cmd} failed with {status}");
+}
+
+fn run_cmd_to_path(cmd: &str, args: &[&str], output: &Path) {
+    let result = Command::new(cmd)
+        .args(args)
+        .arg("-o")
+        .arg(output)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{cmd} failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
 }
 
 fn run_piped(cmd: &str, args: &[&str]) -> String {
@@ -359,7 +385,7 @@ fn force_replace(input: &str, from: &str, to: &str) -> String {
     new
 }
 
-fn compile_optimized(c_path: &Path, dir: &Path, name: &str, gc_san: bool) -> PathBuf {
+fn compile_optimized(c_path: &Path, dir: &Path, bin_path: &Path, gc_san: bool) {
     let runtime_lib = Path::new("target/release/libsolar_system.a");
     assert!(
         runtime_lib.exists(),
@@ -411,7 +437,7 @@ fn compile_optimized(c_path: &Path, dir: &Path, name: &str, gc_san: bool) -> Pat
 
     // Compile generated C to bitcode
     eprintln!("=== Compiling generated C to bitcode ===");
-    let c_bc = dir.join(format!("{name}_c.bc"));
+    let c_bc = dir.join("program_c.bc");
     {
         // `-fexceptions`: emit unwind tables and keep functions unwindable (not
         // `nounwind`) so a Solar `throw` can unwind through these C frames to the
@@ -558,7 +584,6 @@ fn compile_optimized(c_path: &Path, dir: &Path, name: &str, gc_san: bool) -> Pat
 
     // Final link
     eprintln!("=== Final link ===");
-    let bin_path = dir.join(name);
     {
         // Use lld: the runtime archive's dependency-crate members (backtrace,
         // gimli, …) are LLVM bitcode (`linker-plugin-lto`) and are now pulled
@@ -574,14 +599,11 @@ fn compile_optimized(c_path: &Path, dir: &Path, name: &str, gc_san: bool) -> Pat
             "-lm",
             "-lpthread",
             "-ldl",
-            "-o",
-            bin_path.to_str().unwrap(),
         ]);
-        run_cmd("clang", &link_args);
+        run_cmd_to_path("clang", &link_args, bin_path);
     }
 
     eprintln!("=== Built: {} ===", bin_path.display());
-    bin_path
 }
 
 #[cfg(test)]

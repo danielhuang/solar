@@ -20,15 +20,12 @@ fn main() {
         }
     };
 
-    let stem = file_path.file_stem().unwrap().to_str().unwrap();
-    let binary = typed
+    typed
         .to_mangled()
         .to_ir()
         .optimized()
         .to_c(input)
-        .to_binary(stem, CompileOptions::RELEASE);
+        .to_binary(output_bin, CompileOptions::RELEASE);
 
-    // Move the binary to the requested output location
-    std::fs::copy(&binary.path, output_bin).unwrap();
     eprintln!("=== Output: {output_bin} ===");
 }

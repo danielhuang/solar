@@ -21,7 +21,7 @@ fn build(src: &str, name: &str, options: CompileOptions) -> PathBuf {
         .to_ir()
         .optimized()
         .to_c(&path.display().to_string())
-        .to_binary(name, options)
+        .to_binary(test_utils::binary_output_path(name), options)
         .path
 }
 

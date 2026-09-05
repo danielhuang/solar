@@ -21,6 +21,11 @@ compile(path) -> Typed -> Mangled -> Ir -> CSource -> Binary
 Both execution paths pass through `Mangled`: `ast_interp` consumes the mangled
 AST, while `ir_interp` and native codegen consume IR.
 
+`CSource::to_binary(output_path, options)` links directly to the requested path,
+creating missing parent directories. Relative paths use the current working
+directory. Generated C and LLVM artifacts remain in a separate unique directory
+available through `Binary::artifacts_dir`.
+
 Overload selection must reject incompatible concrete argument type bases before
 using a candidate's parameter types to infer closure parameters, including when
 those closures omit parameter annotations.

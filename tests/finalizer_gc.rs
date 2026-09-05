@@ -19,7 +19,7 @@ fn run_fixture(fixture: &str, name: &str, options: CompileOptions, disabled: boo
         .to_ir()
         .optimized()
         .to_c(&source.display().to_string())
-        .to_binary(name, options);
+        .to_binary(test_utils::binary_output_path(name), options);
     let result = Command::new("bash")
         .arg("-c")
         .arg("ulimit -c 0; exec timeout 30s \"$1\"")

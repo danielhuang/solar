@@ -1,10 +1,21 @@
 //! Helpers for exercising Solar compiler backends in tests.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Once;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use solar::pipeline::{CompileOptions, Ir, Mangled};
+
+/// Chooses a distinct output path for a native test binary.
+pub fn binary_output_path(name: &str) -> PathBuf {
+    static NEXT_BINARY: AtomicU64 = AtomicU64::new(0);
+    let sequence = NEXT_BINARY.fetch_add(1, Ordering::Relaxed);
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../target/solar/tests")
+        .join(format!("{name}_{}_{sequence}", std::process::id()))
+        .join(name)
+}
 
 static BUILD_RUNTIME: Once = Once::new();
 
@@ -68,7 +79,7 @@ pub fn run_codegen_file(file_path: &Path, test_name: &str) -> String {
         .to_mangled()
         .to_ir()
         .to_c(&file_path.display().to_string())
-        .to_binary(test_name, CompileOptions::DEBUG)
+        .to_binary(binary_output_path(test_name), CompileOptions::DEBUG)
         .run(test_name)
 }
 
@@ -86,7 +97,7 @@ pub fn run(file_path: &Path, test_name: &str) -> String {
     );
     let codegen_out = ir
         .to_c(&file_path.display().to_string())
-        .to_binary(test_name, CompileOptions::DEBUG)
+        .to_binary(binary_output_path(test_name), CompileOptions::DEBUG)
         .run(test_name);
     assert_eq!(
         ir_out, codegen_out,
