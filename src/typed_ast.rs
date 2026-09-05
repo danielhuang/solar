@@ -9827,6 +9827,17 @@ fn intrinsic_spec(intrinsic: &Intrinsic) -> IntrinsicSpec {
             params: vec![IsRef],
             ret: Fixed(Type::Unit),
         },
+        Intrinsic::RequestGc | Intrinsic::CollectGc => IntrinsicSpec {
+            params: vec![],
+            ret: Fixed(Type::Unit),
+        },
+        Intrinsic::RegisterFinalizer => IntrinsicSpec {
+            params: vec![Exact(Type::Ref(Box::new(Type::Function {
+                params: vec![],
+                return_type: Box::new(Type::Unit),
+            })))],
+            ret: Fixed(Type::Unit),
+        },
         // throw(msg: &[Uint8]): unwind with a string payload; diverges.
         Intrinsic::Throw => IntrinsicSpec {
             params: vec![byte_slice()],

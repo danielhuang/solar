@@ -1,0 +1,28 @@
+import intrinsics from "@intrinsics";
+
+/// A shared registration that runs its callback at most once after becoming
+/// unreachable. Copies share the registration. Captures may resurrect objects.
+/// Callbacks run asynchronously on native Solar threads, in unspecified order;
+/// they are not guaranteed to run before process exit or when GC is disabled.
+/// Conservative tracing can delay execution. Uncaught callback exceptions abort
+/// the process, as with other spawned threads.
+pub struct Finalizer { callback: &fn() }
+
+/// Registers a callback to run after the returned finalizer becomes unreachable.
+pub fn Finalizer::(callback: fn()) -> Finalizer {
+	let record = callback&;
+	unsafe { intrinsics::register_finalizer(record); }
+	Finalizer { callback: record }
+}
+
+/// Requests a collection without waiting. Does nothing when GC is disabled.
+pub fn request_gc() {
+	intrinsics::request_gc();
+}
+
+/// Requests and waits for a collection that starts after this request.
+/// Throws if GC is disabled (including in interpreters). Does not wait for
+/// asynchronous finalizer callbacks to finish.
+pub fn collect_gc() {
+	intrinsics::collect_gc();
+}

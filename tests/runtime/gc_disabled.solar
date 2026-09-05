@@ -1,0 +1,13 @@
+fn main() {
+	let f = Finalizer(\ { println("unexpected finalizer"&); });
+	gc::request_gc();
+
+	try {
+		gc::collect_gc();
+		println("unexpected collection"&);
+	} catch (error) {
+		println(error);
+	}
+
+	gc_keepalive(f&);
+}

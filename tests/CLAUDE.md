@@ -15,6 +15,14 @@ tests use ASAN and exercise the unoptimized write-barrier/collector path.
 Release integration tests additionally exercise LTO and allocation
 specialization.
 
+Use `gc::collect_gc()` to request and wait for collection in lifetime tests,
+and `gc::request_gc()` to exercise asynchronous requests. Avoid allocation
+pressure as a collection trigger. Callback completion requires separate
+synchronization because collection does not wait for finalizers. Finalizer tests
+must account for conservative stack and small-object retention; allocating on a
+worker that exits avoids stale stack roots. Use precisely traced aggregates when
+testing that inactive enum payloads stop retaining existing finalizers.
+
 GC-San tests cover both optimized and unoptimized `CompileOptions`: both run the
 collector with arena access checks and monotonic allocation frontiers.
 

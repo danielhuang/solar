@@ -36,6 +36,12 @@ pub import simd from "simd.solar";
 /// Memory representation and reference operations.
 pub import mem from "mem.solar";
 
+/// Garbage collection controls and finalizer registrations.
+pub import gc from "gc.solar";
+
+/// A shared callback registration for unreachable objects.
+pub import {Finalizer} from "gc.solar";
+
 /// Hash maps.
 pub import hashbrown from "hashbrown/map.solar";
 

@@ -25,8 +25,6 @@ pub struct LayerA { pub tag: Int, pub pad: [Int; 6], }
 pub struct LayerB { pub x: Int, pub y: Int, }
 pub struct Leaf { pub a: LayerA, pub b: LayerB, }
 
-static SCRATCH: &?[Uint8] = null#[[Uint8]];
-
 fn make_leaf(i: Int) -> &LayerB {
     let leaf = Leaf {
         a: LayerA { tag: i, pad: [i; 6u] },
@@ -43,9 +41,7 @@ fn main() {
         keep[Uint(i)] = make_leaf(i);
     }
     // Force collections while only interior references retain the leaves.
-    for i in 0..300000 {
-        SCRATCH = [Uint8(i & 255); 4096u]&;
-    }
+    gc::collect_gc();
     let sx = 0;
     let sy = 0;
     for i in 0..64 {

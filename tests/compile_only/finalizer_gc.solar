@@ -1,0 +1,92 @@
+import intrinsics from "@intrinsics";
+
+// Include a large variant so the arena uses precise tracing. Small allocations
+// are conservatively scanned and may retain stale inactive payload pointers.
+enum Slot { Empty, Full(Finalizer), Padding([Uint; 16]) }
+static FIRST: &?Slot = null#[Slot];
+static SECOND: &?Slot = null#[Slot];
+static CALLS: Uint32 = 0u32;
+static ENTERED: Uint32 = 0u32;
+static RELEASE: Uint32 = 0u32;
+static RESURRECTED: &?Owner = null#[Owner];
+static OTHER_DONE: Uint32 = 0u32;
+static(thread_local) LOCAL: Int = 17;
+
+struct Owner { first: Slot, second: Slot, data: &[Uint8], fd: FileDesc }
+
+fn wait_for(word: &Uint32, expected: Uint32, blocking: Bool) {
+	let start = intrinsics::monotonic_time();
+
+	while word.atomic_load() != expected {
+		assert(intrinsics::monotonic_time() - start < 10000000000u64);
+		if blocking { gc::collect_gc(); } else { gc::request_gc(); }
+		thread::sleep(1000000u64);
+	}
+}
+
+fn setup_shared() {
+	let f = Finalizer(\ { CALLS&.atomic_store(CALLS&.atomic_load() + 1u32); });
+	FIRST@ = Slot::Full(f);
+	SECOND@ = Slot::Full(f);
+}
+
+fn setup_cycle() {
+	let owner = (Owner {
+		first: Slot::Empty,
+		second: Slot::Empty,
+		data: [42u8; 200000u]&,
+		fd: file::open("Cargo.toml"&),
+	})&;
+	owner@.first = Slot::Full(Finalizer(\ {
+		assert(LOCAL == 17);
+		ENTERED&.atomic_store(1u32);
+
+		while RELEASE&.atomic_load() == 0u32 {
+			RELEASE&.futex_wait(0u32);
+		}
+
+		// Collection from inside a callback must not deadlock, and its captured
+		// graph must survive both this collection and the main thread's requests.
+		gc::collect_gc();
+		assert(owner@.data@[199999u] == 42u8);
+		let fd = intrinsics::fd_to_raw(owner@.fd);
+		assert(unsafe { intrinsics::syscall(72i64, Int64(fd), 1i64) } >= 0i64);
+		RESURRECTED = owner;
+		CALLS&.atomic_store(CALLS&.atomic_load() + 1u32);
+	}));
+	owner@.second = Slot::Full(Finalizer(\ {
+		assert(owner@.data@[0u] == 42u8);
+		OTHER_DONE&.atomic_store(1u32);
+	}));
+}
+
+fn main() {
+	// Empty variants have no initialized registration to execute.
+	FIRST = (Slot::Empty)&;
+	SECOND = (Slot::Empty)&;
+	gc::collect_gc();
+	assert(CALLS&.atomic_load() == 0u32);
+	thread::spawn(setup_shared).join();
+	gc::collect_gc();
+	assert(CALLS&.atomic_load() == 0u32);
+	FIRST@ = Slot::Empty;
+	gc::collect_gc();
+	assert(CALLS&.atomic_load() == 0u32);
+	SECOND@ = Slot::Empty;
+	// Exercise nonblocking requests independently of collect_gc.
+	wait_for(CALLS&, 1u32, false);
+
+	thread::spawn(setup_cycle).join();
+	wait_for(ENTERED&, 1u32, true);
+	for i in 0..3 { gc::collect_gc(); }
+	RELEASE&.atomic_store(1u32);
+	RELEASE&.futex_wake();
+	wait_for(CALLS&, 2u32, true);
+	wait_for(OTHER_DONE&, 1u32, true);
+	gc::collect_gc();
+	assert(RESURRECTED@.data@[100000u] == 42u8);
+	RESURRECTED = null#[Owner];
+	for i in 0..3 { gc::collect_gc(); }
+	assert(CALLS&.atomic_load() == 2u32);
+	println("finalizers passed"&);
+}

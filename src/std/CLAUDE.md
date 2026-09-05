@@ -24,6 +24,14 @@ there. Imports are resolved relative to `src/std`, including subdirectories.
   Rust's optimizer barrier.
 - `gc_keepalive(&T)` keeps its argument reachable through the call without
   retaining it.
+- `gc::Finalizer(fn())`, also exported as `Finalizer`, shares one callback
+  registration across copies. Captures are retained while callbacks are queued
+  or executing, and resurrection is allowed. Execution is asynchronous and
+  at most once, with no ordering or process-exit guarantee.
+- `gc::request_gc()` requests collection without waiting; `gc::collect_gc()`
+  waits for a newly requested collection, but not its finalizer callbacks.
+  Disabled collectors and interpreters ignore requests and throw
+  `collect_gc: GC is disabled` for blocking collection.
 - `Any(&T)` erases a sized referent's concrete type while preserving reference
   aliasing; `Any.downcast#[T]()` returns `&?T` without exposing the private tag.
 - `ref_eq(a, b)` compares reference identity.

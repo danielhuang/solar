@@ -38,6 +38,28 @@ STW root scan -> concurrent mark -> STW remark -> concurrent arena sweep
   preserve roots across further allocations.
 - Do not unwind out of a signal-deferred or GC critical section.
 
+## Finalizers and explicit collection
+
+`Finalizer` holds a reference to a fresh, immutable heap `fn()` record. Its
+runtime registration is weak until finalization becomes eligible. After ordinary
+remark, snapshot all unreachable registrations before marking any callback
+captures, then trace their entire graphs before fd, big-object, or arena sweep.
+Queued and running callback records are explicit roots at both root scans.
+After sweep, callbacks run on registered mutator threads with normal thread-local
+initialization. Remove each registration after its callback returns; resurrection
+does not re-register it. Callbacks have no ordering guarantee and do not have to
+finish before process exit. Uncaught exceptions follow spawned-thread behavior.
+
+The collector conservatively scans stacks and arena slots smaller than 128
+bytes. Stale references, including inactive small-enum payloads, can delay
+finalization; type layout alone never registers a callback.
+
+`request_gc` is nonblocking and does nothing when collection is disabled.
+`collect_gc` obtains a new request ticket and waits for a cycle servicing that
+ticket to finish; it throws when collection is disabled. Completion is published
+after sweep and frontier reset, independently of asynchronous callback execution,
+so callbacks may themselves collect. Waiting mutators keep GC signals enabled.
+
 ## File descriptors
 
 `FileDesc` values are traced handles into the fd arena. Unreachable registered

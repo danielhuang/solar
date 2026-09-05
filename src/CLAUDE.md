@@ -80,6 +80,10 @@ AST, while `ir_interp` and native codegen consume IR.
   collector can find it in a register or on the stack through that call. It
   does not retain the reference, so escape analysis treats its argument as
   non-escaping.
+- `register_finalizer(&fn())` is an unsafe intrinsic for a fresh, immutable
+  heap callback record. It retains the record for later execution; escape
+  analysis must not place the record or its captures on the stack. Codegen
+  passes the same thread-local registration/initialization hooks as spawning.
 - `Any` is a sized, reference-like 16-byte `(pointer, private type tag)` value.
   It accepts only references to sized types, aliases its referent when copied,
   and copies/loads/stores the pair with the tear-free unordered i128 helpers.

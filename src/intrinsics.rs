@@ -8,6 +8,9 @@ pub enum Intrinsic {
     RefEq,
     BlackBoxRef,
     GcKeepAlive,
+    RequestGc,
+    CollectGc,
+    RegisterFinalizer,
     AnyNew,
     AnyDowncast,
     Throw,
@@ -71,6 +74,9 @@ const INTRINSIC_NAMES: &[(&str, Intrinsic)] = &[
     ("ref_eq", Intrinsic::RefEq),
     ("black_box_ref", Intrinsic::BlackBoxRef),
     ("gc_keepalive", Intrinsic::GcKeepAlive),
+    ("request_gc", Intrinsic::RequestGc),
+    ("collect_gc", Intrinsic::CollectGc),
+    ("register_finalizer", Intrinsic::RegisterFinalizer),
     ("any_new", Intrinsic::AnyNew),
     ("any_downcast", Intrinsic::AnyDowncast),
     ("throw", Intrinsic::Throw),
@@ -162,6 +168,7 @@ impl Intrinsic {
         matches!(
             self,
             Intrinsic::FdFromRaw
+                | Intrinsic::RegisterFinalizer
                 | Intrinsic::Syscall
                 | Intrinsic::TransmuteUnchecked
                 | Intrinsic::TransmuteRef

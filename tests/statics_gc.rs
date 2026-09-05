@@ -28,7 +28,6 @@ fn build(src: &str, name: &str, options: CompileOptions) -> PathBuf {
 const GC_SRC: &str = r#"
 static KEEP: &?[Uint8] = null#[[Uint8]];
 static CHAIN: &?Node = null#[Node];
-static SCRATCH: &?[Uint8] = null#[[Uint8]];
 static ERASED: &?ErasedHolder = null#[ErasedHolder];
 
 pub struct Node {
@@ -57,17 +56,9 @@ fn setup() {
     ERASED = (ErasedHolder { value: Any(payload&) })&;
 }
 
-fn churn() {
-    // Store through a static so churn escapes optimization and triggers GC.
-    for i in 0..800000 {
-        SCRATCH = [Uint8(i & 255); 4096u]&;
-    }
-}
-
 fn main() {
     setup();
-    churn();
-    println(Int(SCRATCH@[0u])); // (800000-1) & 255 = 255
+    gc::collect_gc();
     println(Int(KEEP@[0u]));
     println(Int(KEEP@[4095u]));
     println(Int(KEEP@[1u]));
@@ -95,8 +86,8 @@ fn statics_root_heap_objects_across_gc() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(stdout, "255\n42\n9\n7\n4950\n123\n");
-    // Sanity: the churn actually forced collection cycles.
+    assert_eq!(stdout, "42\n9\n7\n4950\n123\n");
+    // The explicit request must complete a collection.
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("running gc"),
@@ -106,7 +97,6 @@ fn statics_root_heap_objects_across_gc() {
 
 const TLS_GC_SRC: &str = r#"
 static(thread_local) KEEP: &?[Uint8] = null#[[Uint8]];
-static SCRATCH: &?[Uint8] = null#[[Uint8]];
 
 fn worker() {
     let buf = [7u8; 4096u];
@@ -114,9 +104,7 @@ fn worker() {
     buf[4095u] = 9u8;
     KEEP = buf[0u..4096u]&;
 
-    for i in 0..800000 {
-        SCRATCH = [Uint8(i & 255); 4096u]&;
-    }
+    gc::collect_gc();
 
     println(Int(KEEP@[0u]));
     println(Int(KEEP@[4095u]));

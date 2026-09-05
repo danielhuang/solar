@@ -1744,7 +1744,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     metadata,
                 ))
             }
-            Intrinsic::BlackBoxRef | Intrinsic::GcKeepAlive => {
+            Intrinsic::RequestGc => Value::Unit,
+            Intrinsic::CollectGc => return Err(thrown("collect_gc: GC is disabled")),
+            Intrinsic::BlackBoxRef | Intrinsic::GcKeepAlive | Intrinsic::RegisterFinalizer => {
                 self.eval_expr(&arguments[0])?;
                 Value::Unit
             }

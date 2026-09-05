@@ -13,6 +13,8 @@ use std::time::Instant;
 pub mod arith;
 /// File and directory intrinsics.
 pub mod file;
+/// Callback finalization support.
+pub mod finalizer;
 /// Futex intrinsics.
 pub mod futex;
 /// Garbage collector.

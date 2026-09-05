@@ -851,6 +851,9 @@ impl<'a> Codegen<'a> {
         self.line("extern uint8_t* sol_alloc(size_t size, size_t align, sol_mark_fn_t mark_fn);");
         self.line("extern void sol_black_box_ref(uint8_t* value);");
         self.line("extern void sol_gc_keepalive(uint8_t* value);");
+        self.line("extern void sol_request_gc(void);");
+        self.line("extern void sol_collect_gc(void);");
+        self.line("extern void sol_register_finalizer(uint8_t* callback, void (*register_tls)(void), void (*init_tls)(void*));");
         self.line("extern void sol_gc_mark(void* ctx, uint8_t* ptr);");
         self.line("extern void sol_memcpy(uint8_t* dst, const uint8_t* src, size_t size);");
         self.line(
@@ -3052,13 +3055,18 @@ impl<'a> Codegen<'a> {
                     "sol_assert_array_len((uint64_t){actual}, (uint64_t){expected});"
                 ));
             }
-            Intrinsic::ThreadSpawn => {
-                // arg is a 16-byte function value (code ptr + env ptr)
+            Intrinsic::RequestGc => self.line("sol_request_gc();"),
+            Intrinsic::CollectGc => self.line("sol_collect_gc();"),
+            Intrinsic::RegisterFinalizer | Intrinsic::ThreadSpawn => {
+                // Spawning takes a function value (code + environment), while
+                // finalizer registration takes a reference to that value.
                 let (fn_place, _) = self.emit_place(nodes, args[0]);
                 let fn_ptr = self.fresh_tmp();
                 let env_ptr = self.fresh_tmp();
-                self.linef(format!("void* {fn_ptr} = *(void**){fn_place};"));
-                self.linef(format!("void* {env_ptr} = *(void**)({fn_place} + 8);"));
+                if matches!(intrinsic, Intrinsic::ThreadSpawn) {
+                    self.linef(format!("void* {fn_ptr} = *(void**){fn_place};"));
+                    self.linef(format!("void* {env_ptr} = *(void**)({fn_place} + 8);"));
+                }
                 let register_tls = if self.module.statics.iter().any(|st| st.thread_local) {
                     "_sol_register_thread_locals"
                 } else {
@@ -3070,9 +3078,15 @@ impl<'a> Codegen<'a> {
                     .as_deref()
                     .map(|name| self.func_name(name))
                     .unwrap_or_else(|| "0".to_string());
-                self.linef(format!(
-                    "sol_thread_spawn({fn_ptr}, {env_ptr}, {register_tls}, {init_tls});"
-                ));
+                if matches!(intrinsic, Intrinsic::RegisterFinalizer) {
+                    self.linef(format!(
+                        "sol_register_finalizer(*(uint8_t**){fn_place}, {register_tls}, {init_tls});"
+                    ));
+                } else {
+                    self.linef(format!(
+                        "sol_thread_spawn({fn_ptr}, {env_ptr}, {register_tls}, {init_tls});"
+                    ));
+                }
             }
             Intrinsic::AtomicLoad => {
                 // arg is &T — a pointer. Load the pointee atomically with acquire.

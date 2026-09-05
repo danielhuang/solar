@@ -553,6 +553,8 @@ unsafe extern "C" fn self_suspend_inner(slot: *const ThreadSlot, wait_epoch: u64
 
 /// Bumped by `request_gc` to ask for a cycle; the GC thread FUTEX_WAITs on it.
 static GC_REQUEST: AtomicU64 = AtomicU64::new(0);
+/// Latest request ticket whose full collection has completed.
+static GC_COMPLETED: AtomicU64 = AtomicU64::new(0);
 /// Set while a request is outstanding so an allocation storm issues at most one
 /// wakeup per cycle (the GC thread clears it when it starts serving).
 static GC_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -572,6 +574,49 @@ pub(crate) fn request_gc() {
                 &GC_REQUEST as *const AtomicU64,
                 libc::FUTEX_WAKE,
                 1i32 as i64,
+            );
+        }
+    }
+}
+
+/// Best-effort nonblocking collection request; a no-op in bump allocator mode.
+#[unsafe(no_mangle)]
+pub extern "C" fn sol_request_gc() {
+    if !DISABLE_GC.get() {
+        request_gc();
+    }
+}
+
+/// Waits for a full collection starting after this request, but not callbacks.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn sol_collect_gc() {
+    if DISABLE_GC.get() {
+        crate::panic::throw_str("collect_gc: GC is disabled");
+    }
+    // Always obtain a new ticket: joining an already marking cycle would not
+    // collect objects that became unreachable just before this call.
+    let ticket = GC_REQUEST.fetch_add(1, Ordering::AcqRel) + 1;
+    unsafe {
+        libc::syscall(
+            libc::SYS_futex,
+            &GC_REQUEST as *const AtomicU64,
+            libc::FUTEX_WAKE,
+            1i32,
+        );
+    }
+    loop {
+        let completed = GC_COMPLETED.load(Ordering::Acquire);
+        if completed >= ticket {
+            return;
+        }
+        // GC signals remain enabled while waiting so our stack is scanned.
+        unsafe {
+            libc::syscall(
+                libc::SYS_futex,
+                &GC_COMPLETED as *const AtomicU64,
+                libc::FUTEX_WAIT,
+                completed as u32,
+                std::ptr::null::<libc::timespec>(),
             );
         }
     }
@@ -635,6 +680,16 @@ fn gc_thread_main(statics: &[crate::StaticEntry]) {
         // Let allocations during this cycle arm a fresh request for the next.
         GC_REQUESTED.store(false, Ordering::Release);
         unsafe { run_gc_cycle(statics) };
+        GC_COMPLETED.store(cur, Ordering::Release);
+        unsafe {
+            libc::syscall(
+                libc::SYS_futex,
+                &GC_COMPLETED as *const AtomicU64,
+                libc::FUTEX_WAKE,
+                i32::MAX,
+            );
+            crate::finalizer::dispatch();
+        }
     }
 }
 
@@ -1043,6 +1098,7 @@ unsafe fn run_gc_cycle(statics: &[crate::StaticEntry]) {
         // Materialize root pointer *values* into the gray queue while threads
         // are stopped (spread across shards for balanced parallel draining).
         let mut roots: Vec<usize> = Vec::new();
+        crate::finalizer::roots(&mut roots);
         for slot in registry.values() {
             unsafe { scan_thread_roots(slot, arena_base, big_len, &mut roots) };
             if slot.tls_statics_len != 0 {
@@ -1103,6 +1159,7 @@ unsafe fn run_gc_cycle(statics: &[crate::StaticEntry]) {
         // Flush residual gray buffers + re-scan roots, then drain to fixpoint.
         let remark_start = std::time::Instant::now();
         let mut remark: Vec<usize> = Vec::new();
+        crate::finalizer::roots(&mut remark);
         for slot in registry.values() {
             let buf = unsafe { &mut *slot.gray_buf.get() };
             remark.append(buf);
@@ -1126,6 +1183,12 @@ unsafe fn run_gc_cycle(statics: &[crate::StaticEntry]) {
         unsafe { mark_to_fixpoint(&big_snapshot) };
         p2_pmark = pmark_start.elapsed();
         p2_remark = remark_start.elapsed();
+
+        // Preserve every newly eligible callback and its complete capture
+        // graph, including big allocations and file descriptors, before sweep.
+        let finalizers = unsafe { crate::finalizer::discover() };
+        gray_seed(&finalizers);
+        unsafe { mark_to_fixpoint(&big_snapshot) };
 
         // Big-object and fd sweeps stay STW: they're cheap, and they consume the
         // mark bits that were just brought to a fixpoint.

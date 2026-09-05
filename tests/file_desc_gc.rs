@@ -32,7 +32,7 @@ fn run_with_fd_limit(bin: &Path) -> bool {
     Command::new("bash")
         .arg("-c")
         .arg(format!(
-            "ulimit -n {FD_LIMIT}; exec '{}'",
+            "ulimit -c 0; ulimit -n {FD_LIMIT}; exec '{}'",
             bin.canonicalize().unwrap().display()
         ))
         .env("ASAN_OPTIONS", "detect_leaks=0")
@@ -44,14 +44,6 @@ fn run_with_fd_limit(bin: &Path) -> bool {
 
 // `OPEN_STMT` selects whether each descriptor is dropped or retained.
 const TEMPLATE: &str = r#"
-enum GOpt {
-    Some(&GNode),
-    None,
-}
-struct GNode {
-    value: Int,
-    next: GOpt,
-}
 enum FdOpt {
     Some(&FdNode),
     None,
@@ -62,8 +54,6 @@ struct FdNode {
 }
 
 fn main() {
-    let g_sentinel = (GNode { value: 0, next: GOpt::None })&;
-    let g_root = g_sentinel;
     let fd_sentinel = (FdNode { fd: file::open("Cargo.toml"&), next: FdOpt::None })&;
     let fd_root = fd_sentinel;
     let is_done = false;
@@ -71,11 +61,7 @@ fn main() {
         let kept = fd_sentinel;
         for iter in 0..100 {
             OPEN_STMT
-            let head = g_sentinel;
-            for j in 0..1000000 {
-                head = (GNode { value: j, next: GOpt::Some(head) })&;
-            }
-            g_root&.atomic_store(head);
+            gc::collect_gc();
         }
         is_done&.atomic_store(true);
     });

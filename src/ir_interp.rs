@@ -1465,7 +1465,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     self.mem.store(dst + 8, size, 8);
                 }
             }
-            Intrinsic::BlackBoxRef => {
+            Intrinsic::RequestGc => {}
+            Intrinsic::CollectGc => return Err(self.thrown("collect_gc: GC is disabled")),
+            Intrinsic::BlackBoxRef | Intrinsic::RegisterFinalizer => {
                 let _ = self.eval_load(nodes, args[0])?;
             }
             Intrinsic::GcKeepAlive => {

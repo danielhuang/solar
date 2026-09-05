@@ -105,19 +105,12 @@ fn checksum(slices: &[&[Uint8]]) -> Uint8 {
 fn main() {
     let env_sum = checksum(process::env());
     let sentinel = (Node { data: process::env(), sum: env_sum, next: Opt::None })&;
-    let root = sentinel;
     let head = sentinel;
-    for iter in 0..400 {
+    for iter in 0..32 {
         // Retain a fresh env() copy reachable through the chain.
         head = (Node { data: process::env(), sum: env_sum, next: Opt::Some(head) })&;
-        root&.atomic_store(head);
         if checksum(head@.data) != head@.sum { throw("env copy corrupted!"&); }
-        // Build >1 MiB of escaping garbage so the collector runs each iteration.
-        let g = sentinel;
-        for j in 0..40000 {
-            g = (Node { data: head@.data, sum: env_sum, next: Opt::Some(g) })&;
-        }
-        root&.atomic_store(head);
+        gc::collect_gc();
     }
     // Walk the whole retained chain at the end; every copy must still be intact.
     let walk = head;
@@ -135,7 +128,6 @@ fn main() {
 
 #[test]
 fn retained_env_copies_survive_collection() {
-    // Only release codegen runs the collector.
     let bin = build(GC_SRC, "process_env_gc", CompileOptions::RELEASE);
     let out = Command::new(bin.canonicalize().unwrap())
         .env("SOLAR_TEST_VAR", "stress")

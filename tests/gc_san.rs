@@ -5,14 +5,11 @@ use std::process::Command;
 
 const SRC: &str = r#"
 static KEEP: &?[Uint8] = null#[[Uint8]];
-static SCRATCH: &?[Uint8] = null#[[Uint8]];
 
 fn main() {
     KEEP = [7u8; 4096u]&;
     KEEP@[0u] = 42u8;
-    for i in 0..300000 {
-        SCRATCH = [Uint8(i & 255); 4096u]&;
-    }
+    gc::collect_gc();
     println(Int(KEEP@[0u]));
     println(Int(KEEP@[4095u]));
 }
@@ -22,6 +19,7 @@ const UNOPTIMIZED_SRC: &str = r#"
 fn main() {
     let data = [7u8; 4096u];
     data[0u] = 42u8;
+    gc::collect_gc();
     println(Int(data[0u]));
     println(Int(data[4095u]));
 }
