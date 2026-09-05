@@ -18,8 +18,6 @@ fn check_output(path: PathBuf, options: CompileOptions) {
 
     assert_eq!(binary.path, path);
     assert!(path.is_file());
-    assert!(binary.artifacts_dir.join("program.c").is_file());
-    assert_ne!(binary.artifacts_dir, path.parent().unwrap());
     assert_eq!(binary.run("binary_output"), "passed\n");
     std::fs::remove_file(path).unwrap();
 }
@@ -34,10 +32,28 @@ fn debug_binary_uses_nested_relative_output_path() {
 
 #[test]
 fn release_binary_uses_absolute_output_path() {
-    let path = std::env::temp_dir()
-        .join(format!("solar output {:x}", rand::random::<u64>()))
-        .join("nested/release program");
-    check_output(path, CompileOptions::RELEASE);
+    test_utils::ensure_release_runtime_built();
+    let directory = tempdir::TempDir::new("solar-output-test").unwrap();
+    let scratch = directory.path().join("scratch");
+    std::fs::create_dir(&scratch).unwrap();
+    let path = directory.path().join("nested/release program");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/runtime/iterator.solar");
+    let result = std::process::Command::new(env!("CARGO_BIN_EXE_compile"))
+        .arg(source)
+        .arg(&path)
+        .env("TMPDIR", &scratch)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(std::fs::read_dir(&scratch).unwrap().count(), 0);
+    assert_eq!(
+        solar::pipeline::Binary { path }.run("binary_output"),
+        "passed\n"
+    );
 }
 
 #[test]

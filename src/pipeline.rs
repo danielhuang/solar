@@ -141,7 +141,7 @@ impl CSource {
     /// Compiles the generated C directly to `output_path`, creating parent directories.
     ///
     /// Relative paths are resolved against the current working directory. Intermediate
-    /// artifacts are retained separately in `Binary::artifacts_dir`.
+    /// artifacts use a temporary directory removed before this method returns.
     ///
     /// # Panics
     ///
@@ -157,22 +157,21 @@ impl CSource {
         if let Some(parent) = output_path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent).unwrap();
         }
-        let unique: u64 = rand::random();
-        let dir = Path::new("target/solar").join(format!("build_{unique:x}"));
-        std::fs::create_dir_all(&dir).unwrap();
+        let temporary = tempdir::TempDir::new("solar-build").unwrap();
+        let dir = temporary.path();
 
         let c_path = dir.join("program.c");
         std::fs::write(&c_path, &self.c_source).unwrap();
 
         if options.optimize {
-            compile_optimized(&c_path, &dir, output_path, options.gc_san);
+            compile_optimized(&c_path, dir, output_path, options.gc_san);
         } else {
-            compile_unoptimized(&c_path, &dir, output_path, options);
+            compile_unoptimized(&c_path, dir, output_path, options);
         }
+        temporary.close().unwrap();
 
         Binary {
             path: output_path.to_owned(),
-            artifacts_dir: dir,
         }
     }
 }
@@ -181,8 +180,6 @@ impl CSource {
 pub struct Binary {
     /// Executable path.
     pub path: PathBuf,
-    /// Directory containing generated C and intermediate LLVM artifacts.
-    pub artifacts_dir: PathBuf,
 }
 
 impl Binary {

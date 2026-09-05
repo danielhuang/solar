@@ -12,8 +12,8 @@ Test groups have distinct backend coverage:
 
 Use `test-utils` helpers instead of duplicating pipeline setup. Debug native
 tests use ASAN and exercise the unoptimized write-barrier/collector path.
-Use `test_utils::binary_output_path` for isolated native output paths and
-`Binary::artifacts_dir` to inspect compiler intermediates.
+Use `test_utils::binary_output_path` for isolated native output paths.
+Compiler intermediates are temporary and unavailable after compilation.
 Release integration tests additionally exercise LTO and allocation
 specialization.
 

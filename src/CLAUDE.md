@@ -23,8 +23,8 @@ AST, while `ir_interp` and native codegen consume IR.
 
 `CSource::to_binary(output_path, options)` links directly to the requested path,
 creating missing parent directories. Relative paths use the current working
-directory. Generated C and LLVM artifacts remain in a separate unique directory
-available through `Binary::artifacts_dir`.
+directory. Generated C and LLVM artifacts use a `tempdir::TempDir` that is
+removed before compilation returns; only the requested binary is retained.
 
 Overload selection must reject incompatible concrete argument type bases before
 using a candidate's parameter types to infer closure parameters, including when

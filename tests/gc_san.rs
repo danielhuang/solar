@@ -113,9 +113,6 @@ fn gc_san_runs_without_lto_or_optimization() {
         stderr.contains("memory used:") && !stderr.contains("gc was disabled"),
         "expected collection to be enabled in unoptimized GC-San: {stderr}"
     );
-    let artifacts = &binary.artifacts_dir;
-    assert!(artifacts.join("debug_wb.bc").exists());
-    assert!(artifacts.join("debug_gc_san.bc").exists());
 }
 
 #[test]
@@ -200,7 +197,4 @@ fn gc_runs_without_lto_gc_san_or_optimization() {
         stderr.contains("memory used:") && !stderr.contains("gc was disabled"),
         "expected collection to be enabled in unoptimized build: {stderr}"
     );
-    let artifacts = &binary.artifacts_dir;
-    assert!(artifacts.join("debug_wb.bc").exists());
-    assert!(!artifacts.join("debug_gc_san.bc").exists());
 }
