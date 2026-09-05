@@ -16,6 +16,8 @@ pub enum Intrinsic {
     Throw,
     Try,
     ArrayLen,
+    /// Returns a bounds-checked reference to an array element.
+    ArrayIndex,
     SizeOf,
     Transmute,
     TransmuteUnchecked,
@@ -80,6 +82,7 @@ const INTRINSIC_NAMES: &[(&str, Intrinsic)] = &[
     ("throw", Intrinsic::Throw),
     ("try", Intrinsic::Try),
     ("array_len", Intrinsic::ArrayLen),
+    ("array_index", Intrinsic::ArrayIndex),
     ("size_of", Intrinsic::SizeOf),
     ("transmute", Intrinsic::Transmute),
     ("transmute_unchecked", Intrinsic::TransmuteUnchecked),

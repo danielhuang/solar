@@ -270,10 +270,23 @@ impl Desugarer {
                     })
                     .collect(),
             },
-            ast::ExprKind::Index { object, index } => ast::ExprKind::Index {
-                object: Box::new(self.expr(*object)),
-                index: Box::new(self.expr(*index)),
-            },
+            ast::ExprKind::Index { object, index } => {
+                let object = self.expr(*object);
+                let receiver_span = object.span;
+                ast::ExprKind::Deref(Box::new(ast::Expr {
+                    kind: ast::ExprKind::MethodCall {
+                        receiver: Box::new(ast::Expr {
+                            kind: ast::ExprKind::Reference(Box::new(object)),
+                            span: receiver_span,
+                        }),
+                        method: "operator_index".to_owned(),
+                        type_args: vec![],
+                        arguments: vec![self.expr(*index)],
+                        kwargs: vec![],
+                    },
+                    span,
+                }))
+            }
             ast::ExprKind::Slice { object, start, end } => ast::ExprKind::Slice {
                 object: Box::new(self.expr(*object)),
                 start: Box::new(self.expr(*start)),

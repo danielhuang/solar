@@ -375,6 +375,22 @@ fn return_values() {
 }
 
 #[test]
+fn array_index_intrinsic() {
+    let output = run(
+        &fixture("array_index_intrinsic.solar"),
+        "array_index_intrinsic",
+    );
+    assert_eq!(
+        output,
+        concat!(
+            "index out of bounds: index is 2 but length is 2\n",
+            "index out of bounds: index is 18446744073709551615 but length is 2\n",
+            "index out of bounds: index is 0 but length is 0\n",
+        )
+    );
+}
+
+#[test]
 fn array_index() {
     let output = run(&fixture("array_index.solar"), "array_index");
     assert_eq!(output, "10\n20\n30\n99\n30\n100\n300\n999\n");

@@ -1,0 +1,40 @@
+import intrinsics from "@intrinsics";
+
+struct Empty {}
+
+fn receiver(values: &[Int], calls: &Int) -> &[Int] {
+	assert(calls@ == 0);
+	calls@ = calls@ + 1;
+	values
+}
+
+fn index(calls: &Int) -> Uint {
+	assert(calls@ == 1);
+	calls@ = calls@ + 1;
+	1u
+}
+
+fn main() {
+	let fixed: [Int; 2] = [10, 20];
+	let element = intrinsics::array_index(fixed&, 0u);
+	element@ = 30;
+	assert(fixed[0u] == 30);
+	let slice: &[Int] = fixed&;
+	assert(ref_eq(intrinsics::array_index(slice, 0u), element));
+	assert(ref_eq(slice.operator_index(0u), element));
+	let calls = 0;
+	receiver(slice, calls&)@[index(calls&)] = 40;
+	assert(calls == 2);
+	assert(fixed[1u] == 40);
+	let empty_elements = [Empty {}, Empty {}];
+	let empty_element: &Empty = empty_elements[1u]&;
+	empty_element@ = Empty {};
+	try { fixed[2u] = 0; } catch (e) { println(e); }
+
+	try {
+		let invalid = intrinsics::array_index(slice, 18446744073709551615u);
+	} catch (e) { println(e); }
+
+	let empty: [Int; 0] = []#[Int];
+	try { let invalid = empty[0u]&; } catch (e) { println(e); }
+}

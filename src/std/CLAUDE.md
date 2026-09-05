@@ -36,6 +36,8 @@ there. Imports are resolved relative to `src/std`, including subdirectories.
   aliasing; `Any.downcast#[T]()` returns `&?T` without exposing the private tag.
 - `ref_eq(a, b)` compares reference identity.
 - The blanket `operator_eq(self: &&T, other: &&T)` compares referenced values.
+- `operator_index(self: &[T], index: Uint) -> &T` provides indexing for arrays
+  and slices through the bounds-checked `array_index` intrinsic.
 - Reflective equality and hashing for structs and enums require public fields.
 - HashMap keys must be sized.
 - Constructor-like APIs are empty-name associated functions (`fn Type::(...)`)

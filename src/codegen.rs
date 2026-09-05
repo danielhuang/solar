@@ -2978,6 +2978,9 @@ impl<'a> Codegen<'a> {
                 let c_ty = self.c_int_type(result_ty);
                 self.linef(format!("*({c_ty}*){dst} = ({c_ty}){f}();"));
             }
+            Intrinsic::ArrayIndex => {
+                unreachable!("array_index is lowered before backend execution")
+            }
             Intrinsic::SizeOf => unreachable!("size_of is lowered before code generation"),
             Intrinsic::Transmute | Intrinsic::TransmuteUnchecked => {
                 let source_ty = nodes[args[0].0].ty.clone();

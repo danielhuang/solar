@@ -6167,47 +6167,8 @@ impl<'a> Lowerer<'a> {
                     span: expr.span,
                 })
             }
-            ast::ExprKind::Index { object, index } => {
-                let obj = self.lower_expr(object)?;
-                if Self::array_inner(&obj.ty).is_none()
-                    && self.method_defs.contains_key("operator_index")
-                {
-                    // Preserve place semantics by dereferencing the result of
-                    // `a&.operator_index(b)`, including for assignment and `&`.
-                    return self.lower_expr(&ast::Expr {
-                        kind: ast::ExprKind::Deref(Box::new(ast::Expr {
-                            kind: ast::ExprKind::MethodCall {
-                                receiver: Box::new(Self::auto_reference(object)),
-                                method: "operator_index".to_owned(),
-                                type_args: vec![],
-                                arguments: vec![(**index).clone()],
-                                kwargs: vec![],
-                            },
-                            span: expr.span,
-                        })),
-                        span: expr.span,
-                    });
-                }
-                let elem_ty = Self::array_inner(&obj.ty)
-                    .ok_or_else(|| {
-                        CompileError::new(format!("index on non-array type {}", obj.ty), expr.span)
-                    })?
-                    .clone();
-                let idx = self.lower_expr(index)?;
-                if idx.ty != Type::Uint {
-                    return Err(CompileError::new(
-                        format!("array index must be Uint, got {}", idx.ty),
-                        expr.span,
-                    ));
-                }
-                Ok(Expr {
-                    ty: elem_ty,
-                    kind: ExprKind::Index {
-                        object: Box::new(obj),
-                        index: Box::new(idx),
-                    },
-                    span: expr.span,
-                })
+            ast::ExprKind::Index { .. } => {
+                unreachable!("surface indexing reached typed AST lowering")
             }
             ast::ExprKind::Slice { object, start, end } => {
                 let obj = self.lower_expr(object)?;
@@ -9306,6 +9267,63 @@ impl<'a> Lowerer<'a> {
             }
             return self.lower_syscall_intrinsic(span, arguments);
         }
+        if matches!(intrinsic, Intrinsic::ArrayIndex) {
+            if !type_args.is_empty() {
+                return Err(CompileError::new(
+                    "array_index does not accept type arguments".to_string(),
+                    span,
+                ));
+            }
+            if arguments.len() != 2 {
+                return Err(CompileError::new(
+                    format!("array_index: expected 2 arguments, got {}", arguments.len()),
+                    span,
+                ));
+            }
+            let source = self.lower_expr(&arguments[0])?;
+            let array_ty = match &source.ty {
+                Type::Ref(inner) | Type::RefUnsized(inner)
+                    if Self::array_inner(inner).is_some() =>
+                {
+                    (**inner).clone()
+                }
+                _ => {
+                    return Err(CompileError::new(
+                        format!(
+                            "array_index: expected an array reference, got {}",
+                            source.ty
+                        ),
+                        span,
+                    ));
+                }
+            };
+            let elem_ty = Self::array_inner(&array_ty).unwrap().clone();
+            let index = self.lower_expr(&arguments[1])?;
+            if index.ty != Type::Uint {
+                return Err(CompileError::new(
+                    format!("array_index: expected Uint, got {}", index.ty),
+                    span,
+                ));
+            }
+            // Keep the checked element place as a compiler primitive, while
+            // surface indexing uses ordinary method dispatch for every type.
+            return Ok(Expr {
+                ty: Type::Ref(Box::new(elem_ty.clone())),
+                kind: ExprKind::Reference(Box::new(Expr {
+                    ty: elem_ty,
+                    kind: ExprKind::Index {
+                        object: Box::new(Expr {
+                            ty: array_ty,
+                            kind: ExprKind::Deref(Box::new(source)),
+                            span,
+                        }),
+                        index: Box::new(index),
+                    },
+                    span,
+                })),
+                span,
+            });
+        }
         if matches!(intrinsic, Intrinsic::SizeOf) {
             if type_args.len() != 1 {
                 return Err(CompileError::new(
@@ -9874,6 +9892,9 @@ fn intrinsic_spec(intrinsic: &Intrinsic) -> IntrinsicSpec {
             params: vec![IsArray],
             ret: Fixed(Type::Uint),
         },
+        Intrinsic::ArrayIndex => {
+            unreachable!("array_index is lowered to a checked element reference")
+        }
         Intrinsic::SizeOf => unreachable!("size_of is lowered to a monomorphized function"),
         Intrinsic::Transmute | Intrinsic::TransmuteUnchecked | Intrinsic::TransmuteRef => {
             unreachable!("transmute intrinsics are lowered specially")

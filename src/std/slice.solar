@@ -12,6 +12,11 @@ pub method len#[T](self: &[T]) -> Uint {
 	intrinsics::array_len(self@)
 }
 
+/// Returns a reference to an element, throwing if the index is out of bounds.
+pub method operator_index#[T](self: &[T], index: Uint) -> &T {
+	intrinsics::array_index(self, index)
+}
+
 /// Returns the index of the first element equal to `value`.
 pub method find#[T](self: &[T], value: &T) -> Option#[Uint] {
 	let i = 0u;

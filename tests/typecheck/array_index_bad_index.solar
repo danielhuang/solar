@@ -1,0 +1,6 @@
+import intrinsics from "@intrinsics";
+
+fn main() {
+	let values = [1, 2];
+	intrinsics::array_index(values&, 0);
+}

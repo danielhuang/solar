@@ -272,15 +272,31 @@ fn bad_operator_index_result() {
 }
 
 #[test]
-#[should_panic(expected = "index on non-array type Int")]
+#[should_panic(
+    expected = "no matching overload for `operator_index` with argument types (&Int, Uint)"
+)]
 fn bad_index_non_array() {
     compile(&fixture("typecheck_bad_index_non_array.solar"));
 }
 
 #[test]
-#[should_panic(expected = "array index must be Uint, got Int")]
+#[should_panic(
+    expected = "no matching overload for `operator_index` with argument types (&[Int], Int)"
+)]
 fn bad_index_type() {
-    compile(&fixture("typecheck_bad_index_type.solar"));
+    compile_with_pipeline(&fixture("typecheck_bad_index_type.solar"));
+}
+
+#[test]
+#[should_panic(expected = "array_index: expected an array reference, got &Int")]
+fn array_index_requires_array_reference() {
+    compile_with_pipeline(&fixture("array_index_non_array.solar"));
+}
+
+#[test]
+#[should_panic(expected = "array_index: expected Uint, got Int")]
+fn array_index_requires_uint() {
+    compile_with_pipeline(&fixture("array_index_bad_index.solar"));
 }
 
 #[test]

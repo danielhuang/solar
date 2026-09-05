@@ -1870,6 +1870,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 // (the test harness) can only use this in spawned binaries.
                 std::process::exit(code);
             }
+            Intrinsic::ArrayIndex => {
+                unreachable!("array_index is lowered before backend execution")
+            }
             Intrinsic::SizeOf => unreachable!("size_of is lowered before interpretation"),
             Intrinsic::Transmute | Intrinsic::TransmuteUnchecked => {
                 let value = self.eval_expr(&arguments[0])?;
