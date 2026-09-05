@@ -3,10 +3,12 @@ import {
 	atomic_store,
 	atomic_exchange,
 	atomic_compare_exchange,
-	futex_wait,
-	futex_wake,
+	syscall,
 	throw,
 } from "@intrinsics";
+
+// Linux x86-64 timespec layout for relative FUTEX_WAIT timeouts.
+struct(repr(C)) Timespec { seconds: Int64, nanoseconds: Int64 }
 
 /// Atomically loads a value.
 pub method atomic_load#[T](self: &T) -> T {
@@ -34,17 +36,32 @@ pub method futex_wait(
 	expected: Uint32,
 	timeout: Uint64 = 18446744073709551615u64,
 ) {
-	futex_wait(self, expected, timeout);
+	// FUTEX_WAIT | FUTEX_PRIVATE_FLAG. A null timeout waits indefinitely.
+	// Signals, timeout expiry, and value mismatches may return early; callers
+	// recheck their condition, so the raw syscall result is intentionally ignored.
+	if timeout == 18446744073709551615u64 {
+		unsafe { syscall(202i64, self, 128i64, Uint64(expected), 0u64); }
+	} else {
+		let ts = Timespec {
+			seconds: Int64(timeout / 1000000000u64),
+			nanoseconds: Int64(timeout % 1000000000u64),
+		};
+		unsafe { syscall(202i64, self, 128i64, Uint64(expected), ts&); }
+	}
+
+	return;
 }
 
 /// Wakes at most `count` waiters.
 pub method futex_wake(self: &Uint32, count: Uint32) {
-	futex_wake(self, count);
+	// FUTEX_WAKE | FUTEX_PRIVATE_FLAG.
+	unsafe { syscall(202i64, self, 129i64, Uint64(count)); }
+	return;
 }
 
 /// Wakes all waiters.
 pub method futex_wake(self: &Uint32) {
-	futex_wake(self, 2147483647u32);
+	self.futex_wake(2147483647u32);
 }
 
 /// A futex-backed mutual exclusion lock.

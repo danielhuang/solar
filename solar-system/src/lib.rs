@@ -15,8 +15,6 @@ pub mod arith;
 pub mod file;
 /// Callback finalization support.
 pub mod finalizer;
-/// Futex intrinsics.
-pub mod futex;
 /// Garbage collector.
 pub mod gc;
 /// Size-class heap.

@@ -1696,12 +1696,6 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     self.mem.memcpy(ref_addr, new_addr, size);
                 }
             }
-            Intrinsic::FutexWait => {
-                panic!("futex_wait not implemented in IR interpreter");
-            }
-            Intrinsic::FutexWake => {
-                panic!("futex_wake not implemented in IR interpreter");
-            }
             Intrinsic::CountTrailingZeros | Intrinsic::CountLeadingZeros | Intrinsic::CountOnes => {
                 let width = nodes[args[0].0].ty.int_bit_width();
                 let raw = self.eval_load(nodes, args[0])?;

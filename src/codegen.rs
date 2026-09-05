@@ -912,10 +912,6 @@ impl<'a> Codegen<'a> {
         self.line("extern void sol_atomic_load_128_acq(uint8_t* dst, const uint8_t* src);");
         self.line("extern void sol_atomic_store_128_rel(uint8_t* dst, const uint8_t* src);");
         self.line("extern void sol_atomic_compare_exchange_128_acq_rel(uint8_t* dst, uint8_t* ref, const uint8_t* expected, const uint8_t* new_val);");
-        self.line(
-            "extern void sol_futex_wait(uint32_t* ptr, uint32_t expected, uint64_t timeout_ns);",
-        );
-        self.line("extern void sol_futex_wake(uint32_t* ptr, uint32_t count);");
         self.line("extern uint64_t sol_monotonic_time(void);");
         self.line("extern uint64_t sol_system_time(void);");
         self.line("extern uint64_t sol_num_cpus(void);");
@@ -3176,21 +3172,6 @@ impl<'a> Codegen<'a> {
                     ));
                     self.linef(format!("*({c_ty}*){dst} = {exp_tmp};"));
                 }
-            }
-            Intrinsic::FutexWait => {
-                let ptr = self.emit_load(nodes, args[0]);
-                let expected = self.emit_load(nodes, args[1]);
-                let timeout = self.emit_load(nodes, args[2]);
-                self.linef(format!(
-                    "sol_futex_wait((uint32_t*){ptr}, (uint32_t){expected}, (uint64_t){timeout});"
-                ));
-            }
-            Intrinsic::FutexWake => {
-                let ptr = self.emit_load(nodes, args[0]);
-                let count = self.emit_load(nodes, args[1]);
-                self.linef(format!(
-                    "sol_futex_wake((uint32_t*){ptr}, (uint32_t){count});"
-                ));
             }
             Intrinsic::CountTrailingZeros | Intrinsic::CountLeadingZeros | Intrinsic::CountOnes => {
                 // Lower to the clang/gcc builtins, which become llvm.cttz/ctlz/

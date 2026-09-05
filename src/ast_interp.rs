@@ -2004,12 +2004,6 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     _ => unreachable!("atomic_compare_exchange: expected ref"),
                 }
             }
-            Intrinsic::FutexWait => {
-                panic!("futex_wait not implemented in AST interpreter");
-            }
-            Intrinsic::FutexWake => {
-                panic!("futex_wake not implemented in AST interpreter");
-            }
             Intrinsic::CountTrailingZeros | Intrinsic::CountLeadingZeros | Intrinsic::CountOnes => {
                 let width = arguments[0].ty.int_bit_width();
                 let val = self.eval_expr(&arguments[0])?;

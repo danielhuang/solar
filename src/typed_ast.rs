@@ -9784,8 +9784,6 @@ fn intrinsic_spec(intrinsic: &Intrinsic) -> IntrinsicSpec {
             Type::Array(Box::new(Type::Uint8)),
         ))))))
     };
-    let ref_u32 = || Exact(Type::Ref(Box::new(Type::Uint32)));
-    let u32 = || Exact(Type::Uint32);
     let fn_unit = || {
         Exact(Type::Function {
             params: vec![],
@@ -9884,15 +9882,6 @@ fn intrinsic_spec(intrinsic: &Intrinsic) -> IntrinsicSpec {
         Intrinsic::AtomicCompareExchange => IntrinsicSpec {
             params: vec![RefToAtomic, MatchesRefInner, MatchesRefInner],
             ret: RefInner,
-        },
-        Intrinsic::FutexWait => IntrinsicSpec {
-            // (word, expected value, timeout in nanoseconds; u64::MAX = forever)
-            params: vec![ref_u32(), u32(), Exact(Type::Uint64)],
-            ret: Fixed(Type::Unit),
-        },
-        Intrinsic::FutexWake => IntrinsicSpec {
-            params: vec![ref_u32(), u32()],
-            ret: Fixed(Type::Unit),
         },
         Intrinsic::FdFromRaw => IntrinsicSpec {
             params: vec![Exact(Type::Int32)],

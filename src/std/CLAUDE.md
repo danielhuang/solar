@@ -60,3 +60,8 @@ message and errno. Threads and futexes are native-runtime only too.
 
 When adding a fallible intrinsic, keep its exception text identical in the AST
 interpreter, IR interpreter, and native runtime.
+
+The `futex_wait` and `futex_wake` methods use Linux x86-64 `syscall` directly
+with private futex operations. Finite waits pass a C-layout relative timespec;
+the maximum Uint64 timeout passes a null pointer for an indefinite wait. Raw
+results are ignored because callers recheck their condition after early returns.
