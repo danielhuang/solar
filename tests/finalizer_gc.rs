@@ -11,6 +11,7 @@ fn run_fixture(fixture: &str, name: &str, options: CompileOptions, disabled: boo
     } else {
         test_utils::ensure_runtime_built();
     }
+    let directory = tempdir::TempDir::new("solar-test").unwrap();
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join(fixture);
     let binary = solar::pipeline::compile(&source)
         .map_err(|(errors, _)| errors)
@@ -19,7 +20,7 @@ fn run_fixture(fixture: &str, name: &str, options: CompileOptions, disabled: boo
         .to_ir()
         .optimized()
         .to_c(&source.display().to_string())
-        .to_binary(test_utils::binary_output_path(name), options);
+        .to_binary(directory.path().join(name), options);
     let result = Command::new("bash")
         .arg("-c")
         .arg("ulimit -c 0; exec timeout 30s \"$1\"")

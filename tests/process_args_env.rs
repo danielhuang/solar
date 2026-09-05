@@ -1,28 +1,29 @@
 //! Native-runtime tests for process arguments and environment variables.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 use solar::pipeline::CompileOptions;
 
-fn build(src: &str, name: &str, options: CompileOptions) -> PathBuf {
+fn build(src: &str, name: &str, options: CompileOptions) -> (tempdir::TempDir, PathBuf) {
     if options.optimize {
         test_utils::ensure_release_runtime_built();
     } else {
         test_utils::ensure_runtime_built();
     }
-    let dir = Path::new("target/test-fixtures");
-    std::fs::create_dir_all(dir).unwrap();
+    let directory = tempdir::TempDir::new("solar-test").unwrap();
+    let dir = directory.path();
     let path = dir.join(format!("{name}.solar"));
     std::fs::write(&path, src).unwrap();
     let typed = solar::pipeline::compile(&path).unwrap();
-    typed
+    let binary = typed
         .to_mangled()
         .to_ir()
         .optimized()
         .to_c(&path.display().to_string())
-        .to_binary(test_utils::binary_output_path(name), options)
-        .path
+        .to_binary(dir.join(name), options)
+        .path;
+    (directory, binary)
 }
 
 // Print each arg on its own `arg:` line and the value of the `SOLAR_TEST_VAR`
@@ -54,7 +55,7 @@ fn main() {
 
 #[test]
 fn args_and_env_are_exposed_to_compiled_programs() {
-    let bin = build(PRINT_SRC, "process_print", CompileOptions::RELEASE);
+    let (_directory, bin) = build(PRINT_SRC, "process_print", CompileOptions::RELEASE);
     let out = Command::new(bin.canonicalize().unwrap())
         .args(["hello", "wor ld", "42"])
         .env("SOLAR_TEST_VAR", "the-value")
@@ -128,7 +129,7 @@ fn main() {
 
 #[test]
 fn retained_env_copies_survive_collection() {
-    let bin = build(GC_SRC, "process_env_gc", CompileOptions::RELEASE);
+    let (_directory, bin) = build(GC_SRC, "process_env_gc", CompileOptions::RELEASE);
     let out = Command::new(bin.canonicalize().unwrap())
         .env("SOLAR_TEST_VAR", "stress")
         .env("ASAN_OPTIONS", "detect_leaks=0")

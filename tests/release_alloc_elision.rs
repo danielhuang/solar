@@ -31,8 +31,8 @@ fn main() {
 #[test]
 fn specialized_allocators_retain_allocation_elision() {
     test_utils::ensure_release_runtime_built();
-    let dir = std::env::temp_dir().join("solar_test_release_alloc_elision");
-    std::fs::create_dir_all(&dir).unwrap();
+    let directory = tempdir::TempDir::new("solar-test").unwrap();
+    let dir = directory.path();
     let src_path = dir.join("release_alloc_elision.solar");
     std::fs::write(&src_path, SRC).unwrap();
 
@@ -42,10 +42,7 @@ fn specialized_allocators_retain_allocation_elision() {
         .to_ir()
         .optimized()
         .to_c(&src_path.display().to_string())
-        .to_binary(
-            test_utils::binary_output_path("release_alloc_elision"),
-            CompileOptions::RELEASE,
-        )
+        .to_binary(dir.join("release_alloc_elision"), CompileOptions::RELEASE)
         .path;
     let out = Command::new(bin)
         .env("SOLAR_PRINT_ALLOCS", "1")

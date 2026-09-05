@@ -24,9 +24,8 @@ fn check_output(path: PathBuf, options: CompileOptions) {
 
 #[test]
 fn debug_binary_uses_nested_relative_output_path() {
-    let path = Path::new("target/output path tests")
-        .join(format!("{:x}", rand::random::<u64>()))
-        .join("nested/program with spaces");
+    let directory = tempdir::TempDir::new_in(".", "solar-output-test").unwrap();
+    let path = directory.path().join("nested/program with spaces");
     check_output(path, CompileOptions::DEBUG);
 }
 
@@ -57,8 +56,9 @@ fn release_binary_uses_absolute_output_path() {
 }
 
 #[test]
-fn gc_disabled_binary_uses_bare_output_filename() {
-    let path = PathBuf::from(format!("solar-output-{:x}", rand::random::<u64>()));
+fn gc_disabled_binary_uses_temporary_output_path() {
+    let directory = tempdir::TempDir::new("solar-output-test").unwrap();
+    let path = directory.path().join("program");
     check_output(
         path,
         CompileOptions {
@@ -74,7 +74,10 @@ fn gc_disabled_binary_uses_bare_output_filename() {
 fn binary_output_accepts_non_utf8_paths() {
     use std::os::unix::ffi::OsStringExt;
 
-    let path = test_utils::binary_output_path("non_utf8")
+    let directory = tempdir::TempDir::new("solar-output-test").unwrap();
+    let path = directory
+        .path()
+        .join("non_utf8")
         .with_file_name(std::ffi::OsString::from_vec(b"program-\xff".to_vec()));
     check_output(path, CompileOptions::DEBUG);
 }

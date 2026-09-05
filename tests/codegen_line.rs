@@ -2,14 +2,12 @@
 //! the file it actually came from — in particular `@std` code should point at
 //! the std source files, not at the main program's file.
 
-use std::path::Path;
-
 use solar::pipeline;
 
 #[test]
 fn std_code_gets_std_line_directives() {
-    let dir = Path::new("target/test-fixtures");
-    std::fs::create_dir_all(dir).unwrap();
+    let directory = tempdir::TempDir::new("solar-test").unwrap();
+    let dir = directory.path();
     let path = dir.join("codegen_line.solar");
     // Uses @std's vec, which pulls in std code from src/std/*.solar.
     std::fs::write(

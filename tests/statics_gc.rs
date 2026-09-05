@@ -4,24 +4,25 @@ use solar::pipeline::CompileOptions;
 use std::path::PathBuf;
 use std::process::Command;
 
-fn build(src: &str, name: &str, options: CompileOptions) -> PathBuf {
+fn build(src: &str, name: &str, options: CompileOptions) -> (tempdir::TempDir, PathBuf) {
     if options.optimize {
         test_utils::ensure_release_runtime_built();
     } else {
         test_utils::ensure_runtime_built();
     }
-    let dir = std::env::temp_dir().join(format!("solar_test_{name}"));
-    std::fs::create_dir_all(&dir).unwrap();
+    let directory = tempdir::TempDir::new("solar-test").unwrap();
+    let dir = directory.path();
     let src_path = dir.join(format!("{name}.solar"));
     std::fs::write(&src_path, src).unwrap();
     let typed = solar::pipeline::compile(&src_path).unwrap();
-    typed
+    let binary = typed
         .to_mangled()
         .to_ir()
         .optimized()
         .to_c(&src_path.display().to_string())
-        .to_binary(test_utils::binary_output_path(name), options)
-        .path
+        .to_binary(dir.join(name), options)
+        .path;
+    (directory, binary)
 }
 
 // `setup` returns before collection, leaving the statics as the only roots.
@@ -75,7 +76,7 @@ fn main() {
 
 #[test]
 fn statics_root_heap_objects_across_gc() {
-    let bin = build(GC_SRC, "statics_gc", CompileOptions::RELEASE);
+    let (_directory, bin) = build(GC_SRC, "statics_gc", CompileOptions::RELEASE);
     let out = Command::new(bin.canonicalize().unwrap())
         .env("SOLAR_PRINT_GC_STATS", "1")
         .output()
@@ -119,7 +120,7 @@ fn main() {
 
 #[test]
 fn thread_local_statics_root_heap_objects_across_gc() {
-    let bin = build(
+    let (_directory, bin) = build(
         TLS_GC_SRC,
         "thread_local_statics_gc",
         CompileOptions::RELEASE,

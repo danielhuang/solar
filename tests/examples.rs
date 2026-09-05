@@ -39,15 +39,13 @@ fn all_examples_compile_debug() {
         let name = path.file_name().unwrap().to_str().unwrap();
         eprintln!("compiling {name}");
         let test_name = format!("example_compile_{}", name.replace(".solar", ""));
+        let directory = tempdir::TempDir::new("solar-example").unwrap();
         solar::pipeline::compile(path)
             .unwrap()
             .to_mangled()
             .to_ir()
             .optimized()
             .to_c(&path.display().to_string())
-            .to_binary(
-                test_utils::binary_output_path(&test_name),
-                CompileOptions::DEBUG,
-            );
+            .to_binary(directory.path().join(&test_name), CompileOptions::DEBUG);
     }
 }

@@ -4,23 +4,21 @@ use solar::pipeline::CompileOptions;
 use std::path::PathBuf;
 use std::process::Command;
 
-fn build(src: &str, name: &str) -> PathBuf {
+fn build(src: &str, name: &str) -> (tempdir::TempDir, PathBuf) {
     test_utils::ensure_release_runtime_built();
-    let dir = std::env::temp_dir().join(format!("solar_test_{name}"));
-    std::fs::create_dir_all(&dir).unwrap();
+    let directory = tempdir::TempDir::new("solar-test").unwrap();
+    let dir = directory.path();
     let src_path = dir.join(format!("{name}.solar"));
     std::fs::write(&src_path, src).unwrap();
     let typed = solar::pipeline::compile(&src_path).unwrap();
-    typed
+    let binary = typed
         .to_mangled()
         .to_ir()
         .optimized()
         .to_c(&src_path.display().to_string())
-        .to_binary(
-            test_utils::binary_output_path(name),
-            CompileOptions::RELEASE,
-        )
-        .path
+        .to_binary(dir.join(name), CompileOptions::RELEASE)
+        .path;
+    (directory, binary)
 }
 
 const SRC: &str = r#"
@@ -58,7 +56,7 @@ fn main() {
 
 #[test]
 fn interior_refs_survive_gc() {
-    let bin = build(SRC, "interior_ref_gc");
+    let (_directory, bin) = build(SRC, "interior_ref_gc");
     let out = Command::new(bin.canonicalize().unwrap())
         .env("SOLAR_PRINT_GC_STATS", "1")
         .output()

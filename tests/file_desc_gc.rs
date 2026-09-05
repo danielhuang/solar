@@ -7,24 +7,25 @@ use solar::pipeline::CompileOptions;
 
 const FD_LIMIT: u32 = 64;
 
-fn build(src: &str, name: &str, options: CompileOptions) -> PathBuf {
+fn build(src: &str, name: &str, options: CompileOptions) -> (tempdir::TempDir, PathBuf) {
     if options.optimize {
         test_utils::ensure_release_runtime_built();
     } else {
         test_utils::ensure_runtime_built();
     }
-    let dir = Path::new("target/test-fixtures");
-    std::fs::create_dir_all(dir).unwrap();
+    let directory = tempdir::TempDir::new("solar-test").unwrap();
+    let dir = directory.path();
     let path = dir.join(format!("{name}.solar"));
     std::fs::write(&path, src).unwrap();
     let typed = solar::pipeline::compile(&path).unwrap();
-    typed
+    let binary = typed
         .to_mangled()
         .to_ir()
         .optimized()
         .to_c(&path.display().to_string())
-        .to_binary(test_utils::binary_output_path(name), options)
-        .path
+        .to_binary(dir.join(name), options)
+        .path;
+    (directory, binary)
 }
 
 // Runs a binary with a low descriptor limit.
@@ -74,7 +75,7 @@ fn main() {
 fn dropped_file_descriptors_are_closed_by_gc() {
     // Unreachable descriptors must be collected before exhausting the limit.
     let src = TEMPLATE.replace("OPEN_STMT", r#"let f = file::open("Cargo.toml"&);"#);
-    let bin = build(&src, "fd_gc_dropped", CompileOptions::RELEASE);
+    let (_directory, bin) = build(&src, "fd_gc_dropped", CompileOptions::RELEASE);
     assert!(
         run_with_fd_limit(&bin),
         "opening+dropping FileDescs should survive a low fd limit because the \
@@ -92,7 +93,7 @@ fn closed_file_descriptors_keep_their_fd_number() {
             kept = (FdNode { fd: f, next: FdOpt::Some(kept) })&;
             fd_root&.atomic_store(kept);"#,
     );
-    let bin = build(&src, "fd_gc_closed_retained", CompileOptions::DEBUG);
+    let (_directory, bin) = build(&src, "fd_gc_closed_retained", CompileOptions::DEBUG);
     assert!(
         !run_with_fd_limit(&bin),
         "closing a FileDesc must keep its fd number occupied (dup2 over a dead \
@@ -109,7 +110,7 @@ fn retained_file_descriptors_are_not_closed() {
         r#"kept = (FdNode { fd: file::open("Cargo.toml"&), next: FdOpt::Some(kept) })&;
             fd_root&.atomic_store(kept);"#,
     );
-    let bin = build(&src, "fd_gc_retained", CompileOptions::DEBUG);
+    let (_directory, bin) = build(&src, "fd_gc_retained", CompileOptions::DEBUG);
     assert!(
         !run_with_fd_limit(&bin),
         "retaining all FileDescs should exhaust the fd limit because the GC \

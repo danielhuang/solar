@@ -39,8 +39,8 @@ fn main() {
 #[test]
 fn release_branch_merge_preserves_gc_allocation_provenance() {
     test_utils::ensure_release_runtime_built();
-    let dir = std::env::temp_dir().join("solar_test_release_alloc_metadata");
-    std::fs::create_dir_all(&dir).unwrap();
+    let directory = tempdir::TempDir::new("solar-test").unwrap();
+    let dir = directory.path();
     let src_path = dir.join("release_alloc_metadata.solar");
     std::fs::write(&src_path, SRC).unwrap();
 
@@ -50,10 +50,7 @@ fn release_branch_merge_preserves_gc_allocation_provenance() {
         .to_ir()
         .optimized()
         .to_c(&src_path.display().to_string())
-        .to_binary(
-            test_utils::binary_output_path("release_alloc_metadata"),
-            CompileOptions::RELEASE,
-        )
+        .to_binary(dir.join("release_alloc_metadata"), CompileOptions::RELEASE)
         .path;
     let out = Command::new(bin).output().unwrap();
     assert!(

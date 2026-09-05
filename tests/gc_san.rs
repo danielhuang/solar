@@ -38,8 +38,8 @@ fn main() {
 #[test]
 fn gc_san_runs_collections_without_rejecting_live_objects() {
     test_utils::ensure_release_runtime_built();
-    let dir = std::env::temp_dir().join(format!("solar_gc_san_{:x}", rand::random::<u64>()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let directory = tempdir::TempDir::new("solar-test").unwrap();
+    let dir = directory.path();
     let source = dir.join("gc_san.solar");
     std::fs::write(&source, SRC).unwrap();
 
@@ -49,10 +49,7 @@ fn gc_san_runs_collections_without_rejecting_live_objects() {
         .to_ir()
         .optimized()
         .to_c(&source.display().to_string())
-        .to_binary(
-            test_utils::binary_output_path("gc_san"),
-            CompileOptions::GC_SAN,
-        );
+        .to_binary(dir.join("gc_san"), CompileOptions::GC_SAN);
     let result = Command::new(binary.path.canonicalize().unwrap())
         .env("SOLAR_PRINT_GC_STATS", "1")
         .output()
@@ -74,11 +71,8 @@ fn gc_san_runs_collections_without_rejecting_live_objects() {
 #[test]
 fn gc_san_runs_without_lto_or_optimization() {
     test_utils::ensure_runtime_built();
-    let dir = std::env::temp_dir().join(format!(
-        "solar_gc_san_unoptimized_{:x}",
-        rand::random::<u64>()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let directory = tempdir::TempDir::new("solar-test").unwrap();
+    let dir = directory.path();
     let source = dir.join("gc_san_unoptimized.solar");
     std::fs::write(&source, UNOPTIMIZED_SRC).unwrap();
 
@@ -92,10 +86,7 @@ fn gc_san_runs_without_lto_or_optimization() {
         .to_mangled()
         .to_ir()
         .to_c(&source.display().to_string())
-        .to_binary(
-            test_utils::binary_output_path("gc_san_unoptimized"),
-            options,
-        );
+        .to_binary(dir.join("gc_san_unoptimized"), options);
     let result = Command::new(binary.path.canonicalize().unwrap())
         .env("ASAN_OPTIONS", "detect_leaks=0")
         .env("SOLAR_PRINT_GC_STATS", "1")
@@ -118,11 +109,8 @@ fn gc_san_runs_without_lto_or_optimization() {
 #[test]
 fn gc_san_rejects_offset_ref_outside_its_source_allocation() {
     test_utils::ensure_runtime_built();
-    let dir = std::env::temp_dir().join(format!(
-        "solar_gc_san_offset_ref_{:x}",
-        rand::random::<u64>()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let directory = tempdir::TempDir::new("solar-test").unwrap();
+    let dir = directory.path();
     let source = dir.join("gc_san_offset_ref.solar");
     std::fs::write(&source, OFFSET_REF_OUT_OF_BOUNDS_SRC).unwrap();
 
@@ -142,7 +130,7 @@ fn gc_san_rejects_offset_ref_outside_its_source_allocation() {
         gc_san: true,
         optimize: false,
     };
-    let binary = c_source.to_binary(test_utils::binary_output_path("gc_san_offset_ref"), options);
+    let binary = c_source.to_binary(dir.join("gc_san_offset_ref"), options);
     let result = Command::new(binary.path.canonicalize().unwrap())
         .env("ASAN_OPTIONS", "detect_leaks=0")
         .output()
@@ -163,9 +151,8 @@ fn gc_san_rejects_offset_ref_outside_its_source_allocation() {
 #[test]
 fn gc_runs_without_lto_gc_san_or_optimization() {
     test_utils::ensure_runtime_built();
-    let dir =
-        std::env::temp_dir().join(format!("solar_gc_unoptimized_{:x}", rand::random::<u64>()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let directory = tempdir::TempDir::new("solar-test").unwrap();
+    let dir = directory.path();
     let source = dir.join("gc_unoptimized.solar");
     std::fs::write(&source, UNOPTIMIZED_SRC).unwrap();
 
@@ -179,7 +166,7 @@ fn gc_runs_without_lto_gc_san_or_optimization() {
         .to_mangled()
         .to_ir()
         .to_c(&source.display().to_string())
-        .to_binary(test_utils::binary_output_path("gc_unoptimized"), options);
+        .to_binary(dir.join("gc_unoptimized"), options);
     let result = Command::new(binary.path.canonicalize().unwrap())
         .env("ASAN_OPTIONS", "detect_leaks=0")
         .env("SOLAR_PRINT_GC_STATS", "1")

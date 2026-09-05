@@ -4,8 +4,8 @@ use std::process::Command;
 
 #[test]
 fn instruments_generated_memory_operations() {
-    let dir = std::env::temp_dir().join(format!("solar_gc_san_pass_{:x}", rand::random::<u64>()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let directory = tempdir::TempDir::new("solar-test").unwrap();
+    let dir = directory.path();
     let input = dir.join("input.ll");
     let output = dir.join("output.ll");
     std::fs::write(
