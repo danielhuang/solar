@@ -67,7 +67,7 @@ struct Ring {
 }
 
 fn check_syscall(result: Int64, message: &[Uint8]) {
-	if result < 0i64 { intrinsics::throw(message); }
+	if result < 0i64 { throw(message); }
 }
 
 fn raw_fd(fd: FileDesc) -> Int64 {
@@ -340,7 +340,7 @@ method poll(self: &WriteFuture, executor: &Executor) -> Poll#[Int64] {
 					},
 					Option#[Int64]::Some(result) => {
 						if result <= 0i64 {
-							intrinsics::throw("asynchronous write failed"&);
+							throw("asynchronous write failed"&);
 						}
 
 						self@.written = self@.written + Uint(result);
