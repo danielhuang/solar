@@ -541,11 +541,16 @@ dependencies = [
  "rand 0.9.2",
  "serde",
  "serde_json",
+ "solar-shared",
  "tempdir",
  "test-utils",
  "tree-sitter",
  "tree-sitter-solar",
 ]
+
+[[package]]
+name = "solar-shared"
+version = "0.1.0"
 
 [[package]]
 name = "solar-system"
@@ -556,6 +561,7 @@ dependencies = [
  "flume",
  "libc",
  "rustix-futex-sync",
+ "solar-shared",
 ]
 
 [[package]]

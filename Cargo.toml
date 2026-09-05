@@ -1,7 +1,8 @@
 [workspace]
-members = ["tree-sitter-solar", "solar-system", "test-utils"]
+members = ["tree-sitter-solar", "solar-system", "solar-shared", "test-utils"]
 
 [workspace.dependencies]
+solar-shared = { path = "solar-shared" }
 tree-sitter-solar = { path = "tree-sitter-solar" }
 
 [package]
@@ -16,6 +17,7 @@ clap = { version = "4.6.6", features = ["derive"] }
 rand = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+solar-shared = { workspace = true }
 tempdir = "0.3.7"
 tree-sitter = "0.25"
 tree-sitter-solar = { workspace = true }

@@ -100,6 +100,10 @@ pub unsafe extern "C" fn sol_start(
         gc::DISABLE_GC.set(gc::DISABLE_GC.get() | read_env_bool("SOLAR_DISABLE_GC"));
     }
 
+    let _memory_limit = gc::DISABLE_GC
+        .get()
+        .then(solar_shared::memory_limit::MemoryLimit::start);
+
     gc::install_signal_handler();
     heap::init();
     file::init();

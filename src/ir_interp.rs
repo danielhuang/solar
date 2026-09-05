@@ -2103,12 +2103,14 @@ impl<'a, 'io> Interpreter<'a, 'io> {
 
 /// Interprets an IR module using process standard input and output.
 pub fn interpret(module: &Module) {
+    let _memory_limit = solar_shared::memory_limit::MemoryLimit::start();
     let mut interp = Interpreter::new(module, std::io::stdin(), std::io::stdout());
     interp.run();
 }
 
 /// Interprets an IR module with explicit input and output streams.
 pub fn interpret_to(module: &Module, stdin: impl Read, stdout: impl Write) {
+    let _memory_limit = solar_shared::memory_limit::MemoryLimit::start();
     let mut interp = Interpreter::new(module, stdin, stdout);
     interp.run();
 }

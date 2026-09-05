@@ -8,6 +8,8 @@
 - Provide unversioned `clang`, `clang++`, `llvm-as`, `llvm-link`, `opt`,
   `ld.lld`, and `llvm-config` commands on `PATH`.
 - Grammar development requires Node.js and the tree-sitter CLI.
+- Interpreter and GC-disabled runs require Linux procfs with readable
+  `/proc/self/smaps_rollup` for resident-memory monitoring.
 
 ## Project conventions
 
