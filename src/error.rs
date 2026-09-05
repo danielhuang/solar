@@ -236,16 +236,39 @@ fn span_to_byte_range(
 }
 
 fn render_single_error(err: &CompileError, source: &str, filename: &str) {
-    use annotate_snippets::{AnnotationKind, Group, Level, Renderer, Snippet};
+    let renderer = annotate_snippets::Renderer::styled().decor_style(DecorStyle::Unicode);
+    eprintln!("{}", format_single_error(err, source, filename, &renderer));
+}
+
+fn format_single_error(
+    err: &CompileError,
+    source: &str,
+    filename: &str,
+    renderer: &annotate_snippets::Renderer,
+) -> String {
+    use annotate_snippets::{AnnotationKind, Group, Level, Snippet};
 
     let offsets = line_offsets(source);
     let range = span_to_byte_range(&err.span, &offsets, source);
 
     let range = range.start.min(source.len())..range.end.min(source.len());
 
+    // Preserve each annotated span and at most two surrounding lines when folding.
+    let context_range = |range: &std::ops::Range<usize>| {
+        let first_line = offsets.partition_point(|&offset| offset <= range.start) - 1;
+        let last_byte = range.end.saturating_sub(1).max(range.start);
+        let last_line = offsets.partition_point(|&offset| offset <= last_byte) - 1;
+        let start = offsets[first_line.saturating_sub(2)];
+        let end = offsets
+            .get(last_line + 3)
+            .map_or(source.len(), |offset| offset - 1);
+        start..end
+    };
+
     let mut snippet = Snippet::source(source)
         .path(filename)
-        .fold(false)
+        .fold(true)
+        .annotation(AnnotationKind::Visible.span(context_range(&range)))
         .annotation(AnnotationKind::Primary.span(range));
 
     for label in &err.labels {
@@ -256,6 +279,7 @@ fn render_single_error(err: &CompileError, source: &str, filename: &str) {
             || label.span.end.line > 0
             || label.span.end.col > 0
         {
+            snippet = snippet.annotation(AnnotationKind::Visible.span(context_range(&label_range)));
             snippet = snippet.annotation(
                 AnnotationKind::Context
                     .span(label_range)
@@ -267,8 +291,7 @@ fn render_single_error(err: &CompileError, source: &str, filename: &str) {
     let report: &[Group] =
         &[Group::with_title(Level::ERROR.primary_title(&err.message)).element(snippet)];
 
-    let renderer = Renderer::styled().decor_style(DecorStyle::Unicode);
-    eprintln!("{}", renderer.render(report));
+    renderer.render(report)
 }
 
 /// Render a CompileError and its causes with source context using
@@ -291,5 +314,112 @@ pub fn render_error_with_source_map(err: &CompileError, source_map: &SourceMap) 
         render_single_error(err, source, filename);
     } else {
         eprintln!("error: {}", err.message);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::SourcePos;
+
+    fn span(start_line: u32, start_col: u32, end_line: u32, end_col: u32) -> SourceSpan {
+        SourceSpan {
+            start: SourcePos {
+                line: start_line,
+                col: start_col,
+            },
+            end: SourcePos {
+                line: end_line,
+                col: end_col,
+            },
+            file_id: 0,
+        }
+    }
+
+    fn render(err: &CompileError, source: &str) -> String {
+        format_single_error(
+            err,
+            source,
+            "example.solar",
+            &annotate_snippets::Renderer::plain().decor_style(DecorStyle::Unicode),
+        )
+    }
+
+    fn assert_excerpt(err: &CompileError, expected: &[usize], trailing_newline: bool) -> String {
+        let mut source = (1..=20)
+            .map(|line| format!("source line {line:02}\n"))
+            .collect::<String>();
+        if !trailing_newline {
+            source.pop();
+        }
+        let output = render(err, &source);
+        let visible = output
+            .lines()
+            .filter_map(|line| {
+                let (prefix, number) = line.split_once("source line ")?;
+                let number = number.parse::<usize>().unwrap();
+                assert_eq!(
+                    prefix
+                        .split_whitespace()
+                        .next()
+                        .unwrap()
+                        .parse::<usize>()
+                        .unwrap(),
+                    number
+                );
+                Some(number)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(visible, expected, "{output}");
+        output
+    }
+
+    #[test]
+    fn error_excerpt_has_two_lines_of_context() {
+        let err = CompileError::new("bad expression".into(), span(6, 0, 6, 6));
+        let output = assert_excerpt(&err, &[5, 6, 7, 8, 9], true);
+        assert!(output.contains("error: bad expression"));
+        assert!(output.contains("example.solar:7:1"));
+    }
+
+    #[test]
+    fn multiline_error_excerpt_preserves_all_error_lines() {
+        let err = CompileError::new("bad block".into(), span(5, 0, 12, 6));
+        assert_excerpt(&err, &(4..=15).collect::<Vec<_>>(), true);
+    }
+
+    #[test]
+    fn error_excerpt_clamps_context_to_file_boundaries() {
+        for trailing_newline in [false, true] {
+            let first = CompileError::new("first line".into(), span(0, 0, 0, 6));
+            assert_excerpt(&first, &[1, 2, 3], trailing_newline);
+            let last = CompileError::new("last line".into(), span(19, 0, 19, 6));
+            assert_excerpt(&last, &[18, 19, 20], trailing_newline);
+        }
+    }
+
+    #[test]
+    fn distant_label_gets_its_own_context() {
+        let err = CompileError::new("bad use".into(), span(3, 0, 3, 6))
+            .with_label("defined here", span(15, 0, 15, 6));
+        let output = assert_excerpt(&err, &[2, 3, 4, 5, 6, 14, 15, 16, 17, 18], true);
+        assert!(output.contains("defined here"));
+    }
+
+    #[test]
+    fn overlapping_context_is_shown_once() {
+        let err = CompileError::new("bad use".into(), span(6, 0, 6, 6))
+            .with_label("nearby definition", span(8, 0, 8, 6));
+        assert_excerpt(&err, &[5, 6, 7, 8, 9, 10, 11], true);
+    }
+
+    #[test]
+    fn empty_source_and_eof_spans_render() {
+        let err = CompileError::new("unexpected EOF".into(), span(0, 0, 0, 0));
+        assert!(render(&err, "").contains("unexpected EOF"));
+        let err = CompileError::new("unexpected EOF".into(), span(20, 0, 20, 0));
+        assert_excerpt(&err, &[19, 20], true);
+        let err = CompileError::new("unexpected EOF".into(), span(19, 14, 19, 14));
+        assert_excerpt(&err, &[18, 19, 20], false);
     }
 }
