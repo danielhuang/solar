@@ -8881,6 +8881,17 @@ impl<'a> Lowerer<'a> {
                         lowered_args.push(None);
                     } else {
                         let lowered = self.lower_expr(arg)?;
+                        // Reject unrelated overloads before their unresolved
+                        // type parameters become expected closure parameters.
+                        if let (Some(want), Some(got)) = (
+                            Self::ast_type_base_def(&param_ast_types[i], &type_params),
+                            Self::type_base_key(&lowered.ty),
+                        ) && !self.type_aliases.contains_key(&want)
+                            && want != got
+                        {
+                            pass1_ok = false;
+                            break;
+                        }
                         if i < param_ast_types.len()
                             && !self.try_unify_type(
                                 &param_ast_types[i],

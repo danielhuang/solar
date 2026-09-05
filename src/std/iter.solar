@@ -1,35 +1,33 @@
 import {Option} from "lib.solar";
 
-/// An iterator that forwards advancement to its inner iterator.
-pub struct Iterator#[I] { inner: I }
+/// An iterator with advancement defined for its specific state type.
+pub struct Iterator#[I] {
+	/// State used by iterator-specific methods.
+	pub inner: I,
+}
 
 /// An iterator that transforms each inner value with a callback.
-pub struct Map#[I, T, U] { inner: I, f: fn(T) -> U }
+pub struct Map#[I, T, U] { inner: Iterator#[I], f: fn(T) -> U }
 
 /// An iterator that yields only values accepted by a predicate.
-pub struct Filter#[I, T] { inner: I, predicate: fn(T) -> Bool }
+pub struct Filter#[I, T] { inner: Iterator#[I], predicate: fn(T) -> Bool }
 
 /// Wraps an inner iterator.
 pub fn Iterator::#[I](inner: I) -> Iterator#[I] {
 	Iterator#[I] { inner: inner }
 }
 
-/// Advances the inner iterator and returns its next result.
-pub method next#[I](self: &Iterator#[I]) {
-	self@.inner&.next()
-}
-
 /// Lazily transforms each value yielded by the iterator.
 pub method map#[I, T, U](self: Iterator#[I], f: fn(T) -> U) -> Iterator#[
 	Map#[I, T, U],
 ] {
-	Iterator(Map#[I, T, U] { inner: self.inner, f: f })
+	Iterator(Map#[I, T, U] { inner: self, f: f })
 }
 
 /// Advances the inner iterator and transforms its next value, if present.
-pub method next#[I, T, U](self: &Map#[I, T, U]) -> Option#[U] {
-	match self@.inner&.next() {
-		Option#[T]::Some(value) => Option#[U]::Some((self@.f)(value)),
+pub method next#[I, T, U](self: &Iterator#[Map#[I, T, U]]) -> Option#[U] {
+	match self@.inner.inner&.next() {
+		Option#[T]::Some(value) => Option#[U]::Some((self@.inner.f)(value)),
 		Option#[T]::None => Option#[U]::None,
 	}
 }
@@ -38,15 +36,15 @@ pub method next#[I, T, U](self: &Map#[I, T, U]) -> Option#[U] {
 pub method filter#[I, T](self: Iterator#[I], predicate: fn(T) -> Bool) -> Iterator#[
 	Filter#[I, T],
 ] {
-	Iterator(Filter#[I, T] { inner: self.inner, predicate: predicate })
+	Iterator(Filter#[I, T] { inner: self, predicate: predicate })
 }
 
 /// Advances until a value passes the predicate or the inner iterator ends.
-pub method next#[I, T](self: &Filter#[I, T]) -> Option#[T] {
+pub method next#[I, T](self: &Iterator#[Filter#[I, T]]) -> Option#[T] {
 	while true {
-		match self@.inner&.next() {
+		match self@.inner.inner&.next() {
 			Option#[T]::Some(value) => {
-				if (self@.predicate)(value) {
+				if (self@.inner.predicate)(value) {
 					return Option#[T]::Some(value);
 				}
 			},

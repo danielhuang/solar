@@ -45,9 +45,13 @@ there. Imports are resolved relative to `src/std`, including subdirectories.
   and slices through the bounds-checked `array_index` intrinsic.
 - Reflective equality and hashing for structs and enums require public fields.
 - HashMap keys must be sized.
-- Slice and vector `iter()` methods return `Iterator` wrappers. The wrapper's
-  `next()` borrows its inner iterator and preserves its inferred return type;
-  copying the wrapper copies the inner iterator's cursor state.
+- Slice and vector `iter()` methods return `Iterator` wrappers. Explicit
+  `next()` overloads support wrapped slice, map, and filter iterators; there is
+  no blanket forwarding overload for arbitrary inner types. Copying a wrapper
+  copies the inner iterator's cursor state.
+- Iterator state types do not provide `next()` themselves. Define advancement
+  on `&Iterator#[State]`, using its public `inner` field to update the state.
+  Map and filter store `Iterator#[I]` and advance that wrapped iterator.
 - `Iterator.map(fn(T) -> U)` returns `Iterator#[Map#[I, T, U]]` and invokes
   the callback only when the inner iterator yields `Some(T)`.
 - `Iterator.filter(fn(T) -> Bool)` returns `Iterator#[Filter#[I, T]]` and

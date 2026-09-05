@@ -9,7 +9,7 @@ pub import slice from "slice.solar";
 /// Iterator utilities.
 pub import iter from "iter.solar";
 
-/// A wrapper that forwards to an inner iterator.
+/// A wrapper for iterator-specific state.
 pub import {Iterator} from "iter.solar";
 
 /// Growable vectors.

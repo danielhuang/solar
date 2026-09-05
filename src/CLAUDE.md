@@ -21,6 +21,10 @@ compile(path) -> Typed -> Mangled -> Ir -> CSource -> Binary
 Both execution paths pass through `Mangled`: `ast_interp` consumes the mangled
 AST, while `ir_interp` and native codegen consume IR.
 
+Overload selection must reject incompatible concrete argument type bases before
+using a candidate's parameter types to infer closure parameters, including when
+those closures omit parameter annotations.
+
 ## LSP
 
 `src/bin/lsp.rs` shares one resolved-symbol path between hover and
