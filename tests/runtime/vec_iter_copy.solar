@@ -1,4 +1,4 @@
-fn print_next(iter: &slice::Iter#[Int]) {
+fn print_next(iter: &Iterator#[slice::Iter#[Int]]) {
 	match iter.next() {
 		Option#[&Int]::Some(value) => println(value@),
 		Option#[&Int]::None => println(0),

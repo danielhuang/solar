@@ -1,0 +1,48 @@
+fn main() {
+	let values = [1, 2, 3, 4, 5];
+	let calls = 0&;
+	let filtered = values&.iter().filter(\value: &Int {
+		calls@ = calls@ + 1;
+		value@ % 2 == 0
+	});
+	assert(calls@ == 0);
+	let copy = filtered;
+	match filtered&.next() {
+		Option#[&Int]::Some(value) => {
+			assert(value@ == 2);
+			value@ = 20;
+		},
+		Option#[&Int]::None => assert(false),
+	};
+	assert(values[1u] == 20);
+	assert(calls@ == 2);
+	assert(filtered&.next() == Option#[&Int]::Some(values[3u]&));
+	assert(calls@ == 4);
+	assert(copy&.next() == Option#[&Int]::Some(values[1u]&));
+	assert(calls@ == 6);
+	assert(filtered&.next() == Option#[&Int]::None);
+	assert(calls@ == 7);
+	assert(filtered&.next() == Option#[&Int]::None);
+	assert(calls@ == 7);
+
+	let mapped = vec::Vec(values&)&.iter().map(\value: &Int value@);
+	let chained = mapped.filter(\value: Int value >
+		3).map(\value: Int value + 1);
+	assert(chained&.next() == Option#[Int]::Some(21));
+	assert(chained&.next() == Option#[Int]::Some(5));
+	assert(chained&.next() == Option#[Int]::Some(6));
+	assert(chained&.next() == Option#[Int]::None);
+
+	let rejected = values&.iter().filter(\value: &Int false);
+	assert(rejected&.next() == Option#[&Int]::None);
+	let accepted = values&.iter().filter(\value: &Int true);
+	assert(accepted&.next() == Option#[&Int]::Some(values[0u]&));
+	let empty = []#[Int];
+	let empty_filtered = empty&.iter().filter(\value: &Int {
+		calls@ = calls@ + 1;
+		true
+	});
+	assert(empty_filtered&.next() == Option#[&Int]::None);
+	assert(calls@ == 7);
+	println("passed"&);
+}

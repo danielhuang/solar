@@ -8,6 +8,24 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 #[test]
+fn iterator() {
+    let output = run(&fixture("iterator.solar"), "iterator");
+    assert_eq!(output, "passed\n");
+}
+
+#[test]
+fn iterator_map() {
+    let output = run(&fixture("iterator_map.solar"), "iterator_map");
+    assert_eq!(output, "passed\n");
+}
+
+#[test]
+fn iterator_filter() {
+    let output = run(&fixture("iterator_filter.solar"), "iterator_filter");
+    assert_eq!(output, "passed\n");
+}
+
+#[test]
 fn assert() {
     let output = run(&fixture("assert.solar"), "assert");
     assert_eq!(output, "passed\nassertion failed\n");

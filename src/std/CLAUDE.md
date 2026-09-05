@@ -45,6 +45,13 @@ there. Imports are resolved relative to `src/std`, including subdirectories.
   and slices through the bounds-checked `array_index` intrinsic.
 - Reflective equality and hashing for structs and enums require public fields.
 - HashMap keys must be sized.
+- Slice and vector `iter()` methods return `Iterator` wrappers. The wrapper's
+  `next()` borrows its inner iterator and preserves its inferred return type;
+  copying the wrapper copies the inner iterator's cursor state.
+- `Iterator.map(fn(T) -> U)` returns `Iterator#[Map#[I, T, U]]` and invokes
+  the callback only when the inner iterator yields `Some(T)`.
+- `Iterator.filter(fn(T) -> Bool)` returns `Iterator#[Filter#[I, T]]` and
+  lazily skips rejected values, preserving the accepted values' type.
 - Constructor-like APIs are empty-name associated functions (`fn Type::(...)`)
   and are invoked as `Type(...)`.
 

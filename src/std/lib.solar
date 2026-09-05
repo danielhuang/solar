@@ -6,6 +6,12 @@ pub import {Any} from "any.solar";
 /// Slice utilities and iteration.
 pub import slice from "slice.solar";
 
+/// Iterator utilities.
+pub import iter from "iter.solar";
+
+/// A wrapper that forwards to an inner iterator.
+pub import {Iterator} from "iter.solar";
+
 /// Growable vectors.
 pub import vec from "vec.solar";
 

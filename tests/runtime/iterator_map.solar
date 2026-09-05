@@ -1,0 +1,35 @@
+fn main() {
+	let values = [10, 20, 30];
+	let calls = 0&;
+	let mapped = values&.iter().map(\value: &Int {
+		calls@ = calls@ + 1;
+		value@ + 1
+	});
+	assert(calls@ == 0);
+	let copy = mapped;
+	assert(mapped&.next() == Option#[Int]::Some(11));
+	assert(calls@ == 1);
+	assert(mapped&.next() == Option#[Int]::Some(21));
+	assert(copy&.next() == Option#[Int]::Some(11));
+	assert(mapped&.next() == Option#[Int]::Some(31));
+	assert(calls@ == 4);
+	assert(mapped&.next() == Option#[Int]::None);
+	assert(mapped&.next() == Option#[Int]::None);
+	assert(calls@ == 4);
+
+	let chained = vec::Vec(values&)&.iter().map(\value: &Int value@).map(\value: Int value >
+		15);
+	assert(chained&.next() == Option#[Bool]::Some(false));
+	assert(chained&.next() == Option#[Bool]::Some(true));
+	assert(chained&.next() == Option#[Bool]::Some(true));
+	assert(chained&.next() == Option#[Bool]::None);
+
+	let empty = []#[Int];
+	let empty_mapped = empty&.iter().map(\value: &Int {
+		calls@ = calls@ + 1;
+		value@
+	});
+	assert(empty_mapped&.next() == Option#[Int]::None);
+	assert(calls@ == 4);
+	println("passed"&);
+}

@@ -1,5 +1,6 @@
 import {throw} from "@intrinsics";
 import slice from "slice.solar";
+import {Iterator} from "iter.solar";
 
 /// A growable array.
 pub struct Vec#[T] { len: Uint, inner: ^[T] }
@@ -36,6 +37,6 @@ pub method at#[T](self: &Vec#[T], index: Uint) -> &T {
 }
 
 /// Iterates over the vector's elements.
-pub method iter#[T](self: &Vec#[T]) -> slice::Iter#[T] {
+pub method iter#[T](self: &Vec#[T]) -> Iterator#[slice::Iter#[T]] {
 	self.as_slice().iter()
 }

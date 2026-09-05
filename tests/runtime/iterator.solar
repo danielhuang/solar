@@ -1,0 +1,23 @@
+struct Counter { value: Int }
+
+method next(self: &Counter) -> Option#[Int] {
+	if self@.value >= 3 {
+		return Option#[Int]::None;
+	}
+
+	self@.value = self@.value + 1;
+	Option#[Int]::Some(self@.value)
+}
+
+fn main() {
+	let iterator = iter::Iterator(Counter { value: 0 });
+	let copy = iterator;
+
+	assert(iterator&.next() == Option#[Int]::Some(1));
+	assert(iterator&.next() == Option#[Int]::Some(2));
+	assert(copy&.next() == Option#[Int]::Some(1));
+	assert(iterator&.next() == Option#[Int]::Some(3));
+	assert(iterator&.next() == Option#[Int]::None);
+	assert(iterator&.next() == Option#[Int]::None);
+	println("passed"&);
+}

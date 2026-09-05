@@ -1,5 +1,6 @@
 import intrinsics from "@intrinsics";
 import {Option} from "lib.solar";
+import {Iterator} from "iter.solar";
 
 /// An iterator over borrowed slice elements.
 pub struct Iter#[T] { remaining: &[T] }
@@ -132,8 +133,8 @@ pub method next#[T](self: &Split#[T]) -> Option#[&[T]] {
 }
 
 /// Returns an iterator over the slice's elements.
-pub method iter#[T](self: &[T]) -> Iter#[T] {
-	Iter#[T] { remaining: self }
+pub method iter#[T](self: &[T]) -> Iterator#[Iter#[T]] {
+	Iterator(Iter#[T] { remaining: self })
 }
 
 /// Advances the iterator and returns the next element.
