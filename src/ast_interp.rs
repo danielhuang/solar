@@ -1982,6 +1982,21 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             Intrinsic::ThreadSpawn => {
                 panic!("thread_spawn not implemented in AST interpreter");
             }
+            Intrinsic::AtomicFetch(op) => {
+                let Value::Ref(slot) = self.eval_expr(&arguments[0])? else {
+                    unreachable!("atomic fetch requires a reference")
+                };
+                let Value::Int(value) = self.eval_expr(&arguments[1])? else {
+                    unreachable!("atomic fetch requires an integer or Bool")
+                };
+                let Value::Int(old) = *slot.borrow() else {
+                    unreachable!("atomic fetch requires an integer or Bool")
+                };
+                let new =
+                    crate::ir_interp::atomic_fetch_value(*op, old as u64, value as u64, result_ty);
+                *slot.borrow_mut() = Value::Int(new as i64);
+                Value::Int(old)
+            }
             Intrinsic::AtomicLoad => {
                 // In single-threaded interpreter, atomic load is just a deref
                 let val = self.eval_expr(&arguments[0])?;

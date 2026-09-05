@@ -1,0 +1,5 @@
+fn main() {
+	let value = 1;
+	let reference = value&;
+	reference&.atomic_fetch_or(value&);
+}

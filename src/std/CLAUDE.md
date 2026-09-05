@@ -35,6 +35,11 @@ there. Imports are resolved relative to `src/std`, including subdirectories.
 - `Any(&T)` erases a sized referent's concrete type while preserving reference
   aliasing; `Any.downcast#[T]()` returns `&?T` without exposing the private tag.
 - `ref_eq(a, b)` compares reference identity.
+- Atomic loads use acquire ordering, stores use release, and read-modify-write
+  operations use acquire-release (compare-exchange failures use acquire).
+  `atomic_fetch_add/sub/and/or/xor/nand/min/max` return the previous value;
+  add/sub wrap at the integer width, min/max respect signedness, and the bitwise
+  operations also accept `Bool` while keeping its representation canonical.
 - The blanket `operator_eq(self: &&T, other: &&T)` compares referenced values.
 - `operator_index(self: &[T], index: Uint) -> &T` provides indexing for arrays
   and slices through the bounds-checked `array_index` intrinsic.

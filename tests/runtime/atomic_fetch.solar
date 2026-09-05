@@ -1,0 +1,82 @@
+fn exercise#[T](zero: T, max: T, one: T) {
+	let value = max;
+	let two = one ++ one;
+	let three = two ++ one;
+	let four = two ++ two;
+	let five = four ++ one;
+	let six = four ++ two;
+	let eight = four ++ four;
+	let ten = eight ++ two;
+	let eleven = ten ++ one;
+	let twelve = eight ++ four;
+	let fourteen = twelve ++ two;
+	assert(value&.atomic_fetch_add(one) == max);
+	assert(value == max ++ one);
+	assert(value&.atomic_fetch_sub(one) == max ++ one);
+	assert(value == max);
+
+	value = twelve;
+	assert(value&.atomic_fetch_and(ten) == twelve);
+	assert(value == eight);
+	assert(value&.atomic_fetch_or(three) == eight);
+	assert(value == eleven);
+	assert(value&.atomic_fetch_xor(five) == eleven);
+	assert(value == fourteen);
+	assert(value&.atomic_fetch_nand(six) == fourteen);
+	assert(value == !six);
+
+	// All ones is negative for signed types and the maximum for unsigned types.
+	let all = !zero;
+	let low = if all < one { all } else { one };
+	let high = if all > one { all } else { one };
+	value = all;
+	assert(value&.atomic_fetch_min(one) == all);
+	assert(value == low);
+	assert(value&.atomic_fetch_min(high) == low);
+	assert(value == low);
+	assert(value&.atomic_fetch_max(high) == low);
+	assert(value == high);
+	assert(value&.atomic_fetch_max(low) == high);
+	assert(value == high);
+}
+
+fn boolean(a: Bool, b: Bool) {
+	let value = a;
+	assert(value&.atomic_fetch_and(b) == a);
+	assert(value == (a && b));
+	value = a;
+	assert(value&.atomic_fetch_or(b) == a);
+	assert(value == (a || b));
+	value = a;
+	assert(value&.atomic_fetch_xor(b) == a);
+	assert(value == (a != b));
+	value = a;
+	assert(value&.atomic_fetch_nand(b) == a);
+	assert(value == !(a && b));
+}
+
+fn operand(value: &Int) -> Int {
+	value@ = 10;
+	2
+}
+
+fn main() {
+	exercise(0, 9223372036854775807, 1);
+	exercise(0u, 18446744073709551615u, 1u);
+	exercise(0i8, 127i8, 1i8);
+	exercise(0u8, 255u8, 1u8);
+	exercise(0i16, 32767i16, 1i16);
+	exercise(0u16, 65535u16, 1u16);
+	exercise(0i32, 2147483647i32, 1i32);
+	exercise(0u32, 4294967295u32, 1u32);
+	exercise(0i64, 9223372036854775807i64, 1i64);
+	exercise(0u64, 18446744073709551615u64, 1u64);
+	boolean(false, false);
+	boolean(false, true);
+	boolean(true, false);
+	boolean(true, true);
+	let value = 0;
+	assert(value&.atomic_fetch_add(operand(value&)) == 10);
+	assert(value == 12);
+	println("passed"&);
+}

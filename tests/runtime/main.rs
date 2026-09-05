@@ -370,6 +370,12 @@ fn return_values() {
 }
 
 #[test]
+fn atomic_fetch() {
+    let output = run(&fixture("atomic_fetch.solar"), "atomic_fetch");
+    assert_eq!(output, "passed\n");
+}
+
+#[test]
 fn array_index_intrinsic() {
     let output = run(
         &fixture("array_index_intrinsic.solar"),

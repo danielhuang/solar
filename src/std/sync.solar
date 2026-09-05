@@ -3,6 +3,14 @@ import {
 	atomic_store,
 	atomic_exchange,
 	atomic_compare_exchange,
+	atomic_fetch_add,
+	atomic_fetch_sub,
+	atomic_fetch_and,
+	atomic_fetch_or,
+	atomic_fetch_xor,
+	atomic_fetch_nand,
+	atomic_fetch_min,
+	atomic_fetch_max,
 	syscall,
 	throw,
 } from "@intrinsics";
@@ -10,22 +18,72 @@ import {
 // Linux x86-64 timespec layout for relative FUTEX_WAIT timeouts.
 struct(repr(C)) Timespec { seconds: Int64, nanoseconds: Int64 }
 
-/// Atomically loads a value.
+/// Adds with wrapping arithmetic, returning the previous value.
+/// Uses acquire-release ordering. Accepts integers.
+pub method atomic_fetch_add#[T](self: &T, value: T) -> T {
+	atomic_fetch_add(self, value)
+}
+
+/// Subtracts with wrapping arithmetic, returning the previous value.
+/// Uses acquire-release ordering. Accepts integers.
+pub method atomic_fetch_sub#[T](self: &T, value: T) -> T {
+	atomic_fetch_sub(self, value)
+}
+
+/// Applies bitwise AND, returning the previous value.
+/// Uses acquire-release ordering. Accepts integers and Bool.
+pub method atomic_fetch_and#[T](self: &T, value: T) -> T {
+	atomic_fetch_and(self, value)
+}
+
+/// Applies bitwise OR, returning the previous value.
+/// Uses acquire-release ordering. Accepts integers and Bool.
+pub method atomic_fetch_or#[T](self: &T, value: T) -> T {
+	atomic_fetch_or(self, value)
+}
+
+/// Applies bitwise XOR, returning the previous value.
+/// Uses acquire-release ordering. Accepts integers and Bool.
+pub method atomic_fetch_xor#[T](self: &T, value: T) -> T {
+	atomic_fetch_xor(self, value)
+}
+
+/// Applies bitwise NOT of AND, returning the previous value.
+/// Uses acquire-release ordering. Accepts integers and Bool.
+pub method atomic_fetch_nand#[T](self: &T, value: T) -> T {
+	atomic_fetch_nand(self, value)
+}
+
+/// Stores the minimum, returning the previous value.
+/// Uses acquire-release ordering. Accepts integers.
+pub method atomic_fetch_min#[T](self: &T, value: T) -> T {
+	atomic_fetch_min(self, value)
+}
+
+/// Stores the maximum, returning the previous value.
+/// Uses acquire-release ordering. Accepts integers.
+pub method atomic_fetch_max#[T](self: &T, value: T) -> T {
+	atomic_fetch_max(self, value)
+}
+
+/// Atomically loads a value with acquire ordering.
 pub method atomic_load#[T](self: &T) -> T {
 	atomic_load(self)
 }
 
-/// Atomically stores a value.
+/// Atomically stores a value with release ordering.
 pub method atomic_store#[T](self: &T, val: T) {
 	atomic_store(self, val);
 }
 
 /// Atomically replaces a value and returns the old value.
+/// Uses acquire-release ordering.
 pub method atomic_exchange#[T](self: &T, val: T) -> T {
 	atomic_exchange(self, val)
 }
 
 /// Atomically replaces `expected` with `new` and returns the old value.
+/// Uses acquire-release ordering on success and acquire ordering on failure.
 pub method atomic_compare_exchange#[T](self: &T, expected: T, new: T) -> T {
 	atomic_compare_exchange(self, expected, new)
 }

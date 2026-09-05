@@ -1,5 +1,5 @@
 use crate::ast::BinOp;
-use crate::intrinsics::Intrinsic;
+use crate::intrinsics::{AtomicFetchOp, Intrinsic};
 use crate::ir::*;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -76,6 +76,32 @@ fn truncate_to_ty(val: u64, ty: &Type) -> u64 {
     } else {
         masked
     }
+}
+
+/// Single-threaded semantics of an atomic fetch operation, shared by interpreters.
+pub(crate) fn atomic_fetch_value(op: AtomicFetchOp, old: u64, value: u64, ty: &Type) -> u64 {
+    let normalize = |value| {
+        if *ty == Type::Bool {
+            value & 1
+        } else {
+            truncate_to_ty(value, ty)
+        }
+    };
+    let old = normalize(old);
+    let value = normalize(value);
+    let result = match op {
+        AtomicFetchOp::Add => old.wrapping_add(value),
+        AtomicFetchOp::Sub => old.wrapping_sub(value),
+        AtomicFetchOp::And => old & value,
+        AtomicFetchOp::Or => old | value,
+        AtomicFetchOp::Xor => old ^ value,
+        AtomicFetchOp::Nand => !(old & value),
+        AtomicFetchOp::Min if is_signed(ty) => (old as i64).min(value as i64) as u64,
+        AtomicFetchOp::Max if is_signed(ty) => (old as i64).max(value as i64) as u64,
+        AtomicFetchOp::Min => old.min(value),
+        AtomicFetchOp::Max => old.max(value),
+    };
+    normalize(result)
 }
 
 fn is_signed(ty: &Type) -> bool {
@@ -1685,6 +1711,14 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             }
             Intrinsic::ThreadSpawn => {
                 panic!("thread_spawn not implemented in IR interpreter");
+            }
+            Intrinsic::AtomicFetch(op) => {
+                let address = self.eval_load(nodes, args[0])? as usize;
+                let value = self.eval_load(nodes, args[1])?;
+                let old = self.scalar_load(address, result_ty);
+                let new = atomic_fetch_value(*op, old, value, result_ty);
+                self.scalar_store(address, new, result_ty);
+                self.scalar_store(dst, old, result_ty);
             }
             Intrinsic::AtomicLoad => {
                 // In single-threaded interpreter, atomic load is just a regular load via ref

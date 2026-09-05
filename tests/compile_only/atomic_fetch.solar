@@ -1,0 +1,41 @@
+fn main() {
+	let count = 0u;
+	let seen = [0u8; 8000u];
+	let handles = ([]#[thread::Thread])^;
+	let t = 0u;
+
+	while t < 8u {
+		let handle = thread::spawn(\ {
+			let i = 0u;
+
+			while i < 1000u {
+				let ticket = count&.atomic_fetch_add(1u);
+				assert(seen[ticket]&.atomic_exchange(1u8) == 0u8);
+				i = i + 1u;
+			}
+		});
+		handles = (handles@ + [handle])^;
+		t = t + 1u;
+	}
+
+	let j = 0u;
+
+	while j < 8u {
+		handles@[j].join();
+		j = j + 1u;
+	}
+
+	assert(count == 8000u);
+
+	// Release publication and acquire observation via fetch operations.
+	let ready = 0u;
+	let payload = 0;
+	let producer = thread::spawn(\ {
+		payload = 42;
+		let old = ready&.atomic_fetch_or(1u);
+	});
+	while ready&.atomic_fetch_and(1u) == 0u {}
+	assert(payload == 42);
+	producer.join();
+	println("passed"&);
+}

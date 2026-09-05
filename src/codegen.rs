@@ -3125,6 +3125,28 @@ impl<'a> Codegen<'a> {
                     ));
                 }
             }
+            Intrinsic::AtomicFetch(op) => {
+                let reference = self.emit_load(nodes, args[0]);
+                let pointer = self.fresh_tmp();
+                let c_ty = self.c_int_type(result_ty);
+                self.linef(format!("{c_ty}* {pointer} = ({c_ty}*){reference};"));
+                let value = self.emit_load(nodes, args[1]);
+                let old = self.fresh_tmp();
+                if *result_ty == Type::Bool && matches!(op, crate::intrinsics::AtomicFetchOp::Nand)
+                {
+                    // Keep Bool storage canonical: NAND with true toggles it;
+                    // NAND with false stores true. Each branch is one RMW.
+                    self.linef(format!(
+                        "{c_ty} {old} = ({value}) ? __atomic_fetch_xor({pointer}, 1, __ATOMIC_ACQ_REL) : __atomic_exchange_n({pointer}, 1, __ATOMIC_ACQ_REL);"
+                    ));
+                } else {
+                    let builtin = op.name();
+                    self.linef(format!(
+                        "{c_ty} {old} = __{builtin}({pointer}, ({c_ty}){value}, __ATOMIC_ACQ_REL);"
+                    ));
+                }
+                self.linef(format!("*({c_ty}*){dst} = {old};"));
+            }
             Intrinsic::AtomicLoad => {
                 // arg is &T — a pointer. Load the pointee atomically with acquire.
                 let ref_val = self.emit_load(nodes, args[0]);

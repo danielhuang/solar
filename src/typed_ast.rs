@@ -9592,6 +9592,26 @@ impl<'a> Lowerer<'a> {
                         ));
                     }
                 }
+                ParamRequirement::RefToAtomicInteger { allow_bool } => {
+                    let Type::Ref(inner) = &arg.ty else {
+                        return Err(CompileError::new(
+                            format!("{name}: expected &T, got {}", arg.ty),
+                            span,
+                        ));
+                    };
+                    if !inner.is_integer() && !(*allow_bool && **inner == Type::Bool) {
+                        let expected = if *allow_bool {
+                            "an integer or Bool"
+                        } else {
+                            "an integer"
+                        };
+                        return Err(CompileError::new(
+                            format!("{name}: expected a reference to {expected}, got {}", arg.ty),
+                            span,
+                        ));
+                    }
+                    ref_inner = Some((**inner).clone());
+                }
                 ParamRequirement::RefToAtomic => {
                     let inner_ty = match &arg.ty {
                         Type::Ref(inner) => (**inner).clone(),
@@ -9753,6 +9773,10 @@ enum ParamRequirement {
     /// Must equal the type captured by a preceding `IsFloat` param.
     MatchesFloat,
     RefToAtomic,
+    /// An integer reference, optionally also accepting Bool for bitwise RMWs.
+    RefToAtomicInteger {
+        allow_bool: bool,
+    },
     MatchesRefInner,
     IsSizedRef,
     IsRef,
@@ -9876,6 +9900,15 @@ fn intrinsic_spec(intrinsic: &Intrinsic) -> IntrinsicSpec {
         Intrinsic::ThreadSpawn => IntrinsicSpec {
             params: vec![fn_unit()],
             ret: Fixed(Type::Unit),
+        },
+        Intrinsic::AtomicFetch(op) => IntrinsicSpec {
+            params: vec![
+                RefToAtomicInteger {
+                    allow_bool: op.accepts_bool(),
+                },
+                MatchesRefInner,
+            ],
+            ret: RefInner,
         },
         Intrinsic::AtomicLoad => IntrinsicSpec {
             params: vec![RefToAtomic],

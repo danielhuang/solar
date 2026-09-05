@@ -8,6 +8,12 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 #[test]
+fn atomic_fetch() {
+    let output = run_codegen_file(&fixture("atomic_fetch.solar"), "compile_only_atomic_fetch");
+    assert_eq!(output, "passed\n");
+}
+
+#[test]
 fn atomics() {
     let output = run_codegen_file(&fixture("atomics.solar"), "compile_only_atomics");
     assert_eq!(output, "42\n3\n99\n4\n");

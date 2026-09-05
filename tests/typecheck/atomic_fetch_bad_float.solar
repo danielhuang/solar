@@ -1,0 +1,4 @@
+fn main() {
+	let value = 1.0f64;
+	value&.atomic_fetch_min(2.0f64);
+}

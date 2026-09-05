@@ -1,0 +1,4 @@
+fn main() {
+	let value = false;
+	value&.atomic_fetch_add(true);
+}

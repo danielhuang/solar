@@ -2,6 +2,48 @@
 
 use crate::ast::NumericType;
 
+/// An atomic read-modify-write operation that returns the previous value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtomicFetchOp {
+    /// Wrapping addition.
+    Add,
+    /// Wrapping subtraction.
+    Sub,
+    /// Bitwise AND.
+    And,
+    /// Bitwise OR.
+    Or,
+    /// Bitwise XOR.
+    Xor,
+    /// Bitwise NOT of AND.
+    Nand,
+    /// Minimum in the operand type's signedness.
+    Min,
+    /// Maximum in the operand type's signedness.
+    Max,
+}
+
+impl AtomicFetchOp {
+    /// Whether the operation also accepts booleans.
+    pub fn accepts_bool(self) -> bool {
+        matches!(self, Self::And | Self::Or | Self::Xor | Self::Nand)
+    }
+
+    /// Source name of the corresponding intrinsic.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Add => "atomic_fetch_add",
+            Self::Sub => "atomic_fetch_sub",
+            Self::And => "atomic_fetch_and",
+            Self::Or => "atomic_fetch_or",
+            Self::Xor => "atomic_fetch_xor",
+            Self::Nand => "atomic_fetch_nand",
+            Self::Min => "atomic_fetch_min",
+            Self::Max => "atomic_fetch_max",
+        }
+    }
+}
+
 /// A compiler intrinsic.
 #[derive(Debug, Clone)]
 pub enum Intrinsic {
@@ -29,6 +71,7 @@ pub enum Intrinsic {
     AtomicStore,
     AtomicExchange,
     AtomicCompareExchange,
+    AtomicFetch(AtomicFetchOp),
     FdFromRaw,
     FdToRaw,
     Syscall,
@@ -94,6 +137,35 @@ const INTRINSIC_NAMES: &[(&str, Intrinsic)] = &[
     ("atomic_store", Intrinsic::AtomicStore),
     ("atomic_exchange", Intrinsic::AtomicExchange),
     ("atomic_compare_exchange", Intrinsic::AtomicCompareExchange),
+    (
+        "atomic_fetch_add",
+        Intrinsic::AtomicFetch(AtomicFetchOp::Add),
+    ),
+    (
+        "atomic_fetch_sub",
+        Intrinsic::AtomicFetch(AtomicFetchOp::Sub),
+    ),
+    (
+        "atomic_fetch_and",
+        Intrinsic::AtomicFetch(AtomicFetchOp::And),
+    ),
+    ("atomic_fetch_or", Intrinsic::AtomicFetch(AtomicFetchOp::Or)),
+    (
+        "atomic_fetch_xor",
+        Intrinsic::AtomicFetch(AtomicFetchOp::Xor),
+    ),
+    (
+        "atomic_fetch_nand",
+        Intrinsic::AtomicFetch(AtomicFetchOp::Nand),
+    ),
+    (
+        "atomic_fetch_min",
+        Intrinsic::AtomicFetch(AtomicFetchOp::Min),
+    ),
+    (
+        "atomic_fetch_max",
+        Intrinsic::AtomicFetch(AtomicFetchOp::Max),
+    ),
     ("fd_from_raw", Intrinsic::FdFromRaw),
     ("fd_to_raw", Intrinsic::FdToRaw),
     ("syscall", Intrinsic::Syscall),
@@ -139,6 +211,7 @@ impl Intrinsic {
     pub fn name(&self) -> &'static str {
         match self {
             Intrinsic::Cast(..) => "cast",
+            Intrinsic::AtomicFetch(op) => op.name(),
             other => {
                 INTRINSIC_NAMES
                     .iter()

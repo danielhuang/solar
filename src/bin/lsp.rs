@@ -6226,7 +6226,12 @@ fn main() {
                 .unwrap()
                 .ends_with("/src/std/sync.solar")
         );
-        assert_eq!(location["range"]["start"]["line"], 106);
+        let sync_source = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/std/sync.solar"),
+        )
+        .unwrap();
+        let (expected_line, _) = occurrence_position(&sync_source, "pub method unlock", 0);
+        assert_eq!(location["range"]["start"]["line"], expected_line);
     }
 
     #[test]

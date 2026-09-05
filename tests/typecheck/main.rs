@@ -288,6 +288,30 @@ fn bad_index_type() {
 }
 
 #[test]
+#[should_panic(expected = "atomic_fetch_add: expected a reference to an integer, got &Bool")]
+fn atomic_fetch_rejects_bool_arithmetic() {
+    compile_with_pipeline(&fixture("atomic_fetch_bad_bool.solar"));
+}
+
+#[test]
+#[should_panic(expected = "atomic_fetch_min: expected a reference to an integer, got &Float64")]
+fn atomic_fetch_rejects_float() {
+    compile_with_pipeline(&fixture("atomic_fetch_bad_float.solar"));
+}
+
+#[test]
+#[should_panic(expected = "atomic_fetch_or: expected a reference to an integer or Bool, got &&Int")]
+fn atomic_fetch_rejects_reference_bits() {
+    compile_with_pipeline(&fixture("atomic_fetch_bad_ref.solar"));
+}
+
+#[test]
+#[should_panic(expected = "no matching overload for `atomic_fetch_add`")]
+fn atomic_fetch_requires_matching_operand() {
+    compile_with_pipeline(&fixture("atomic_fetch_bad_operand.solar"));
+}
+
+#[test]
 #[should_panic(expected = "array_index: expected an array reference, got &Int")]
 fn array_index_requires_array_reference() {
     compile_with_pipeline(&fixture("array_index_non_array.solar"));
