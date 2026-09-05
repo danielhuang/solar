@@ -1,46 +1,13 @@
 # Tests
 
-Test groups have distinct backend coverage:
-
-- `tests/runtime`: AST interpreter, IR interpreter, and debug native codegen;
-  outputs must match.
-- `tests/typecheck`: compiler diagnostics.
-- `tests/parser`: CST-to-AST behavior and source spans.
-- `tests/multi_file`: imports, visibility, provenance, and cross-file symbols.
-- `tests/compile_only`: native-only features such as threads and sockets.
-- Dedicated release integration tests exercise the collector and LLVM passes.
-
-Use `test-utils` helpers instead of duplicating pipeline setup. Debug native
-tests use ASAN and exercise the unoptimized write-barrier/collector path.
-Keep generated sources and native test binaries in a `tempdir::TempDir` owned
-by the test. Helpers returning a binary path must also return its directory
-guard, and callers must retain the guard until execution and assertions finish.
-Compiler intermediates are temporary and unavailable after compilation.
-Release integration tests additionally exercise LTO and allocation
-specialization.
-
-Use `gc::collect_gc()` to request and wait for collection in lifetime tests,
-and `gc::request_gc()` to exercise asynchronous requests. Avoid allocation
-pressure as a collection trigger. Callback completion requires separate
-synchronization because collection does not wait for finalizers. Finalizer tests
-must account for conservative stack and small-object retention; allocating on a
-worker that exits avoids stale stack roots. Use precisely traced aggregates when
-testing that inactive enum payloads stop retaining existing finalizers.
-
-GC-San tests cover both optimized and unoptimized `CompileOptions`: both run the
-collector with arena access checks and monotonic allocation frontiers.
-
-Tests that perform file or directory I/O beyond standard-stream writes belong
-in `compile_only` because those APIs use the native-only `syscall` intrinsic.
-Standard-stream coverage remains in `runtime` so both interpreters continue to
-exercise `file_std*` and `file_write_partial`.
-
-Keep runtime exception messages identical across all backends. Add regression
-fixtures near the subsystem they exercise and avoid temporary probe tests or
-machine-specific paths.
-
-Run the full suite with:
-
-```bash
-cargo test --workspace
-```
+- Use `test-utils` helpers instead of duplicating pipeline setup.
+- Keep generated sources and native binaries in a temporary directory owned by
+  the test, and retain its guard until execution and assertions finish.
+- Use explicit collection requests in GC lifetime tests; avoid allocation
+  pressure as a collection trigger.
+- Synchronize finalizer tests explicitly instead of relying on timing.
+- Exercise both optimized and unoptimized builds in GC-San tests.
+- Keep standard-stream tests in the shared runtime suite so all backends are
+  exercised.
+- Add regression fixtures near the subsystem they exercise. Avoid temporary
+  probe tests and machine-specific paths.
