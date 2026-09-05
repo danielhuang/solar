@@ -67,6 +67,7 @@ fn monomorphization_error_retains_and_prints_the_call_chain() {
     assert!(inner.caused_by.is_none());
 
     let output = Command::new(env!("CARGO_BIN_EXE_solar"))
+        .arg("check")
         .arg(path)
         .output()
         .unwrap();

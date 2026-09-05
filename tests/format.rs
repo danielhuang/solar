@@ -43,7 +43,7 @@ fn all_solar_sources_are_formatted() {
 
     assert!(
         failures.is_empty(),
-        "Solar formatting failures:\n  {}\n\nrun `cargo run --bin fmt -- $(rg --files -g '*.solar')`",
+        "Solar formatting failures:\n  {}\n\nrun `cargo run -- fmt $(rg --files -g '*.solar')`",
         failures.join("\n  ")
     );
 }

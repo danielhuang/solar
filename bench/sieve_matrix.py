@@ -7,7 +7,7 @@ Minimum over ROUNDS interleaved rounds. Unlike bench.py there is nothing for a
 collector to do here, so each runtime appears once with its default GC.
 
 Prereqs:
-  Solar  target/sieve      (cargo run --release --bin compile -- examples/sieve.solar target/sieve)
+  Solar  target/sieve      (cargo run --release -- compile --release examples/sieve.solar target/sieve)
   C      bench/c/sieve      (make -C bench/c)
   Go     bench/go/sieve     (go build)
   Java   bench/java/Sieve.class   (javac)

@@ -30,6 +30,21 @@ Overload selection must reject incompatible concrete argument type bases before
 using a candidate's parameter types to infer closure parameters, including when
 those closures omit parameter annotations.
 
+## Command line
+
+`src/main.rs` defines the Clap CLI: `solar compile <src.solar> <dest>`,
+`solar fmt <files>...`, `solar check <src.solar>`, and `solar run <src.solar>`.
+The LSP remains a separate binary. `check` resolves and type-checks without
+code generation or execution. `fmt` validates every input before writing any.
+
+Native `compile` and `run` default to debug ASAN builds. `--release` enables
+optimized code generation; `--gc-san` enables GC-San with either build mode.
+Build the matching `solar-system` runtime before native compilation.
+`run` owns a temporary directory for its executable and removes it after the
+child exits, including nonzero exits, before returning the child's exit code
+(or 1 for signal termination). `run --interp ast` and `run --interp ir` use the
+diagnostic interpreters and cannot be combined with native build flags.
+
 ## LSP
 
 `src/bin/lsp.rs` shares one resolved-symbol path between hover and
@@ -73,7 +88,7 @@ scope.
 
 ## Formatter
 
-Run `cargo run --bin fmt -- path/to/file.solar` to rewrite Solar source files.
+Run `cargo run -- fmt path/to/file.solar` to rewrite Solar source files.
 The formatter uses an 80-column layout, tabs for indentation, compact blocks
 when written compact and they fit, and trailing commas only for multiline
 lists. It preserves comments, collapses consecutive blank lines, and refuses to

@@ -12,7 +12,7 @@
 // bench/rust — a cross-implementation correctness check.
 //
 // Built to be compiled (the interpreter is far too slow for these sizes):
-//   cargo run --bin compile -- examples/hashmap.solar target/hashmap
+//   cargo run -- compile --release examples/hashmap.solar target/hashmap
 //   target/hashmap < /dev/null          # run every phase
 //   echo 2 | target/hashmap             # run only phase 2
 // A phase index on stdin selects a single phase; EOF (e.g. < /dev/null) runs all.

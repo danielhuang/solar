@@ -81,7 +81,7 @@ codegen:
 cargo build --release -p solar-system
 
 for stem in allocs3 threads_list2 splay allocs5 sieve hashmap binarytrees binarytrees_st; do
-  cargo run --release --quiet --bin compile -- \
+  cargo run --release --quiet -- compile --release \
     "examples/$stem.solar" "target/$stem"
 done
 ```

@@ -37,7 +37,8 @@ fn release_binary_uses_absolute_output_path() {
     std::fs::create_dir(&scratch).unwrap();
     let path = directory.path().join("nested/release program");
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/runtime/iterator.solar");
-    let result = std::process::Command::new(env!("CARGO_BIN_EXE_compile"))
+    let result = std::process::Command::new(env!("CARGO_BIN_EXE_solar"))
+        .args(["compile", "--release"])
         .arg(source)
         .arg(&path)
         .env("TMPDIR", &scratch)

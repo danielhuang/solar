@@ -22,20 +22,20 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 Run a program with the IR interpreter:
 
 ```bash
-cargo run -- examples/example.solar
+cargo run -- run examples/example.solar --interp ir
 ```
 
 Compile a native release binary:
 
 ```bash
 cargo build --release -p solar-system
-cargo run --bin compile -- path/to/program.solar target/program
+cargo run -- compile path/to/program.solar target/program --release
 ```
 
 Build a debug ASAN binary:
 
 ```bash
-cargo run --bin run_codegen -- path/to/program.solar
+cargo run -- run path/to/program.solar
 ```
 
 Release codegen is the production path. Debug codegen and the interpreters are

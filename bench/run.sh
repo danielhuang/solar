@@ -7,7 +7,7 @@ echo "Building Solar runtime (release)..."
 cargo build --release -p solar-system
 
 echo "Compiling examples/hashmap.solar (release)..."
-cargo run --quiet --bin compile -- examples/hashmap.solar target/hashmap
+cargo run --quiet -- compile --release examples/hashmap.solar target/hashmap
 
 echo "Building Rust reference (release)..."
 ( cd bench/rust && cargo build --release --quiet )
