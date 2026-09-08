@@ -629,7 +629,7 @@ pub fn type_contains_unique(ty: &Type, dt: &HashMap<String, DataType>) -> bool {
                 false
             }
         }
-        Type::FixedArray(inner, _) => type_contains_unique(inner, dt),
+        Type::Array(inner) | Type::FixedArray(inner, _) => type_contains_unique(inner, dt),
         _ => false,
     }
 }
@@ -669,7 +669,7 @@ pub fn type_contains_enum(ty: &Type, dt: &HashMap<String, DataType>) -> bool {
                 false
             }
         }
-        Type::FixedArray(inner, _) => type_contains_enum(inner, dt),
+        Type::Array(inner) | Type::FixedArray(inner, _) => type_contains_enum(inner, dt),
         _ => false,
     }
 }

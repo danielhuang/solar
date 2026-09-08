@@ -102,7 +102,7 @@ module.exports = grammar({
       seq(
         optional("pub"),
         "struct",
-        optional(field("attr", $.struct_repr_attr)),
+        optional(field("attr", $.struct_attrs)),
         field("name", $.identifier),
         optional(field("type_params", $.type_params)),
         choice(
@@ -111,8 +111,16 @@ module.exports = grammar({
         ),
       ),
 
-    // C-compatible field order and padding: `struct(repr(C)) Name { ... }`.
-    struct_repr_attr: ($) => seq("(", "repr", "(", "C", ")", ")"),
+    // Layout and reflection attributes, such as `struct(repr(C), opaque)`.
+    struct_attrs: ($) => seq(
+      "(",
+      choice($.struct_repr_attr, $.struct_opaque_attr),
+      repeat(seq(",", choice($.struct_repr_attr, $.struct_opaque_attr))),
+      optional(","),
+      ")",
+    ),
+    struct_repr_attr: ($) => seq("repr", "(", "C", ")"),
+    struct_opaque_attr: ($) => "opaque",
 
     field_list: ($) => seq($.field_def, repeat(seq(",", $.field_def)), optional(",")),
 

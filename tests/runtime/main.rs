@@ -1208,3 +1208,41 @@ fn offset_ref_scales_by_sized_pointee() {
     let output = run(&fixture("offset_ref.solar"), "offset_ref");
     assert_eq!(output, "30\n10\n40\n");
 }
+
+#[test]
+fn maybe_zeroed() {
+    assert_eq!(
+        run(&fixture("maybe_zeroed.solar"), "maybe_zeroed"),
+        "passed\n"
+    );
+}
+
+#[test]
+fn maybe_zeroed_gc() {
+    let path = fixture("maybe_zeroed_gc.solar");
+    assert_eq!(
+        test_utils::run_codegen_file(&path, "maybe_zeroed_gc"),
+        "passed\n"
+    );
+    test_utils::ensure_release_runtime_built();
+    let directory = tempdir::TempDir::new("solar-maybe-zeroed").unwrap();
+    for options in [
+        solar::pipeline::CompileOptions::RELEASE,
+        solar::pipeline::CompileOptions::GC_SAN,
+        solar::pipeline::CompileOptions {
+            gc_san: true,
+            ..solar::pipeline::CompileOptions::DEBUG
+        },
+    ] {
+        let ir = solar::pipeline::compile(&path)
+            .unwrap()
+            .to_mangled()
+            .to_ir();
+        let ir = if options.optimize { ir.optimized() } else { ir };
+        let output = ir
+            .to_c(&path.display().to_string())
+            .to_binary(directory.path().join("maybe_zeroed_gc"), options)
+            .run("maybe_zeroed_gc");
+        assert_eq!(output, "passed\n");
+    }
+}

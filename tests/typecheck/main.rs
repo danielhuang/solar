@@ -747,3 +747,33 @@ fn associated_function_generic_owner_signatures_must_be_distinct() {
         "associated_function_duplicate_generic_owner.solar",
     ));
 }
+
+#[test]
+#[should_panic(expected = "access to unsafe function `assume_valid` requires an unsafe block")]
+fn maybe_zeroed_assume_valid_requires_unsafe() {
+    compile_with_pipeline(&fixture("maybe_zeroed_assume_valid_requires_unsafe.solar"));
+}
+
+#[test]
+#[should_panic(expected = "access to unsafe intrinsic `zeroed` requires an unsafe block")]
+fn zeroed_intrinsic_requires_unsafe() {
+    compile_with_pipeline(&fixture("zeroed_requires_unsafe.solar"));
+}
+
+#[test]
+#[should_panic(expected = "cannot reflect fields of opaque struct")]
+fn maybe_zeroed_reflection_cannot_expose_invalid_values() {
+    compile_with_pipeline(&fixture("maybe_zeroed_reflection.solar"));
+}
+
+#[test]
+#[should_panic(expected = "cannot reflect fields of opaque struct")]
+fn maybe_zeroed_paired_reflection_cannot_expose_invalid_values() {
+    compile_with_pipeline(&fixture("maybe_zeroed_paired_reflection.solar"));
+}
+
+#[test]
+#[should_panic(expected = "field `value` is private")]
+fn maybe_zeroed_value_is_private() {
+    compile_with_pipeline(&fixture("maybe_zeroed_private_value.solar"));
+}

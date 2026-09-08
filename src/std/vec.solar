@@ -1,18 +1,28 @@
-import {throw} from "@intrinsics";
+import {throw, transmute_ref} from "@intrinsics";
 import slice from "slice.solar";
 import {Iterator} from "iter.solar";
+import {MaybeZeroed} from "mem.solar";
 
 /// A growable array.
-pub struct Vec#[T] { len: Uint, inner: ^[T] }
+pub struct Vec#[T] { len: Uint, inner: ^[MaybeZeroed#[T]] }
 
 /// Creates a vector containing a copy of `src`.
 pub fn Vec::#[T](src: &[T]) -> Vec#[T] {
-	Vec#[T] { len: src.len(), inner: src@^ }
+	let inner: ^[MaybeZeroed#[T]] = [MaybeZeroed#[T](); src.len()]^;
+	let i = 0u;
+
+	while i < src.len() {
+		inner@[i]&.write(src@[i]);
+		i = i + 1u;
+	}
+
+	Vec#[T] { len: src.len(), inner: inner }
 }
 
 /// Borrows the initialized elements.
 pub method as_slice#[T](self: &Vec#[T]) -> &[T] {
-	self@.inner@[0u..self@.len]&
+	// MaybeZeroed has T's layout, and every element below len is initialized.
+	unsafe { transmute_ref#[[T]](self@.inner@&, self@.len) }
 }
 
 /// Appends a value.
@@ -20,10 +30,19 @@ pub method push#[T](self: &Vec#[T], value: T) {
 	let cap = self@.inner@&.len();
 
 	if self@.len >= cap {
-		self@.inner = (self@.inner@ + self@.inner@)^;
+		let new_cap = if cap == 0u { 1u } else { cap * 2u };
+		let inner: ^[MaybeZeroed#[T]] = [MaybeZeroed#[T](); new_cap]^;
+		let i = 0u;
+
+		while i < self@.len {
+			inner@[i]&.write(unsafe { self@.inner@[i]&.assume_valid()@ });
+			i = i + 1u;
+		}
+
+		self@.inner = inner;
 	}
 
-	self@.inner@[self@.len] = value;
+	self@.inner@[self@.len]&.write(value);
 	self@.len = self@.len + 1u;
 }
 
@@ -33,7 +52,7 @@ pub method at#[T](self: &Vec#[T], index: Uint) -> &T {
 		throw("Vec.at: index out of bounds"&);
 	}
 
-	self@.inner@[index]&
+	unsafe { self@.inner@[index]&.assume_valid() }
 }
 
 /// Iterates over the vector's elements.

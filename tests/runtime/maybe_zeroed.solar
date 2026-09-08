@@ -1,0 +1,69 @@
+struct Empty {}
+
+enum Uninhabited {}
+
+struct Payload { small: Uint8, reference: &[Uint8] }
+
+enum Choice { Ref(&Int), Empty }
+
+fn main() {
+	let never = MaybeZeroed#[Never]();
+	let uninhabited = MaybeZeroed#[Uninhabited]();
+	gc_keepalive(never&);
+	gc_keepalive(uninhabited&);
+	let slot = MaybeZeroed#[&Int]();
+	assert(unsafe { mem::transmute_unchecked#[Uint64](slot) } == 0u64);
+	assert(size_of#[MaybeZeroed#[Payload]]() == size_of#[Payload]());
+	let payload = MaybeZeroed#[Payload]();
+	let words = unsafe { mem::transmute_unchecked#[[Uint64; 4]](payload) };
+	assert(
+		words[0u] == 0u64 && words[1u] ==
+				0u64 && words[2u] == 0u64 && words[3u] == 0u64,
+	);
+	let choice = MaybeZeroed#[Choice]();
+	let function = MaybeZeroed#[fn() -> Int]();
+	let erased = MaybeZeroed#[Any]();
+	let owned = MaybeZeroed#[^Int]();
+	let owned_copy = owned;
+	assert(unsafe { mem::transmute_unchecked#[Uint64](owned_copy) } == 0u64);
+	let wide_owned = MaybeZeroed#[^[Int]]();
+	let wide_copy = wide_owned;
+	let wide_words = unsafe {
+		mem::transmute_unchecked#[[Uint64; 2]](wide_copy)
+	};
+	assert(wide_words[0u] == 0u64 && wide_words[1u] == 0u64);
+	let array = MaybeZeroed#[[&Int; 2]]();
+	gc_keepalive(choice&);
+	gc_keepalive(function&);
+	gc_keepalive(erased&);
+	gc_keepalive(owned&);
+	gc_keepalive(array&);
+
+	slot&.write(42&);
+	let reference = unsafe { slot&.assume_valid() };
+	assert(reference@@ == 42);
+	slot&.write(43&);
+	assert(reference@@ == 43);
+	let initialized = MaybeZeroed(7);
+	assert(unsafe { initialized&.assume_valid()@ } == 7);
+
+	let empty = vec::Vec([0; 0u]&);
+	empty&.push(1);
+	empty&.push(2);
+	empty&.push(3);
+	assert(empty&.as_slice().len() == 3u);
+	let slice = empty&.as_slice();
+	slice@[1u] = 20;
+	assert(empty&.at(1u)@ == 20);
+	empty&.at(2u)@ = 30;
+	assert(slice@[2u] == 30);
+	let copy = empty;
+	copy&.at(0u)@ = 99;
+	assert(empty&.at(0u)@ == 1);
+	assert(copy&.at(0u)@ == 99);
+
+	let units = vec::Vec([Empty {}; 0u]&);
+	units&.push(Empty {});
+	assert(units&.as_slice().len() == 1u);
+	println("passed"&);
+}

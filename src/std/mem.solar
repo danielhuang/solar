@@ -32,3 +32,31 @@ pub unsafe fn transmute_ref#[T, out U](x: &T, size: Uint) -> &U {
 pub unsafe fn offset_ref#[T](x: &T, offset: Int) -> &T {
 	unsafe { intrinsics::offset_ref(x, offset) }
 }
+
+/// Storage containing either a valid `T` or all-zero bytes, with `T`'s layout.
+/// Zeroed storage is safe for the GC to scan but must be initialized before use.
+/// Field reflection is disabled so it cannot expose an invalid `T`.
+pub struct(opaque) MaybeZeroed#[T] { value: T }
+
+/// Creates zeroed storage without requiring zero to be a valid `T`.
+pub fn MaybeZeroed::#[out T]() -> MaybeZeroed#[T] {
+	unsafe { intrinsics::zeroed#[MaybeZeroed#[T]]() }
+}
+
+/// Creates storage containing a valid value.
+pub fn MaybeZeroed::#[T](value: T) -> MaybeZeroed#[T] {
+	MaybeZeroed#[T] { value: value }
+}
+
+/// Initializes the storage with a valid value.
+pub method write#[T](self: &MaybeZeroed#[T], value: T) {
+	self@.value = value;
+}
+
+/// Borrows the stored value.
+///
+/// The caller must ensure the storage contains a valid `T`, and must keep it
+/// valid for as long as the returned reference can be used.
+pub unsafe method assume_valid#[T](self: &MaybeZeroed#[T]) -> &T {
+	self@.value&
+}

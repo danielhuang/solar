@@ -174,6 +174,7 @@
 
 (inline_attr "inline" @attribute)
 (struct_repr_attr ["repr" "C"] @attribute)
+(struct_opaque_attr) @attribute
 (static_attr "thread_local" @attribute)
 
 ; ── Operators & punctuation ────────────────────────────────────────────────

@@ -1,0 +1,4 @@
+fn main() {
+	let storage = MaybeZeroed(42);
+	storage&.assume_valid();
+}

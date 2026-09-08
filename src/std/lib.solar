@@ -42,6 +42,9 @@ pub import simd from "simd.solar";
 /// Memory representation and reference operations.
 pub import mem from "mem.solar";
 
+/// Storage for a valid value or zeroed bytes.
+pub import {MaybeZeroed} from "mem.solar";
+
 /// Garbage collection controls and finalizer registrations.
 pub import gc from "gc.solar";
 

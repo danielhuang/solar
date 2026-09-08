@@ -1343,6 +1343,9 @@ impl MarkContext {
 /// Enqueues a pointer from a generated mark function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_gc_mark(ctx: *mut u8, ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
     let ctx = unsafe { &*(ctx as *const MarkContext) };
     unsafe { (*ctx.worklist).push(ptr as usize) };
 }
@@ -1439,7 +1442,10 @@ pub(crate) unsafe fn memcpy_barrier(dst: *mut u8, size: usize) {
 /// isn't an arena pointer through to the big-alloc binary search).
 #[inline]
 fn plausible(v: usize, arena_base: usize, big_len: usize) -> bool {
-    v.wrapping_sub(arena_base) < heap::ARENA_SIZE || big_len != 0 || crate::file::in_fd_arena(v)
+    v != 0
+        && (v.wrapping_sub(arena_base) < heap::ARENA_SIZE
+            || big_len != 0
+            || crate::file::in_fd_arena(v))
 }
 
 /// Set the mark bit for `(class, slot)` via the per-word accumulator. Returns

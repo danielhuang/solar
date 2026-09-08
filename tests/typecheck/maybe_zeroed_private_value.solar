@@ -1,0 +1,4 @@
+fn main() {
+	let storage = MaybeZeroed#[&Int]();
+	println(storage.value@);
+}

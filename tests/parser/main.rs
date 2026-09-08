@@ -679,3 +679,22 @@ fn associated_owner_and_function_generics_are_separate() {
     assert_eq!(type_args.len(), 1);
     assert_eq!(function.name, "identity");
 }
+
+#[test]
+fn opaque_struct_attributes_round_trip() {
+    let source = "pub struct(opaque) Storage#[T] { value: T }\nstruct(repr(C), opaque) Handle { value: Int }\n";
+    let ast = parse(source);
+    for item in &ast.items {
+        let TopLevelItem::Struct(definition) = item else {
+            panic!("expected struct");
+        };
+        assert!(definition.opaque);
+    }
+    let TopLevelItem::Struct(definition) = &ast.items[1] else {
+        unreachable!();
+    };
+    assert!(definition.repr_c);
+    let formatted = solar::fmt::format_source(source).unwrap();
+    assert!(formatted.contains("struct(opaque) Storage"));
+    assert!(formatted.contains("struct(repr(C), opaque) Handle"));
+}

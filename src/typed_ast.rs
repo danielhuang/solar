@@ -7146,6 +7146,15 @@ impl<'a> Lowerer<'a> {
                 ));
             }
         };
+        if self
+            .ast_struct_def(&struct_name)
+            .is_some_and(|def| def.opaque)
+        {
+            return Err(CompileError::new(
+                format!("cannot reflect fields of opaque struct `{struct_name}`"),
+                span,
+            ));
+        }
         let field_names: Vec<String> = self.lowered_structs[&struct_name]
             .fields
             .iter()
@@ -7339,6 +7348,15 @@ impl<'a> Lowerer<'a> {
                 ));
             }
         };
+        if self
+            .ast_struct_def(&struct_name)
+            .is_some_and(|def| def.opaque)
+        {
+            return Err(CompileError::new(
+                format!("cannot reflect fields of opaque struct `{struct_name}`"),
+                span,
+            ));
+        }
         let field_names: Vec<String> = self.lowered_structs[&struct_name]
             .fields
             .iter()
@@ -9330,28 +9348,32 @@ impl<'a> Lowerer<'a> {
                 span,
             });
         }
-        if matches!(intrinsic, Intrinsic::SizeOf) {
+        if matches!(intrinsic, Intrinsic::SizeOf | Intrinsic::Zeroed) {
             if type_args.len() != 1 {
                 return Err(CompileError::new(
-                    format!("size_of: expected 1 type argument, got {}", type_args.len()),
+                    format!("{name}: expected 1 type argument, got {}", type_args.len()),
                     span,
                 ));
             }
             if !arguments.is_empty() {
                 return Err(CompileError::new(
-                    format!("size_of: expected 0 arguments, got {}", arguments.len()),
+                    format!("{name}: expected 0 arguments, got {}", arguments.len()),
                     span,
                 ));
             }
             let ty = self.resolve_ast_type(&type_args[0])?;
             if type_layout(&ty, &self.lowered_structs, &self.lowered_enums).is_none() {
                 return Err(CompileError::new(
-                    format!("size_of: type {ty} is unsized"),
+                    format!("{name}: type {ty} is unsized"),
                     span,
                 ));
             }
             return Ok(Expr {
-                ty: Type::Uint,
+                ty: if matches!(intrinsic, Intrinsic::Zeroed) {
+                    ty.clone()
+                } else {
+                    Type::Uint
+                },
                 kind: ExprKind::IntrinsicCall {
                     intrinsic: intrinsic.clone(),
                     type_args: vec![ty],
@@ -9900,7 +9922,7 @@ fn intrinsic_spec(intrinsic: &Intrinsic) -> IntrinsicSpec {
         Intrinsic::ArrayIndex => {
             unreachable!("array_index has a dependent signature")
         }
-        Intrinsic::SizeOf => unreachable!("size_of requires a type argument"),
+        Intrinsic::SizeOf | Intrinsic::Zeroed => unreachable!("intrinsic requires a type argument"),
         Intrinsic::Transmute | Intrinsic::TransmuteUnchecked | Intrinsic::TransmuteRef => {
             unreachable!("transmute intrinsics have dependent signatures")
         }

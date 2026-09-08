@@ -1,0 +1,49 @@
+struct Payload { text: &[Uint8], value: &Int }
+
+enum Choice { Ref(&Int), Empty }
+
+static SLOTS: &?[MaybeZeroed#[Payload]] = null#[[MaybeZeroed#[Payload]]];
+static CHOICES: &?[MaybeZeroed#[Choice]] = null#[[MaybeZeroed#[Choice]]];
+
+fn fill() {
+	SLOTS@[3u]&.write(Payload { text: [65u8; 100u]&, value: 123& });
+	CHOICES@[7u]&.write(Choice::Ref(456&));
+}
+
+fn make_slice() -> &[Payload] {
+	let v = vec::Vec([Payload { text: [66u8; 100u]&, value: 1& }]&);
+	v&.push(Payload { text: [67u8; 100u]&, value: 2& });
+	v&.push(Payload { text: [68u8; 100u]&, value: 3& });
+	v&.as_slice()
+}
+
+fn main() {
+	SLOTS = [MaybeZeroed#[Payload](); 64u]&;
+	CHOICES = [MaybeZeroed#[Choice](); 64u]&;
+	gc::collect_gc();
+	fill();
+	let slice = make_slice();
+	let owned = vec::Vec([1^]&);
+	owned&.push(2^);
+	owned&.push(3^);
+	let owned_copy = owned;
+	owned_copy&.at(1u)@@ = 20;
+	let zeroed_owned = MaybeZeroed#[^Int]();
+	let zeroed_copy = zeroed_owned;
+	assert(unsafe { mem::transmute_unchecked#[Uint64](zeroed_copy) } == 0u64);
+	gc::collect_gc();
+	let payload = unsafe { SLOTS@[3u]&.assume_valid() };
+	assert(payload@.text@[99u] == 65u8);
+	assert(payload@.value@ == 123);
+	match unsafe { CHOICES@[7u]&.assume_valid()@ } {
+		Choice::Ref(value) => { assert(value@ == 456); },
+		Choice::Empty => { assert(false); },
+	};
+	assert(owned&.at(1u)@@ == 2);
+	assert(owned_copy&.at(1u)@@ == 20);
+	assert(slice.len() == 3u);
+	assert(slice@[0u].text@[99u] == 66u8);
+	assert(slice@[1u].value@ == 2);
+	assert(slice@[2u].text@[99u] == 68u8);
+	println("passed"&);
+}

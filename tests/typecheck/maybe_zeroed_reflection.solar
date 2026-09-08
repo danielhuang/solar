@@ -1,0 +1,4 @@
+fn main() {
+	let storage = MaybeZeroed#[&Int]();
+	for.reflect_fields (_, value) in storage& { println(value@@); }
+}

@@ -279,6 +279,8 @@ pub struct StructDef {
     pub is_tuple: bool,
     /// Whether the struct requires C-compatible field layout.
     pub repr_c: bool,
+    /// Whether field reflection is forbidden to preserve storage invariants.
+    pub opaque: bool,
     /// Whether the declaration is exported.
     pub is_pub: bool,
     /// Attached documentation.

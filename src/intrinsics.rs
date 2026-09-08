@@ -61,6 +61,8 @@ pub enum Intrinsic {
     /// Returns a bounds-checked reference to an array element.
     ArrayIndex,
     SizeOf,
+    /// Produces zero bytes; the caller must encapsulate any invalid value.
+    Zeroed,
     Transmute,
     TransmuteUnchecked,
     TransmuteRef,
@@ -127,6 +129,7 @@ const INTRINSIC_NAMES: &[(&str, Intrinsic)] = &[
     ("array_len", Intrinsic::ArrayLen),
     ("array_index", Intrinsic::ArrayIndex),
     ("size_of", Intrinsic::SizeOf),
+    ("zeroed", Intrinsic::Zeroed),
     ("transmute", Intrinsic::Transmute),
     ("transmute_unchecked", Intrinsic::TransmuteUnchecked),
     ("transmute_ref", Intrinsic::TransmuteRef),
@@ -242,6 +245,7 @@ impl Intrinsic {
             Intrinsic::FdFromRaw
                 | Intrinsic::RegisterFinalizer
                 | Intrinsic::Syscall
+                | Intrinsic::Zeroed
                 | Intrinsic::TransmuteUnchecked
                 | Intrinsic::TransmuteRef
                 | Intrinsic::OffsetRef

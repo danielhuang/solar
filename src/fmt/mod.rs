@@ -379,10 +379,11 @@ fn top_level_doc(item: &TopLevelItem, context: &SourceContext<'_>) -> Doc {
 fn struct_doc(definition: &StructDef, context: &SourceContext<'_>) -> Doc {
     let header = Doc::concat([
         visibility(definition.is_pub),
-        if definition.repr_c {
-            Doc::text("struct(repr(C)) ")
-        } else {
-            Doc::text("struct ")
+        match (definition.repr_c, definition.opaque) {
+            (true, true) => Doc::text("struct(repr(C), opaque) "),
+            (true, false) => Doc::text("struct(repr(C)) "),
+            (false, true) => Doc::text("struct(opaque) "),
+            (false, false) => Doc::text("struct "),
         },
         Doc::text(&definition.name),
         type_parameters(&definition.type_params),

@@ -2053,15 +2053,25 @@ impl<'a> Codegen<'a> {
         }
         match ty {
             Type::Unique(inner) => {
+                // MaybeZeroed may contain a null unique pointer: copying it
+                // preserves the zero representation without reading a pointee.
                 let size = self.type_size(inner);
                 let align = self.type_align(inner);
                 let mf = self.mark_fn_expr(inner);
                 let new_ptr = self.fresh_tmp();
-                self.emit_alloc(&new_ptr, size, align, &mf);
                 let src_ptr = self.fresh_tmp();
-                self.linef(format!("uint8_t* {src_ptr} = *(uint8_t**){src};"));
+                self.linef(format!("uint8_t* {src_ptr} = *(uint8_t**)({src});"));
+                self.linef(format!("if ({src_ptr} == NULL) {{"));
+                self.indent += 1;
+                self.linef(format!("*(uint8_t**)({dst}) = NULL;"));
+                self.indent -= 1;
+                self.line("} else {");
+                self.indent += 1;
+                self.emit_alloc(&new_ptr, size, align, &mf);
                 self.emit_copy(&new_ptr, &src_ptr, inner, &size.to_string());
-                self.linef(format!("*(uint8_t**){dst} = {new_ptr};"));
+                self.linef(format!("*(uint8_t**)({dst}) = {new_ptr};"));
+                self.indent -= 1;
+                self.line("}");
             }
             Type::UniqueUnsized(inner) => {
                 // Atomic load from src (it's a wide ptr)
@@ -2073,6 +2083,12 @@ impl<'a> Codegen<'a> {
                 let align = self.type_align(inner);
                 let src_ptr = self.fresh_tmp();
                 self.linef(format!("uint8_t* {src_ptr} = *(uint8_t**){src_wide};"));
+                self.linef(format!("if ({src_ptr} == NULL) {{"));
+                self.indent += 1;
+                self.linef(format!("sol_store_128_unordered({dst}, {src_wide});"));
+                self.indent -= 1;
+                self.line("} else {");
+                self.indent += 1;
                 let src_meta = self.fresh_tmp();
                 self.linef(format!(
                     "uint64_t {src_meta} = *(uint64_t*)({src_wide} + 8);"
@@ -2090,12 +2106,14 @@ impl<'a> Codegen<'a> {
                 self.linef(format!("*(uint8_t**){wide_tmp} = {new_ptr};"));
                 self.linef(format!("*(uint64_t*)({wide_tmp} + 8) = {src_meta};"));
                 self.linef(format!("sol_store_128_unordered({dst}, {wide_tmp});"));
+                self.indent -= 1;
+                self.line("}");
             }
             Type::Enum(name) => {
                 let dt = &self.module.datatypes[name.as_str()];
                 let variant_map: Vec<_> = dt.variant_map.as_ref().unwrap().clone();
                 let disc_tmp = self.fresh_tmp();
-                self.linef(format!("uint64_t {disc_tmp} = *(uint64_t*){src};"));
+                self.linef(format!("uint64_t {disc_tmp} = *(uint64_t*)({src});"));
                 let mut first = true;
                 for (i, vm_entry) in variant_map.iter().enumerate() {
                     if let Some(field_name) = vm_entry {
@@ -3015,6 +3033,12 @@ impl<'a> Codegen<'a> {
                 self.linef(format!(
                     "*(uint8_t**){dst} = sol_slice_index({base}, (uint64_t){index}, {len}, {size});"
                 ));
+            }
+            Intrinsic::Zeroed => {
+                let size = self.type_size(result_ty);
+                if size != 0 {
+                    self.linef(format!("memset({dst}, 0, {size});"));
+                }
             }
             Intrinsic::SizeOf => {
                 let size = self.type_size(&type_args[0]);

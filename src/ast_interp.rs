@@ -45,7 +45,7 @@ enum Value {
         name: String,
         captures: Vec<(String, Slot)>,
     },
-    /// A null nullable reference (`null#[T]`).
+    /// A null reference or zeroed storage with no valid pointee or variant.
     Null,
     Unit,
 }
@@ -610,8 +610,19 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         destination_ty: &Type,
         metadata: usize,
     ) -> Slot {
+        // A single-field wrapper shares its field's layout. Preserve the
+        // field slot so writes through the reinterpreted reference alias it.
+        if source_ty != destination_ty
+            && let Type::Struct(name) = source_ty
+            && let def = &self.structs[name]
+            && def.fields.len() == 1
+            && def.fields[0].ty == *destination_ty
+            && let Value::Struct { fields, .. } = &*source.borrow()
+        {
+            return Rc::clone(&fields[def.fields[0].name.as_str()]);
+        }
         match destination_ty {
-            Type::Array(_) => {
+            Type::Array(destination_element) => {
                 let elements = match &*source.borrow() {
                     Value::Array(elements) => elements.clone(),
                     _ => {
@@ -633,7 +644,22 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     metadata <= elements.len(),
                     "transmute_ref slice exceeds its source array"
                 );
-                let target = Rc::new(RefCell::new(Value::Array(elements[..metadata].to_vec())));
+                let source_element = match source_ty {
+                    Type::Array(inner) | Type::FixedArray(inner, _) => inner.as_ref(),
+                    _ => source_ty,
+                };
+                let elements = elements[..metadata]
+                    .iter()
+                    .map(|element| {
+                        self.transmute_reference_view(
+                            Rc::clone(element),
+                            source_element,
+                            destination_element,
+                            0,
+                        )
+                    })
+                    .collect();
+                let target = Rc::new(RefCell::new(Value::Array(elements)));
                 self.remember_array(&target);
                 target
             }
@@ -698,6 +724,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
     fn encode_transmute_value(&mut self, value: &Value, ty: &Type) -> Vec<u8> {
         let (size, _) = ast_type_layout(ty, self.structs, self.enums).unwrap();
         let mut bytes = vec![0; size];
+        if matches!(value, Value::Null) {
+            return bytes;
+        }
         match ty {
             Type::Int8
             | Type::Int16
@@ -813,6 +842,61 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             Type::Array(_) | Type::Never => unreachable!("unsized or uninhabited transmute source"),
         }
         bytes
+    }
+
+    /// Represents zeroed storage without requiring its embedded references to
+    /// point at interpreter slots. Only unsafe code may expose those values.
+    fn zeroed_value(&mut self, ty: &Type) -> Value {
+        match ty {
+            Type::Struct(name) => {
+                let def = self.structs[name].clone();
+                Value::Struct {
+                    name: name.clone(),
+                    fields: def
+                        .fields
+                        .iter()
+                        .map(|field| {
+                            (
+                                field.name.clone(),
+                                Rc::new(RefCell::new(self.zeroed_value(&field.ty))),
+                            )
+                        })
+                        .collect(),
+                }
+            }
+            Type::FixedArray(inner, count) => Value::Array(
+                (0..*count)
+                    .map(|_| Rc::new(RefCell::new(self.zeroed_value(inner))))
+                    .collect(),
+            ),
+            Type::Enum(name) => {
+                let Some(variant) = self.enums[name].variants.first().cloned() else {
+                    return Value::Null;
+                };
+                Value::Enum {
+                    enum_name: name.clone(),
+                    variant_name: variant.name,
+                    variant_index: variant.index,
+                    value: variant
+                        .inner_type
+                        .as_ref()
+                        .map(|inner| Rc::new(RefCell::new(self.zeroed_value(inner)))),
+                }
+            }
+            Type::Ref(_)
+            | Type::RefUnsized(_)
+            | Type::NullableRef(_)
+            | Type::NullableRefUnsized(_)
+            | Type::Unique(_)
+            | Type::UniqueUnsized(_)
+            | Type::Any
+            | Type::Function { .. }
+            | Type::Never => Value::Null,
+            _ => {
+                let size = ast_type_layout(ty, self.structs, self.enums).unwrap().0;
+                self.decode_transmute_value(&vec![0; size], ty)
+            }
+        }
     }
 
     fn decode_transmute_value(&mut self, bytes: &[u8], ty: &Type) -> Value {
@@ -1893,6 +1977,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let (backing, start, _) = self.ensure_array_region(&array, elements);
                 Value::Ref(Rc::clone(&backing[start + index as usize]))
             }
+            Intrinsic::Zeroed => self.zeroed_value(result_ty),
             Intrinsic::SizeOf => Value::Int(
                 ast_type_layout(&type_args[0], self.structs, self.enums)
                     .unwrap()

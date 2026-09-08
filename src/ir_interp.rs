@@ -300,6 +300,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         match ty {
             Type::Unique(inner) => {
                 let src_ptr = self.mem.load(src, 8) as usize;
+                if src_ptr == 0 {
+                    self.mem.store(dst, 0, 8);
+                    return;
+                }
                 let inner_size = type_size(inner, &self.module.datatypes);
                 let inner_align = type_align(inner, &self.module.datatypes);
                 let new_ptr = self.mem.alloc(inner_size, inner_align);
@@ -309,6 +313,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             Type::UniqueUnsized(inner) => {
                 let src_ptr = self.mem.load(src, 8) as usize;
                 let src_meta = self.mem.load(src + 8, 8) as usize;
+                if src_ptr == 0 {
+                    self.mem.memcpy(dst, src, 16);
+                    return;
+                }
                 let inner_size = full_size(inner, &self.module.datatypes, src_meta);
                 let inner_align = type_align(inner, &self.module.datatypes);
                 let new_ptr = self.mem.alloc(inner_size, inner_align);
@@ -1640,6 +1648,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let size = type_size(element, &self.module.datatypes);
                 self.mem
                     .store(dst, (base + index as usize * size) as u64, 8);
+            }
+            Intrinsic::Zeroed => {
+                let size = type_size(result_ty, &self.module.datatypes);
+                self.mem.data[dst..dst + size].fill(0);
             }
             Intrinsic::SizeOf => {
                 let size = type_size(&type_args[0], &self.module.datatypes);
