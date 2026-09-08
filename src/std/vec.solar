@@ -30,7 +30,12 @@ pub method push#[T](self: &Vec#[T], value: T) {
 	let cap = self@.inner@&.len();
 
 	if self@.len >= cap {
-		let new_cap = if cap == 0u { 1u } else { cap * 2u };
+		// Round len + 1 up to the next power of two.
+		let new_cap = if self@.len == 0u {
+			1u
+		} else {
+			1u << (64u - self@.len.count_leading_zeros())
+		};
 		let inner: ^[MaybeZeroed#[T]] = [MaybeZeroed#[T](); new_cap]^;
 		let i = 0u;
 
