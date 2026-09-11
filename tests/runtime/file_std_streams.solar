@@ -1,8 +1,14 @@
-// Exercises the file::stdin() / file::stdout() intrinsics, which both return an
-// opaque FileDesc for a process-owned standard stream. FileDesc is opaque so we
-// just confirm the handles are obtained; all three backends must agree.
+import intrinsics from "@intrinsics";
+
 fn main() {
-	let out = file::stdout();
-	let inp = file::stdin();
+	assert(intrinsics::fd_to_raw(file::stdin()) == 0i32);
+	assert(intrinsics::fd_to_raw(file::stdout()) == 1i32);
+	assert(intrinsics::fd_to_raw(file::stderr()) == 2i32);
+	let written = unsafe {
+		intrinsics::syscall(1i64, 1i64, "stdout\nignored"&, 7u64)
+	};
+	assert(written == 7i64);
+	assert(unsafe { intrinsics::syscall(1i64, 1i64, 0u64, 0u64) } == 0i64);
+	assert(file::stdout().write_partial(""&) == 0u);
 	println("std streams ok"&);
 }

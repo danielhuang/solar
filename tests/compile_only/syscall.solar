@@ -1,7 +1,7 @@
 import intrinsics from "@intrinsics";
 
 fn main() {
-	let stdout = intrinsics::fd_to_raw(intrinsics::file_stdout());
+	let stdout = intrinsics::fd_to_raw(file::stdout());
 	let written = unsafe {
 		intrinsics::syscall(1i64, Int64(stdout), "syscall\n"&, 8u64)
 	};

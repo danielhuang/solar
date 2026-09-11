@@ -4,7 +4,7 @@ use crate::ir::*;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 
-use crate::interp_io::{FileTable, STDERR, STDIN, STDOUT};
+use crate::interp_io::{FileTable, STDOUT};
 
 struct Memory {
     data: Vec<u8>,
@@ -1542,35 +1542,38 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 self.scalar_store(dst, value, result_ty);
             }
             Intrinsic::Syscall => {
-                panic!("syscall intrinsic not implemented in IR interpreter");
+                // Evaluate every argument once, in order. For references the
+                // first word is the data pointer, just as in native syscalls.
+                let mut values = Vec::with_capacity(args.len());
+                for argument in args {
+                    let ty = &nodes[argument.0].ty;
+                    let value = if matches!(ty, Type::Int64 | Type::Uint64) {
+                        self.eval_load(nodes, *argument)?
+                    } else {
+                        let place = self.alloc_ty(ty);
+                        self.eval_into(nodes, *argument, place)?;
+                        self.mem.load(place, 8)
+                    };
+                    values.push(value);
+                }
+                assert!(
+                    values.first() == Some(&1) && values.get(1) == Some(&1),
+                    "interpreters only support syscall write (1) to stdout (fd 1)"
+                );
+                let len = values.get(3).copied().unwrap_or(0) as usize;
+                let bytes = if len == 0 {
+                    Vec::new()
+                } else {
+                    let data = values[2] as usize;
+                    self.mem.data[data..data + len].to_vec()
+                };
+                let result = self.files.write_syscall(STDOUT, &bytes);
+                self.scalar_store(dst, result as u64, result_ty);
             }
             Intrinsic::FileClose => {
                 // The virtual table keeps the stream alive (no auto-close in the
                 // interpreters); evaluate the argument for any side effects.
                 let _ = self.eval_load(nodes, args[0])?;
-            }
-            Intrinsic::FileStdin => {
-                self.scalar_store(dst, STDIN as u64, result_ty);
-            }
-            Intrinsic::FileStdout => {
-                self.scalar_store(dst, STDOUT as u64, result_ty);
-            }
-            Intrinsic::FileStderr => {
-                self.scalar_store(dst, STDERR as u64, result_ty);
-            }
-            Intrinsic::FileWritePartial => {
-                let fd = self.eval_load(nodes, args[0])? as usize;
-                let (ref_addr, _) = self.eval_place(nodes, args[1])?;
-                let data_ptr = self.mem.load(ref_addr, 8) as usize;
-                let data_len = self.mem.load(ref_addr + 8, 8) as usize;
-                let bytes = self.mem.data[data_ptr..data_ptr + data_len].to_vec();
-                let n = match self.files.write_partial(fd, &bytes) {
-                    Ok(n) => n,
-                    Err(err) => {
-                        return Err(self.thrown(&format!("file_write_partial failed: {err}")));
-                    }
-                };
-                self.scalar_store(dst, n as u64, result_ty);
             }
             Intrinsic::Args | Intrinsic::Env => {
                 // The interpreters have no process args/env source; return an

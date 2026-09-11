@@ -862,12 +862,6 @@ impl<'a> Codegen<'a> {
         self.line("extern uint8_t* sol_fd_from_raw(int32_t fd);");
         self.line("extern int32_t sol_fd_to_raw(uint8_t* fd);");
         self.line("extern void sol_file_close(uint8_t* fd);");
-        self.line("extern uint8_t* sol_file_stdin(void);");
-        self.line("extern uint8_t* sol_file_stdout(void);");
-        self.line("extern uint8_t* sol_file_stderr(void);");
-        self.line(
-            "extern size_t sol_file_write_partial(uint8_t* fd, const uint8_t* ptr, size_t len);",
-        );
         self.line("extern void sol_args(uint8_t* out);");
         self.line("extern void sol_env(uint8_t* out);");
         self.line("extern int64_t sol_checked_add_int(int64_t a, int64_t b);");
@@ -2911,33 +2905,6 @@ impl<'a> Codegen<'a> {
                 // the fd in place — no result.
                 let fd = self.emit_load(nodes, args[0]);
                 self.linef(format!("sol_file_close((uint8_t*){fd});"));
-            }
-            Intrinsic::FileStdin => {
-                // No args; returns a FileDesc for stdin (opaque uint8_t*).
-                self.linef(format!("*(uint8_t**){dst} = sol_file_stdin();"));
-            }
-            Intrinsic::FileStdout => {
-                // No args; returns a FileDesc for stdout (opaque uint8_t*).
-                self.linef(format!("*(uint8_t**){dst} = sol_file_stdout();"));
-            }
-            Intrinsic::FileWritePartial => {
-                // args: FileDesc, &[Uint8] src (fat pointer). Returns bytes written.
-                let fd = self.emit_load(nodes, args[0]);
-                let (ref_place, _) = self.emit_place(nodes, args[1]);
-                let data_ptr = self.fresh_tmp();
-                let data_len = self.fresh_tmp();
-                self.linef(format!("uint8_t* {data_ptr} = *(uint8_t**){ref_place};"));
-                self.linef(format!(
-                    "uint64_t {data_len} = *(uint64_t*)({ref_place} + 8);"
-                ));
-                let c_ty = self.c_int_type(result_ty);
-                self.linef(format!(
-                    "*({c_ty}*){dst} = ({c_ty})sol_file_write_partial((uint8_t*){fd}, {data_ptr}, {data_len});"
-                ));
-            }
-            Intrinsic::FileStderr => {
-                // No args; returns a FileDesc for stderr (opaque uint8_t*).
-                self.linef(format!("*(uint8_t**){dst} = sol_file_stderr();"));
             }
             Intrinsic::Args | Intrinsic::Env => {
                 // No args. The runtime builds the `&[&[Uint8]]` and writes its

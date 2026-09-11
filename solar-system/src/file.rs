@@ -100,7 +100,8 @@ unsafe fn mark_word(fd: usize) -> *const AtomicU64 {
 /// Take ownership of a raw file descriptor and return its GC-traced
 /// `FileDesc`. Once no reachable `FileDesc` contains this handle, sweeping may
 /// close the descriptor. The caller must ensure `fd` is newly owned and is not
-/// simultaneously managed elsewhere.
+/// simultaneously managed elsewhere. Descriptors 0, 1, and 2 are process-owned
+/// standard streams and are never registered for automatic closure.
 ///
 /// A negative descriptor is treated as the immediately preceding syscall's
 /// failure sentinel and throws its saved OS error.
@@ -109,6 +110,9 @@ pub unsafe extern "C-unwind" fn sol_fd_from_raw(fd: libc::c_int) -> *mut u8 {
     if fd < 0 {
         let err = std::io::Error::last_os_error();
         crate::panic::throw_message(format_args!("fd_from_raw failed: {err}"));
+    }
+    if fd <= libc::STDERR_FILENO {
+        return (FD_BASE.get() + fd as usize) as *mut u8;
     }
     unsafe { register_new_fd(fd as usize) }
 }
@@ -145,32 +149,6 @@ pub(crate) unsafe fn register_new_fd(fd: usize) -> *mut u8 {
     (FD_BASE.get() + fd) as *mut u8
 }
 
-/// Returns a standard stream without registering it for automatic closure.
-#[inline]
-unsafe fn std_stream(fd: libc::c_int) -> *mut u8 {
-    let base = FD_BASE.get();
-    debug_assert!(base != 0, "std_stream called before fd arena init");
-    (base + fd as usize) as *mut u8
-}
-
-/// `FileDesc` for the process's standard input (fd 0). Never auto-closed.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn sol_file_stdin() -> *mut u8 {
-    unsafe { std_stream(libc::STDIN_FILENO) }
-}
-
-/// `FileDesc` for the process's standard output (fd 1). Never auto-closed.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn sol_file_stdout() -> *mut u8 {
-    unsafe { std_stream(libc::STDOUT_FILENO) }
-}
-
-/// `FileDesc` for the process's standard error (fd 2). Never auto-closed.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn sol_file_stderr() -> *mut u8 {
-    unsafe { std_stream(libc::STDERR_FILENO) }
-}
-
 /// Recover the raw fd number from a `FileDesc` pointer (`addr - FD_BASE`).
 #[inline]
 pub(crate) fn fd_from_ptr(fd_ptr: *mut u8) -> libc::c_int {
@@ -180,30 +158,6 @@ pub(crate) fn fd_from_ptr(fd_ptr: *mut u8) -> libc::c_int {
         "FileDesc pointer is not in the fd arena"
     );
     (fd_ptr as usize).wrapping_sub(base) as libc::c_int
-}
-
-/// Write up to `src_len` bytes from `src` to `fd`, returning the count actually
-/// written (a single, possibly partial, `write(2)`). Throws a Solar exception
-/// on a non-`EINTR` I/O error. Calls `write(2)` directly; the looping write-all
-/// lives in `@std`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn sol_file_write_partial(
-    fd_ptr: *mut u8,
-    src: *const u8,
-    src_len: usize,
-) -> usize {
-    let fd = fd_from_ptr(fd_ptr);
-    loop {
-        let n = unsafe { libc::write(fd, src as *const libc::c_void, src_len) };
-        if n >= 0 {
-            return n as usize;
-        }
-        let err = std::io::Error::last_os_error();
-        if err.kind() == std::io::ErrorKind::Interrupted {
-            continue;
-        }
-        crate::panic::throw_message(format_args!("file_write_partial failed: {err}"));
-    }
 }
 
 /// Replaces a file descriptor with the dead pipe without releasing its number.

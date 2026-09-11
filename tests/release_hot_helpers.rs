@@ -9,6 +9,7 @@ fn hot_helpers_preserve_runtime_results_and_exceptions() {
     let directory = tempdir::TempDir::new("solar-test").unwrap();
     for name in [
         "catch_runtime_errors",
+        "file_std_streams",
         "binop_arithmetic",
         "carrying_mul_add",
         "array_slice",

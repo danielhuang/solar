@@ -75,19 +75,19 @@ pub fn open(
 /// owned by the process for its whole lifetime, so the collector never
 /// auto-closes it.
 pub fn stdin() -> FileDesc {
-	intrinsics::file_stdin()
+	unsafe { intrinsics::fd_from_raw(0i32) }
 }
 
 /// Returns a FileDesc for the process's standard output. Like stdin, the stream
 /// is process-owned and is never auto-closed by the collector.
 pub fn stdout() -> FileDesc {
-	intrinsics::file_stdout()
+	unsafe { intrinsics::fd_from_raw(1i32) }
 }
 
 /// Returns a FileDesc for the process's standard error. Like stdin/stdout, the
 /// stream is process-owned and is never auto-closed by the collector.
 pub fn stderr() -> FileDesc {
-	intrinsics::file_stderr()
+	unsafe { intrinsics::fd_from_raw(2i32) }
 }
 
 /// Opens the directory at `path` for listing with `read_entries`.
@@ -132,7 +132,17 @@ pub method read(self: FileDesc, max_size: Uint) -> &[Uint8] {
 /// Writes up to `src`'s length bytes, returning the number actually written. A
 /// single write; may write fewer bytes than requested.
 pub method write_partial(self: FileDesc, src: &[Uint8]) -> Uint {
-	intrinsics::file_write_partial(self, src)
+	const SYS_WRITE = 1i64;
+
+	loop {
+		let result = unsafe {
+			intrinsics::syscall(SYS_WRITE, raw_fd(self), src, Uint64(src.len()))
+		};
+
+		if result != 0i64 - 4i64 {
+			return syscall_result(result, "file_write_partial failed"&);
+		}
+	}
 }
 
 /// Writes the entire `src` buffer, looping over partial writes until done (like

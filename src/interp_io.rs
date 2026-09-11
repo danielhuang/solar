@@ -64,9 +64,21 @@ impl<'io> FileTable<'io> {
         }
     }
 
-    /// Write `buf` to the stream at `fd`, returning the byte count actually
-    /// written (a single, possibly partial, write).
-    pub fn write_partial(&mut self, fd: usize, buf: &[u8]) -> std::io::Result<usize> {
-        self.files[fd].write(buf)
+    /// Emulates Linux write(2) for stdout, returning a count or negative errno.
+    pub fn write_syscall(&mut self, fd: usize, buf: &[u8]) -> i64 {
+        assert_eq!(fd, STDOUT, "interpreters only support writes to stdout");
+        match self.files[fd].write(buf) {
+            Ok(count) => count as i64,
+            Err(error) => {
+                let errno = error.raw_os_error().unwrap_or_else(|| {
+                    if error.kind() == std::io::ErrorKind::Interrupted {
+                        4
+                    } else {
+                        5
+                    }
+                });
+                -i64::from(errno)
+            }
+        }
     }
 }

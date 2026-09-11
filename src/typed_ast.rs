@@ -9972,14 +9972,6 @@ fn intrinsic_spec(intrinsic: &Intrinsic) -> IntrinsicSpec {
             params: vec![Exact(Type::FileDesc)],
             ret: Fixed(Type::Unit),
         },
-        Intrinsic::FileStdin | Intrinsic::FileStdout | Intrinsic::FileStderr => IntrinsicSpec {
-            params: vec![],
-            ret: Fixed(Type::FileDesc),
-        },
-        Intrinsic::FileWritePartial => IntrinsicSpec {
-            params: vec![Exact(Type::FileDesc), byte_slice()],
-            ret: Fixed(Type::Uint),
-        },
         // args() / env(): no parameters; return `&[&[Uint8]]`. The runtime
         // copies each argument / `KEY=VALUE` entry into a fresh GC allocation.
         Intrinsic::Args | Intrinsic::Env => IntrinsicSpec {

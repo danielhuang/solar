@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 
-use crate::interp_io::{FileTable, STDERR, STDIN, STDOUT};
+use crate::interp_io::{FileTable, STDOUT};
 use std::rc::Rc;
 
 type Slot = Rc<RefCell<Value>>;
@@ -1866,43 +1866,33 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             }
             Intrinsic::FdFromRaw | Intrinsic::FdToRaw => self.eval_expr(&arguments[0])?,
             Intrinsic::Syscall => {
-                panic!("syscall intrinsic not implemented in AST interpreter");
+                let values = arguments
+                    .iter()
+                    .map(|argument| self.eval_expr(argument))
+                    .collect::<Result<Vec<_>, _>>()?;
+                assert!(
+                    matches!(values.first(), Some(Value::Int(1)))
+                        && matches!(values.get(1), Some(Value::Int(1))),
+                    "interpreters only support syscall write (1) to stdout (fd 1)"
+                );
+                let len = match values.get(3) {
+                    Some(Value::Int(n)) => *n as usize,
+                    None => 0,
+                    _ => unreachable!("write count must be an integer"),
+                };
+                let bytes = if len == 0 {
+                    Vec::new()
+                } else {
+                    slice_to_bytes(&values[2])
+                };
+                assert!(len <= bytes.len(), "write count exceeds interpreter buffer");
+                Value::Int(self.files.write_syscall(STDOUT, &bytes[..len]))
             }
             Intrinsic::FileClose => {
                 // The virtual table keeps the stream alive (no auto-close in the
                 // interpreters); evaluate the argument for any side effects.
                 self.eval_expr(&arguments[0])?;
                 Value::Unit
-            }
-            Intrinsic::FileStdin => Value::Int(STDIN as i64),
-            Intrinsic::FileStdout => Value::Int(STDOUT as i64),
-            Intrinsic::FileStderr => Value::Int(STDERR as i64),
-            Intrinsic::FileWritePartial => {
-                let fd = match self.eval_expr(&arguments[0])? {
-                    Value::Int(n) => n as usize,
-                    _ => unreachable!(),
-                };
-                let src = self.eval_expr(&arguments[1])?;
-                let bytes: Vec<u8> = match &src {
-                    Value::Ref(slot) | Value::Unique(slot) => match &*slot.borrow() {
-                        Value::Array(elements) => elements
-                            .iter()
-                            .map(|s| match &*s.borrow() {
-                                Value::Int(n) => *n as u8,
-                                _ => unreachable!(),
-                            })
-                            .collect(),
-                        _ => unreachable!(),
-                    },
-                    _ => unreachable!(),
-                };
-                let n = match self.files.write_partial(fd, &bytes) {
-                    Ok(n) => n,
-                    Err(err) => {
-                        return Err(thrown(&format!("file_write_partial failed: {err}")));
-                    }
-                };
-                Value::Int(n as i64)
             }
             Intrinsic::Args | Intrinsic::Env => {
                 // No process args/env source in the interpreters: return an

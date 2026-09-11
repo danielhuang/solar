@@ -846,7 +846,7 @@ fn nullable_ref() {
 #[test]
 fn file_std_streams() {
     let output = run(&fixture("file_std_streams.solar"), "file_std_streams");
-    assert_eq!(output, "std streams ok\n");
+    assert_eq!(output, "stdout\nstd streams ok\n");
 }
 
 // Every fallible runtime intrinsic (checked arithmetic, bounds/null/length
