@@ -62,6 +62,7 @@ bench/
   go/                      Go ports
   java/                    Java ports
   js/                      Node.js ports
+  julia/                   Julia allocation/GC ports (standalone runs)
   rust/                    Rust HashMap reference
   sieve_matrix.py          sieve harness
   run.py                   HashMap harness
@@ -162,6 +163,36 @@ The Java configurations are G1, Parallel, generational ZGC,
 non-generational ZGC, and Shenandoah. The .NET configurations select
 workstation and server GC at process startup. Node.js runs with an 8 GiB old
 space limit per isolate.
+
+### Julia allocation ports
+
+The four Julia ports require Julia 1.10 or newer and no external packages.
+Run them directly; `bench.py` does not yet include Julia or parse its GC traces:
+
+```bash
+julia --startup-file=no bench/julia/allocs3.jl
+julia --startup-file=no --threads=17 bench/julia/threads_list2.jl
+julia --startup-file=no bench/julia/splay.jl
+julia --startup-file=no --threads=17 bench/julia/allocs5.jl
+```
+
+The defaults match the allocation counts, payloads, random sequence, and
+checksums of the other ports. The threaded programs share one heap and atomic
+root, with sixteen workers plus a thread for the waiting main task. They exit
+when the first worker finishes. `allocs5` explicitly preserves its retained
+chain during churn. Mutable Julia nodes keep allocations as heap objects;
+object sizes and GC metadata differ from Solar.
+
+Prefix a command with `/usr/bin/time -v` to measure elapsed time and peak RSS.
+These process timings include Julia startup and JIT compilation, with no warmup.
+For a quick correctness check, include a file and call its parameterized driver:
+
+```bash
+julia --startup-file=no --threads=17 -e \
+  'include("bench/julia/allocs5.jl"); combined(chain_size=10000, iterations=10, list_size=1000); exit(0)'
+julia --startup-file=no -e \
+  'include("bench/julia/splay.jl"); main(outer_runs=2, runs=10)'
+```
 
 ## Run the C allocator matrix
 
