@@ -4,7 +4,7 @@ use std::ffi::{c_char, c_int};
 
 use crate::gc::sol_gc_mark;
 use crate::init_cell::InitCell;
-use crate::mem::{MarkFn, sol_alloc};
+use crate::mem::{MarkFn, sol_alloc_impl};
 
 unsafe extern "C" {
     /// The process environment: a NUL-terminated array of `KEY=VALUE` C strings,
@@ -58,8 +58,8 @@ pub(crate) unsafe extern "C" fn mark_ptr_array(ctx: *mut u8, obj: *mut u8, size:
 /// at stable, non-GC memory for the duration of the call.
 unsafe fn build(out: *mut u8, n: usize, entry: impl Fn(usize) -> (*const u8, usize)) {
     // Outer array: `n` `&[Uint8]` fat pointers, 16 bytes / 8-byte aligned each.
-    // `n == 0` is possible (an empty environment); `sol_alloc(0, ..)` is fine.
-    let outer = unsafe { sol_alloc(n * 16, 8, mark_ptr_array as MarkFn) };
+    // `n == 0` is possible (an empty environment); `sol_alloc_impl(0, ..)` is fine.
+    let outer = unsafe { sol_alloc_impl(n * 16, 8, mark_ptr_array as MarkFn) };
     // See invariant (1): zero before any further allocation can trigger a GC.
     unsafe { std::ptr::write_bytes(outer, 0, n * 16) };
 
@@ -71,7 +71,7 @@ unsafe fn build(out: *mut u8, n: usize, entry: impl Fn(usize) -> (*const u8, usi
         let buf = if len == 0 {
             std::ptr::null_mut()
         } else {
-            let buf = unsafe { sol_alloc(len, 1, mark_noop as MarkFn) };
+            let buf = unsafe { sol_alloc_impl(len, 1, mark_noop as MarkFn) };
             unsafe { std::ptr::copy_nonoverlapping(ptr, buf, len) };
             buf
         };

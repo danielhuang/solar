@@ -3,8 +3,8 @@
 use crate::panic::throw_str;
 
 /// Adds signed integers or throws on overflow.
-#[unsafe(export_name = "sol_checked_add_int_slow")]
-pub unsafe extern "C-unwind" fn sol_checked_add_int(a: i64, b: i64) -> i64 {
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_checked_add_int_slow(a: i64, b: i64) -> i64 {
     match a.checked_add(b) {
         Some(v) => v,
         None => throw_str("integer overflow in addition"),
@@ -12,8 +12,8 @@ pub unsafe extern "C-unwind" fn sol_checked_add_int(a: i64, b: i64) -> i64 {
 }
 
 /// Subtracts signed integers or throws on overflow.
-#[unsafe(export_name = "sol_checked_sub_int_slow")]
-pub unsafe extern "C-unwind" fn sol_checked_sub_int(a: i64, b: i64) -> i64 {
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_checked_sub_int_slow(a: i64, b: i64) -> i64 {
     match a.checked_sub(b) {
         Some(v) => v,
         None => throw_str("integer overflow in subtraction"),
@@ -21,8 +21,8 @@ pub unsafe extern "C-unwind" fn sol_checked_sub_int(a: i64, b: i64) -> i64 {
 }
 
 /// Multiplies signed integers or throws on overflow.
-#[unsafe(export_name = "sol_checked_mul_int_slow")]
-pub unsafe extern "C-unwind" fn sol_checked_mul_int(a: i64, b: i64) -> i64 {
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_checked_mul_int_slow(a: i64, b: i64) -> i64 {
     match a.checked_mul(b) {
         Some(v) => v,
         None => throw_str("integer overflow in multiplication"),
@@ -30,8 +30,8 @@ pub unsafe extern "C-unwind" fn sol_checked_mul_int(a: i64, b: i64) -> i64 {
 }
 
 /// Divides signed integers or throws on overflow or division by zero.
-#[unsafe(export_name = "sol_checked_div_int_slow")]
-pub unsafe extern "C-unwind" fn sol_checked_div_int(a: i64, b: i64) -> i64 {
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_checked_div_int_slow(a: i64, b: i64) -> i64 {
     match a.checked_div(b) {
         Some(v) => v,
         None if b == 0 => throw_str("integer division by zero"),
@@ -40,8 +40,8 @@ pub unsafe extern "C-unwind" fn sol_checked_div_int(a: i64, b: i64) -> i64 {
 }
 
 /// Computes signed remainder or throws on overflow or division by zero.
-#[unsafe(export_name = "sol_checked_mod_int_slow")]
-pub unsafe extern "C-unwind" fn sol_checked_mod_int(a: i64, b: i64) -> i64 {
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_checked_mod_int_slow(a: i64, b: i64) -> i64 {
     match a.checked_rem(b) {
         Some(v) => v,
         None if b == 0 => throw_str("integer modulo by zero"),
@@ -50,8 +50,8 @@ pub unsafe extern "C-unwind" fn sol_checked_mod_int(a: i64, b: i64) -> i64 {
 }
 
 /// Adds unsigned integers or throws on overflow.
-#[unsafe(export_name = "sol_checked_add_uint_slow")]
-pub unsafe extern "C-unwind" fn sol_checked_add_uint(a: u64, b: u64) -> u64 {
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_checked_add_uint_slow(a: u64, b: u64) -> u64 {
     match a.checked_add(b) {
         Some(v) => v,
         None => throw_str("integer overflow in addition"),
@@ -59,8 +59,8 @@ pub unsafe extern "C-unwind" fn sol_checked_add_uint(a: u64, b: u64) -> u64 {
 }
 
 /// Subtracts unsigned integers or throws on overflow.
-#[unsafe(export_name = "sol_checked_sub_uint_slow")]
-pub unsafe extern "C-unwind" fn sol_checked_sub_uint(a: u64, b: u64) -> u64 {
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_checked_sub_uint_slow(a: u64, b: u64) -> u64 {
     match a.checked_sub(b) {
         Some(v) => v,
         None => throw_str("integer overflow in subtraction"),
@@ -68,8 +68,8 @@ pub unsafe extern "C-unwind" fn sol_checked_sub_uint(a: u64, b: u64) -> u64 {
 }
 
 /// Multiplies unsigned integers or throws on overflow.
-#[unsafe(export_name = "sol_checked_mul_uint_slow")]
-pub unsafe extern "C-unwind" fn sol_checked_mul_uint(a: u64, b: u64) -> u64 {
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_checked_mul_uint_slow(a: u64, b: u64) -> u64 {
     match a.checked_mul(b) {
         Some(v) => v,
         None => throw_str("integer overflow in multiplication"),
@@ -77,8 +77,8 @@ pub unsafe extern "C-unwind" fn sol_checked_mul_uint(a: u64, b: u64) -> u64 {
 }
 
 /// Divides unsigned integers or throws on division by zero.
-#[unsafe(export_name = "sol_checked_div_uint_slow")]
-pub unsafe extern "C-unwind" fn sol_checked_div_uint(a: u64, b: u64) -> u64 {
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_checked_div_uint_slow(a: u64, b: u64) -> u64 {
     match a.checked_div(b) {
         Some(v) => v,
         None => throw_str("integer division by zero"),
@@ -86,8 +86,8 @@ pub unsafe extern "C-unwind" fn sol_checked_div_uint(a: u64, b: u64) -> u64 {
 }
 
 /// Computes unsigned remainder or throws on division by zero.
-#[unsafe(export_name = "sol_checked_mod_uint_slow")]
-pub unsafe extern "C-unwind" fn sol_checked_mod_uint(a: u64, b: u64) -> u64 {
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_checked_mod_uint_slow(a: u64, b: u64) -> u64 {
     match a.checked_rem(b) {
         Some(v) => v,
         None => throw_str("integer modulo by zero"),

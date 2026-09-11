@@ -128,7 +128,7 @@ pub extern "C" fn sol_fd_to_raw(fd_ptr: *mut u8) -> libc::c_int {
 /// and be born marked if a concurrent mark is already in flight. The
 /// born-marked decision (read `SOL_CONCURRENT_MARKING`, conditionally set the
 /// mark bit) must not be interrupted by the STW signal — exactly like
-/// `sol_alloc`'s allocate-black — so the registration runs in a GC critical
+/// `sol_alloc_impl`'s allocate-black — so the registration runs in a GC critical
 /// section. (An un-registered fd is never swept, so a cycle landing between
 /// the fd-producing syscall and this call can't close it.) The caller must be
 /// a registered mutator thread.

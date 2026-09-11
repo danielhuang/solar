@@ -38,8 +38,8 @@ pub extern "C" fn sol_gc_keepalive(value: *mut u8) {
 }
 
 /// Allocates uninitialized GC-managed memory.
-#[unsafe(export_name = "sol_alloc_impl")]
-pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -> *mut u8 {
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sol_alloc_impl(size: usize, align: usize, mark_fn: MarkFn) -> *mut u8 {
     unsafe { alloc_in_class::<-1>(size, align, mark_fn) }
 }
 
@@ -75,7 +75,7 @@ macro_rules! class_allocators {
     ($(($name:ident, $class:literal)),* $(,)?) => {$(
         #[doc = "Compiler-only allocation entry point for a fixed arena class."]
         #[doc(hidden)]
-        #[unsafe(export_name = concat!(stringify!($name), "_impl"))]
+        #[unsafe(no_mangle)]
         #[inline(never)]
         pub unsafe extern "C" fn $name(
             size: usize,
@@ -88,34 +88,34 @@ macro_rules! class_allocators {
 }
 
 class_allocators!(
-    (sol_alloc_class_0, 0),
-    (sol_alloc_class_1, 1),
-    (sol_alloc_class_2, 2),
-    (sol_alloc_class_3, 3),
-    (sol_alloc_class_4, 4),
-    (sol_alloc_class_5, 5),
-    (sol_alloc_class_6, 6),
-    (sol_alloc_class_7, 7),
-    (sol_alloc_class_8, 8),
-    (sol_alloc_class_9, 9),
-    (sol_alloc_class_10, 10),
-    (sol_alloc_class_11, 11),
-    (sol_alloc_class_12, 12),
-    (sol_alloc_class_13, 13),
-    (sol_alloc_class_14, 14),
-    (sol_alloc_class_15, 15),
-    (sol_alloc_class_16, 16),
-    (sol_alloc_class_17, 17),
-    (sol_alloc_class_18, 18),
-    (sol_alloc_class_19, 19),
-    (sol_alloc_class_20, 20),
-    (sol_alloc_class_21, 21),
-    (sol_alloc_class_22, 22),
-    (sol_alloc_class_23, 23),
-    (sol_alloc_class_24, 24),
-    (sol_alloc_class_25, 25),
-    (sol_alloc_class_26, 26),
-    (sol_alloc_class_27, 27),
+    (sol_alloc_class_0_impl, 0),
+    (sol_alloc_class_1_impl, 1),
+    (sol_alloc_class_2_impl, 2),
+    (sol_alloc_class_3_impl, 3),
+    (sol_alloc_class_4_impl, 4),
+    (sol_alloc_class_5_impl, 5),
+    (sol_alloc_class_6_impl, 6),
+    (sol_alloc_class_7_impl, 7),
+    (sol_alloc_class_8_impl, 8),
+    (sol_alloc_class_9_impl, 9),
+    (sol_alloc_class_10_impl, 10),
+    (sol_alloc_class_11_impl, 11),
+    (sol_alloc_class_12_impl, 12),
+    (sol_alloc_class_13_impl, 13),
+    (sol_alloc_class_14_impl, 14),
+    (sol_alloc_class_15_impl, 15),
+    (sol_alloc_class_16_impl, 16),
+    (sol_alloc_class_17_impl, 17),
+    (sol_alloc_class_18_impl, 18),
+    (sol_alloc_class_19_impl, 19),
+    (sol_alloc_class_20_impl, 20),
+    (sol_alloc_class_21_impl, 21),
+    (sol_alloc_class_22_impl, 22),
+    (sol_alloc_class_23_impl, 23),
+    (sol_alloc_class_24_impl, 24),
+    (sol_alloc_class_25_impl, 25),
+    (sol_alloc_class_26_impl, 26),
+    (sol_alloc_class_27_impl, 27),
 );
 
 /// Allocate `size` bytes (rounded up to a power-of-2 size class) from the
@@ -249,8 +249,8 @@ fn gc_san_assert_same_allocation(source: usize, destination: usize) {
 }
 
 /// Checks a slice range and returns its starting address.
-#[unsafe(export_name = "sol_slice_range_slow")]
-pub unsafe extern "C-unwind" fn sol_slice_range(
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_slice_range_slow(
     base: *const u8,
     start: u64,
     end: u64,
@@ -268,8 +268,8 @@ pub unsafe extern "C-unwind" fn sol_slice_range(
 }
 
 /// Checks a slice index and returns the element address.
-#[unsafe(export_name = "sol_slice_index_slow")]
-pub unsafe extern "C-unwind" fn sol_slice_index(
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_slice_index_slow(
     base: *const u8,
     index: u64,
     len: u64,
@@ -286,8 +286,8 @@ pub unsafe extern "C-unwind" fn sol_slice_index(
 
 /// Null check for dereferencing a nullable reference (`&?T`). Throws a Solar
 /// exception if the pointer is null; otherwise returns it unchanged.
-#[unsafe(export_name = "sol_null_check_slow")]
-pub unsafe extern "C-unwind" fn sol_null_check(ptr: *const u8) -> *const u8 {
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn sol_null_check_slow(ptr: *const u8) -> *const u8 {
     if ptr.is_null() {
         crate::panic::throw_str("null dereference");
     }
@@ -296,8 +296,8 @@ pub unsafe extern "C-unwind" fn sol_null_check(ptr: *const u8) -> *const u8 {
 
 /// Array length check backing both array destructuring and the `[T]` → `[T; N]`
 /// coercion (`ArraySizeCoerce`).
-#[unsafe(export_name = "sol_assert_array_len_slow")]
-pub extern "C-unwind" fn sol_assert_array_len(actual: u64, expected: u64) {
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn sol_assert_array_len_slow(actual: u64, expected: u64) {
     if actual != expected {
         crate::panic::throw_message(format_args!(
             "array length mismatch: expected {expected} elements, got {actual}"

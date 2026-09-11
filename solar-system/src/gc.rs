@@ -269,7 +269,7 @@ pub(crate) unsafe fn end_critical_section(slot: &ThreadSlot) {
 }
 
 /// Run `f` inside a GC critical section and return its result. Shared by
-/// `sol_alloc` and the barrier / `sol_memcpy` gray-buffer updates — anything
+/// `sol_alloc_impl` and the barrier / `sol_memcpy` gray-buffer updates — anything
 /// that touches per-thread GC structures (and may lock `GRAY`).
 #[inline]
 pub(crate) unsafe fn with_signal_deferred<R>(f: impl FnOnce(&ThreadSlot) -> R) -> R {
@@ -514,7 +514,7 @@ unsafe fn notify_and_wait_for_gc(slot: &ThreadSlot, wait_epoch: u64) {
 }
 
 // ---------------------------------------------------------------------------
-// Cooperative self-suspend (from sol_alloc when gc_pending_epoch is set).
+// Cooperative self-suspend (from sol_alloc_impl when gc_pending_epoch is set).
 // ---------------------------------------------------------------------------
 
 pub(crate) unsafe fn self_suspend(slot: &ThreadSlot, wait_epoch: u64) {
@@ -1359,8 +1359,8 @@ pub unsafe extern "C" fn sol_gc_mark(ctx: *mut u8, ptr: *mut u8) {
 pub static SOL_CONCURRENT_MARKING: AtomicBool = AtomicBool::new(false);
 
 /// Shades a pointer stored while concurrent marking is active.
-#[unsafe(export_name = "sol_write_barrier_slow")]
-pub unsafe extern "C" fn sol_write_barrier(dst: *mut u8, val: *mut u8) {
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sol_write_barrier_slow(dst: *mut u8, val: *mut u8) {
     if SOL_CONCURRENT_MARKING.load(Ordering::Relaxed) {
         unsafe { write_barrier_slow(dst, val) };
     }
@@ -1392,10 +1392,10 @@ unsafe fn write_barrier_slow(_dst: *mut u8, val: *mut u8) {
 
 /// Bulk write barrier for optimizer-generated `llvm.memcpy`/`memmove` (and any
 /// other aggregate copy the compiler's pass instruments). Conservatively shades
-/// the destination region when marking is active. The compiler inserts a call
-/// to this after such intrinsics whose destination is not stack-derived.
-#[unsafe(export_name = "sol_gc_memcpy_barrier_slow")]
-pub unsafe extern "C" fn sol_gc_memcpy_barrier(dst: *mut u8, size: usize) {
+/// the destination region when marking is active. The compiler inserts calls
+/// to the LLVM `sol_gc_memcpy_barrier` wrapper, which forwards here while marking.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sol_gc_memcpy_barrier_slow(dst: *mut u8, size: usize) {
     if SOL_CONCURRENT_MARKING.load(Ordering::Relaxed) {
         unsafe { memcpy_barrier(dst, size) };
     }

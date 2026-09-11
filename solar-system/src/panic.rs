@@ -388,7 +388,8 @@ pub(crate) fn throw_message(args: std::fmt::Arguments) -> ! {
     );
     unsafe { crate::gc::begin_critical_section(&*slot) };
     let text = args.to_string();
-    let ptr = unsafe { crate::mem::sol_alloc(text.len().max(1), 1, crate::process::mark_noop) };
+    let ptr =
+        unsafe { crate::mem::sol_alloc_impl(text.len().max(1), 1, crate::process::mark_noop) };
     unsafe { std::ptr::copy_nonoverlapping(text.as_ptr(), ptr, text.len()) };
     // `text` is dropped by the unwind's landing pad, still inside the section.
     throw_raw(ptr, text.len())
