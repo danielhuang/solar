@@ -12,6 +12,7 @@ a command changes directory explicitly.
 - [Run the allocation and GC matrix](#run-the-allocation-and-gc-matrix)
 - [Run the C allocator matrix](#run-the-c-allocator-matrix)
 - [Run sieve](#run-sieve)
+- [Run loop optimization](#run-loop-optimization)
 - [Run HashMap](#run-hashmap)
 - [Run binary trees](#run-binary-trees)
 - [Measurement definitions](#measurement-definitions)
@@ -81,7 +82,7 @@ codegen:
 ```bash
 cargo build --release -p solar-system
 
-for stem in allocs3 threads_list2 splay allocs5 sieve hashmap binarytrees binarytrees_st; do
+for stem in allocs3 threads_list2 splay allocs5 sieve hashmap binarytrees binarytrees_st loop2 loop2fn5; do
   cargo run --release --quiet -- compile --release \
     "examples/$stem.solar" "target/$stem"
 done
@@ -218,6 +219,53 @@ ROUNDS=5 python3 bench/sieve_matrix.py
 
 The harness requires every process to print `5761455` and fails if an output
 or exit status is incorrect.
+
+## Run loop optimization
+
+Compare `examples/loop2.solar`, `examples/loop2fn5.solar`, and the C reference
+`bench/c/loop2.c`. Each increments a signed 64-bit counter from zero to one
+billion, printing it when `i % 10000 == 0`. The C source retains the full
+outer loop and modulo branch rather than stepping directly between prints.
+
+`loop2fn5.solar` is expected to have the same release performance as
+`loop2.solar`: the optimizer should remove the extra higher-order calls,
+closures, single-element array, and reference indirection. This is an
+optimization expectation, not a recorded measurement.
+
+To build just this group:
+
+```bash
+cargo build --release -p solar-system
+for stem in loop2 loop2fn5; do
+  cargo run --release --quiet -- compile --release \
+    "examples/$stem.solar" "target/$stem"
+done
+make -C bench/c loop2
+```
+
+Verify identical output (100,000 lines, from `0` through `999990000`):
+
+```bash
+target/loop2 > /tmp/loop2-solar
+target/loop2fn5 > /tmp/loop2fn5-solar
+bench/c/loop2 > /tmp/loop2-c
+diff -u /tmp/loop2-solar /tmp/loop2fn5-solar
+diff -u /tmp/loop2-solar /tmp/loop2-c
+```
+
+Measure three interleaved rounds with output redirected to avoid terminal
+rendering overhead. Compare minimum wall times across rounds:
+
+```bash
+for round in 1 2 3; do
+  /usr/bin/time -f 'Solar loop2: wall=%e user=%U sys=%S rss_kib=%M' \
+    target/loop2 >/dev/null
+  /usr/bin/time -f 'Solar loop2fn5: wall=%e user=%U sys=%S rss_kib=%M' \
+    target/loop2fn5 >/dev/null
+  /usr/bin/time -f 'C loop2: wall=%e user=%U sys=%S rss_kib=%M' \
+    bench/c/loop2 >/dev/null
+done
+```
 
 ## Run HashMap
 
