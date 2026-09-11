@@ -4,6 +4,24 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
+    let hot_sources = [
+        "solar-system/src/atomic128.ll",
+        "solar-system/src/hot.ll",
+        "solar-system/src/allocators.ll",
+    ];
+    let hot_bc = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("solar_hot.bc");
+    for source in hot_sources {
+        println!("cargo:rerun-if-changed={source}");
+    }
+    let status = Command::new("llvm-link")
+        .args(hot_sources)
+        .arg("-o")
+        .arg(&hot_bc)
+        .status()
+        .unwrap();
+    assert!(status.success(), "failed to assemble hot runtime helpers");
+    println!("cargo:rustc-env=SOLAR_HOT_BITCODE={}", hot_bc.display());
+
     println!("cargo:rerun-if-changed=llvm-pass/SolarWriteBarriers.cpp");
     println!("cargo:rerun-if-changed=build.rs");
 

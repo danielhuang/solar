@@ -866,6 +866,12 @@ fn catch_runtime_errors() {
          integer division by zero\n\
          integer overflow in division\n\
          integer modulo by zero\n\
+         integer overflow in modulo\n\
+         integer overflow in subtraction\n\
+         integer overflow in addition\n\
+         integer overflow in multiplication\n\
+         integer division by zero\n\
+         integer modulo by zero\n\
          index out of bounds: index is 5 but length is 3\n\
          slice end (5) > length (3)\n\
          slice start (2) > end (1)\n\

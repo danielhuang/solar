@@ -103,7 +103,7 @@ pub struct CompileOptions {
     /// Inserts GC-San access checks and disables reuse of swept arena slots.
     /// Requires [`Self::enable_gc`].
     pub gc_san: bool,
-    /// Enables `-O3`, cross-language LTO, and allocation specialization.
+    /// Enables `-O3`, hot-runtime inlining, and allocation specialization.
     /// Requires [`Self::enable_gc`].
     pub optimize: bool,
 }
@@ -309,9 +309,6 @@ fn compile_unoptimized(c_path: &Path, dir: &Path, bin_path: &Path, options: Comp
             // No write-barrier pass, so force bump-allocator mode (codegen
             // guards the `sol_disable_gc()` call on this macro).
             "-DSOLAR_DEBUG_DISABLE_GC",
-            // lld: some of the runtime archive's dependency-crate members are
-            // LLVM bitcode (`linker-plugin-lto`); GNU ld can't read those, so
-            // lld compiles them at link time.
             "-fuse-ld=lld",
             c_path.to_str().unwrap(),
             "target/debug/libsolar_system.a",
@@ -332,7 +329,7 @@ fn compile_unoptimized(c_path: &Path, dir: &Path, bin_path: &Path, options: Comp
 }
 
 // ---------------------------------------------------------------------------
-// Optimized compilation: LLVM LTO with cross-language optimization
+// Optimized compilation: small inlineable runtime module, native runtime link
 // ---------------------------------------------------------------------------
 
 /// Enable aggressive LLVM Attributor pass. Currently disabled due to an LLVM bug
@@ -362,26 +359,6 @@ fn run_cmd_to_path(cmd: &str, args: &[&str], output: &Path) {
     );
 }
 
-fn run_piped(cmd: &str, args: &[&str]) -> String {
-    let output = Command::new(cmd)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("failed to run {cmd}: {e}"));
-    assert!(
-        output.status.success(),
-        "{cmd} failed with {}",
-        output.status
-    );
-    String::from_utf8(output.stdout).unwrap()
-}
-
-fn force_replace(input: &str, from: &str, to: &str) -> String {
-    assert!(from != to);
-    let new = input.replace(from, to);
-    assert!(new != input, "{new:?}");
-    new
-}
-
 fn compile_optimized(c_path: &Path, dir: &Path, bin_path: &Path, gc_san: bool) {
     let runtime_lib = Path::new("target/release/libsolar_system.a");
     assert!(
@@ -390,47 +367,8 @@ fn compile_optimized(c_path: &Path, dir: &Path, bin_path: &Path, gc_san: bool) {
         runtime_lib.display()
     );
 
-    eprintln!("=== Extracting bitcode from runtime archive ===");
-    run_cmd(
-        "ar",
-        &[
-            "x",
-            runtime_lib.to_str().unwrap(),
-            "--output",
-            dir.to_str().unwrap(),
-        ],
-    );
-
-    // Only runtime-owned bitcode participates in cross-language optimization.
-    eprintln!("=== Merging Rust bitcode (solar_system only) ===");
-    let bc_files: Vec<String> = std::fs::read_dir(dir)
-        .unwrap()
-        .filter_map(|e| {
-            let path = e.unwrap().path();
-            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            let is_own = file_name.starts_with("solar_system") || file_name == "atomic128.o";
-            if is_own && path.extension().is_some_and(|e| e == "o") {
-                let out = run_piped("file", &[path.to_str().unwrap()]);
-                if out.contains("LLVM IR bitcode") {
-                    return Some(path.to_str().unwrap().to_string());
-                }
-            }
-            None
-        })
-        .collect();
-    assert!(
-        !bc_files.is_empty(),
-        "no LLVM IR bitcode files found in archive"
-    );
-
-    let merged_rust = dir.join("merged_rust.bc");
-    {
-        let mut link_args = vec!["-o", merged_rust.to_str().unwrap()];
-        for f in &bc_files {
-            link_args.push(f.as_str());
-        }
-        run_cmd("llvm-link", &link_args);
-    }
+    let hot_bc = dir.join("runtime_hot.bc");
+    std::fs::write(&hot_bc, include_bytes!(env!("SOLAR_HOT_BITCODE"))).unwrap();
 
     // Compile generated C to bitcode
     eprintln!("=== Compiling generated C to bitcode ===");
@@ -440,7 +378,7 @@ fn compile_optimized(c_path: &Path, dir: &Path, bin_path: &Path, gc_san: bool) {
         // `nounwind`) so a Solar `throw` can unwind through these C frames to the
         // nearest `sol_try` (`catch_unwind`). Without it C frames abort the unwind.
         let mut clang_args = vec![
-            "-flto=full",
+            "-emit-llvm",
             "-fexceptions",
             // The generated C accesses the same memory through mixed-typed
             // casts (`uint8_t*` pointer members vs `uint64_t` scalar views),
@@ -461,86 +399,17 @@ fn compile_optimized(c_path: &Path, dir: &Path, bin_path: &Path, gc_san: bool) {
         run_cmd("clang", &clang_args);
     }
 
-    // Merge C and Rust bitcode
-    eprintln!("=== Merging C and Rust bitcode ===");
+    // Only the small helper module participates in program optimization.
+    eprintln!("=== Linking hot runtime helpers ===");
     let full_bc = dir.join("full.bc");
     run_cmd(
         "llvm-link",
         &[
             c_bc.to_str().unwrap(),
-            merged_rust.to_str().unwrap(),
+            hot_bc.to_str().unwrap(),
             "-o",
             full_bc.to_str().unwrap(),
         ],
-    );
-
-    // Stamp allocator attributes
-    eprintln!("=== Stamping allocator attributes ===");
-    let full_ll = dir.join("full.ll");
-    run_cmd(
-        "llvm-dis",
-        &[full_bc.to_str().unwrap(), "-o", full_ll.to_str().unwrap()],
-    );
-    {
-        let ll = std::fs::read_to_string(&full_ll).unwrap();
-        let mut patched = String::with_capacity(ll.len());
-        let mut matched = 0usize;
-        let mut matched_classes = 0usize;
-        for line in ll.lines() {
-            if line.contains("@sol_alloc(") && line.starts_with("define") {
-                matched += 1;
-                let line = force_replace(
-                    line,
-                    "personality ptr @rust_eh_personality",
-                    "noinline allocsize(0) allockind(\"alloc,aligned\") personality ptr @rust_eh_personality",
-                );
-                let line = force_replace(
-                    &line,
-                    "@sol_alloc(i64 noundef %0, i64 noundef %1, ptr noundef nonnull %2)",
-                    "@sol_alloc(i64 noundef %0, i64 noundef allocalign %1, ptr noundef nonnull %2)",
-                );
-                let line = force_replace(
-                    &line,
-                    "define noundef ptr @sol_alloc",
-                    "define noundef noalias ptr @sol_alloc",
-                );
-                patched.push_str(&line);
-            } else if line.contains("@sol_alloc_class_") && line.starts_with("define") {
-                matched_classes += 1;
-                let line = force_replace(
-                    line,
-                    "personality ptr @rust_eh_personality",
-                    "noinline allocsize(0) allockind(\"alloc,aligned\") personality ptr @rust_eh_personality",
-                );
-                let line = force_replace(
-                    &line,
-                    "(i64 noundef %0, i64 noundef %1,",
-                    "(i64 noundef %0, i64 noundef allocalign %1,",
-                );
-                let line = force_replace(
-                    &line,
-                    "define noundef ptr @sol_alloc_class_",
-                    "define noundef noalias ptr @sol_alloc_class_",
-                );
-                patched.push_str(&line);
-            } else {
-                patched.push_str(line);
-            }
-            patched.push('\n');
-        }
-        assert!(
-            matched == 1,
-            "expected exactly 1 sol_alloc definition, found {matched}"
-        );
-        assert!(
-            matched_classes == 28,
-            "expected exactly 28 sol_alloc_class definitions, found {matched_classes}"
-        );
-        std::fs::write(&full_ll, patched).unwrap();
-    }
-    run_cmd(
-        "llvm-as",
-        &[full_ll.to_str().unwrap(), "-o", full_bc.to_str().unwrap()],
     );
 
     eprintln!("=== Specializing constant-size GC allocations ===");
@@ -548,7 +417,7 @@ fn compile_optimized(c_path: &Path, dir: &Path, bin_path: &Path, gc_san: bool) {
     specialize_gc_alloc(&full_bc, &full_specialized_bc);
 
     // Optimize
-    eprintln!("=== Optimizing (cross-language inlining) ===");
+    eprintln!("=== Optimizing program and hot helpers ===");
     let full_opt_bc = dir.join("full_opt.bc");
     {
         let mut opt_args = vec!["-O3"];
@@ -579,26 +448,36 @@ fn compile_optimized(c_path: &Path, dir: &Path, bin_path: &Path, gc_san: bool) {
         &full_wb_bc
     };
 
-    // Final link
-    eprintln!("=== Final link ===");
-    {
-        // Use lld: the runtime archive's dependency-crate members (backtrace,
-        // gimli, …) are LLVM bitcode (`linker-plugin-lto`) and are now pulled
-        // here rather than pre-merged. GNU ld can't read bitcode archive
-        // members; lld compiles them at link time.
-        let mut link_args = vec!["-fuse-ld=lld", "-march=native", "-O3", "-g"];
-        if ATTRIBUTOR_ENABLE_ALL {
-            link_args.extend(["-mllvm", "-attributor-enable=all"]);
-        }
-        link_args.extend([
+    // Compile the instrumented program to a native object first. The bulk
+    // runtime and all its dependencies are native archive members; the final
+    // linker performs no LTO or runtime code generation.
+    eprintln!("=== Compiling program object ===");
+    let program_obj = dir.join("program.o");
+    run_cmd_to_path(
+        "clang",
+        &[
+            "-c",
+            "-march=native",
+            "-O3",
+            "-g",
             final_bc.to_str().unwrap(),
+        ],
+        &program_obj,
+    );
+    eprintln!("=== Linking native runtime ===");
+    run_cmd_to_path(
+        "clang",
+        &[
+            "-fuse-ld=lld",
+            "-fno-lto",
+            program_obj.to_str().unwrap(),
             runtime_lib.to_str().unwrap(),
             "-lm",
             "-lpthread",
             "-ldl",
-        ]);
-        run_cmd_to_path("clang", &link_args, bin_path);
-    }
+        ],
+        bin_path,
+    );
 
     eprintln!("=== Built: {} ===", bin_path.display());
 }

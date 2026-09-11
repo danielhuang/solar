@@ -38,7 +38,7 @@ pub extern "C" fn sol_gc_keepalive(value: *mut u8) {
 }
 
 /// Allocates uninitialized GC-managed memory.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "sol_alloc_impl")]
 pub unsafe extern "C" fn sol_alloc(size: usize, align: usize, mark_fn: MarkFn) -> *mut u8 {
     unsafe { alloc_in_class::<-1>(size, align, mark_fn) }
 }
@@ -75,7 +75,7 @@ macro_rules! class_allocators {
     ($(($name:ident, $class:literal)),* $(,)?) => {$(
         #[doc = "Compiler-only allocation entry point for a fixed arena class."]
         #[doc(hidden)]
-        #[unsafe(no_mangle)]
+        #[unsafe(export_name = concat!(stringify!($name), "_impl"))]
         #[inline(never)]
         pub unsafe extern "C" fn $name(
             size: usize,
@@ -249,7 +249,7 @@ fn gc_san_assert_same_allocation(source: usize, destination: usize) {
 }
 
 /// Checks a slice range and returns its starting address.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "sol_slice_range_slow")]
 pub unsafe extern "C-unwind" fn sol_slice_range(
     base: *const u8,
     start: u64,
@@ -268,7 +268,7 @@ pub unsafe extern "C-unwind" fn sol_slice_range(
 }
 
 /// Checks a slice index and returns the element address.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "sol_slice_index_slow")]
 pub unsafe extern "C-unwind" fn sol_slice_index(
     base: *const u8,
     index: u64,
@@ -286,7 +286,7 @@ pub unsafe extern "C-unwind" fn sol_slice_index(
 
 /// Null check for dereferencing a nullable reference (`&?T`). Throws a Solar
 /// exception if the pointer is null; otherwise returns it unchanged.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "sol_null_check_slow")]
 pub unsafe extern "C-unwind" fn sol_null_check(ptr: *const u8) -> *const u8 {
     if ptr.is_null() {
         crate::panic::throw_str("null dereference");
@@ -296,7 +296,7 @@ pub unsafe extern "C-unwind" fn sol_null_check(ptr: *const u8) -> *const u8 {
 
 /// Array length check backing both array destructuring and the `[T]` → `[T; N]`
 /// coercion (`ArraySizeCoerce`).
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "sol_assert_array_len_slow")]
 pub extern "C-unwind" fn sol_assert_array_len(actual: u64, expected: u64) {
     if actual != expected {
         crate::panic::throw_message(format_args!(

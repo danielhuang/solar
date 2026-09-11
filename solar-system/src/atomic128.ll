@@ -11,37 +11,37 @@ target triple = "x86_64-unknown-linux-gnu"
 ; will promote: with `monotonic`+ the access is a synchronization point and a
 ; non-escaping box can never be elided. Keeping these `unordered` lets plain
 ; `opt -O3` delete thread-local fat-pointer boxes with no extra Solar/LLVM passes.
-define void @sol_store_128_unordered(ptr %dst, ptr %src) #0 {
+define weak_odr void @sol_store_128_unordered(ptr %dst, ptr %src) #0 {
   %val = load i128, ptr %src, align 8
   store atomic i128 %val, ptr %dst unordered, align 16
   ret void
 }
 
-define void @sol_load_128_unordered(ptr %dst, ptr %src) #0 {
+define weak_odr void @sol_load_128_unordered(ptr %dst, ptr %src) #0 {
   %val = load atomic i128, ptr %src unordered, align 16
   store i128 %val, ptr %dst, align 8
   ret void
 }
 
-define void @sol_copy_128_unordered(ptr %dst, ptr %src) #0 {
+define weak_odr void @sol_copy_128_unordered(ptr %dst, ptr %src) #0 {
   %val = load atomic i128, ptr %src unordered, align 16
   store atomic i128 %val, ptr %dst unordered, align 16
   ret void
 }
 
-define void @sol_atomic_load_128_acq(ptr %dst, ptr %src) #0 {
+define weak_odr void @sol_atomic_load_128_acq(ptr %dst, ptr %src) #0 {
   %val = load atomic i128, ptr %src acquire, align 16
   store i128 %val, ptr %dst, align 8
   ret void
 }
 
-define void @sol_atomic_store_128_rel(ptr %dst, ptr %src) #0 {
+define weak_odr void @sol_atomic_store_128_rel(ptr %dst, ptr %src) #0 {
   %val = load i128, ptr %src, align 8
   store atomic i128 %val, ptr %dst release, align 16
   ret void
 }
 
-define void @sol_atomic_compare_exchange_128_acq_rel(ptr %dst, ptr %ref, ptr %expected, ptr %new_val) #0 {
+define weak_odr void @sol_atomic_compare_exchange_128_acq_rel(ptr %dst, ptr %ref, ptr %expected, ptr %new_val) #0 {
   %exp_val = load i128, ptr %expected, align 8
   %new_v = load i128, ptr %new_val, align 8
   %result = cmpxchg ptr %ref, i128 %exp_val, i128 %new_v acq_rel acquire, align 16

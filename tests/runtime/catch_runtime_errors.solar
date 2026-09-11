@@ -22,6 +22,12 @@ fn main() {
 	try { println(big / zero); } catch (e) { println(e); }
 	try { println(min / neg); } catch (e) { println(e); }
 	try { println(big % zero); } catch (e) { println(e); }
+	try { println(min % neg); } catch (e) { println(e); }
+	try { println(min - 1); } catch (e) { println(e); }
+	try { println(!0u + 1u); } catch (e) { println(e); }
+	try { println(!0u * 2u); } catch (e) { println(e); }
+	try { println(1u / 0u); } catch (e) { println(e); }
+	try { println(1u % 0u); } catch (e) { println(e); }
 
 	// Bounds checks.
 	try { println(a[5u]); } catch (e) { println(e); }

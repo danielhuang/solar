@@ -1359,7 +1359,7 @@ pub unsafe extern "C" fn sol_gc_mark(ctx: *mut u8, ptr: *mut u8) {
 pub static SOL_CONCURRENT_MARKING: AtomicBool = AtomicBool::new(false);
 
 /// Shades a pointer stored while concurrent marking is active.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "sol_write_barrier_slow")]
 pub unsafe extern "C" fn sol_write_barrier(dst: *mut u8, val: *mut u8) {
     if SOL_CONCURRENT_MARKING.load(Ordering::Relaxed) {
         unsafe { write_barrier_slow(dst, val) };
@@ -1394,7 +1394,7 @@ unsafe fn write_barrier_slow(_dst: *mut u8, val: *mut u8) {
 /// other aggregate copy the compiler's pass instruments). Conservatively shades
 /// the destination region when marking is active. The compiler inserts a call
 /// to this after such intrinsics whose destination is not stack-derived.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "sol_gc_memcpy_barrier_slow")]
 pub unsafe extern "C" fn sol_gc_memcpy_barrier(dst: *mut u8, size: usize) {
     if SOL_CONCURRENT_MARKING.load(Ordering::Relaxed) {
         unsafe { memcpy_barrier(dst, size) };
