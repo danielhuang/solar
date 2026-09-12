@@ -3,8 +3,8 @@
 ## Development environment
 
 - Install Rust with rustup.
-- LLVM, clang, clang++, lld, and the LLVM development headers must match the
-  LLVM version used by rustc.
+- Use compatible versions of clang and the external LLVM tools. The LLVM
+  development headers must match the `opt` that loads the pass plugin.
 - Provide unversioned `clang`, `clang++`, `llvm-as`, `llvm-link`, `opt`,
   `ld.lld`, and `llvm-config` commands on `PATH`.
 - Grammar development requires Node.js and the tree-sitter CLI.
