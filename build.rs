@@ -25,7 +25,7 @@ fn main() {
     println!("cargo:rerun-if-changed=llvm-pass/SolarWriteBarriers.cpp");
     println!("cargo:rerun-if-changed=build.rs");
 
-    let Some(llvm_config) = ["llvm-config", "llvm-config-22"].into_iter().find(|c| {
+    let Some(llvm_config) = ["llvm-config", "llvm-config-23"].into_iter().find(|c| {
         Command::new(c)
             .arg("--version")
             .output()
