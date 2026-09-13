@@ -1,0 +1,86 @@
+import intrinsics from "@intrinsics";
+
+struct Details { code: Int, text: &[Uint8] }
+enum Choice { Number(Int), Empty }
+struct Cycle { left: &?Cycle, right: &?Cycle }
+
+fn check_payload#[T](value: T, text: &[Uint8]) {
+	let e = Exception("message"&, Any(value&));
+	assert(e.message@ == "message");
+	assert(e.payload.downcast#[T]() != null#[T]);
+	assert(e.trace.len() > 0u);
+	assert(e.to_string().contains(text));
+	assert(e.to_string().contains("Stack trace:"&));
+}
+
+fn make_failure() {
+	let details = Details { code: 42, text: "retained payload"& };
+	throw("failure"&, Any(details&));
+}
+
+fn main() {
+	let value = 42;
+	assert(Any(value&).type_name()@ == "Int");
+	let addresses = intrinsics::capture_backtrace();
+	assert(addresses.len() > 0u);
+	let resolved = intrinsics::resolve_address(0u);
+	assert(resolved@ == "0x0 <unknown>");
+	resolved@[0u] = 'X';
+	assert(resolved@ == "Xx0 <unknown>");
+
+	try { throw("default"&); } catch (e: Exception) {
+		assert(e.payload.downcast#[Unit]() != null#[Unit]);
+		assert(e.to_string().contains("Payload type: Unit"&));
+		assert(e.trace.len() > 0u);
+	}
+
+	try {
+		try { make_failure(); } catch (e) {
+			let original_trace = e.trace;
+			let payload = e.payload.downcast#[Details]();
+			assert(payload@.code == 42);
+			payload@.code = 43;
+			assert(e.to_string().contains("Payload type: Details"&));
+
+			try { throw(e); } catch (again) {
+				assert(ref_eq(original_trace, again.trace));
+				assert(ref_eq(payload@&, again.payload.downcast#[Details]()@&));
+				throw(again);
+			}
+		}
+	} catch (e) {
+		assert(e.message@ == "failure");
+		assert(e.payload.downcast#[Details]()@.code == 43);
+		assert(e.payload.downcast#[Details]()@.text@ == "retained payload");
+		assert(!e.to_string().contains("retained payload"&));
+	}
+
+	let cyclic = (Cycle { left: null#[Cycle], right: null#[Cycle] })&;
+	cyclic@.left = cyclic;
+	cyclic@.right = cyclic;
+	let cycle = Exception("cycle"&, Any(cyclic&));
+	let formatted_cycle = cycle.to_string();
+	assert(formatted_cycle.contains("Payload type: &Cycle"&));
+	let copied = Exception {
+		message: cycle.message,
+		payload: cycle.payload,
+		trace: cycle.trace,
+	};
+	assert(ref_eq(copied.trace, cycle.trace));
+	check_payload(123, "Payload type: Int"&);
+	check_payload(18446744073709551615u, "Payload type: Uint"&);
+	check_payload(true, "Payload type: Bool"&);
+	check_payload("hello"&, "Payload type: &[Uint8]"&);
+	let numbers: [Int; 3] = [1, 2, 3];
+	check_payload(numbers, "Payload type: [Int; 3]"&);
+	check_payload(Choice::Number(7), "Payload type: Choice"&);
+	check_payload(Choice::Empty, "Payload type: Choice"&);
+
+	try { let zero = black_box(0); println(1 / zero); } catch (e) {
+		assert(e.payload.downcast#[Unit]() != null#[Unit]);
+		assert(e.trace.len() > 0u);
+		assert(e.to_string().contains("division by zero"&));
+	}
+
+	println("passed"&);
+}

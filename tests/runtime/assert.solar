@@ -6,6 +6,6 @@ fn main() {
 		assert(false);
 		println("UNREACHABLE"&);
 	} catch (e) {
-		println(e);
+		println(e.message);
 	}
 }

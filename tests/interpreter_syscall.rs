@@ -34,7 +34,7 @@ fn stdout_syscall_retries_and_reports_errors_through_solar() {
     std::fs::write(
         &source,
         r#"fn main() {
-            try { println("discard"&); } catch (e) { println(e); }
+            try { println("discard"&); } catch (e) { println(e.message); }
         }"#,
     )
     .unwrap();

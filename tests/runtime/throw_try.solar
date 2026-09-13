@@ -23,16 +23,16 @@ fn main() {
 		println("UNREACHABLE after throw"&);
 	} catch (e) {
 		println("caught:"&);
-		println(e);
+		println(e.message);
 	}
 
 	// 3. Throw from a nested call across a closure boundary, caught here.
-	// (Explicit binding type — must be &[Uint8].)
+	// (Explicit binding type — must be Exception.)
 	try {
 		checked(50);
-	} catch (e: &[Uint8]) {
+	} catch (e: Exception) {
 		println("caught nested:"&);
-		println(e);
+		println(e.message);
 	}
 
 	println("done"&);

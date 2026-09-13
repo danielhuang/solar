@@ -5,7 +5,7 @@ use std::fmt;
 
 /// Compiler-private marker placed in bits 48..63 of every `Any` type tag.
 /// The non-pointer-looking prefix reduces conservative GC false positives.
-pub(crate) const ANY_TYPE_TAG_PREFIX: u64 = 0x00ff_0000_0000_0000;
+pub(crate) const ANY_TYPE_TAG_PREFIX: u64 = solar_shared::ANY_UNIT_TAG;
 
 /// A Solar type parameterized by its struct and enum identity representation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -324,4 +324,13 @@ impl<I: fmt::Display> fmt::Display for Type<I> {
             Type::Never => write!(f, "!"),
         }
     }
+}
+
+/// Display a concrete payload type with demangled struct and enum names.
+pub(crate) fn payload_type_name(ty: &Type<String>) -> String {
+    if *ty == Type::Unit {
+        return String::from("Unit");
+    }
+    ty.map_id(|name| solar_shared::trace::pretty_name(name))
+        .to_string()
 }

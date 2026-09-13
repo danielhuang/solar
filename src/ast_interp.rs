@@ -108,16 +108,69 @@ fn cast_numeric_ast(raw: u64, src: &Type, dst: &Type) -> u64 {
     }
 }
 
-/// Build an `Unwind::Thrown` carrying `msg` as a fresh `&[Uint8]` value — the
-/// interpreter's counterpart of the compiled runtime's throw helpers
-/// (`panic::throw_str`/`throw_message`). The message strings are canonical
-/// across all three backends.
-fn thrown(msg: &str) -> Unwind {
-    let bytes: Vec<Slot> = msg
-        .bytes()
-        .map(|b| Rc::new(RefCell::new(Value::Int(b as i64))))
-        .collect();
-    Unwind::Thrown(Value::Ref(Rc::new(RefCell::new(Value::Array(bytes)))))
+/// Construct a Solar byte slice from host bytes.
+fn byte_slice(bytes: &[u8]) -> Value {
+    Value::Ref(Rc::new(RefCell::new(Value::Array(
+        bytes
+            .iter()
+            .map(|&b| Rc::new(RefCell::new(Value::Int(b as i64))))
+            .collect(),
+    ))))
+}
+
+fn capture_backtrace() -> Value {
+    Value::Ref(Rc::new(RefCell::new(Value::Array(
+        solar_shared::trace::capture()
+            .into_iter()
+            .map(|ip| Rc::new(RefCell::new(Value::Int(ip as i64))))
+            .collect(),
+    ))))
+}
+
+fn new_exception(message: Value, payload: Value) -> Value {
+    let trace = capture_backtrace();
+    Value::Struct {
+        // Runtime failures acquire their concrete name from the catch handler
+        // before the value becomes visible to Solar code.
+        name: String::new(),
+        fields: [("message", message), ("payload", payload), ("trace", trace)]
+            .into_iter()
+            .map(|(name, value)| (name.into(), Rc::new(RefCell::new(value))))
+            .collect(),
+    }
+}
+
+fn exception_string(exception: &Value) -> String {
+    let Value::Struct { fields, .. } = exception else {
+        unreachable!()
+    };
+    let bytes = slice_to_bytes(&fields["message"].borrow());
+    let erased = fields["payload"].borrow();
+    let Value::Any { ty, .. } = &*erased else {
+        unreachable!()
+    };
+    let payload = crate::types::payload_type_name(ty);
+    let trace = fields["trace"].borrow();
+    let Value::Ref(trace) = &*trace else {
+        unreachable!()
+    };
+    let trace = trace.borrow();
+    let Value::Array(trace) = &*trace else {
+        unreachable!()
+    };
+    let addresses = trace
+        .iter()
+        .map(|ip| match *ip.borrow() {
+            Value::Int(ip) => ip as usize,
+            _ => unreachable!(),
+        })
+        .collect::<Vec<_>>();
+    format!(
+        "{}\nPayload type: {}\n{}",
+        String::from_utf8_lossy(&bytes),
+        payload,
+        solar_shared::trace::format(&addresses)
+    )
 }
 
 /// Extract the bytes of a `&[Uint8]`/`^[Uint8]` value (a ref to a byte array).
@@ -478,10 +531,7 @@ fn slot_address(slot: &Slot) -> u64 {
 /// never crosses a function/closure boundary), and the `try` intrinsic catches
 /// only `Thrown`.
 enum Unwind {
-    /// A Solar `throw`: the thrown message as a `&[Uint8]` value — the
-    /// reference itself, so a `catch` binding aliases the thrown slice. This
-    /// mirrors the compiled backend's `sol_throw`/`sol_try` (Rust panic +
-    /// `catch_unwind`). Caught by the nearest `try`.
+    /// A complete exception propagated to the nearest try handler.
     Thrown(Value),
     /// `return <v>` — caught at the function-body boundary.
     Return(Value),
@@ -513,6 +563,16 @@ struct Interpreter<'a, 'io> {
 }
 
 impl<'a, 'io> Interpreter<'a, 'io> {
+    fn thrown(&self, msg: &str) -> Unwind {
+        Unwind::Thrown(new_exception(
+            byte_slice(msg.as_bytes()),
+            Value::Any {
+                target: Rc::new(RefCell::new(Value::Unit)),
+                ty: Type::Unit,
+            },
+        ))
+    }
+
     fn new(source: &'a SourceFile, stdin: impl Read + 'io, stdout: impl Write + 'io) -> Self {
         let functions = source
             .functions
@@ -1093,7 +1153,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let inner_ref = inner_slot.borrow();
                 match &*inner_ref {
                     Value::Ref(target) | Value::Unique(target) => Rc::clone(target),
-                    Value::Null => return Err(thrown("null dereference")),
+                    Value::Null => return Err(self.thrown("null dereference")),
                     _ => unreachable!("type checker guarantees ref/unique"),
                 }
             }
@@ -1113,7 +1173,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 };
                 let len = elements.len();
                 if idx >= len as u64 {
-                    return Err(thrown(&format!(
+                    return Err(self.thrown(&format!(
                         "index out of bounds: index is {idx} but length is {len}"
                     )));
                 }
@@ -1136,10 +1196,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 };
                 let len = elements.len();
                 if s > e {
-                    return Err(thrown(&format!("slice start ({s}) > end ({e})")));
+                    return Err(self.thrown(&format!("slice start ({s}) > end ({e})")));
                 }
                 if e > len {
-                    return Err(thrown(&format!("slice end ({e}) > length ({len})")));
+                    return Err(self.thrown(&format!("slice end ({e}) > length ({len})")));
                 }
                 let (backing, parent_start, _) = self.ensure_array_region(&arr_slot, elements);
                 let start = parent_start + s;
@@ -1360,7 +1420,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 match &val {
                     Value::Array(elements) => {
                         if elements.len() != *size as usize {
-                            return Err(thrown(&format!(
+                            return Err(self.thrown(&format!(
                                 "array length mismatch: expected {} elements, got {}",
                                 size,
                                 elements.len()
@@ -1412,33 +1472,35 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                                     BinOp::Add => int(match a.checked_add(b) {
                                         Some(v) => v,
                                         None => {
-                                            return Err(thrown("integer overflow in addition"));
+                                            return Err(self.thrown("integer overflow in addition"));
                                         }
                                     }),
                                     BinOp::Sub => int(match a.checked_sub(b) {
                                         Some(v) => v,
                                         None => {
-                                            return Err(thrown("integer overflow in subtraction"));
+                                            return Err(
+                                                self.thrown("integer overflow in subtraction")
+                                            );
                                         }
                                     }),
                                     BinOp::Mul => int(match a.checked_mul(b) {
                                         Some(v) => v,
                                         None => {
-                                            return Err(thrown(
-                                                "integer overflow in multiplication",
-                                            ));
+                                            return Err(
+                                                self.thrown("integer overflow in multiplication")
+                                            );
                                         }
                                     }),
                                     BinOp::Div => int(match a.checked_div(b) {
                                         Some(v) => v,
                                         None => {
-                                            return Err(thrown("integer division by zero"));
+                                            return Err(self.thrown("integer division by zero"));
                                         }
                                     }),
                                     BinOp::Mod => int(match a.checked_rem(b) {
                                         Some(v) => v,
                                         None => {
-                                            return Err(thrown("integer modulo by zero"));
+                                            return Err(self.thrown("integer modulo by zero"));
                                         }
                                     }),
                                     BinOp::Eq => Value::Int((a == b) as i64),
@@ -1479,39 +1541,41 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                                     BinOp::Add => Value::Int(match a.checked_add(b) {
                                         Some(v) => v,
                                         None => {
-                                            return Err(thrown("integer overflow in addition"));
+                                            return Err(self.thrown("integer overflow in addition"));
                                         }
                                     }),
                                     BinOp::Sub => Value::Int(match a.checked_sub(b) {
                                         Some(v) => v,
                                         None => {
-                                            return Err(thrown("integer overflow in subtraction"));
+                                            return Err(
+                                                self.thrown("integer overflow in subtraction")
+                                            );
                                         }
                                     }),
                                     BinOp::Mul => Value::Int(match a.checked_mul(b) {
                                         Some(v) => v,
                                         None => {
-                                            return Err(thrown(
-                                                "integer overflow in multiplication",
-                                            ));
+                                            return Err(
+                                                self.thrown("integer overflow in multiplication")
+                                            );
                                         }
                                     }),
                                     BinOp::Div => Value::Int(match a.checked_div(b) {
                                         Some(v) => v,
                                         None if b == 0 => {
-                                            return Err(thrown("integer division by zero"));
+                                            return Err(self.thrown("integer division by zero"));
                                         }
                                         None => {
-                                            return Err(thrown("integer overflow in division"));
+                                            return Err(self.thrown("integer overflow in division"));
                                         }
                                     }),
                                     BinOp::Mod => Value::Int(match a.checked_rem(b) {
                                         Some(v) => v,
                                         None if b == 0 => {
-                                            return Err(thrown("integer modulo by zero"));
+                                            return Err(self.thrown("integer modulo by zero"));
                                         }
                                         None => {
-                                            return Err(thrown("integer overflow in modulo"));
+                                            return Err(self.thrown("integer overflow in modulo"));
                                         }
                                     }),
                                     BinOp::Eq => Value::Int(if a == b { 1 } else { 0 }),
@@ -1831,7 +1895,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 ))
             }
             Intrinsic::RequestGc => Value::Unit,
-            Intrinsic::CollectGc => return Err(thrown("collect_gc: GC is disabled")),
+            Intrinsic::CollectGc => return Err(self.thrown("collect_gc: GC is disabled")),
             Intrinsic::BlackBoxRef | Intrinsic::GcKeepAlive | Intrinsic::RegisterFinalizer => {
                 self.eval_expr(&arguments[0])?;
                 Value::Unit
@@ -1960,7 +2024,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 };
                 let len = elements.len();
                 if index >= len as u64 {
-                    return Err(thrown(&format!(
+                    return Err(self.thrown(&format!(
                         "index out of bounds: index is {index} but length is {len}"
                     )));
                 }
@@ -2048,7 +2112,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     _ => unreachable!(),
                 };
                 if actual_len != expected_len {
-                    return Err(thrown(&format!(
+                    return Err(self.thrown(&format!(
                         "array length mismatch: expected {expected_len} elements, got {actual_len}"
                     )));
                 }
@@ -2177,21 +2241,45 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 }
                 Value::Unit
             }
+            Intrinsic::CaptureBacktrace => capture_backtrace(),
+            Intrinsic::ResolveAddress => {
+                let Value::Int(address) = self.eval_expr(&arguments[0])? else {
+                    unreachable!()
+                };
+                byte_slice(solar_shared::trace::resolve_address(address as usize).as_bytes())
+            }
+            Intrinsic::AnyTypeName => {
+                let Value::Any { ty, .. } = self.eval_expr(&arguments[0])? else {
+                    unreachable!()
+                };
+                byte_slice(crate::types::payload_type_name(&ty).as_bytes())
+            }
             Intrinsic::Throw => {
-                // Unwind carrying the `&[Uint8]` reference itself (not a copy), so
-                // the value `catch` receives aliases the one passed to `throw`.
+                // The exception retains its original payload and trace references.
                 let val = self.eval_expr(&arguments[0])?;
                 return Err(Unwind::Thrown(val));
             }
             Intrinsic::Try => {
                 // try(body, handler): run `body`; if it throws, run `handler`
-                // with the thrown `&[Uint8]` reference (same slot — it aliases).
+                // with the complete exception, retaining all field references.
                 // Only `Thrown` is caught here; any other unwind propagates.
                 let body = self.eval_expr(&arguments[0])?;
                 let handler = self.eval_expr(&arguments[1])?;
                 match self.call_function_value(body, vec![]) {
-                    Err(Unwind::Thrown(reference)) => {
-                        self.call_function_value(handler, vec![reference])?;
+                    Err(Unwind::Thrown(mut exception)) => {
+                        let Value::Struct { name, .. } = &mut exception else {
+                            unreachable!()
+                        };
+                        if name.is_empty() {
+                            let Type::Function { params, .. } = &arguments[1].ty else {
+                                unreachable!()
+                            };
+                            let Type::Struct(handler_type) = &params[0] else {
+                                unreachable!()
+                            };
+                            *name = handler_type.clone();
+                        }
+                        self.call_function_value(handler, vec![exception])?;
                     }
                     other => {
                         other?;
@@ -2411,11 +2499,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         let result = self.exec_function_body(&main_func.body, &main_func.return_type);
         self.pop_scope();
         if let Err(Thrown(reference)) = result {
-            // A `throw` that escapes `main` is uncaught; mirror the compiled
-            // runtime, which aborts with the message.
-            let bytes = slice_to_bytes(&reference);
-            let msg = String::from_utf8_lossy(&bytes);
-            panic!("uncaught exception: {msg}");
+            panic!("uncaught exception: {}", exception_string(&reference));
         }
     }
 }

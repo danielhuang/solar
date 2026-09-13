@@ -218,7 +218,58 @@ pub fn assert(condition: Bool) {
 	}
 }
 
-/// Throws a recoverable exception.
-pub fn throw(s: &[Uint8]) {
-	intrinsics::throw(s);
+/// A recoverable failure with a typed payload and a lazily symbolized trace.
+pub struct Exception {
+	/// Human-readable description of the failure.
+	pub message: &[Uint8],
+	/// Optional application data; message-only throws carry Unit.
+	pub payload: Any,
+	/// Saved instruction addresses, resolved only when formatting the exception.
+	pub trace: &[Uint],
+}
+
+/// Constructs an exception, capturing unresolved instruction addresses.
+/// `message` is human-readable text, `payload` retains its concrete type through
+/// `Any`, and `trace` contains the saved addresses for lazy symbolization.
+pub fn Exception::(message: &[Uint8], payload: Any) -> Exception {
+	Exception {
+		message: message,
+		payload: payload,
+		trace: intrinsics::capture_backtrace(),
+	}
+}
+
+/// Constructs an exception with a Unit payload.
+pub fn Exception::(message: &[Uint8]) -> Exception {
+	let unit: Unit = {};
+	Exception(message, Any(unit&))
+}
+
+/// Formats the message, payload type, and demangled stack trace.
+/// Native traces describe Solar calls; diagnostic interpreter traces describe the host interpreter.
+pub method to_string(self: Exception) -> &[Uint8] {
+	let text = (self.message@ + "\nPayload type: " + self.payload.type_name()@ +
+		"\nStack trace:\n")&;
+
+	for index in 0u..self.trace.len() {
+		let resolved = intrinsics::resolve_address(self.trace@[index]);
+		text = (text@ + "  " + index.to_string()@ + ": " + resolved@ + "\n")&;
+	}
+
+	text
+}
+
+/// Throws an exception, preserving its payload and captured trace when rethrown.
+pub fn throw(exception: Exception) {
+	intrinsics::throw(exception);
+}
+
+/// Throws a recoverable exception with a Unit payload.
+pub fn throw(message: &[Uint8]) {
+	throw(Exception(message));
+}
+
+/// Throws a recoverable exception with a type-erased payload.
+pub fn throw(message: &[Uint8], payload: Any) {
+	throw(Exception(message, payload));
 }

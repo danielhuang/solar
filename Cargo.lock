@@ -492,6 +492,9 @@ dependencies = [
 [[package]]
 name = "solar-shared"
 version = "0.1.0"
+dependencies = [
+ "backtrace",
+]
 
 [[package]]
 name = "solar-system"

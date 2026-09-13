@@ -1559,6 +1559,7 @@ fn resolve_impl(
 ) -> Result<Vec<TopLevelItem>, Vec<CompileError>> {
     let std_lib = Path::new(STDLIB_DIR).join("lib.solar");
     let std_root_id = resolver.parse_file(&std_lib)?;
+    assert_eq!(std_root_id, STDLIB_FILE);
     resolver.parse_imports(std_root_id)?;
     resolver.std_root_id = Some(std_root_id);
     let std_file_count = resolver.files.len();

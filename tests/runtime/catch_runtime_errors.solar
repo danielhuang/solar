@@ -15,37 +15,37 @@ fn main() {
 	let z: &?Int = null#[Int];
 
 	// Checked arithmetic: overflow and division/modulo by zero.
-	try { println(big + 1); } catch (e) { println(e); }
+	try { println(big + 1); } catch (e) { println(e.message); }
 
-	try { println(0u - 1u); } catch (e) { println(e); }
-	try { println(big * 2); } catch (e) { println(e); }
-	try { println(big / zero); } catch (e) { println(e); }
-	try { println(min / neg); } catch (e) { println(e); }
-	try { println(big % zero); } catch (e) { println(e); }
-	try { println(min % neg); } catch (e) { println(e); }
-	try { println(min - 1); } catch (e) { println(e); }
-	try { println(!0u + 1u); } catch (e) { println(e); }
-	try { println(!0u * 2u); } catch (e) { println(e); }
-	try { println(1u / 0u); } catch (e) { println(e); }
-	try { println(1u % 0u); } catch (e) { println(e); }
+	try { println(0u - 1u); } catch (e) { println(e.message); }
+	try { println(big * 2); } catch (e) { println(e.message); }
+	try { println(big / zero); } catch (e) { println(e.message); }
+	try { println(min / neg); } catch (e) { println(e.message); }
+	try { println(big % zero); } catch (e) { println(e.message); }
+	try { println(min % neg); } catch (e) { println(e.message); }
+	try { println(min - 1); } catch (e) { println(e.message); }
+	try { println(!0u + 1u); } catch (e) { println(e.message); }
+	try { println(!0u * 2u); } catch (e) { println(e.message); }
+	try { println(1u / 0u); } catch (e) { println(e.message); }
+	try { println(1u % 0u); } catch (e) { println(e.message); }
 
 	// Bounds checks.
-	try { println(a[5u]); } catch (e) { println(e); }
+	try { println(a[5u]); } catch (e) { println(e.message); }
 
-	try { println(a[1u..5u][0u]); } catch (e) { println(e); }
-	try { println(a[2u..1u][0u]); } catch (e) { println(e); }
+	try { println(a[1u..5u][0u]); } catch (e) { println(e.message); }
+	try { println(a[2u..1u][0u]); } catch (e) { println(e.message); }
 
 	// Null deref, destructure, fixed-size coercion.
-	try { println(z@); } catch (e) { println(e); }
+	try { println(z@); } catch (e) { println(e.message); }
 
 	try {
 		let [p, q]: [Int] = a;
 		println(p + q);
 	} catch (e) {
-		println(e);
+		println(e.message);
 	}
 
-	try { println(first2(a)); } catch (e) { println(e); }
+	try { println(first2(a)); } catch (e) { println(e.message); }
 
 	println("done"&);
 }

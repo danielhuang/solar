@@ -4096,6 +4096,269 @@ impl<'a> Lowerer<'a> {
         })
     }
 
+    fn exception_type(&self) -> Result<TypeId, CompileError> {
+        self.structs
+            .get_key_value(&DefId::new(ast::STDLIB_FILE, "Exception"))
+            .map(|(def, _)| TypeId::plain(def.clone()))
+            .ok_or_else(|| {
+                CompileError::new(
+                    "exceptions require @std::Exception".into(),
+                    ast::SourceSpan::default(),
+                )
+            })
+    }
+
+    fn intrinsic_spec(&self, intrinsic: &Intrinsic) -> Result<IntrinsicSpec, CompileError> {
+        use ParamRequirement::*;
+        use ReturnSpec::*;
+
+        // `&[&[Uint8]]` — a slice of byte-slices, the result of `args()`/`env()`.
+        let byte_slice_slice = || {
+            Type::RefUnsized(Box::new(Type::Array(Box::new(Type::RefUnsized(Box::new(
+                Type::Array(Box::new(Type::Uint8)),
+            ))))))
+        };
+        let fn_unit = || {
+            Exact(Type::Function {
+                params: vec![],
+                return_type: Box::new(Type::Unit),
+            })
+        };
+
+        Ok(match intrinsic {
+            Intrinsic::CaptureBacktrace => IntrinsicSpec {
+                params: vec![],
+                ret: Fixed(Type::RefUnsized(Box::new(Type::Array(Box::new(
+                    Type::Uint,
+                ))))),
+            },
+            Intrinsic::ResolveAddress => IntrinsicSpec {
+                params: vec![Exact(Type::Uint)],
+                ret: Fixed(Type::RefUnsized(Box::new(Type::Array(Box::new(
+                    Type::Uint8,
+                ))))),
+            },
+            Intrinsic::AnyTypeName => IntrinsicSpec {
+                params: vec![Exact(Type::Any)],
+                ret: Fixed(Type::RefUnsized(Box::new(Type::Array(Box::new(
+                    Type::Uint8,
+                ))))),
+            },
+            Intrinsic::AnyNew => IntrinsicSpec {
+                params: vec![IsSizedRef],
+                ret: Fixed(Type::Any),
+            },
+            Intrinsic::AnyDowncast => IntrinsicSpec {
+                params: vec![Exact(Type::Any)],
+                ret: NullableRefTypeArg,
+            },
+            Intrinsic::RefEq => IntrinsicSpec {
+                params: vec![IsRef, MatchesRef],
+                ret: Fixed(Type::Bool),
+            },
+            Intrinsic::OffsetRef => IntrinsicSpec {
+                params: vec![IsSizedRef, Exact(Type::Int)],
+                ret: RefArg,
+            },
+            Intrinsic::BlackBoxRef => IntrinsicSpec {
+                params: vec![IsSizedRef],
+                ret: Fixed(Type::Unit),
+            },
+            Intrinsic::GcKeepAlive => IntrinsicSpec {
+                params: vec![IsRef],
+                ret: Fixed(Type::Unit),
+            },
+            Intrinsic::RequestGc | Intrinsic::CollectGc => IntrinsicSpec {
+                params: vec![],
+                ret: Fixed(Type::Unit),
+            },
+            Intrinsic::RegisterFinalizer => IntrinsicSpec {
+                params: vec![Exact(Type::Ref(Box::new(Type::Function {
+                    params: vec![],
+                    return_type: Box::new(Type::Unit),
+                })))],
+                ret: Fixed(Type::Unit),
+            },
+            // throw(exception: Exception): unwind with the complete exception; diverges.
+            Intrinsic::Throw => IntrinsicSpec {
+                params: vec![Exact(Type::Struct(self.exception_type()?))],
+                ret: Fixed(Type::Never),
+            },
+            // try(body: fn(), handler: fn(Exception)): catch a complete exception.
+            Intrinsic::Try => IntrinsicSpec {
+                params: vec![
+                    fn_unit(),
+                    Exact(Type::Function {
+                        params: vec![Type::Struct(self.exception_type()?)],
+                        return_type: Box::new(Type::Unit),
+                    }),
+                ],
+                ret: Fixed(Type::Unit),
+            },
+            Intrinsic::Cast(from_nt, to_nt) => IntrinsicSpec {
+                params: vec![Exact(from_nt.into())],
+                ret: Fixed(to_nt.into()),
+            },
+            Intrinsic::ArrayLen => IntrinsicSpec {
+                params: vec![IsArray],
+                ret: Fixed(Type::Uint),
+            },
+            Intrinsic::ArrayIndex => {
+                unreachable!("array_index has a dependent signature")
+            }
+            Intrinsic::SizeOf | Intrinsic::Zeroed => {
+                unreachable!("intrinsic requires a type argument")
+            }
+            Intrinsic::Transmute | Intrinsic::TransmuteUnchecked | Intrinsic::TransmuteRef => {
+                unreachable!("transmute intrinsics have dependent signatures")
+            }
+            Intrinsic::AssertArrayLen => IntrinsicSpec {
+                params: vec![IsArray, Exact(Type::Uint)],
+                ret: Fixed(Type::Unit),
+            },
+            Intrinsic::ThreadSpawn => IntrinsicSpec {
+                params: vec![fn_unit()],
+                ret: Fixed(Type::Unit),
+            },
+            Intrinsic::AtomicFetch(op) => IntrinsicSpec {
+                params: vec![
+                    RefToAtomicInteger {
+                        allow_bool: op.accepts_bool(),
+                    },
+                    MatchesRefInner,
+                ],
+                ret: RefInner,
+            },
+            Intrinsic::AtomicLoad => IntrinsicSpec {
+                params: vec![RefToAtomic],
+                ret: RefInner,
+            },
+            Intrinsic::AtomicStore => IntrinsicSpec {
+                params: vec![RefToAtomic, MatchesRefInner],
+                ret: Fixed(Type::Unit),
+            },
+            Intrinsic::AtomicExchange => IntrinsicSpec {
+                params: vec![RefToAtomic, MatchesRefInner],
+                ret: RefInner,
+            },
+            Intrinsic::AtomicCompareExchange => IntrinsicSpec {
+                params: vec![RefToAtomic, MatchesRefInner, MatchesRefInner],
+                ret: RefInner,
+            },
+            Intrinsic::FdFromRaw => IntrinsicSpec {
+                params: vec![Exact(Type::Int32)],
+                ret: Fixed(Type::FileDesc),
+            },
+            Intrinsic::FdToRaw => IntrinsicSpec {
+                params: vec![Exact(Type::FileDesc)],
+                ret: Fixed(Type::Int32),
+            },
+            Intrinsic::Syscall => unreachable!("syscall has a variadic signature"),
+            Intrinsic::FileClose => IntrinsicSpec {
+                params: vec![Exact(Type::FileDesc)],
+                ret: Fixed(Type::Unit),
+            },
+            // args() / env(): no parameters; return `&[&[Uint8]]`. The runtime
+            // copies each argument / `KEY=VALUE` entry into a fresh GC allocation.
+            Intrinsic::Args | Intrinsic::Env => IntrinsicSpec {
+                params: vec![],
+                ret: Fixed(byte_slice_slice()),
+            },
+            // monotonic_time() / system_time(): no parameters; return the clock
+            // reading in nanoseconds (CLOCK_MONOTONIC / nanoseconds since the Unix
+            // epoch). The monotonic epoch is unspecified — only differences are
+            // meaningful.
+            Intrinsic::MonotonicTime | Intrinsic::SystemTime => IntrinsicSpec {
+                params: vec![],
+                ret: Fixed(Type::Uint64),
+            },
+            // num_cpus(): the OS's available parallelism (>= 1).
+            Intrinsic::NumCpus => IntrinsicSpec {
+                params: vec![],
+                ret: Fixed(Type::Uint),
+            },
+            // exit(code): terminate the process immediately with the given status.
+            Intrinsic::Exit => IntrinsicSpec {
+                params: vec![Exact(Type::Int)],
+                ret: Fixed(Type::Never),
+            },
+            // Unary float math: take Float32 or Float64, return the operand's
+            // type. Codegen lowers to the clang builtins (llvm.sqrt/... or libm
+            // calls); the interpreters use the Rust float methods — the same
+            // system libm, keeping the three backends bit-identical.
+            Intrinsic::Sqrt
+            | Intrinsic::Sin
+            | Intrinsic::Cos
+            | Intrinsic::Tan
+            | Intrinsic::Asin
+            | Intrinsic::Acos
+            | Intrinsic::Atan
+            | Intrinsic::Exp
+            | Intrinsic::Log
+            | Intrinsic::Floor
+            | Intrinsic::Ceil
+            | Intrinsic::Round
+            | Intrinsic::Trunc
+            | Intrinsic::FloatAbs => IntrinsicSpec {
+                params: vec![IsFloat],
+                ret: FloatArg,
+            },
+            // Binary float math: both operands the same float type.
+            Intrinsic::Atan2 | Intrinsic::Pow => IntrinsicSpec {
+                params: vec![IsFloat, MatchesFloat],
+                ret: FloatArg,
+            },
+            // Bit-counting intrinsics: take any integer, return a count as `Uint`.
+            Intrinsic::CountTrailingZeros | Intrinsic::CountLeadingZeros | Intrinsic::CountOnes => {
+                IntrinsicSpec {
+                    params: vec![IsInteger],
+                    ret: Fixed(Type::Uint),
+                }
+            }
+            // u64_from_le([Uint8; 8]) / u32_from_le([Uint8; 4]): decode a fixed byte
+            // array as a little-endian integer. Callers pass a slice that coerces to
+            // the fixed array (`u64_from_le(s[i..i+8u])`); the coercion's length
+            // assertion guarantees exactly N in-bounds bytes are read.
+            Intrinsic::U64FromLe => IntrinsicSpec {
+                params: vec![Exact(Type::FixedArray(Box::new(Type::Uint8), 8))],
+                ret: Fixed(Type::Uint64),
+            },
+            Intrinsic::U32FromLe => IntrinsicSpec {
+                params: vec![Exact(Type::FixedArray(Box::new(Type::Uint8), 4))],
+                ret: Fixed(Type::Uint32),
+            },
+            // simd_match_byte_x16([Uint8; 16], tag) / simd_match_high_bit_x16([Uint8; 16]):
+            // SwissTable group scans over a 16-lane byte vector. Return a compact
+            // 16-bit match mask (`Uint`). Lowered to a real SSE2 compare + move-mask
+            // so they vectorize regardless of caller context.
+            Intrinsic::SimdMatchByteX16 => IntrinsicSpec {
+                params: vec![
+                    Exact(Type::FixedArray(Box::new(Type::Uint8), 16)),
+                    Exact(Type::Uint8),
+                ],
+                ret: Fixed(Type::Uint),
+            },
+            Intrinsic::SimdMatchHighBitX16 => IntrinsicSpec {
+                params: vec![Exact(Type::FixedArray(Box::new(Type::Uint8), 16))],
+                ret: Fixed(Type::Uint),
+            },
+            // carrying_mul_add(a, b, carry, add, out_lo, out_hi): computes the full
+            // 128-bit product `a*b + carry + add` and writes the low/high 64-bit
+            // halves through the two `&Uint64` out-params. Returns Unit.
+            Intrinsic::CarryingMulAdd => IntrinsicSpec {
+                params: vec![
+                    Exact(Type::Uint64),
+                    Exact(Type::Uint64),
+                    Exact(Type::Uint64),
+                    Exact(Type::Uint64),
+                    Exact(Type::Ref(Box::new(Type::Uint64))),
+                    Exact(Type::Ref(Box::new(Type::Uint64))),
+                ],
+                ret: Fixed(Type::Unit),
+            },
+        })
+    }
+
     fn lower_try_statement(
         &mut self,
         span: ast::SourceSpan,
@@ -4170,11 +4433,10 @@ impl<'a> Lowerer<'a> {
             has_continue: false,
         });
 
-        let binding_type = binding_type.cloned().unwrap_or_else(|| {
-            ast::Type::Reference(Box::new(ast::Type::Slice(Box::new(ast::Type::Named(
-                DefId::new(0, "Uint8"),
-            )))))
-        });
+        let binding_type = match binding_type {
+            Some(ty) => ty.clone(),
+            None => ast::Type::Named(self.exception_type()?.def),
+        };
         let closure = |parameters, body: &[ast::Statement]| ast::Expr {
             kind: ast::ExprKind::Closure {
                 parameters,
@@ -4202,7 +4464,7 @@ impl<'a> Lowerer<'a> {
             self.next_closure_is_try_block = false;
             lowered_arguments.push(lowered_argument?);
         }
-        let expected_arguments = intrinsic_spec(&Intrinsic::Try).params;
+        let expected_arguments = self.intrinsic_spec(&Intrinsic::Try)?.params;
         for (argument, expected) in lowered_arguments.iter_mut().zip(expected_arguments) {
             let ParamRequirement::Exact(expected) = expected else {
                 unreachable!("try closure requirements are exact function types")
@@ -9541,7 +9803,7 @@ impl<'a> Lowerer<'a> {
                 span,
             ));
         }
-        let spec = intrinsic_spec(intrinsic);
+        let spec = self.intrinsic_spec(intrinsic)?;
 
         if arguments.len() != spec.params.len() {
             return Err(CompileError::new(
@@ -9831,246 +10093,6 @@ enum ReturnSpec {
 struct IntrinsicSpec {
     params: Vec<ParamRequirement>,
     ret: ReturnSpec,
-}
-
-fn intrinsic_spec(intrinsic: &Intrinsic) -> IntrinsicSpec {
-    use ParamRequirement::*;
-    use ReturnSpec::*;
-
-    let byte_slice = || {
-        Exact(Type::RefUnsized(Box::new(Type::Array(Box::new(
-            Type::Uint8,
-        )))))
-    };
-    // `&[&[Uint8]]` — a slice of byte-slices, the result of `args()`/`env()`.
-    let byte_slice_slice = || {
-        Type::RefUnsized(Box::new(Type::Array(Box::new(Type::RefUnsized(Box::new(
-            Type::Array(Box::new(Type::Uint8)),
-        ))))))
-    };
-    let fn_unit = || {
-        Exact(Type::Function {
-            params: vec![],
-            return_type: Box::new(Type::Unit),
-        })
-    };
-    // `fn(&[Uint8])` — the `try` exception handler: takes the thrown message.
-    let fn_byte_slice = || {
-        Exact(Type::Function {
-            params: vec![Type::RefUnsized(Box::new(Type::Array(Box::new(
-                Type::Uint8,
-            ))))],
-            return_type: Box::new(Type::Unit),
-        })
-    };
-
-    match intrinsic {
-        Intrinsic::AnyNew => IntrinsicSpec {
-            params: vec![IsSizedRef],
-            ret: Fixed(Type::Any),
-        },
-        Intrinsic::AnyDowncast => IntrinsicSpec {
-            params: vec![Exact(Type::Any)],
-            ret: NullableRefTypeArg,
-        },
-        Intrinsic::RefEq => IntrinsicSpec {
-            params: vec![IsRef, MatchesRef],
-            ret: Fixed(Type::Bool),
-        },
-        Intrinsic::OffsetRef => IntrinsicSpec {
-            params: vec![IsSizedRef, Exact(Type::Int)],
-            ret: RefArg,
-        },
-        Intrinsic::BlackBoxRef => IntrinsicSpec {
-            params: vec![IsSizedRef],
-            ret: Fixed(Type::Unit),
-        },
-        Intrinsic::GcKeepAlive => IntrinsicSpec {
-            params: vec![IsRef],
-            ret: Fixed(Type::Unit),
-        },
-        Intrinsic::RequestGc | Intrinsic::CollectGc => IntrinsicSpec {
-            params: vec![],
-            ret: Fixed(Type::Unit),
-        },
-        Intrinsic::RegisterFinalizer => IntrinsicSpec {
-            params: vec![Exact(Type::Ref(Box::new(Type::Function {
-                params: vec![],
-                return_type: Box::new(Type::Unit),
-            })))],
-            ret: Fixed(Type::Unit),
-        },
-        // throw(msg: &[Uint8]): unwind with a string payload; diverges.
-        Intrinsic::Throw => IntrinsicSpec {
-            params: vec![byte_slice()],
-            ret: Fixed(Type::Never),
-        },
-        // try(body: fn(), handler: fn(&[Uint8])): run `body`; if it throws,
-        // run `handler` with the thrown message.
-        Intrinsic::Try => IntrinsicSpec {
-            params: vec![fn_unit(), fn_byte_slice()],
-            ret: Fixed(Type::Unit),
-        },
-        Intrinsic::Cast(from_nt, to_nt) => IntrinsicSpec {
-            params: vec![Exact(from_nt.into())],
-            ret: Fixed(to_nt.into()),
-        },
-        Intrinsic::ArrayLen => IntrinsicSpec {
-            params: vec![IsArray],
-            ret: Fixed(Type::Uint),
-        },
-        Intrinsic::ArrayIndex => {
-            unreachable!("array_index has a dependent signature")
-        }
-        Intrinsic::SizeOf | Intrinsic::Zeroed => unreachable!("intrinsic requires a type argument"),
-        Intrinsic::Transmute | Intrinsic::TransmuteUnchecked | Intrinsic::TransmuteRef => {
-            unreachable!("transmute intrinsics have dependent signatures")
-        }
-        Intrinsic::AssertArrayLen => IntrinsicSpec {
-            params: vec![IsArray, Exact(Type::Uint)],
-            ret: Fixed(Type::Unit),
-        },
-        Intrinsic::ThreadSpawn => IntrinsicSpec {
-            params: vec![fn_unit()],
-            ret: Fixed(Type::Unit),
-        },
-        Intrinsic::AtomicFetch(op) => IntrinsicSpec {
-            params: vec![
-                RefToAtomicInteger {
-                    allow_bool: op.accepts_bool(),
-                },
-                MatchesRefInner,
-            ],
-            ret: RefInner,
-        },
-        Intrinsic::AtomicLoad => IntrinsicSpec {
-            params: vec![RefToAtomic],
-            ret: RefInner,
-        },
-        Intrinsic::AtomicStore => IntrinsicSpec {
-            params: vec![RefToAtomic, MatchesRefInner],
-            ret: Fixed(Type::Unit),
-        },
-        Intrinsic::AtomicExchange => IntrinsicSpec {
-            params: vec![RefToAtomic, MatchesRefInner],
-            ret: RefInner,
-        },
-        Intrinsic::AtomicCompareExchange => IntrinsicSpec {
-            params: vec![RefToAtomic, MatchesRefInner, MatchesRefInner],
-            ret: RefInner,
-        },
-        Intrinsic::FdFromRaw => IntrinsicSpec {
-            params: vec![Exact(Type::Int32)],
-            ret: Fixed(Type::FileDesc),
-        },
-        Intrinsic::FdToRaw => IntrinsicSpec {
-            params: vec![Exact(Type::FileDesc)],
-            ret: Fixed(Type::Int32),
-        },
-        Intrinsic::Syscall => unreachable!("syscall has a variadic signature"),
-        Intrinsic::FileClose => IntrinsicSpec {
-            params: vec![Exact(Type::FileDesc)],
-            ret: Fixed(Type::Unit),
-        },
-        // args() / env(): no parameters; return `&[&[Uint8]]`. The runtime
-        // copies each argument / `KEY=VALUE` entry into a fresh GC allocation.
-        Intrinsic::Args | Intrinsic::Env => IntrinsicSpec {
-            params: vec![],
-            ret: Fixed(byte_slice_slice()),
-        },
-        // monotonic_time() / system_time(): no parameters; return the clock
-        // reading in nanoseconds (CLOCK_MONOTONIC / nanoseconds since the Unix
-        // epoch). The monotonic epoch is unspecified — only differences are
-        // meaningful.
-        Intrinsic::MonotonicTime | Intrinsic::SystemTime => IntrinsicSpec {
-            params: vec![],
-            ret: Fixed(Type::Uint64),
-        },
-        // num_cpus(): the OS's available parallelism (>= 1).
-        Intrinsic::NumCpus => IntrinsicSpec {
-            params: vec![],
-            ret: Fixed(Type::Uint),
-        },
-        // exit(code): terminate the process immediately with the given status.
-        Intrinsic::Exit => IntrinsicSpec {
-            params: vec![Exact(Type::Int)],
-            ret: Fixed(Type::Never),
-        },
-        // Unary float math: take Float32 or Float64, return the operand's
-        // type. Codegen lowers to the clang builtins (llvm.sqrt/... or libm
-        // calls); the interpreters use the Rust float methods — the same
-        // system libm, keeping the three backends bit-identical.
-        Intrinsic::Sqrt
-        | Intrinsic::Sin
-        | Intrinsic::Cos
-        | Intrinsic::Tan
-        | Intrinsic::Asin
-        | Intrinsic::Acos
-        | Intrinsic::Atan
-        | Intrinsic::Exp
-        | Intrinsic::Log
-        | Intrinsic::Floor
-        | Intrinsic::Ceil
-        | Intrinsic::Round
-        | Intrinsic::Trunc
-        | Intrinsic::FloatAbs => IntrinsicSpec {
-            params: vec![IsFloat],
-            ret: FloatArg,
-        },
-        // Binary float math: both operands the same float type.
-        Intrinsic::Atan2 | Intrinsic::Pow => IntrinsicSpec {
-            params: vec![IsFloat, MatchesFloat],
-            ret: FloatArg,
-        },
-        // Bit-counting intrinsics: take any integer, return a count as `Uint`.
-        Intrinsic::CountTrailingZeros | Intrinsic::CountLeadingZeros | Intrinsic::CountOnes => {
-            IntrinsicSpec {
-                params: vec![IsInteger],
-                ret: Fixed(Type::Uint),
-            }
-        }
-        // u64_from_le([Uint8; 8]) / u32_from_le([Uint8; 4]): decode a fixed byte
-        // array as a little-endian integer. Callers pass a slice that coerces to
-        // the fixed array (`u64_from_le(s[i..i+8u])`); the coercion's length
-        // assertion guarantees exactly N in-bounds bytes are read.
-        Intrinsic::U64FromLe => IntrinsicSpec {
-            params: vec![Exact(Type::FixedArray(Box::new(Type::Uint8), 8))],
-            ret: Fixed(Type::Uint64),
-        },
-        Intrinsic::U32FromLe => IntrinsicSpec {
-            params: vec![Exact(Type::FixedArray(Box::new(Type::Uint8), 4))],
-            ret: Fixed(Type::Uint32),
-        },
-        // simd_match_byte_x16([Uint8; 16], tag) / simd_match_high_bit_x16([Uint8; 16]):
-        // SwissTable group scans over a 16-lane byte vector. Return a compact
-        // 16-bit match mask (`Uint`). Lowered to a real SSE2 compare + move-mask
-        // so they vectorize regardless of caller context.
-        Intrinsic::SimdMatchByteX16 => IntrinsicSpec {
-            params: vec![
-                Exact(Type::FixedArray(Box::new(Type::Uint8), 16)),
-                Exact(Type::Uint8),
-            ],
-            ret: Fixed(Type::Uint),
-        },
-        Intrinsic::SimdMatchHighBitX16 => IntrinsicSpec {
-            params: vec![Exact(Type::FixedArray(Box::new(Type::Uint8), 16))],
-            ret: Fixed(Type::Uint),
-        },
-        // carrying_mul_add(a, b, carry, add, out_lo, out_hi): computes the full
-        // 128-bit product `a*b + carry + add` and writes the low/high 64-bit
-        // halves through the two `&Uint64` out-params. Returns Unit.
-        Intrinsic::CarryingMulAdd => IntrinsicSpec {
-            params: vec![
-                Exact(Type::Uint64),
-                Exact(Type::Uint64),
-                Exact(Type::Uint64),
-                Exact(Type::Uint64),
-                Exact(Type::Ref(Box::new(Type::Uint64))),
-                Exact(Type::Ref(Box::new(Type::Uint64))),
-            ],
-            ret: Fixed(Type::Unit),
-        },
-    }
 }
 
 /// Returns true if a type is atomic-compatible:

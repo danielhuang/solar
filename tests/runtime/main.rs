@@ -1252,3 +1252,8 @@ fn maybe_zeroed_gc() {
         assert_eq!(output, "passed\n");
     }
 }
+
+#[test]
+fn exception() {
+    assert_eq!(run(&fixture("exception.solar"), "exception"), "passed\n");
+}

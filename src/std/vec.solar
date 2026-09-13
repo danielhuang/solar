@@ -1,4 +1,5 @@
-import {throw, transmute_ref} from "@intrinsics";
+import {transmute_ref} from "@intrinsics";
+import {throw} from "lib.solar";
 import slice from "slice.solar";
 import {Iterator} from "iter.solar";
 import {MaybeZeroed} from "mem.solar";

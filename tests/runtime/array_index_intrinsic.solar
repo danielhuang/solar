@@ -29,12 +29,12 @@ fn main() {
 	let empty_elements = [Empty {}, Empty {}];
 	let empty_element: &Empty = empty_elements[1u]&;
 	empty_element@ = Empty {};
-	try { fixed[2u] = 0; } catch (e) { println(e); }
+	try { fixed[2u] = 0; } catch (e) { println(e.message); }
 
 	try {
 		let invalid = intrinsics::array_index(slice, 18446744073709551615u);
-	} catch (e) { println(e); }
+	} catch (e) { println(e.message); }
 
 	let empty: [Int; 0] = []#[Int];
-	try { let invalid = empty[0u]&; } catch (e) { println(e); }
+	try { let invalid = empty[0u]&; } catch (e) { println(e.message); }
 }

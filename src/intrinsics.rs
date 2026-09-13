@@ -55,6 +55,12 @@ pub enum Intrinsic {
     RegisterFinalizer,
     AnyNew,
     AnyDowncast,
+    /// Capture unresolved instruction addresses.
+    CaptureBacktrace,
+    /// Resolve an address into a GC-allocated, demangled byte string.
+    ResolveAddress,
+    /// Return the concrete type name of an erased reference.
+    AnyTypeName,
     Throw,
     Try,
     ArrayLen,
@@ -120,6 +126,9 @@ const INTRINSIC_NAMES: &[(&str, Intrinsic)] = &[
     ("register_finalizer", Intrinsic::RegisterFinalizer),
     ("any_new", Intrinsic::AnyNew),
     ("any_downcast", Intrinsic::AnyDowncast),
+    ("capture_backtrace", Intrinsic::CaptureBacktrace),
+    ("resolve_address", Intrinsic::ResolveAddress),
+    ("any_type_name", Intrinsic::AnyTypeName),
     ("throw", Intrinsic::Throw),
     ("try", Intrinsic::Try),
     ("array_len", Intrinsic::ArrayLen),

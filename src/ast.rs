@@ -32,6 +32,9 @@ pub struct DefId {
     pub name: Ident,
 }
 
+/// File identifier of the standard library root, which the resolver loads first.
+pub const STDLIB_FILE: u32 = 0;
+
 /// File identifier reserved for compiler-generated definitions.
 pub const SYNTHETIC_FILE: u32 = u32::MAX;
 

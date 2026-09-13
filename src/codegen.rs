@@ -142,6 +142,9 @@ impl<'a> Codegen<'a> {
     }
 
     fn any_type_tag(&mut self, ty: &Type) -> u64 {
+        if *ty == Type::Unit {
+            return crate::types::ANY_TYPE_TAG_PREFIX;
+        }
         if let Some(tag) = self.any_type_ids.get(ty) {
             return *tag;
         }
@@ -805,6 +808,7 @@ impl<'a> Codegen<'a> {
             self.emit_function(&self.module.functions[*idx]);
         }
 
+        self.emit_payload_type_names();
         // Emit main
         self.line("int main(void) {");
         self.indent += 1;
@@ -828,6 +832,29 @@ impl<'a> Codegen<'a> {
         };
         self.linef(format!("sol_start(solar_main, {statics}, {register_tls});"));
         self.line("return 0;");
+        self.indent -= 1;
+        self.line("}");
+    }
+
+    fn emit_payload_type_names(&mut self) {
+        self.line("const char* sol_payload_type_name(uint64_t type) {");
+        self.indent += 1;
+        self.line("type &= UINT64_C(0x0000ffffffffffff);");
+        self.line("if (type == 0) return \"Unit\";");
+        let mut types = self
+            .any_type_ids
+            .iter()
+            .map(|(ty, tag)| (*tag, crate::types::payload_type_name(ty)))
+            .collect::<Vec<_>>();
+        types.sort_by_key(|(tag, _)| *tag);
+        for (tag, name) in types {
+            let id = tag & 0x0000_ffff_ffff_ffff;
+            self.linef(format!(
+                "if (type == UINT64_C({id})) return {};",
+                serde_json::to_string(&name).unwrap()
+            ));
+        }
+        self.line("return \"<unknown>\";");
         self.indent -= 1;
         self.line("}");
     }
@@ -892,7 +919,10 @@ impl<'a> Codegen<'a> {
         self.line("extern uint8_t* sol_thread_static_alloc(size_t size, size_t align);");
         self.line("extern void sol_thread_register_statics(const sol_static_entry* statics, size_t statics_len);");
         self.line("extern void sol_thread_spawn(void* fn_ptr, void* env, void (*register_tls)(void), void (*init_tls)(void*));");
-        self.line("extern void sol_throw(const uint8_t* ptr, size_t len);");
+        self.line("extern void sol_capture_backtrace(void*);");
+        self.line("extern void sol_resolve_address(void*, uint64_t);");
+        self.line("extern const char* sol_payload_type_name(uint64_t);");
+        self.line("extern void sol_throw(const void* exception);");
         self.line(
             "extern void sol_try(void* body_fn, void* body_env, void* handler_fn, void* handler_env);",
         );
@@ -2823,20 +2853,39 @@ impl<'a> Codegen<'a> {
                     "*(uint8_t**){dst} = *(uint64_t*)({snapshot} + 8) == UINT64_C(0x{tag:016x}) ? *(uint8_t**){snapshot} : (uint8_t*)0;"
                 ));
             }
-            Intrinsic::Throw => {
-                // arg[0] is a &[Uint8] fat pointer (ptr + len). Unwind with it.
-                let (ref_place, _) = self.emit_place(nodes, args[0]);
-                let data_ptr = self.fresh_tmp();
-                let data_len = self.fresh_tmp();
-                self.linef(format!("uint8_t* {data_ptr} = *(uint8_t**){ref_place};"));
+            Intrinsic::CaptureBacktrace | Intrinsic::ResolveAddress => {
+                let temporary = self.fresh_tmp();
+                self.linef(format!("_Alignas(16) uint8_t {temporary}[16];"));
+                if matches!(intrinsic, Intrinsic::CaptureBacktrace) {
+                    self.linef(format!("sol_capture_backtrace({temporary});"));
+                } else {
+                    let address = self.emit_load(nodes, args[0]);
+                    self.linef(format!("sol_resolve_address({temporary}, {address});"));
+                }
+                self.emit_copy(dst, &temporary, result_ty, "16");
+            }
+            Intrinsic::AnyTypeName => {
+                let (any, _) = self.emit_place(nodes, args[0]);
+                let snapshot = self.fresh_tmp();
+                self.linef(format!("_Alignas(16) uint8_t {snapshot}[16];"));
+                self.linef(format!("sol_load_128_unordered({snapshot}, {any});"));
+                let name = self.fresh_tmp();
                 self.linef(format!(
-                    "uint64_t {data_len} = *(uint64_t*)({ref_place} + 8);"
+                    "const char* {name} = sol_payload_type_name(*(uint64_t*)({snapshot} + 8));"
                 ));
-                self.linef(format!("sol_throw({data_ptr}, {data_len});"));
+                let temporary = self.fresh_tmp();
+                self.linef(format!("_Alignas(16) uint8_t {temporary}[16];"));
+                self.linef(format!("*(const char**){temporary} = {name};"));
+                self.linef(format!("*(uint64_t*)({temporary} + 8) = strlen({name});"));
+                self.emit_copy(dst, &temporary, result_ty, "16");
+            }
+            Intrinsic::Throw => {
+                let (exception, _) = self.emit_place(nodes, args[0]);
+                self.linef(format!("sol_throw({exception});"));
             }
             Intrinsic::Try => {
                 // args are two 16-byte function values (code ptr + env ptr):
-                // [0] body fn(), [1] handler fn(&[Uint8]).
+                // [0] body fn(), [1] handler fn(Exception).
                 let (body_place, _) = self.emit_place(nodes, args[0]);
                 let (handler_place, _) = self.emit_place(nodes, args[1]);
                 let body_fn = self.fresh_tmp();

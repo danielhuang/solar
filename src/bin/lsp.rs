@@ -6662,7 +6662,7 @@ fn main() {
 }
 "#;
         let document = compute(&uri, source);
-        for (name, ty) in [("value", "Int"), ("index", "Int"), ("message", "&[Uint8]")] {
+        for (name, ty) in [("value", "Int"), ("index", "Int"), ("message", "Exception")] {
             for occurrence in 0..2 {
                 let (line, character) = occurrence_position(source, name, occurrence);
                 let hover = hover(source, line, character, &document)
@@ -6704,7 +6704,7 @@ fn main() {
         let hints = inlay_hints(source, &document, None);
         let labels = hint_labels(&hints);
 
-        for expected in [": Shape", ": Int", ": Int", ": Int", ": &[Uint8]"] {
+        for expected in [": Shape", ": Int", ": Int", ": Int", ": Exception"] {
             assert!(labels.contains(&expected), "missing {expected}: {labels:?}");
         }
         assert!(!labels.contains(&" -> ()"), "{labels:?}");

@@ -117,15 +117,15 @@ fn bad_let() {
 }
 
 #[test]
-#[should_panic(expected = "try: expected fn(&[Uint8]), got fn(Int)")]
+#[should_panic(expected = "try: expected fn(Exception), got fn(Int)")]
 fn try_catch_bad_binding_type() {
-    compile(&fixture("try_catch_bad_binding_type.solar"));
+    compile_with_pipeline(&fixture("try_catch_bad_binding_type.solar"));
 }
 
 #[test]
 #[should_panic(expected = "undefined enum: TryBlockResult_0")]
 fn try_result_type_is_inaccessible() {
-    compile(&fixture("try_result_type_inaccessible.solar"));
+    compile_with_pipeline(&fixture("try_result_type_inaccessible.solar"));
 }
 
 #[test]

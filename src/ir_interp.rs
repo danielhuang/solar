@@ -156,15 +156,9 @@ fn cast_numeric(raw: u64, src: &Type, dst: &Type) -> u64 {
     }
 }
 
-/// A propagating Solar `throw`: the thrown message bytes. It unwinds as the
-/// `Err` of `Eval` through every evaluation step until a `try` handler catches
-/// it (or it escapes `main`, which aborts). Mirrors the compiled backend's
-/// `sol_throw`/`sol_try` (Rust panic + `catch_unwind`).
+/// A propagating exception stored in interpreter memory.
 struct Thrown {
-    /// Data address (offset into `mem.data`) and length of the thrown `&[Uint8]`
-    /// — the reference itself, so a `catch` binding aliases the thrown slice.
-    ptr: usize,
-    len: usize,
+    exception: usize,
 }
 
 /// A non-local exit unwinding through evaluation as the `Err` of `Eval`.
@@ -261,6 +255,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
     }
 
     fn any_type_tag(&mut self, ty: &Type) -> u64 {
+        if *ty == Type::Unit {
+            return crate::types::ANY_TYPE_TAG_PREFIX;
+        }
         if let Some(tag) = self.any_type_ids.get(ty) {
             return *tag;
         }
@@ -275,13 +272,63 @@ impl<'a, 'io> Interpreter<'a, 'io> {
     /// the interpreter's counterpart of the compiled runtime's throw helpers
     /// (`panic::throw_str`/`throw_message`). The message strings are canonical
     /// across all three backends.
+    fn bytes(&mut self, bytes: &[u8]) -> usize {
+        let ptr = self.mem.alloc(bytes.len().max(1), 1);
+        self.mem.data[ptr..ptr + bytes.len()].copy_from_slice(bytes);
+        ptr
+    }
+
+    fn capture_backtrace(&mut self, dst: usize) {
+        let addresses = solar_shared::trace::capture();
+        let trace = self.mem.alloc(addresses.len() * 8, 8);
+        for (i, &address) in addresses.iter().enumerate() {
+            self.mem.store(trace + i * 8, address as u64, 8);
+        }
+        self.mem.store(dst, trace as u64, 8);
+        self.mem.store(dst + 8, addresses.len() as u64, 8);
+    }
+
+    fn any_type_name(&self, tag: u64) -> String {
+        if tag == crate::types::ANY_TYPE_TAG_PREFIX {
+            String::from("Unit")
+        } else {
+            let ty = self
+                .any_type_ids
+                .iter()
+                .find_map(|(ty, &id)| (id == tag).then_some(ty))
+                .unwrap();
+            crate::types::payload_type_name(ty)
+        }
+    }
+
+    fn exception_string(&mut self, exception: usize) -> String {
+        let ptr = self.mem.load(exception, 8) as usize;
+        let len = self.mem.load(exception + 8, 8) as usize;
+        let message = String::from_utf8_lossy(&self.mem.data[ptr..ptr + len]);
+        let tag = self.mem.load(exception + 24, 8);
+        let payload = self.any_type_name(tag);
+        let ptr = self.mem.load(exception + 32, 8) as usize;
+        let len = self.mem.load(exception + 40, 8) as usize;
+        let addresses = (0..len)
+            .map(|i| self.mem.load(ptr + i * 8, 8) as usize)
+            .collect::<Vec<_>>();
+        format!(
+            "{message}\nPayload type: {payload}\n{}",
+            solar_shared::trace::format(&addresses)
+        )
+    }
+
     fn thrown(&mut self, msg: &str) -> Unwind {
-        let ptr = self.mem.alloc(msg.len().max(1), 1);
-        self.mem.data[ptr..ptr + msg.len()].copy_from_slice(msg.as_bytes());
-        Unwind::Thrown(Thrown {
-            ptr,
-            len: msg.len(),
-        })
+        let ptr = self.bytes(msg.as_bytes());
+        let exception = self.mem.alloc(48, 16);
+        let unit = self.mem.alloc(0, 1);
+        self.mem.store(exception + 16, unit as u64, 8);
+        self.mem
+            .store(exception + 24, crate::types::ANY_TYPE_TAG_PREFIX, 8);
+        self.mem.store(exception, ptr as u64, 8);
+        self.mem.store(exception + 8, msg.len() as u64, 8);
+        self.capture_backtrace(exception + 32);
+        Unwind::Thrown(Thrown { exception })
     }
 
     fn alloc_ty(&mut self, ty: &Type) -> usize {
@@ -1821,18 +1868,28 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 self.scalar_store(lo_addr, lo, &Type::Uint64);
                 self.scalar_store(hi_addr, hi, &Type::Uint64);
             }
+            Intrinsic::CaptureBacktrace => self.capture_backtrace(dst),
+            Intrinsic::ResolveAddress => {
+                let address = self.eval_load(nodes, args[0])? as usize;
+                let text = solar_shared::trace::resolve_address(address);
+                let ptr = self.bytes(text.as_bytes());
+                self.mem.store(dst, ptr as u64, 8);
+                self.mem.store(dst + 8, text.len() as u64, 8);
+            }
+            Intrinsic::AnyTypeName => {
+                let (any, _) = self.eval_place(nodes, args[0])?;
+                let text = self.any_type_name(self.mem.load(any + 8, 8));
+                let ptr = self.bytes(text.as_bytes());
+                self.mem.store(dst, ptr as u64, 8);
+                self.mem.store(dst + 8, text.len() as u64, 8);
+            }
             Intrinsic::Throw => {
-                assert_eq!(*result_ty, Type::Never);
-                let (ref_addr, _) = self.eval_place(nodes, args[0])?;
-                let data_ptr = self.mem.load(ref_addr, 8) as usize;
-                let data_len = self.mem.load(ref_addr + 8, 8) as usize;
-                return Err(Unwind::Thrown(Thrown {
-                    ptr: data_ptr,
-                    len: data_len,
-                }));
+                let exception = self.mem.alloc(48, 16);
+                self.eval_into(nodes, args[0], exception)?;
+                return Err(Unwind::Thrown(Thrown { exception }));
             }
             Intrinsic::Try => {
-                // args[0] = body fn(), args[1] = handler fn(&[Uint8]).
+                // args[0] = body fn(), args[1] = handler fn(Exception).
                 let body_ty = nodes[args[0].0].ty.clone();
                 let body_addr = self.alloc_ty(&body_ty);
                 self.eval_into(nodes, args[0], body_addr)?;
@@ -1845,16 +1902,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let h_idx = self.mem.load(h_addr, 8) as usize;
                 let h_env = self.mem.load(h_addr + 8, 8);
 
-                // Run the body; on a throw, hand the handler a `&[Uint8]` whose
-                // fat pointer is the thrown one (same ptr/len) — so it aliases
-                // the slice passed to `throw`, no copy. Only `Thrown` is caught
-                // here; any other unwind propagates.
+                // Copy the complete exception into the handler argument.
                 match self.invoke_fn_value(body_idx, body_env, &[], dst) {
-                    Err(Unwind::Thrown(Thrown { ptr, len })) => {
-                        let arg_addr = self.mem.alloc(16, 8);
-                        self.mem.store(arg_addr, ptr as u64, 8);
-                        self.mem.store(arg_addr + 8, len as u64, 8);
-                        self.invoke_fn_value(h_idx, h_env, &[arg_addr], dst)?;
+                    Err(Unwind::Thrown(Thrown { exception })) => {
+                        self.invoke_fn_value(h_idx, h_env, &[exception], dst)?;
                     }
                     other => other?,
                 }
@@ -2106,12 +2157,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             .get("main")
             .unwrap_or_else(|| panic!("no main function"));
         assert!(main_func.params.is_empty(), "main must take no parameters");
-        if let Err(Unwind::Thrown(Thrown { ptr, len })) = self.exec_function_body(main_func, 0) {
-            // A `throw` that escapes `main` is uncaught; mirror the compiled
-            // runtime, which aborts with the message.
-            let bytes = self.mem.data[ptr..ptr + len].to_vec();
-            let msg = String::from_utf8_lossy(&bytes);
-            panic!("uncaught exception: {msg}");
+        if let Err(Unwind::Thrown(Thrown { exception })) = self.exec_function_body(main_func, 0) {
+            panic!("uncaught exception: {}", self.exception_string(exception));
         }
     }
 }

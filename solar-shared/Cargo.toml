@@ -2,3 +2,6 @@
 name = "solar-shared"
 version = "0.1.0"
 edition = "2024"
+
+[dependencies]
+backtrace = "0.3"

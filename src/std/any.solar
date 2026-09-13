@@ -10,3 +10,8 @@ pub fn Any::#[T](x: &T) -> Any {
 pub method downcast#[out T](self: Any) -> &?T {
 	intrinsics::any_downcast#[T](self)
 }
+
+/// Returns the concrete type name of the erased reference, without reading its value.
+pub method type_name(self: Any) -> &[Uint8] {
+	intrinsics::any_type_name(self)
+}

@@ -15,7 +15,7 @@ fn main() {
 	try {
 		linux::check_syscall(0i64 - 13i64, "operation failed"&);
 	} catch (error) {
-		println(error);
+		println(error.message);
 	}
 
 	println("done"&);

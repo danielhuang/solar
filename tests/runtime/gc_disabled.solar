@@ -6,7 +6,7 @@ fn main() {
 		gc::collect_gc();
 		println("unexpected collection"&);
 	} catch (error) {
-		println(error);
+		println(error.message);
 	}
 
 	gc_keepalive(f&);

@@ -21,7 +21,7 @@ fn main() {
 
 	// Capture across a try block nested inside a closure.
 	let guarded = \ {
-		try { println(a - b); } catch (e) { println(e); }
+		try { println(a - b); } catch (e) { println(e.message); }
 	};
 	guarded();
 }

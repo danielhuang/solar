@@ -1,4 +1,4 @@
-import intrinsics from "@intrinsics";
+import {throw} from "lib.solar";
 
 /// Returns the conventional Linux message for a positive errno code.
 pub fn error_message(code: Int) -> &[Uint8] {
@@ -149,6 +149,6 @@ pub fn check_syscall(result: Int64, operation: &[Uint8]) {
 	let exception: [Uint8] = operation@ + ": " + message@ + " (os error " +
 		code_text@ +
 		")";
-	intrinsics::throw(exception&);
+	throw(exception&);
 	return;
 }
