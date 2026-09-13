@@ -43,8 +43,7 @@ def run_one(bench, preload):
     wall = time.perf_counter() - t0
     os.close(devnull)
     if status != 0:
-        print(f"  !! {bench} ({preload or 'glibc'}) exited status={status}",
-              file=sys.stderr)
+        raise RuntimeError(f"{bench} ({preload or 'glibc'}) exited status={status}")
     return wall, ru.ru_maxrss  # ru_maxrss is KiB on Linux
 
 

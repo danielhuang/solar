@@ -25,6 +25,7 @@ benchmark suite additionally needs:
 - C and C++ compilers with `-O3` and `-march=native` support;
 - Go;
 - Node.js;
+- Julia 1.10 or newer;
 - JDK 21, including `javac`;
 - .NET 10;
 - Python 3;
@@ -63,9 +64,10 @@ bench/
   go/                      Go ports
   java/                    Java ports
   js/                      Node.js ports
-  julia/                   Julia allocation/GC ports (standalone runs)
+  julia/                   Julia allocation/GC ports and pause logging
   rust/                    Rust HashMap reference
   sieve_matrix.py          sieve harness
+  control.py               loop and binary-trees timing/output checks
   run.py                   HashMap harness
   run.sh                   HashMap build-and-run shortcut
   binarytrees_arena.cpp    threaded C++ arena implementation
@@ -91,7 +93,7 @@ done
 Build the C ports and the preloadable bump allocator:
 
 ```bash
-make -C bench/c
+make -B -C bench/c
 clang -O3 -fPIC -ftls-model=initial-exec -shared \
   -o bench/c/libbump.so bench/c/bump.c
 ```
@@ -145,11 +147,11 @@ gcc -O3 -march=native \
 
 ## Run the allocation and GC matrix
 
-Run all four workloads, all eleven runtime/collector configurations, both
+Run all four workloads, all twelve runtime/collector configurations, both
 throughput and traced-latency modes, and three interleaved rounds:
 
 ```bash
-python3 bench/bench.py --markdown
+python3 bench/bench.py --markdown --json target/bench-allocation.json
 ```
 
 Useful narrower runs:
@@ -168,7 +170,8 @@ space limit per isolate.
 ### Julia allocation ports
 
 The four Julia ports require Julia 1.10 or newer and no external packages.
-Run them directly; `bench.py` does not yet include Julia or parse its GC traces:
+The allocation matrix includes Julia throughput and GC pauses by default.
+For standalone runs:
 
 ```bash
 julia --startup-file=no bench/julia/allocs3.jl
@@ -185,7 +188,11 @@ chain during churn. Mutable Julia nodes keep allocations as heap objects;
 object sizes and GC metadata differ from Solar.
 
 Prefix a command with `/usr/bin/time -v` to measure elapsed time and peak RSS.
-These process timings include Julia startup and JIT compilation, with no warmup.
+All Julia process timings, including those in the matrix, include startup and
+JIT compilation, with no warmup. Traced runs preload `julia/gc_trace.jl`, which
+enables `GC.enable_logging(true)`; the harness reads individual `GC: pause`
+durations. Single-threaded workloads use one Julia worker thread, while the
+threaded workloads use seventeen. Julia GC thread counts retain their defaults.
 For a quick correctness check, include a file and call its parameterized driver:
 
 ```bash
@@ -230,7 +237,8 @@ outer loop and modulo branch rather than stepping directly between prints.
 `loop2fn5.solar` is expected to have the same release performance as
 `loop2.solar`: the optimizer should remove the extra higher-order calls,
 closures, single-element array, and reference indirection. This is an
-optimization expectation, not a recorded measurement.
+optimization expectation; the latest measured comparison is in
+[README.md](README.md#loop-optimization).
 
 To build just this group:
 
@@ -240,7 +248,7 @@ for stem in loop2 loop2fn5; do
   cargo run --release --quiet -- compile --release \
     "examples/$stem.solar" "target/$stem"
 done
-make -C bench/c loop2
+make -B -C bench/c loop2
 ```
 
 Verify identical output (100,000 lines, from `0` through `999990000`):
@@ -265,6 +273,12 @@ for round in 1 2 3; do
   /usr/bin/time -f 'C loop2: wall=%e user=%U sys=%S rss_kib=%M' \
     bench/c/loop2 >/dev/null
 done
+```
+
+For checked measurements with per-round JSON output:
+
+```bash
+python3 bench/control.py loops --json target/bench-loops.json
 ```
 
 ## Run HashMap
@@ -326,16 +340,25 @@ target/bench/bt_vanilla 21 | tail -n +2 > /tmp/bt-c-malloc
 diff -u /tmp/bt-solar-single /tmp/bt-c-malloc
 ```
 
+The equivalent automated check and measurement command is:
+
+```bash
+python3 bench/control.py binarytrees --json target/bench-binarytrees.json
+```
+
 ## Measurement definitions
 
 ### Allocation and GC
 
-- Throughput wall time is the minimum of the requested rounds.
+- Throughput wall time is the minimum of the requested rounds. All process
+  timings include runtime startup and JIT compilation where applicable. Failed
+  processes stop the harness and are never included as successful measurements.
 - Each run's peak RSS is its largest `/proc/<pid>/status` `VmHWM` sample; the
   reported value is the minimum across rounds.
 - Solar pause samples are its three individual stop-the-world phases.
 - Go samples are sweep-termination and mark-termination pauses from
   `GODEBUG=gctrace=1`.
+- Julia samples are individual `GC: pause` durations from `GC.enable_logging(true)`.
 - Java samples are individual safepoints from `-Xlog:safepoint`.
 - .NET samples are runtime
   `GCSuspendEEBegin`-to-`GCRestartEEEnd` windows captured by
@@ -354,5 +377,7 @@ diff -u /tmp/bt-solar-single /tmp/bt-c-malloc
   `wait4` peak RSS across interleaved rounds.
 - The HashMap harness reports the minimum wall time and minimum `wait4` peak
   RSS across seven runs of each isolated phase.
-- The binary-trees table in `README.md` uses the minimum wall time, minimum
-  `user + system` CPU time, and minimum peak RSS from three rounds.
+- The loop and binary-trees tables in `README.md` use the minimum wall time,
+  minimum `user + system` CPU time, and minimum GNU `time` peak RSS from three
+  rounds. The timing helper is executed before the measured process so the
+  Python driver’s output-check buffers do not inflate the child RSS measurement.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Allocation / GC benchmark harness for Solar vs C vs Go vs the JVM
-collectors vs .NET vs JavaScript (Node.js/V8).
+collectors vs .NET vs JavaScript (Node.js/V8) vs Julia.
 
 Runs four benchmarks (allocs3, threads_list2, splay, allocs5), each ported to
 every runtime, and reports throughput (minimum wall-clock + peak RSS) and
@@ -15,6 +15,7 @@ Prereqs (see guide.md):
   Go     bench/go/{allocs3,threads_list2,splay,allocs5} (go build)
   Java   bench/java/*.class                             (javac)
   C#     bench/csharp/*/bin/Release/net10.0/*           (dotnet build -c Release)
+  Julia  bench/julia/*.jl                               (nothing to build; needs julia)
   JS     bench/js/*.js                                  (nothing to build; needs node)
 
 Usage:
@@ -27,11 +28,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -77,6 +80,9 @@ def contenders(stem: str, cls: str):
         ("Go",               [str(ROOT / "bench/go" / stem)],        {}, "go"),
         ("JS (Node/V8)",     ["node", *NODE_OPTS,
                               str(ROOT / "bench/js" / f"{stem}.js")], {}, "node"),
+        ("Julia",            ["julia", "--startup-file=no",
+                              "--threads=17" if stem in ("threads_list2", "allocs5") else "--threads=1",
+                              str(ROOT / "bench/julia" / f"{stem}.jl")], {}, "julia"),
         ("Java G1",          [*java, "-XX:+UseG1GC", cls],           {}, "java"),
         ("Java Parallel",    [*java, "-XX:+UseParallelGC", cls],     {}, "java"),
         ("Java ZGC gen",     [*java, "-XX:+UseZGC", "-XX:+ZGenerational", cls], {}, "java"),
@@ -106,17 +112,20 @@ def run_throughput(argv, env) -> tuple[float, int]:
     """Run once; return (wall_seconds, peak_rss_kb)."""
     full_env = {**os.environ, **env}
     start = time.perf_counter()
-    proc = subprocess.Popen(
-        argv, cwd=JAVA_DIR, env=full_env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    hwm = 0
-    while proc.poll() is None:
-        hwm = max(hwm, peak_rss_kb(proc.pid))
-        time.sleep(0.01)
-    hwm = max(hwm, peak_rss_kb(proc.pid))  # last chance before reaping
-    proc.wait()
-    return time.perf_counter() - start, hwm
+    with tempfile.TemporaryFile() as errors:
+        proc = subprocess.Popen(
+            argv, cwd=JAVA_DIR, env=full_env,
+            stdout=subprocess.DEVNULL, stderr=errors,
+        )
+        hwm = 0
+        while proc.poll() is None:
+            hwm = max(hwm, peak_rss_kb(proc.pid))
+            time.sleep(0.01)
+        elapsed = time.perf_counter() - start
+        if proc.returncode:
+            errors.seek(0)
+            raise RuntimeError(f"{argv} exited {proc.returncode}: {errors.read().decode(errors='replace')}")
+    return elapsed, hwm
 
 
 # --------------------------------------------------------------------------- #
@@ -127,6 +136,7 @@ _SOLAR_RE = re.compile(r"pause([123]) ([0-9.]+)(µs|ms|s)")
 _GO_RE = re.compile(r"([0-9.]+)\+[0-9.]+\+([0-9.]+) ms clock")
 _JAVA_RE = re.compile(r"At safepoint: (\d+) ns")
 _CSHARP_RE = re.compile(r"GCPAUSE ([0-9.]+) ms")
+_JULIA_RE = re.compile(r"GC: pause ([0-9.]+)ms")
 _NODE_RE = re.compile(r"([0-9.]+) / [0-9.]+ ms")
 
 
@@ -134,7 +144,7 @@ def capture(argv, env) -> str:
     full_env = {**os.environ, **env}
     p = subprocess.run(
         argv, cwd=JAVA_DIR, env=full_env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, check=True,
     )
     return p.stderr
 
@@ -155,7 +165,7 @@ def pause_samples(argv, kind: str, env: dict | None = None) -> tuple[list[float]
         # Solar prints stats to stdout; capture both streams.
         env = {"SOLAR_PRINT_GC_STATS": "1"}
         p = subprocess.run(argv, cwd=JAVA_DIR, env={**os.environ, **env},
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, check=True)
         text = p.stdout + p.stderr
         out = []
         for line in text.splitlines():
@@ -179,7 +189,7 @@ def pause_samples(argv, kind: str, env: dict | None = None) -> tuple[list[float]
     if kind == "java":
         # JVM flags must precede the main class; -Xlog defaults to stdout.
         java_argv = argv[:-1] + ["-Xlog:safepoint", argv[-1]]
-        p = subprocess.run(java_argv, cwd=JAVA_DIR, capture_output=True, text=True)
+        p = subprocess.run(java_argv, cwd=JAVA_DIR, capture_output=True, text=True, check=True)
         text = p.stdout + p.stderr
         return done([int(ns) / 1e6 for ns in _JAVA_RE.findall(text)])
     if kind == "csharp":
@@ -187,6 +197,10 @@ def pause_samples(argv, kind: str, env: dict | None = None) -> tuple[list[float]
         # (GcPause.cs) prints each STW window to stderr when BENCH_GC_TRACE=1.
         text = capture(argv, {**env, "BENCH_GC_TRACE": "1"})
         return done([float(ms) for ms in _CSHARP_RE.findall(text)])
+    if kind == "julia":
+        julia_argv = [argv[0], "-L", str(ROOT / "bench/julia/gc_trace.jl"), *argv[1:]]
+        text = capture(julia_argv, env)
+        return done([float(ms) for ms in _JULIA_RE.findall(text)])
     if kind == "node":
         # V8's --trace-gc prints one line per collection per isolate (main +
         # every worker_threads worker), to stdout: "..., X / Y ms ..." where X
@@ -195,7 +209,7 @@ def pause_samples(argv, kind: str, env: dict | None = None) -> tuple[list[float]
         # thread — the per-pause accounting the other runtimes use.
         node_argv = [argv[0], "--trace-gc", *argv[1:]]
         p = subprocess.run(node_argv, cwd=JAVA_DIR, env={**os.environ, **env},
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, check=True)
         text = p.stdout + p.stderr
         return done([float(ms) for ms in _NODE_RE.findall(text)])
     raise ValueError(kind)
@@ -218,7 +232,15 @@ def main():
     ap.add_argument("--only", choices=["throughput", "latency"], default=None)
     ap.add_argument("--markdown", action="store_true",
                     help="also print README.md-style transposed tables")
+    ap.add_argument("--json", type=Path, help="save every round's measurements and final summaries")
     args = ap.parse_args()
+    if args.rounds < 1:
+        ap.error("--rounds must be positive")
+    measurements = []
+
+    def save():
+        if args.json:
+            args.json.write_text(json.dumps({"rounds": measurements, "summary": results}, indent=2) + "\n")
 
     do_tp = args.only in (None, "throughput")
     do_lat = args.only in (None, "latency")
@@ -244,14 +266,23 @@ def main():
                     w, m = run_throughput(argv, env)
                     walls[lbl].append(w)
                     rss[lbl].append(m)
+                    measurements.append(dict(benchmark=stem, runtime=lbl, round=r,
+                                             mode="throughput", wall=w, rss_kib=m))
+                    save()
                 if do_lat and kind != "none":
                     s, traced_wall = pause_samples(argv, kind, env)
+                    measurements.append(dict(benchmark=stem, runtime=lbl, round=r,
+                                             mode="latency", wall=traced_wall, count=len(s),
+                                             max_ms=max(s) if s else None,
+                                             p50_ms=statistics.median(s) if s else None,
+                                             total_ms=sum(s)))
+                    save()
                     if s:
                         lat_max[lbl].append(max(s))
                         lat_p50[lbl].append(statistics.median(s))
                     # zero samples == a zero-collection run: STW fraction 0%
                     stw[lbl].append(100.0 * sum(s) / 1000.0 / traced_wall)
-                print(" .", end="", flush=True)
+                print(f" {lbl}", end="", flush=True)
             print()
 
         results[cls] = {}
@@ -278,6 +309,7 @@ def main():
             print(row)
         print()
 
+    save()
     print(f"### {loadavg()} (after)")
 
     if args.markdown:
