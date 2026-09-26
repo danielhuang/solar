@@ -44,6 +44,89 @@ fn check_does_not_execute_the_program() {
 }
 
 #[test]
+fn dump_stages_write_to_stdout_without_running_or_building() {
+    let directory = tempdir::TempDir::new("solar-cli-test").unwrap();
+    let source = directory.path().join("dump.solar");
+    std::fs::write(&source, "fn main() { assert(false); }\n").unwrap();
+    for (stage, marker) in [
+        ("ast", "SourceFile {"),
+        ("typed_ast", "SourceFile {"),
+        ("tree_ir", "Module {"),
+        ("c", "#include"),
+    ] {
+        for release in [false, true] {
+            let mut command = solar();
+            command
+                .arg("dump")
+                .arg(&source)
+                .args(["--stage", stage])
+                .env("PATH", "")
+                .env("TMPDIR", directory.path());
+            if release {
+                command.arg("--release");
+            }
+            let output = command.output().unwrap();
+            assert_success(&output);
+            let stdout = std::str::from_utf8(&output.stdout).unwrap();
+            assert!(stdout.contains(marker), "{stage}: {stdout}");
+            assert!(stdout.contains("main"), "{stage}: {stdout}");
+            assert!(output.stderr.is_empty(), "{output:?}");
+        }
+    }
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn dump_ast_stops_before_typechecking_and_reports_parse_errors() {
+    let directory = tempdir::TempDir::new("solar-cli-test").unwrap();
+    let source = directory.path().join("invalid.solar");
+    std::fs::write(&source, "fn main() { let x: Int = true; }\n").unwrap();
+    assert_success(
+        &solar()
+            .arg("dump")
+            .arg(&source)
+            .args(["--stage", "ast"])
+            .output()
+            .unwrap(),
+    );
+    for stage in ["typed_ast", "tree_ir", "c"] {
+        let output = solar()
+            .arg("dump")
+            .arg(&source)
+            .args(["--stage", stage])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("invalid.solar"), "{stderr}");
+        assert!(stderr.contains("Bool"), "{stderr}");
+    }
+    std::fs::write(&source, "$").unwrap();
+    for stage in ["ast", "typed_ast", "tree_ir", "c"] {
+        let output = solar()
+            .arg("dump")
+            .arg(&source)
+            .args(["--stage", stage])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("invalid.solar"));
+    }
+    std::fs::remove_file(&source).unwrap();
+    let output = solar()
+        .arg("dump")
+        .arg(&source)
+        .args(["--stage", "ast"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid.solar"));
+}
+
+#[test]
 fn compilation_errors_are_reported_by_each_command() {
     let directory = tempdir::TempDir::new("solar-cli-test").unwrap();
     let source = directory.path().join("invalid.solar");
@@ -91,6 +174,9 @@ fn cli_rejects_missing_arguments_and_conflicting_modes() {
         vec!["fmt"],
         vec!["check"],
         vec!["run"],
+        vec!["dump"],
+        vec!["dump", "source.solar"],
+        vec!["dump", "source.solar", "--stage", "other"],
         vec!["run", "source.solar", "--interp"],
         vec!["run", "source.solar", "--interp", "other"],
         vec!["run", "source.solar", "--interp", "ast", "--release"],

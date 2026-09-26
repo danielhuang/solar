@@ -6,7 +6,10 @@ use solar::fmt::format_source;
 use solar::pipeline::{CompileOptions, Typed};
 
 #[derive(Parser)]
-#[command(version, about = "Compile, run, check, and format Solar programs")]
+#[command(
+    version,
+    about = "Compile, run, check, format, and dump Solar programs"
+)]
 struct Cli {
     #[command(subcommand)]
     command: SolarCommand,
@@ -14,6 +17,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum SolarCommand {
+    /// Dump a pipeline stage to standard output without executing the program.
+    Dump {
+        #[arg(value_name = "SRC.solar")]
+        source: PathBuf,
+        #[arg(long, value_enum)]
+        stage: DumpStage,
+        /// Optimize tree IR before dumping tree IR or C; earlier stages are unaffected.
+        #[arg(long)]
+        release: bool,
+    },
     /// Compile a program to a native executable.
     Compile {
         #[arg(value_name = "SRC.solar")]
@@ -75,8 +88,26 @@ enum Interpreter {
     TreeIr,
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+#[value(rename_all = "snake_case")]
+enum DumpStage {
+    /// Parsed source file, before resolving imports or type-checking.
+    Ast,
+    /// Type-checked and monomorphized program.
+    TypedAst,
+    /// Lowered tree intermediate representation.
+    TreeIr,
+    /// Generated C source.
+    C,
+}
+
 fn main() -> ExitCode {
     match Cli::parse().command {
+        SolarCommand::Dump {
+            source,
+            stage,
+            release,
+        } => dump(&source, stage, release),
         SolarCommand::Fmt { files } => format_files(&files),
         SolarCommand::Check { source } => match typecheck(&source) {
             Ok(_) => ExitCode::SUCCESS,
@@ -123,6 +154,52 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
     }
+}
+
+fn dump(source: &Path, stage: DumpStage, release: bool) -> ExitCode {
+    if matches!(stage, DumpStage::Ast) {
+        let text = match std::fs::read_to_string(source) {
+            Ok(text) => text,
+            Err(error) => {
+                eprintln!("{}: {error}", source.display());
+                return ExitCode::FAILURE;
+            }
+        };
+        return match solar::parser::parse(&text) {
+            Ok(ast) => {
+                println!("{ast:#?}");
+                ExitCode::SUCCESS
+            }
+            Err(errors) => {
+                for error in errors {
+                    eprintln!("{}:{error}", source.display());
+                }
+                ExitCode::FAILURE
+            }
+        };
+    }
+
+    let typed = match typecheck(source) {
+        Ok(typed) => typed,
+        Err(status) => return status,
+    };
+    if matches!(stage, DumpStage::TypedAst) {
+        println!("{:#?}", typed.typed);
+        return ExitCode::SUCCESS;
+    }
+
+    let tree_ir = typed.to_mangled().to_tree_ir();
+    let tree_ir = if release {
+        tree_ir.optimized()
+    } else {
+        tree_ir
+    };
+    match stage {
+        DumpStage::TreeIr => println!("{:#?}", tree_ir.tree_ir),
+        DumpStage::C => print!("{}", tree_ir.to_c(&source.to_string_lossy()).c_source),
+        DumpStage::Ast | DumpStage::TypedAst => unreachable!(),
+    }
+    ExitCode::SUCCESS
 }
 
 fn typecheck(source: &Path) -> Result<Typed, ExitCode> {
