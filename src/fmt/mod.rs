@@ -1567,6 +1567,17 @@ mod tests {
     }
 
     #[test]
+    fn preserves_parentheses_around_generic_calls() {
+        let source = "fn dispatch#[S]() { (command_dispatcher_with_root#[S](root_command_node::root_command_node#[S]())) }\n";
+        let formatted = formatted(source);
+        assert_eq!(
+            formatted,
+            "fn dispatch#[S]() {\n\t(command_dispatcher_with_root#[S](\n\t\troot_command_node::root_command_node#[S](),\n\t))\n}\n"
+        );
+        crate::parser::parse(&formatted).unwrap();
+    }
+
+    #[test]
     fn preserves_comments_and_canonical_blank_lines() {
         assert_eq!(
             formatted("// docs\n\n\nfn f() {\nlet x=1; // value\n\n// tail\nx\n}\n"),

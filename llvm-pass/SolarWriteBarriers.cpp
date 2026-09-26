@@ -47,6 +47,76 @@ bool isStackOrGlobalDest(Value *Dst) {
   return isa<AllocaInst>(Base) || isa<GlobalValue>(Base);
 }
 
+// LLVM's x86 backend emits an unresolved `__llvm_memcpy_element_unordered_atomic_16`
+// for this intrinsic. Solar's atomic128 runtime already provides the required
+// unordered i128 load/store semantics, so lower each element back to those
+// operations after optimization (keeping optimization's escape analysis intact).
+struct SolarLowerAtomicMemcpy16 : PassInfoMixin<SolarLowerAtomicMemcpy16> {
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
+    SmallVector<CallInst *, 8> Copies;
+    for (Function &F : M)
+      for (Instruction &I : instructions(F))
+        if (auto *Call = dyn_cast<CallInst>(&I))
+          if (Function *Callee = Call->getCalledFunction())
+            if (Callee->getName().starts_with(
+                    "llvm.memcpy.element.unordered.atomic.")) {
+              auto *ElementBytes = dyn_cast<ConstantInt>(Call->getArgOperand(3));
+              if (ElementBytes && ElementBytes->getZExtValue() == 16)
+                Copies.push_back(Call);
+            }
+
+    if (Copies.empty())
+      return PreservedAnalyses::all();
+
+    LLVMContext &Ctx = M.getContext();
+    Type *PtrTy = PointerType::getUnqual(Ctx);
+    FunctionType *CopyTy = FunctionType::get(
+        Type::getVoidTy(Ctx), {PtrTy, PtrTy}, false);
+    FunctionCallee Copy = M.getOrInsertFunction("sol_copy_128_unordered", CopyTy);
+
+    for (CallInst *Call : Copies) {
+      // The intrinsic requires each atomic element to be naturally aligned.
+      // The helper uses align-16 atomic operations, so retain that precondition.
+      if (Call->getParamAlign(0).valueOrOne() < Align(16) ||
+          Call->getParamAlign(1).valueOrOne() < Align(16))
+        report_fatal_error("unaligned 16-byte atomic memcpy intrinsic");
+      if (Function *CopyFunction = dyn_cast<Function>(Copy.getCallee()))
+        CopyFunction->addFnAttr(Attribute::NoInline);
+
+      Value *Dst = Call->getArgOperand(0);
+      Value *Src = Call->getArgOperand(1);
+      Value *Length = Call->getArgOperand(2);
+      auto *LengthTy = cast<IntegerType>(Length->getType());
+      Function *F = Call->getFunction();
+      BasicBlock *Preheader = Call->getParent();
+      BasicBlock *Continue = Preheader->splitBasicBlock(
+          Call->getIterator(), "atomic.memcpy.continue");
+      Preheader->getTerminator()->eraseFromParent();
+      BasicBlock *Loop = BasicBlock::Create(Ctx, "atomic.memcpy.loop", F, Continue);
+      BasicBlock *Body = BasicBlock::Create(Ctx, "atomic.memcpy.body", F, Continue);
+
+      IRBuilder<> Before(Preheader);
+      Before.CreateBr(Loop);
+      IRBuilder<> LoopBuilder(Loop);
+      PHINode *Offset = LoopBuilder.CreatePHI(LengthTy, 2, "atomic.memcpy.offset");
+      Offset->addIncoming(ConstantInt::get(LengthTy, 0), Preheader);
+      Value *More = LoopBuilder.CreateICmpULT(Offset, Length);
+      LoopBuilder.CreateCondBr(More, Body, Continue);
+
+      IRBuilder<> BodyBuilder(Body);
+      Value *ElementDst = BodyBuilder.CreateGEP(Type::getInt8Ty(Ctx), Dst, Offset);
+      Value *ElementSrc = BodyBuilder.CreateGEP(Type::getInt8Ty(Ctx), Src, Offset);
+      BodyBuilder.CreateCall(Copy, {ElementDst, ElementSrc});
+      Value *Next = BodyBuilder.CreateAdd(Offset, ConstantInt::get(LengthTy, 16));
+      BodyBuilder.CreateBr(Loop);
+      Offset->addIncoming(Next, Body);
+
+      Call->eraseFromParent();
+    }
+    return PreservedAnalyses::none();
+  }
+};
+
 // Redirect constant-size sol_alloc calls to a fixed-size-class runtime entry
 // point. Those entry points are const-generic Rust monomorphizations, so their
 // bitmap and arena address calculations are optimized for a constant class.
@@ -317,6 +387,10 @@ llvmGetPassPluginInfo() {
                    ArrayRef<PassBuilder::PipelineElement>) {
                   if (Name == "solar-write-barriers") {
                     MPM.addPass(SolarWriteBarriers());
+                    return true;
+                  }
+                  if (Name == "solar-lower-atomic-memcpy16") {
+                    MPM.addPass(SolarLowerAtomicMemcpy16());
                     return true;
                   }
                   if (Name == "solar-specialize-gc-alloc") {

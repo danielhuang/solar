@@ -145,7 +145,11 @@ impl Resolver {
             .unwrap_or(Path::new("."))
             .to_path_buf();
 
-        for (import_path, span) in imports {
+        for (import_path, mut span) in imports {
+            // Parser spans start with file_id 0. Imports are diagnosed before
+            // the later name-rewrite pass assigns file IDs to declarations,
+            // so attribute this span to the importing file here.
+            set_file_id_span(&mut span, file_id);
             if import_path == "@intrinsics" || import_path == "@std" {
                 continue;
             }
@@ -653,7 +657,7 @@ impl Resolver {
                 TopLevelItem::Function(f) => {
                     let mut f = f.clone();
                     rewrite_function_body(&mut f, &rewrite_ctx);
-                    set_file_id_span(&mut f.span, file_id);
+                    set_function_file_spans(&mut f, file_id);
                     if let Some(owner) = &f.associated_type {
                         let owner_id = match owner {
                             Type::Named(id) | Type::Generic { name: id, .. } => id,
@@ -692,7 +696,7 @@ impl Resolver {
                 TopLevelItem::Method(m) => {
                     let mut m = m.clone();
                     rewrite_function_body(&mut m, &rewrite_ctx);
-                    set_file_id_span(&mut m.span, file_id);
+                    set_function_file_spans(&mut m, file_id);
                     let is_std = (file_id as usize) < std_file_count;
                     let mut method_type_params = m.type_params.clone();
                     method_type_params.extend(m.out_type_params.iter().cloned());
@@ -772,6 +776,16 @@ impl Resolver {
 
 fn set_file_id_span(span: &mut SourceSpan, file_id: FileId) {
     span.file_id = file_id;
+}
+
+fn set_function_file_spans(function: &mut FunctionDef, file_id: FileId) {
+    set_file_id_span(&mut function.span, file_id);
+    if let Some(span) = &mut function.return_type_span {
+        set_file_id_span(span, file_id);
+    }
+    for parameter in &mut function.parameters {
+        set_file_id_span(&mut parameter.span, file_id);
+    }
 }
 
 /// Resolves a type name to its defining file.
@@ -1026,6 +1040,15 @@ fn rewrite_function_body(f: &mut FunctionDef, parent_ctx: &RewriteCtx<'_>) {
         type_params: &type_params,
         file_id: parent_ctx.file_id,
     };
+
+    // Defaults are lowered at each call site, but their names belong to the
+    // function's defining module. Resolve them here alongside the function
+    // body so imported defaults retain the defining module's type aliases.
+    for parameter in &mut f.parameters {
+        if let Some(default) = &mut parameter.default {
+            rewrite_expr(default, &ctx, &locals);
+        }
+    }
 
     // Rewrite body
     rewrite_statements(&mut f.body, &ctx, &mut locals);

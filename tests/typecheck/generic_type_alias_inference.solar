@@ -1,0 +1,11 @@
+struct Registry#[T] { value: T }
+type MappedRegistry#[T] = Registry#[T];
+
+fn get_value#[T](value: &MappedRegistry#[T]) -> T {
+	value@.value
+}
+
+fn main() {
+	let registry = Registry#[Int] { value: 42 };
+	assert(get_value(registry&) == 42);
+}

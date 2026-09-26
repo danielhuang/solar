@@ -23,6 +23,24 @@ fn named_import() {
 }
 
 #[test]
+fn imported_main_may_return_a_value() {
+    let root = fixture("imported_main_return/main.solar");
+    let output = run(&root, "imported_main_may_return_a_value");
+    assert_eq!(output, "42\n");
+
+    let imported_main = fixture("imported_main_return/helper.solar");
+    let (errors, _) = match solar::pipeline::compile(&imported_main) {
+        Ok(_) => panic!("imported module main is an ordinary function when used as root"),
+        Err(error) => error,
+    };
+    assert!(
+        errors[0]
+            .message
+            .contains("entry function `main` must return Unit or diverge")
+    );
+}
+
+#[test]
 fn wildcard_import() {
     let output = run(&fixture("wildcard_import/main.solar"), "wildcard_import");
     assert_eq!(output, "10\n9\n");
@@ -146,6 +164,27 @@ fn type_alias_import() {
         "type_alias_import",
     );
     assert_eq!(output, "10\n20\n42\n");
+}
+
+#[test]
+fn imported_default_argument_resolves_its_type_alias() {
+    let output = run(
+        &fixture("imported_default_alias/main.solar"),
+        "imported_default_argument_resolves_its_type_alias",
+    );
+    assert_eq!(output, "1\n");
+}
+
+#[test]
+fn missing_import_diagnostic_points_to_importing_module() {
+    let path = fixture("missing_import_span/main.solar");
+    let (errors, source_map) = solar::resolve::resolve(&path).expect_err("missing import");
+    let error = &errors[0];
+    let (filename, _) = source_map
+        .get(error.span.file_id)
+        .expect("diagnostic source file");
+    assert_eq!(std::path::Path::new(filename), path);
+    assert_eq!(error.span.start.line, 2);
 }
 
 #[test]

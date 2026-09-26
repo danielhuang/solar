@@ -307,7 +307,7 @@ fn atomic_value_eq(a: &Value, b: &Value) -> bool {
 /// For structs: update each field slot. For arrays: update each element slot.
 /// For same-variant enums: update the inner value slot.
 /// For everything else (including different-variant enums): replace the whole value.
-fn assign_value_in_place(dst: &Slot, src: Value) {
+fn assign_value_in_place(dst: &Slot, src: Value) -> Result<(), (usize, usize)> {
     let pairs: Option<Vec<(Slot, Value)>> = {
         let d = dst.borrow();
         match (&*d, &src) {
@@ -323,13 +323,9 @@ fn assign_value_in_place(dst: &Slot, src: Value) {
                     .collect(),
             ),
             (Value::Array(old_e), Value::Array(new_e)) => {
-                assert_eq!(
-                    old_e.len(),
-                    new_e.len(),
-                    "unsized assignment: length mismatch ({} vs {})",
-                    old_e.len(),
-                    new_e.len()
-                );
+                if old_e.len() != new_e.len() {
+                    return Err((old_e.len(), new_e.len()));
+                }
                 Some(
                     old_e
                         .iter()
@@ -359,11 +355,12 @@ fn assign_value_in_place(dst: &Slot, src: Value) {
 
     if let Some(pairs) = pairs {
         for (slot, val) in pairs {
-            assign_value_in_place(&slot, val);
+            assign_value_in_place(&slot, val)?;
         }
     } else {
         *dst.borrow_mut() = src;
     }
+    Ok(())
 }
 
 fn ast_type_layout(
@@ -2335,7 +2332,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             StatementKind::Assignment { target, value } => {
                 let val = self.eval_expr(value)?;
                 let slot = self.eval_place(target)?;
-                assign_value_in_place(&slot, val);
+                if let Err((target_len, value_len)) = assign_value_in_place(&slot, val) {
+                    return Err(self.thrown(&format!(
+                        "unsized assignment: length mismatch ({target_len} vs {value_len})"
+                    )));
+                }
             }
             StatementKind::If {
                 condition,

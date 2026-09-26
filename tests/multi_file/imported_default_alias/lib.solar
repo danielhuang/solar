@@ -1,0 +1,10 @@
+pub type Callback = fn(Int16, Int16) -> Int32;
+pub struct Holder { callback: &?Callback }
+
+pub fn make(callback: &?Callback = null#[Callback]) -> &Holder {
+	(Holder { callback: callback })&
+}
+
+pub method empty(self: &Holder) -> Bool {
+	self@.callback == null#[Callback]
+}

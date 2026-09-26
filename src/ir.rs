@@ -970,6 +970,45 @@ impl<'a> FunctionLowerer<'a> {
         })
     }
 
+    /// Keep setup statements from a later operand after evaluation of earlier
+    /// operand values, including when the setup mutates an earlier place.
+    fn lower_ordered_values<'e>(
+        &mut self,
+        expressions: impl IntoIterator<Item = &'e mangled_ast::Expr>,
+    ) -> Vec<NodeId> {
+        let mut values: Vec<NodeId> = Vec::new();
+        let mut pending = self.drain_pending();
+        for expression in expressions {
+            let value = self.lower_expr(expression);
+            let setup = self.drain_pending();
+            if !setup.is_empty() {
+                for previous in &mut values {
+                    let ty = self.nodes[previous.0].ty.clone();
+                    let span = self.nodes[previous.0].span;
+                    let var = self.fresh_var();
+                    pending.push(self.push(Node {
+                        ty: ty.clone(),
+                        kind: NodeKind::Let {
+                            var,
+                            value: *previous,
+                            noescape: false,
+                        },
+                        span,
+                    }));
+                    *previous = self.push(Node {
+                        ty,
+                        kind: NodeKind::Local(var),
+                        span,
+                    });
+                }
+            }
+            pending.extend(setup);
+            values.push(value);
+        }
+        self.pending_stmts.extend(pending);
+        values
+    }
+
     fn push_scope(&mut self) {
         self.scopes.push();
     }
@@ -1229,9 +1268,11 @@ impl<'a> FunctionLowerer<'a> {
                 })
             }
             mangled_ast::ExprKind::StructLiteral { name, fields } => {
+                let values = self.lower_ordered_values(fields.iter().map(|field| &field.value));
                 let fields: Vec<(String, NodeId)> = fields
                     .iter()
-                    .map(|f| (f.name.clone(), self.lower_expr(&f.value)))
+                    .zip(values)
+                    .map(|(f, value)| (f.name.clone(), value))
                     .collect();
                 self.push(Node {
                     ty: expr.ty.clone(),
@@ -1271,7 +1312,7 @@ impl<'a> FunctionLowerer<'a> {
                 })
             }
             mangled_ast::ExprKind::ArrayLiteral(elements) => {
-                let elems: Vec<NodeId> = elements.iter().map(|e| self.lower_expr(e)).collect();
+                let elems = self.lower_ordered_values(elements);
                 self.push(Node {
                     ty: expr.ty.clone(),
                     kind: NodeKind::ArrayLiteral(elems),
@@ -1279,8 +1320,8 @@ impl<'a> FunctionLowerer<'a> {
                 })
             }
             mangled_ast::ExprKind::ArrayRepeat { element, count } => {
-                let elem = self.lower_expr(element);
-                let cnt = self.lower_expr(count);
+                let values = self.lower_ordered_values([element.as_ref(), count.as_ref()]);
+                let (elem, cnt) = (values[0], values[1]);
                 self.push(Node {
                     ty: expr.ty.clone(),
                     kind: NodeKind::ArrayRepeat {
@@ -1291,8 +1332,8 @@ impl<'a> FunctionLowerer<'a> {
                 })
             }
             mangled_ast::ExprKind::ArrayInit { count, init } => {
-                let cnt = self.lower_expr(count);
-                let ini = self.lower_expr(init);
+                let values = self.lower_ordered_values([count.as_ref(), init.as_ref()]);
+                let (cnt, ini) = (values[0], values[1]);
                 self.push(Node {
                     ty: expr.ty.clone(),
                     kind: NodeKind::ArrayInit {
@@ -1314,8 +1355,8 @@ impl<'a> FunctionLowerer<'a> {
                 })
             }
             mangled_ast::ExprKind::BinaryOp { op, left, right } => {
-                let l = self.lower_expr(left);
                 if matches!(op, BinOp::And | BinOp::Or) {
+                    let l = self.lower_expr(left);
                     // Lowering an expression can emit setup statements (for
                     // example, materializing an index and its bounds check).
                     // Those belonging to the RHS must remain inside the
@@ -1356,7 +1397,8 @@ impl<'a> FunctionLowerer<'a> {
                         span: expr.span,
                     })
                 } else {
-                    let r = self.lower_expr(right);
+                    let values = self.lower_ordered_values([left.as_ref(), right.as_ref()]);
+                    let (l, r) = (values[0], values[1]);
                     self.push(Node {
                         ty: expr.ty.clone(),
                         kind: NodeKind::BinaryOp {

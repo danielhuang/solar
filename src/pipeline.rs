@@ -21,6 +21,9 @@ pub fn compile(file_path: &Path) -> Result<Typed, (Vec<CompileError>, SourceMap)
 fn compile_inner(file_path: &Path) -> Result<Typed, (Vec<CompileError>, SourceMap)> {
     let (resolved, source_map) = resolve::resolve(file_path)?;
     let typed = typed_ast::lower(&resolved).map_err(|e| (vec![e], source_map.clone()))?;
+    typed
+        .validate_entry_point(source_map.root_file_id())
+        .map_err(|error| (vec![error], source_map.clone()))?;
     Ok(Typed { typed, source_map })
 }
 
@@ -234,6 +237,10 @@ fn insert_write_barriers(in_bc: &Path, out_bc: &Path) {
     run_solar_pass("solar-write-barriers", in_bc, out_bc);
 }
 
+fn lower_atomic_memcpy16(in_bc: &Path, out_bc: &Path) {
+    run_solar_pass("solar-lower-atomic-memcpy16", in_bc, out_bc);
+}
+
 /// Instrument generated memory operations with arena-allocation checks.
 fn insert_gc_san_checks(in_bc: &Path, out_bc: &Path) {
     run_solar_pass("solar-gc-sanitize", in_bc, out_bc);
@@ -432,12 +439,18 @@ fn compile_optimized(c_path: &Path, dir: &Path, bin_path: &Path, gc_san: bool) {
         run_cmd("opt", &opt_args);
     }
 
+    // Lower an atomic memcpy intrinsic synthesized by LLVM's optimizer. Solar
+    // provides unordered 128-bit copies through its atomic runtime helper, while
+    // LLVM's native backend does not provide this intrinsic's runtime symbol.
+    let full_atomic_memcpy_bc = dir.join("full_atomic_memcpy.bc");
+    lower_atomic_memcpy16(&full_opt_bc, &full_atomic_memcpy_bc);
+
     // Insert GC write barriers. This runs after `opt -O3` so barrier calls
     // don't block allocation elision/SROA; the final clang -O3 below inlines
     // the barrier fast path into the instrumented stores.
     eprintln!("=== Inserting write barriers ===");
     let full_wb_bc = dir.join("full_wb.bc");
-    insert_write_barriers(&full_opt_bc, &full_wb_bc);
+    insert_write_barriers(&full_atomic_memcpy_bc, &full_wb_bc);
 
     let full_gc_san_bc = dir.join("full_gc_san.bc");
     let final_bc = if gc_san {

@@ -1,0 +1,7 @@
+import vec from "../../src/std/vec.solar";
+
+fn main() {
+	let values: [&[Uint8]] = ["first"&, "second"&];
+	let copied = vec::Vec(values&);
+	assert(copied.as_slice().len() == 2u);
+}

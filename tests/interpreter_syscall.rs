@@ -65,7 +65,7 @@ fn interpreters_reject_other_syscalls_and_descriptors() {
             &source,
             format!(
                 "import intrinsics from \"@intrinsics\";\n\
-                 fn main() {{ unsafe {{ intrinsics::syscall({number}i64, {fd}i64, \"x\"&, 1u64); }} }}"
+                 fn main() {{ unsafe {{ intrinsics::syscall({number}i64, {fd}i64, \"x\"&, 1u64); }} return; }}"
             ),
         )
         .unwrap();

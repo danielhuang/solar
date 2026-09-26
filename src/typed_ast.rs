@@ -916,6 +916,33 @@ pub struct SourceFile {
     pub statics: Vec<StaticItem>,
 }
 
+impl SourceFile {
+    /// Ensures the root module's entry function returns Unit or diverges.
+    /// Other modules may declare ordinary `main` functions with any return
+    /// type.
+    pub fn validate_entry_point(&self, root_file_id: Option<u32>) -> Result<(), CompileError> {
+        let Some(root_file_id) = root_file_id else {
+            return Ok(());
+        };
+        let entry = self.functions.iter().find(|(id, _)| {
+            id.def.file == root_file_id
+                && id.def.name == "main"
+                && !id.method
+                && id.args.is_empty()
+                && id.overload.is_none()
+        });
+        if let Some((_, function)) = entry
+            && !matches!(function.return_type, Type::Unit | Type::Never)
+        {
+            return Err(CompileError::new(
+                "entry function `main` must return Unit or diverge".to_string(),
+                function.def_span,
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// A mutable global.
 #[derive(Debug, Clone)]
 pub struct StaticItem {
@@ -1513,7 +1540,7 @@ fn match_associated_owner_pattern(
     }
 
     match (pattern, concrete) {
-        (ast::Type::Named(a), ast::Type::Named(b)) => a == b,
+        (ast::Type::Named(a), ast::Type::Named(b)) => associated_owner_name_matches(a, b),
         (
             ast::Type::Generic {
                 name: a_name,
@@ -1524,7 +1551,7 @@ fn match_associated_owner_pattern(
                 type_args: b_args,
             },
         ) => {
-            a_name == b_name
+            associated_owner_name_matches(a_name, b_name)
                 && a_args.len() == b_args.len()
                 && a_args
                     .iter()
@@ -1571,6 +1598,10 @@ fn match_associated_owner_pattern(
         (ast::Type::Infer, ast::Type::Infer) => true,
         _ => false,
     }
+}
+
+fn associated_owner_name_matches(a: &ast::DefId, b: &ast::DefId) -> bool {
+    a == b || ((a.file == 0 || b.file == 0) && a.name == b.name)
 }
 
 /// Pre-order structural specificity. A concrete type constructor sorts before
@@ -2599,6 +2630,21 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Method syntax implicitly borrows a value receiver when the declared
+    /// first parameter is a shared reference to that value.
+    fn try_coerce_method_receiver(&self, expr: Expr, target: &Type) -> Expr {
+        if let Type::Ref(inner) = target
+            && **inner == expr.ty
+        {
+            return Expr {
+                ty: target.clone(),
+                span: expr.span,
+                kind: ExprKind::Reference(Box::new(expr)),
+            };
+        }
+        self.try_coerce(expr, target)
+    }
+
     /// Resolve a type alias, returning the target type with type args substituted.
     /// Returns None if the name is not an alias.
     fn resolve_type_alias(&self, name: &DefId, type_args: &[ast::Type]) -> Option<ast::Type> {
@@ -2617,6 +2663,101 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn canonical_generic_struct_name(&self, name: &DefId) -> Option<DefId> {
+        if self.generic_structs.contains_key(name) {
+            return Some(name.clone());
+        }
+        if name.file == 0 {
+            return self
+                .generic_structs
+                .keys()
+                .find(|candidate| candidate.name == name.name)
+                .cloned();
+        }
+        None
+    }
+
+    fn canonical_generic_enum_name(&self, name: &DefId) -> Option<DefId> {
+        if self.generic_enums.contains_key(name) {
+            return Some(name.clone());
+        }
+        if name.file == 0 {
+            return self
+                .generic_enums
+                .keys()
+                .find(|candidate| candidate.name == name.name)
+                .cloned();
+        }
+        None
+    }
+
+    /// Reject unresolved nominal types before layout queries can inspect them.
+    /// A bad imported type such as `alias::Missing` otherwise becomes a
+    /// `Type::Struct` placeholder and `Type::is_sized` assumes its definition
+    /// exists, panicking while deciding whether a reference is thin or fat.
+    fn ensure_type_layout_exists(&self, ty: &Type) -> Result<(), CompileError> {
+        match ty {
+            Type::Struct(id) => {
+                if !self.lowered_structs.contains_key(id)
+                    && !self.generic_structs.contains_key(&id.def)
+                {
+                    return Err(CompileError::new(
+                        format!("undefined type: {}", id.def.name),
+                        ast::SourceSpan::default(),
+                    ));
+                }
+                for arg in &id.args {
+                    self.ensure_type_layout_exists(arg)?;
+                }
+            }
+            Type::Enum(id) => {
+                if !self.lowered_enums.contains_key(id) && !self.generic_enums.contains_key(&id.def)
+                {
+                    return Err(CompileError::new(
+                        format!("undefined type: {}", id.def.name),
+                        ast::SourceSpan::default(),
+                    ));
+                }
+                for arg in &id.args {
+                    self.ensure_type_layout_exists(arg)?;
+                }
+            }
+            Type::Array(inner)
+            | Type::FixedArray(inner, _)
+            | Type::Ref(inner)
+            | Type::RefUnsized(inner)
+            | Type::NullableRef(inner)
+            | Type::NullableRefUnsized(inner)
+            | Type::Unique(inner)
+            | Type::UniqueUnsized(inner) => self.ensure_type_layout_exists(inner)?,
+            Type::Function {
+                params,
+                return_type,
+            } => {
+                for param in params {
+                    self.ensure_type_layout_exists(param)?;
+                }
+                self.ensure_type_layout_exists(return_type)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Type resolution sometimes discovers an invalid nominal only when its
+    /// layout is requested. Those internal checks do not carry AST spans, so
+    /// attach the containing declaration's span when the diagnostic still has
+    /// the synthetic default location.
+    fn locate_unspanned_error(mut error: CompileError, span: ast::SourceSpan) -> CompileError {
+        if error.span.file_id == ast::STDLIB_FILE {
+            error.span = span;
+        }
+        if let Some(cause) = error.caused_by.take() {
+            error.caused_by = Some(Box::new(Self::locate_unspanned_error(*cause, span)));
+        }
+        error
+    }
+
     /// Resolve an AST type to a typed_ast Type, triggering monomorphization for generics.
     fn resolve_ast_type(&mut self, ty: &ast::Type) -> Result<Type, CompileError> {
         match ty {
@@ -2624,17 +2765,27 @@ impl<'a> Lowerer<'a> {
                 if let Some(resolved) = self.resolve_type_alias(name, &[]) {
                     return self.resolve_ast_type(&resolved);
                 }
+                // A source enum/struct may share a spelling with a primitive
+                // alias such as `Unit`; resolved DefId provenance takes
+                // precedence over primitive-name fallback.
+                let plain_id = TypeId::plain(name.clone());
+                if self.enums.contains_key(name) || self.lowered_enums.contains_key(&plain_id) {
+                    return Ok(Type::Enum(plain_id));
+                }
+                if self.structs.contains_key(name) || self.lowered_structs.contains_key(&plain_id) {
+                    return Ok(Type::Struct(plain_id));
+                }
                 Ok(self.resolve_refs(from_ast_type(ty)))
             }
             ast::Type::Generic { name, type_args } => {
                 if let Some(resolved) = self.resolve_type_alias(name, type_args) {
                     return self.resolve_ast_type(&resolved);
                 }
-                if self.generic_structs.contains_key(name) {
-                    let id = self.ensure_struct_monomorphized(name, type_args)?;
+                if let Some(struct_name) = self.canonical_generic_struct_name(name) {
+                    let id = self.ensure_struct_monomorphized(&struct_name, type_args)?;
                     Ok(Type::Struct(id))
-                } else if self.generic_enums.contains_key(name) {
-                    let id = self.ensure_enum_monomorphized(name, type_args)?;
+                } else if let Some(enum_name) = self.canonical_generic_enum_name(name) {
+                    let id = self.ensure_enum_monomorphized(&enum_name, type_args)?;
                     Ok(Type::Enum(id))
                 } else {
                     Err(CompileError::new(
@@ -2645,6 +2796,7 @@ impl<'a> Lowerer<'a> {
             }
             ast::Type::Reference(inner) => {
                 let inner_ty = self.resolve_ast_type(inner)?;
+                self.ensure_type_layout_exists(&inner_ty)?;
                 if inner_ty.is_sized(&self.lowered_structs) {
                     Ok(Type::Ref(Box::new(inner_ty)))
                 } else {
@@ -2659,6 +2811,7 @@ impl<'a> Lowerer<'a> {
             // instantiate it first).
             ast::Type::NullableReference(inner) => {
                 let inner_ty = self.resolve_ast_type(inner)?;
+                self.ensure_type_layout_exists(&inner_ty)?;
                 if inner_ty.is_sized(&self.lowered_structs) {
                     Ok(Type::NullableRef(Box::new(inner_ty)))
                 } else {
@@ -2667,6 +2820,7 @@ impl<'a> Lowerer<'a> {
             }
             ast::Type::Unique(inner) => {
                 let inner_ty = self.resolve_ast_type(inner)?;
+                self.ensure_type_layout_exists(&inner_ty)?;
                 if inner_ty.is_sized(&self.lowered_structs) {
                     Ok(Type::Unique(Box::new(inner_ty)))
                 } else {
@@ -2831,6 +2985,66 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Ensure a monomorphization argument refers only to declared types.
+    /// Generic function templates are substituted before reaching this path;
+    /// a leftover name such as an unbound `T` here is a source error, not a
+    /// struct whose layout should be queried later.
+    fn validate_monomorphization_arg(&self, ty: &Type) -> Result<(), CompileError> {
+        match ty {
+            Type::Struct(id) | Type::Enum(id) => {
+                let actual_arity = id.args.len();
+                let expected_arity = if self.generic_structs.contains_key(&id.def) {
+                    Some(self.generic_structs[&id.def].type_params.len())
+                } else if self.generic_enums.contains_key(&id.def) {
+                    Some(self.generic_enums[&id.def].type_params.len())
+                } else if self.structs.contains_key(&id.def)
+                    || self.enums.contains_key(&id.def)
+                    || self.lowered_structs.contains_key(id)
+                    || self.lowered_enums.contains_key(id)
+                {
+                    Some(0)
+                } else {
+                    return Err(CompileError::new(
+                        format!("undefined type: {}", id.def.name),
+                        ast::SourceSpan::default(),
+                    ));
+                };
+                if expected_arity != Some(actual_arity) {
+                    return Err(CompileError::new(
+                        format!(
+                            "type `{}` expects {} type arguments, got {actual_arity}",
+                            id.def.name,
+                            expected_arity.unwrap()
+                        ),
+                        ast::SourceSpan::default(),
+                    ));
+                }
+                for arg in &id.args {
+                    self.validate_monomorphization_arg(arg)?;
+                }
+                Ok(())
+            }
+            Type::Array(inner)
+            | Type::FixedArray(inner, _)
+            | Type::Ref(inner)
+            | Type::RefUnsized(inner)
+            | Type::NullableRef(inner)
+            | Type::NullableRefUnsized(inner)
+            | Type::Unique(inner)
+            | Type::UniqueUnsized(inner) => self.validate_monomorphization_arg(inner),
+            Type::Function {
+                params,
+                return_type,
+            } => {
+                for param in params {
+                    self.validate_monomorphization_arg(param)?;
+                }
+                self.validate_monomorphization_arg(return_type)
+            }
+            _ => Ok(()),
+        }
+    }
+
     fn resolve_enum_name(
         &mut self,
         name: &DefId,
@@ -2861,6 +3075,8 @@ impl<'a> Lowerer<'a> {
                 ));
             }
             Ok(id)
+        } else if let Some(enum_name) = self.canonical_generic_enum_name(name) {
+            self.ensure_enum_monomorphized(&enum_name, type_args)
         } else {
             self.ensure_enum_monomorphized(name, type_args)
         }
@@ -2922,7 +3138,7 @@ impl<'a> Lowerer<'a> {
         type_args: &[ast::Type],
     ) -> Result<TypeId, CompileError> {
         let def = name.clone();
-        let gdef = self.generic_structs.get(&def).ok_or_else(|| {
+        let gdef = self.generic_structs.get(&def).cloned().ok_or_else(|| {
             CompileError::new(
                 format!("undefined generic struct: {}", def.name),
                 ast::SourceSpan::default(),
@@ -2946,7 +3162,19 @@ impl<'a> Lowerer<'a> {
             .map(|a| self.expand_type_aliases(a, 0))
             .collect();
         let type_args = &type_args[..];
-        let concrete_args: Vec<Type> = type_args.iter().map(from_ast_type).collect();
+        let concrete_args: Vec<Type> = type_args
+            .iter()
+            .map(|argument| self.resolve_ast_type(argument))
+            .collect::<Result<_, _>>()?;
+        for arg in &concrete_args {
+            self.validate_monomorphization_arg(arg).map_err(|cause| {
+                CompileError::new(
+                    format!("invalid type argument `{arg}` for `{}`", def.name),
+                    ast::SourceSpan::default(),
+                )
+                .with_cause(cause)
+            })?;
+        }
         let id = TypeId {
             def: def.clone(),
             args: concrete_args,
@@ -2981,7 +3209,15 @@ impl<'a> Lowerer<'a> {
         let fields: Vec<FieldDef> = ast_fields
             .iter()
             .map(|f| {
-                let ty = self.resolve_ast_type_with_subst(&f.ty, &subst)?;
+                let ty = self
+                    .resolve_ast_type_with_subst(&f.ty, &subst)
+                    .map_err(|cause| {
+                        CompileError::new(
+                            format!("failed to resolve field `{}` of `{id}`", f.name),
+                            f.span,
+                        )
+                        .with_cause(cause)
+                    })?;
                 Ok(FieldDef {
                     name: f.name.clone(),
                     ty,
@@ -2999,7 +3235,7 @@ impl<'a> Lowerer<'a> {
         type_args: &[ast::Type],
     ) -> Result<TypeId, CompileError> {
         let def = name.clone();
-        let gdef = self.generic_enums.get(&def).ok_or_else(|| {
+        let gdef = self.generic_enums.get(&def).cloned().ok_or_else(|| {
             CompileError::new(
                 format!("undefined generic enum: {}", def.name),
                 ast::SourceSpan::default(),
@@ -3023,7 +3259,19 @@ impl<'a> Lowerer<'a> {
             .map(|a| self.expand_type_aliases(a, 0))
             .collect();
         let type_args = &type_args[..];
-        let concrete_args: Vec<Type> = type_args.iter().map(from_ast_type).collect();
+        let concrete_args: Vec<Type> = type_args
+            .iter()
+            .map(|argument| self.resolve_ast_type(argument))
+            .collect::<Result<_, _>>()?;
+        for arg in &concrete_args {
+            self.validate_monomorphization_arg(arg).map_err(|cause| {
+                CompileError::new(
+                    format!("invalid type argument `{arg}` for `{}`", def.name),
+                    ast::SourceSpan::default(),
+                )
+                .with_cause(cause)
+            })?;
+        }
         let id = TypeId {
             def: def.clone(),
             args: concrete_args,
@@ -3209,6 +3457,8 @@ impl<'a> Lowerer<'a> {
         type_params: &[String],
         bindings: &mut HashMap<String, ast::Type>,
     ) -> bool {
+        let expanded_pattern = self.expand_type_aliases(pattern, 0);
+        let pattern = &expanded_pattern;
         match pattern {
             ast::Type::Named(name)
                 if type_params
@@ -3545,9 +3795,16 @@ impl<'a> Lowerer<'a> {
                     .fields
                     .iter()
                     .map(|f| {
+                        let ty = self
+                            .resolve_ast_type(&f.ty)
+                            .and_then(|ty| {
+                                self.ensure_type_layout_exists(&ty)?;
+                                Ok(ty)
+                            })
+                            .map_err(|error| Self::locate_unspanned_error(error, f.span))?;
                         Ok(FieldDef {
                             name: f.name.clone(),
-                            ty: self.resolve_ast_type(&f.ty)?,
+                            ty,
                         })
                     })
                     .collect::<Result<Vec<_>, CompileError>>()?;
@@ -3722,7 +3979,10 @@ impl<'a> Lowerer<'a> {
                 let param_types = ast_def
                     .parameters
                     .iter()
-                    .map(|parameter| self.resolve_ast_type(&parameter.ty))
+                    .map(|parameter| {
+                        self.resolve_ast_type(&parameter.ty)
+                            .map_err(|error| Self::locate_unspanned_error(error, parameter.span))
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 let fid = FuncId {
                     def: def_id_of_function(&ast_def),
@@ -3906,7 +4166,13 @@ impl<'a> Lowerer<'a> {
         let mut param_destructure_stmts: Vec<Statement> = Vec::new();
         let mut parameters: Vec<Parameter> = Vec::new();
         for (i, p) in func.parameters.iter().enumerate() {
-            let ty = self.resolve_ast_type(&p.ty)?;
+            let ty = self
+                .resolve_ast_type(&p.ty)
+                .and_then(|ty| {
+                    self.ensure_type_layout_exists(&ty)?;
+                    Ok(ty)
+                })
+                .map_err(|error| Self::locate_unspanned_error(error, p.span))?;
             if !ty.is_sized(&self.lowered_structs) {
                 return Err(CompileError::new(
                     format!(
@@ -3948,7 +4214,19 @@ impl<'a> Lowerer<'a> {
             }
         }
         let explicit_return_type = match func.return_type.as_ref() {
-            Some(t) => Some(self.resolve_ast_type(t)?),
+            Some(t) => Some(
+                self.resolve_ast_type(t)
+                    .and_then(|ty| {
+                        self.ensure_type_layout_exists(&ty)?;
+                        Ok(ty)
+                    })
+                    .map_err(|error| {
+                        Self::locate_unspanned_error(
+                            error,
+                            func.return_type_span.unwrap_or(func.span),
+                        )
+                    })?,
+            ),
             None => None,
         };
 
@@ -5370,6 +5648,7 @@ impl<'a> Lowerer<'a> {
             return Ok(Vec::new());
         };
         let concrete_owner = self.concrete_type_to_ast_type(&concrete_owner);
+        let concrete_owner = self.expand_type_aliases(&concrete_owner, 0);
         let mut matches = Vec::new();
         for entry in entries {
             if !(entry.ast_def.is_pub
@@ -5381,9 +5660,10 @@ impl<'a> Lowerer<'a> {
             let Some(pattern) = entry.ast_def.associated_type.as_ref() else {
                 continue;
             };
+            let expanded_pattern = self.expand_type_aliases(pattern, 0);
             let mut bindings = HashMap::new();
             if !match_associated_owner_pattern(
-                pattern,
+                &expanded_pattern,
                 &concrete_owner,
                 &entry.associated_type_params,
                 &mut bindings,
@@ -5395,7 +5675,11 @@ impl<'a> Lowerer<'a> {
                 continue;
             }
             let mut specificity = Vec::new();
-            associated_owner_specificity(pattern, &entry.associated_type_params, &mut specificity);
+            associated_owner_specificity(
+                &expanded_pattern,
+                &entry.associated_type_params,
+                &mut specificity,
+            );
             let mut instantiated = entry.clone();
             instantiated.associated_type_params.clear();
             instantiated.ast_def = Rc::new(apply_subst_to_function_def(&entry.ast_def, &bindings));
@@ -7165,8 +7449,9 @@ impl<'a> Lowerer<'a> {
             }
         }
 
+        let result_ty = result_ty.unwrap_or(Type::Unit);
         Ok(Expr {
-            ty: result_ty.unwrap_or(Type::Unit),
+            ty: result_ty,
             kind: ExprKind::Match {
                 scrutinee: Box::new(lowered_scrutinee),
                 arms: typed_arms,
@@ -7274,8 +7559,9 @@ impl<'a> Lowerer<'a> {
         // the wildcard to backends that emit an if/else chain.
         typed_arms.truncate(wildcard_index + 1);
 
+        let result_ty = result_ty.unwrap_or(Type::Unit);
         Ok(Expr {
-            ty: result_ty.unwrap_or(Type::Unit),
+            ty: result_ty,
             kind: ExprKind::Match {
                 scrutinee: Box::new(scrutinee),
                 arms: typed_arms,
@@ -7294,7 +7580,15 @@ impl<'a> Lowerer<'a> {
         ty: &ast::Type,
         arms: &[ast::ReflectArm],
     ) -> Result<Expr, CompileError> {
-        let resolved = self.resolve_ast_type(ty)?;
+        let resolved = self.resolve_ast_type(ty).map_err(|error| {
+            if let ast::Type::Named(name) = ty
+                && error.message == format!("undefined type: {}", name.name)
+            {
+                CompileError::new(format!("undefined type in match.reflect: {name}"), span)
+            } else {
+                error
+            }
+        })?;
         let kind = match &resolved {
             Type::Enum(_) => Some("enum"),
             Type::Struct(id) => {
@@ -7358,7 +7652,8 @@ impl<'a> Lowerer<'a> {
                 span,
             ));
         };
-        self.lower_expr(&arm.body)
+        let result = self.lower_expr(&arm.body)?;
+        Ok(result)
     }
 
     /// Compile-time field iteration: unrolls the body once per field of the
@@ -8841,12 +9136,16 @@ impl<'a> Lowerer<'a> {
                     .iter()
                     .map(|p| self.resolve_ast_type(&p.ty))
                     .collect::<Result<Vec<_>, _>>()?;
-                let matches = lowered_args
-                    .iter()
-                    .zip(param_types.iter())
-                    .all(|(arg, pty)| {
-                        arg.ty == *pty || self.try_coerce(arg.clone(), pty).ty == *pty
-                    });
+                let matches = lowered_args.iter().zip(param_types.iter()).enumerate().all(
+                    |(index, (arg, pty))| {
+                        arg.ty == *pty
+                            || if is_method && index == 0 {
+                                self.try_coerce_method_receiver(arg.clone(), pty).ty == *pty
+                            } else {
+                                self.try_coerce(arg.clone(), pty).ty == *pty
+                            }
+                    },
+                );
                 if matches {
                     let ast_types: Vec<ast::Type> = entry
                         .ast_def
@@ -8921,11 +9220,16 @@ impl<'a> Lowerer<'a> {
                     .map(|(p, a)| (p.clone(), a.clone()))
                     .collect();
                 let mut params_match = true;
-                for (arg, pat) in lowered_args.iter().zip(param_ast_types.iter()) {
+                for (index, (arg, pat)) in
+                    lowered_args.iter().zip(param_ast_types.iter()).enumerate()
+                {
                     let substituted = apply_subst_to_ast_type(pat, &subst);
                     if let Ok(resolved) = self.resolve_ast_type(&substituted) {
                         if resolved != arg.ty
                             && self.try_coerce(arg.clone(), &resolved).ty != resolved
+                            && !(is_method
+                                && index == 0
+                                && matches!(&resolved, Type::Ref(inner) if **inner == arg.ty))
                         {
                             params_match = false;
                             break;
@@ -9064,7 +9368,14 @@ impl<'a> Lowerer<'a> {
                     let coerced_args: Vec<Expr> = lowered_args
                         .into_iter()
                         .zip(param_types.iter())
-                        .map(|(arg, pty)| self.try_coerce(arg, pty))
+                        .enumerate()
+                        .map(|(index, (arg, pty))| {
+                            if is_method && index == 0 {
+                                self.try_coerce_method_receiver(arg, pty)
+                            } else {
+                                self.try_coerce(arg, pty)
+                            }
+                        })
                         .collect();
                     Ok(Expr {
                         ty: ret_ty,
@@ -9088,9 +9399,16 @@ impl<'a> Lowerer<'a> {
                         .map_err(|cause| self.monomorphization_call_error(name, span, cause))?;
                     let mono_fn = self.monomorphized_functions[&mangled].clone();
                     let mut coerced_args: Vec<Expr> = Vec::new();
-                    for (lowered, param) in lowered_args.into_iter().zip(mono_fn.parameters.iter())
+                    for (index, (lowered, param)) in lowered_args
+                        .into_iter()
+                        .zip(mono_fn.parameters.iter())
+                        .enumerate()
                     {
-                        let coerced = self.try_coerce(lowered, &param.ty);
+                        let coerced = if is_method && index == 0 {
+                            self.try_coerce_method_receiver(lowered, &param.ty)
+                        } else {
+                            self.try_coerce(lowered, &param.ty)
+                        };
                         if coerced.ty != param.ty {
                             let param_name = match &param.name {
                                 ast::Ident::User(name) => name.as_str(),

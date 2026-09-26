@@ -135,6 +135,47 @@ fn production_exception_behavior_matches_interpreters() {
 }
 
 #[test]
+fn unsized_assignment_length_mismatch_is_a_catchable_exception_in_every_backend() {
+    test_utils::ensure_release_runtime_built();
+    let directory = tempdir::TempDir::new("solar-exceptions").unwrap();
+    let source = directory.path().join("unsized_assignment.solar");
+    std::fs::write(
+        &source,
+        r#"
+fn main() {
+    let result = "prefix";
+    let caught = false;
+    try { result = result + "suffix"; } catch (e) {
+        assert(e.message@ == "unsized assignment: length mismatch (6 vs 12)");
+        caught = true;
+    }
+    assert(caught);
+    println("passed"&);
+}
+"#,
+    )
+    .unwrap();
+    let typed = solar::pipeline::compile(&source).unwrap();
+    let mangled = typed.to_mangled();
+    let expected = "passed\n";
+
+    let mut ast_output = Vec::new();
+    solar::ast_interp::interpret_to(&mangled.mangled, &b""[..], &mut ast_output);
+    assert_eq!(ast_output, expected.as_bytes());
+
+    let ir = mangled.to_ir().optimized();
+    let mut ir_output = Vec::new();
+    solar::ir_interp::interpret_to(&ir.ir, &b""[..], &mut ir_output);
+    assert_eq!(ir_output, expected.as_bytes());
+
+    let binary = ir.to_c(&source.display().to_string()).to_binary(
+        directory.path().join("unsized_assignment"),
+        CompileOptions::RELEASE,
+    );
+    assert_eq!(binary.run("unsized assignment"), expected);
+}
+
+#[test]
 fn exception_is_a_standard_library_type() {
     let directory = tempdir::TempDir::new("solar-exceptions").unwrap();
     let source = directory.path().join("standard_type.solar");

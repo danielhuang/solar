@@ -1,0 +1,81 @@
+enum Choice { Short, Long }
+
+static CONCAT_CALLS: Int = 0;
+
+fn choose(flag: Bool) -> Bool {
+	CONCAT_CALLS = CONCAT_CALLS + 1;
+	flag
+}
+
+fn select(choice: Choice) -> &[Uint8] {
+	let selected = match choice {
+		Choice::Short => "a"&,
+		Choice::Long => "bigger"&,
+	};
+	selected
+}
+
+fn concatenate(flag: Bool) -> &[Uint8] {
+	("prefix" + (if choose(flag) { "a"& } else { "bb"& })@)&
+}
+
+fn grow_reference() -> &[Uint8] {
+	let result = "prefix"&;
+	for _ in 0u..1u { result = (result@ + "suffix")&; }
+	result
+}
+
+fn mutate_and_return(values: &[Uint]) -> [Uint; 1] {
+	values@[0u] = 99u;
+	[3u]
+}
+
+fn mutate_source(values: &[Uint8]) -> Bool {
+	values@[0u] = 90u8;
+	true
+}
+
+fn mutate_selected_reference(flag: Bool) -> Int {
+	let left = 10;
+	let right = 20;
+	(if flag { left& } else { right& })@ = 99;
+	left + right
+}
+
+fn borrow_selected_place(flag: Bool) -> Int {
+	let left = 10;
+	let right = 20;
+	let selected = (if flag { left } else { right })&;
+	selected@ = 99;
+	left + right
+}
+
+fn mutate_selected_unique(flag: Bool) -> Int {
+	let left: ^Int = 10^;
+	let right: ^Int = 20^;
+	(if flag { left } else { right })@ = 99;
+	left@ + right@
+}
+
+fn main() {
+	println(select(Choice::Short));
+	println(select(Choice::Long));
+	println(concatenate(true));
+	println(concatenate(false));
+	println(CONCAT_CALLS);
+	println(grow_reference());
+	let source: [Uint] = [1u, 2u];
+	let snapshot = source + mutate_and_return(source&);
+	println(snapshot[0u]);
+	println(source[0u]);
+	println(([1u] + [2u])[1u]);
+	let borrowed = ([3u] + [4u])&;
+	println(borrowed@[0u]);
+	let bytes: [Uint8] = [65u8];
+	let joined = bytes + (if mutate_source(bytes&) { "b"& } else { "c"& })@;
+	println(Int(joined[0u]));
+	println(Int(bytes[0u]));
+	println(mutate_selected_reference(true));
+	println(borrow_selected_place(true));
+	println(mutate_selected_unique(true));
+}

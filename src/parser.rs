@@ -994,7 +994,8 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             }
         }
         "generic_call_expr" => {
-            let name = node_text(node.child_by_field_name("function").unwrap(), source).to_string();
+            let function_node = node.child_by_field_name("function").unwrap();
+            let name = node_text(function_node, source).to_string();
             let type_args = node
                 .child_by_field_name("type_args")
                 .map(|n| convert_type_args(n, source))
@@ -1003,7 +1004,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             ExprKind::Call {
                 function: Box::new(Expr {
                     kind: ExprKind::Identifier(Ident::user(name)),
-                    span,
+                    span: source_span(function_node),
                 }),
                 type_args,
                 arguments,

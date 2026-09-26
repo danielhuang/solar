@@ -1,0 +1,6 @@
+import lib from "lib.solar";
+
+fn main() {
+	let holder = lib::make();
+	println(if holder.empty() { 1 } else { 0 });
+}

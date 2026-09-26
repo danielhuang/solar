@@ -1,0 +1,12 @@
+pub struct SingleRecipeInput#[T] { pub item: &T }
+
+pub fn single_recipe_input#[T](item: &T) -> SingleRecipeInput#[T] {
+	SingleRecipeInput#[T] { item: item }
+}
+
+pub method size(self: &SingleRecipeInput#[T]) -> Int { 1 }
+
+pub method get_item(self: &SingleRecipeInput#[T], index: Int) -> &T {
+	assert(index == 0);
+	self@.item
+}

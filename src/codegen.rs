@@ -12,6 +12,33 @@ const STACK_ALLOC_MAX: usize = 4096;
 /// A by-value C typedef spec: (size, align, pointer-word runs).
 type ValTypeSpec = (usize, usize, Vec<(usize, usize)>);
 
+/// Inputs evaluated before allocating an expression's final unsized result.
+struct PreparedValue {
+    ty: Type,
+    meta: Option<String>,
+    value: PreparedContents,
+}
+
+enum PreparedContents {
+    Copy(String),
+    Elements(Vec<PreparedValue>),
+    Repeat(Box<PreparedValue>),
+    Init(String),
+    Fields(Vec<(usize, PreparedValue)>),
+    Concat(Box<PreparedValue>, Box<PreparedValue>),
+    Choice(String, Vec<PreparedValue>),
+}
+
+enum LoopDestination {
+    Into(String),
+    Prepare {
+        selector: String,
+        meta: String,
+        snapshot: bool,
+        values: Vec<PreparedValue>,
+    },
+}
+
 /// Generates a C translation unit for an IR module.
 pub fn generate(module: &Module, source_file: &str, source_map: &SourceMap) -> String {
     let mut cg = Codegen {
@@ -24,6 +51,7 @@ pub fn generate(module: &Module, source_file: &str, source_map: &SourceMap) -> S
         emitted_mark_fns: HashSet::new(),
         static_root_count: 0,
         loop_dst: Vec::new(),
+        prepared_declarations: Vec::new(),
         cur_loc: None,
         cur_fn_returns_nothing: false,
         any_type_ids: HashMap::new(),
@@ -49,7 +77,9 @@ struct Codegen<'a> {
     static_root_count: usize,
     /// C lvalue strings for the enclosing loop expressions' result destinations;
     /// `break <v>` assigns into the innermost one.
-    loop_dst: Vec<String>,
+    loop_dst: Vec<LoopDestination>,
+    /// Declarations shared by preparation branches and the subsequent fill.
+    prepared_declarations: Vec<Vec<String>>,
     /// Source location (`#line` value, file) to stamp on every emitted code line.
     /// A statement expands to many C lines, but a `#line N` directive only sets the
     /// *next* line — the C preprocessor auto-increments after that, so without
@@ -908,6 +938,7 @@ impl<'a> Codegen<'a> {
         self.line("extern uint8_t* sol_slice_range(uint8_t* base, uint64_t start, uint64_t end, uint64_t len, uint64_t elem_size);");
         self.line("extern uint8_t* sol_null_check(uint8_t* ptr);");
         self.line("extern void sol_assert_array_len(uint64_t actual, uint64_t expected);");
+        self.line("extern void sol_assert_unsized_assignment_len_slow(uint64_t target, uint64_t value) __attribute__((noreturn));");
         self.line(
             "typedef struct { uint8_t* addr; uint64_t size; sol_mark_fn_t mark_fn; } sol_static_entry;",
         );
@@ -1014,6 +1045,28 @@ impl<'a> Codegen<'a> {
         self.linef(format!("{q} {sig} {{"));
         self.indent += 1;
 
+        // Noescape local storage may be referenced by a place-valued branch
+        // after its C block ends. Give each binding function-scope storage;
+        // Solar's lexical scopes still govern when the pointer name is used.
+        for node in &func.nodes {
+            if let NodeKind::Let {
+                var,
+                value,
+                noescape: true,
+            } = &node.kind
+            {
+                let ty = &func.nodes[value.0].ty;
+                if self.stack_eligible(ty) {
+                    let size = self.type_size(ty);
+                    let align = self.type_align(ty);
+                    self.linef(format!(
+                        "uint8_t _v{}_stk[{size}] __attribute__((aligned({align})));",
+                        var.0,
+                    ));
+                }
+            }
+        }
+
         // Bind captured variables from env. Each capture occupies a 16-byte
         // slot: a thin pointer (sized) or a fat pointer `(ptr, meta)` (unsized,
         // e.g. a captured `[Uint8]` — its `meta` is the length).
@@ -1096,7 +1149,352 @@ impl<'a> Codegen<'a> {
         self.line("");
     }
 
-    /// Returns (ptr_expr, Option<meta_expr>) — C expressions for address and optional metadata.
+    /// Stages control flow, metadata, and input values exactly once. Saved
+    /// inputs live outside branch scopes until the destination has been filled.
+    fn prepare_value(&mut self, nodes: &[Node], id: NodeId) -> PreparedValue {
+        let start = self.out.len();
+        let location = self.cur_loc.clone();
+        self.prepared_declarations.push(Vec::new());
+        let result = self.prepare_value_inner(nodes, id, false);
+        let preparation = self.out.split_off(start);
+        let declarations = self.prepared_declarations.pop().unwrap();
+        self.cur_loc = location;
+        for declaration in declarations {
+            self.line(&declaration);
+        }
+        self.out.push_str(&preparation);
+        result
+    }
+
+    fn prepared_slot(&mut self, declaration: impl FnOnce(&str) -> String) -> String {
+        let name = self.fresh_tmp();
+        self.prepared_declarations
+            .last_mut()
+            .unwrap()
+            .push(declaration(&name));
+        name
+    }
+
+    fn prepared_count(&mut self, nodes: &[Node], id: NodeId) -> String {
+        let slot = self.prepared_slot(|name| format!("uint64_t {name} = 0;"));
+        let value = self.emit_load(nodes, id);
+        self.linef(format!("{slot} = (uint64_t){value};"));
+        slot
+    }
+
+    fn prepare_branch(&mut self, nodes: &[Node], body: &[NodeId], snapshot: bool) -> PreparedValue {
+        let (tail, init) = body.split_last().unwrap();
+        for &stmt in init {
+            self.emit_stmt(nodes, stmt);
+        }
+        if let NodeKind::Expr(inner) = nodes[tail.0].kind {
+            self.prepare_value_inner(nodes, inner, snapshot)
+        } else {
+            // A returning/throwing branch never reaches the fill phase.
+            self.emit_stmt(nodes, *tail);
+            PreparedValue {
+                ty: Type::Never,
+                meta: Some("0".into()),
+                value: PreparedContents::Elements(Vec::new()),
+            }
+        }
+    }
+
+    fn prepare_value_inner(&mut self, nodes: &[Node], id: NodeId, snapshot: bool) -> PreparedValue {
+        let ty = nodes[id.0].ty.clone();
+        if self.is_sized(&ty) {
+            let size = self.type_size(&ty).max(1);
+            let align = self.type_align(&ty);
+            let saved = if size <= STACK_ALLOC_MAX {
+                self.prepared_slot(|name| {
+                    format!("uint8_t {name}[{size}] __attribute__((aligned({align}))) = {{0}};")
+                })
+            } else {
+                let saved = self.prepared_slot(|name| format!("uint8_t* {name} = NULL;"));
+                let temporary = self.fresh_tmp();
+                self.emit_alloc(&temporary, size, align, self.mark_fn_expr(&ty));
+                self.linef(format!("{saved} = {temporary};"));
+                saved
+            };
+            self.emit_into(nodes, id, &saved);
+            let meta = if let Type::FixedArray(_, n) = ty {
+                Some(n.to_string())
+            } else {
+                None
+            };
+            return PreparedValue {
+                ty,
+                meta,
+                value: PreparedContents::Copy(saved),
+            };
+        }
+        let (meta, value) = match &nodes[id.0].kind {
+            NodeKind::Expr(inner) => return self.prepare_value_inner(nodes, *inner, snapshot),
+            NodeKind::IfExpr {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                let selector = self.prepared_count(nodes, *condition);
+                let meta = self.prepared_slot(|name| format!("uint64_t {name} = 0;"));
+                self.linef(format!("if ({selector}) {{"));
+                self.indent += 1;
+                let yes = self.prepare_branch(nodes, then_body, snapshot);
+                self.linef(format!("{meta} = {};", yes.meta.as_deref().unwrap_or("0")));
+                self.indent -= 1;
+                self.line("} else {");
+                self.indent += 1;
+                let no = self.prepare_branch(nodes, else_body, snapshot);
+                self.linef(format!("{meta} = {};", no.meta.as_deref().unwrap_or("0")));
+                self.indent -= 1;
+                self.line("}");
+                (
+                    Some(meta),
+                    PreparedContents::Choice(selector, vec![no, yes]),
+                )
+            }
+            NodeKind::Match { scrutinee, arms } => {
+                let (base, _) = self.emit_place(nodes, *scrutinee);
+                let match_ty = &nodes[scrutinee.0].ty;
+                let (selector, enum_name) = self.emit_match_selector(match_ty, &base);
+                let selected = self.prepared_slot(|name| format!("uint64_t {name} = 0;"));
+                let meta = self.prepared_slot(|name| format!("uint64_t {name} = 0;"));
+                let mut values = Vec::new();
+                for (i, arm) in arms.iter().enumerate() {
+                    let condition = self.match_condition(&arm.pattern, &selector, match_ty);
+                    match (i, condition) {
+                        (0, None) => self.line("{"),
+                        (0, Some(c)) => self.linef(format!("if ({c}) {{")),
+                        (_, None) => self.line("} else {"),
+                        (_, Some(c)) => self.linef(format!("}} else if ({c}) {{")),
+                    }
+                    self.indent += 1;
+                    self.emit_match_binding(&arm.pattern, &base, enum_name.as_deref());
+                    let value = self.prepare_branch(nodes, &arm.body, snapshot);
+                    self.linef(format!("{selected} = {i};"));
+                    self.linef(format!(
+                        "{meta} = {};",
+                        value.meta.as_deref().unwrap_or("0")
+                    ));
+                    values.push(value);
+                    self.indent -= 1;
+                }
+                self.line("}");
+                (Some(meta), PreparedContents::Choice(selected, values))
+            }
+            NodeKind::Loop { body } => {
+                let selector = self.prepared_slot(|name| format!("uint64_t {name} = 0;"));
+                let meta = self.prepared_slot(|name| format!("uint64_t {name} = 0;"));
+                self.loop_dst.push(LoopDestination::Prepare {
+                    selector: selector.clone(),
+                    meta: meta.clone(),
+                    snapshot,
+                    values: Vec::new(),
+                });
+                self.line("while (1) {");
+                self.indent += 1;
+                for &stmt in body {
+                    self.emit_stmt(nodes, stmt);
+                }
+                self.indent -= 1;
+                self.line("}");
+                let LoopDestination::Prepare { values, .. } = self.loop_dst.pop().unwrap() else {
+                    unreachable!()
+                };
+                (Some(meta), PreparedContents::Choice(selector, values))
+            }
+            NodeKind::ArrayLiteral(elements) => {
+                let values = elements
+                    .iter()
+                    .map(|&element| self.prepare_value_inner(nodes, element, true))
+                    .collect();
+                (
+                    Some(elements.len().to_string()),
+                    PreparedContents::Elements(values),
+                )
+            }
+            NodeKind::ArrayRepeat { element, count } => {
+                let element = self.prepare_value_inner(nodes, *element, true);
+                let count = self.prepared_count(nodes, *count);
+                (Some(count), PreparedContents::Repeat(Box::new(element)))
+            }
+            NodeKind::ArrayInit { count, init } => {
+                let count = self.prepared_count(nodes, *count);
+                let callee = self.prepared_slot(|name| {
+                    format!("uint8_t {name}[16] __attribute__((aligned(16))) = {{0}};")
+                });
+                self.emit_into(nodes, *init, &callee);
+                let value = PreparedValue {
+                    ty: ty.clone(),
+                    meta: Some(count),
+                    value: PreparedContents::Init(callee),
+                };
+                if snapshot {
+                    let saved = self.prepared_slot(|name| format!("uint8_t* {name} = NULL;"));
+                    let ptr = self.allocate_prepared(&value);
+                    self.linef(format!("{saved} = {ptr};"));
+                    return PreparedValue {
+                        ty,
+                        meta: value.meta,
+                        value: PreparedContents::Copy(saved),
+                    };
+                }
+                return value;
+            }
+            NodeKind::StructLiteral { name, fields } if !self.is_sized(&ty) => {
+                let mut values = Vec::new();
+                let mut meta = None;
+                for (field, value) in fields {
+                    let layout = self.module.datatypes[name.as_str()]
+                        .fields
+                        .iter()
+                        .find(|f| f.name == *field)
+                        .unwrap();
+                    let offset = layout.offset;
+                    let has_tail_metadata = !self.is_sized(&layout.ty);
+                    let value = self.prepare_value_inner(nodes, *value, snapshot);
+                    if has_tail_metadata {
+                        meta = value.meta.clone();
+                    }
+                    values.push((offset, value));
+                }
+                (meta, PreparedContents::Fields(values))
+            }
+            NodeKind::BinaryOp {
+                op: BinOp::Add,
+                left,
+                right,
+            } if matches!(ty, Type::Array(_) | Type::FixedArray(_, _)) => {
+                // The RHS may mutate the LHS; retain its already evaluated value.
+                let left = self.prepare_value_inner(nodes, *left, true);
+                let right = self.prepare_value_inner(nodes, *right, snapshot);
+                let meta = format!(
+                    "({} + {})",
+                    left.meta.as_ref().unwrap(),
+                    right.meta.as_ref().unwrap()
+                );
+                (
+                    Some(meta),
+                    PreparedContents::Concat(Box::new(left), Box::new(right)),
+                )
+            }
+
+            _ => {
+                assert!(
+                    is_place(nodes, id),
+                    "unsupported unsized expression {:?}",
+                    nodes[id.0].kind
+                );
+                let (ptr, meta) = self.emit_place(nodes, id);
+                let saved = self.prepared_slot(|name| format!("uint8_t* {name} = NULL;"));
+                let length = self.prepared_slot(|name| format!("uint64_t {name} = 0;"));
+                self.linef(format!("{length} = {};", meta.unwrap()));
+                if snapshot {
+                    let tmp = self.fresh_tmp();
+                    let size = self.emit_full_size_expr(&ty, &length);
+                    self.emit_alloc(&tmp, &size, self.type_align(&ty), self.mark_fn_expr(&ty));
+                    self.emit_copy_contents(&tmp, &ptr, &ty, &size);
+                    self.linef(format!("{saved} = {tmp};"));
+                } else {
+                    self.linef(format!("{saved} = {ptr};"));
+                }
+                (Some(length), PreparedContents::Copy(saved))
+            }
+        };
+        PreparedValue { ty, meta, value }
+    }
+
+    fn allocate_prepared(&mut self, value: &PreparedValue) -> String {
+        let size = self.emit_full_size_expr(&value.ty, value.meta.as_deref().unwrap_or("0"));
+        let dst = self.fresh_tmp();
+        self.emit_alloc(
+            &dst,
+            size,
+            self.type_align(&value.ty),
+            self.mark_fn_expr(&value.ty),
+        );
+        self.fill_prepared(value, &dst);
+        dst
+    }
+
+    fn fill_prepared(&mut self, value: &PreparedValue, dst: &str) {
+        match &value.value {
+            PreparedContents::Copy(ptr) => {
+                let size =
+                    self.emit_full_size_expr(&value.ty, value.meta.as_deref().unwrap_or("0"));
+                self.emit_copy_contents(dst, ptr, &value.ty, &size);
+            }
+            PreparedContents::Elements(values) => {
+                for (i, element) in values.iter().enumerate() {
+                    let offset = i * self.type_size(&element.ty);
+                    self.fill_prepared(element, &format!("({dst} + {offset})"));
+                }
+            }
+            PreparedContents::Repeat(element) => {
+                let count = value.meta.as_ref().unwrap();
+                let index = self.fresh_tmp();
+                self.linef(format!(
+                    "for (uint64_t {index} = 0; {index} < {count}; {index}++) {{"
+                ));
+                self.indent += 1;
+                let size = self.type_size(&element.ty);
+                self.fill_prepared(element, &format!("({dst} + {index} * {size})"));
+                self.indent -= 1;
+                self.line("}");
+            }
+            PreparedContents::Init(callee) => {
+                let (Type::Array(element) | Type::FixedArray(element, _)) = &value.ty else {
+                    unreachable!()
+                };
+                let count = value.meta.as_ref().unwrap();
+                let size = self.type_size(element);
+                let ret = self.val_type(element);
+                let idx_ty = Self::val_type_name(8, 8, &[]);
+                let index = self.fresh_tmp();
+                let argument = self.fresh_tmp();
+                let result = self.fresh_tmp();
+                self.linef(format!(
+                    "for (uint64_t {index} = 0; {index} < {count}; {index}++) {{"
+                ));
+                self.indent += 1;
+                self.linef(format!("{idx_ty} {argument};"));
+                self.linef(format!("*(uint64_t*)&{argument} = {index};"));
+                self.linef(format!("{ret} {result} = (({ret}(*)(void*, {idx_ty}))(*(void(**)()){callee}))(*(void**)({callee} + 8), {argument});"));
+                self.emit_copy(
+                    &format!("({dst} + {index} * {size})"),
+                    &format!("(uint8_t*)&{result}"),
+                    element,
+                    &size.to_string(),
+                );
+                self.indent -= 1;
+                self.line("}");
+            }
+            PreparedContents::Fields(fields) => {
+                for (offset, field) in fields {
+                    self.fill_prepared(field, &format!("({dst} + {offset})"));
+                }
+            }
+            PreparedContents::Concat(left, right) => {
+                self.fill_prepared(left, dst);
+                let offset = self.emit_full_size_expr(&left.ty, left.meta.as_ref().unwrap());
+                self.fill_prepared(right, &format!("({dst} + {offset})"));
+            }
+            PreparedContents::Choice(selector, values) => {
+                for (i, value) in values.iter().enumerate() {
+                    self.linef(format!(
+                        "{}if ({selector} == {i}) {{",
+                        if i == 0 { "" } else { "else " }
+                    ));
+                    self.indent += 1;
+                    self.fill_prepared(value, dst);
+                    self.indent -= 1;
+                    self.line("}");
+                }
+            }
+        }
+    }
+
+    /// Returns the address and optional metadata of an evaluated place.
     fn emit_place(&mut self, nodes: &[Node], id: NodeId) -> (String, Option<String>) {
         match &nodes[id.0].kind {
             NodeKind::Local(var) => {
@@ -1343,13 +1741,19 @@ impl<'a> Codegen<'a> {
                 (ptr_tmp, if has_meta { Some(meta_tmp) } else { None })
             }
             _ => {
-                // Non-place node: materialize into a temporary
                 let ty = &nodes[id.0].ty;
-                let s = self.type_size(ty);
-                let a = self.type_align(ty);
-                let mf = self.mark_fn_expr(ty);
+                if !self.is_sized(ty) {
+                    let prepared = self.prepare_value(nodes, id);
+                    let dst = self.allocate_prepared(&prepared);
+                    return (dst, prepared.meta);
+                }
                 let tmp = self.fresh_tmp();
-                self.emit_alloc(&tmp, s, a, &mf);
+                self.emit_alloc(
+                    &tmp,
+                    self.type_size(ty),
+                    self.type_align(ty),
+                    self.mark_fn_expr(ty),
+                );
                 self.emit_into(nodes, id, &tmp);
                 (tmp, None)
             }
@@ -1402,120 +1806,15 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    /// Returns a C expression for metadata, or None for sized types (except FixedArray).
-    /// The length shared by every branch's tail value, or `None` if any branch
-    /// has no tail, no statically known length, or disagrees with the others.
-    fn common_branch_meta(nodes: &[Node], bodies: &[Vec<NodeId>]) -> Option<u64> {
-        let mut common: Option<u64> = None;
-        for body in bodies {
-            let m = Self::static_meta(nodes, body.last().copied()?)?;
-            match common {
-                None => common = Some(m),
-                Some(prev) if prev == m => {}
-                Some(_) => return None,
-            }
-        }
-        common
-    }
-
-    /// A value's element count when known from the IR alone, emitting nothing.
-    /// Used where emitting code would be wrong (untaken branches).
-    fn static_meta(nodes: &[Node], id: NodeId) -> Option<u64> {
-        if let Type::FixedArray(_, n) = &nodes[id.0].ty {
-            return Some(*n);
-        }
-        match &nodes[id.0].kind {
-            NodeKind::ArrayLiteral(elems) => Some(elems.len() as u64),
-            NodeKind::ArraySizeCoerce { size, .. } => Some(*size),
-            NodeKind::Expr(inner) => Self::static_meta(nodes, *inner),
-            NodeKind::Match { arms, .. } => {
-                let bodies: Vec<Vec<NodeId>> = arms.iter().map(|a| a.body.clone()).collect();
-                Self::common_branch_meta(nodes, &bodies)
-            }
-            NodeKind::IfExpr {
-                then_body,
-                else_body,
-                ..
-            } => Self::common_branch_meta(nodes, &[then_body.clone(), else_body.clone()]),
-            _ => None,
-        }
-    }
-
+    /// Reads metadata from a value evaluated as a place. Non-place unsized
+    /// values go through preparation and allocation before exposing metadata.
     fn emit_meta(&mut self, nodes: &[Node], id: NodeId) -> Option<String> {
-        let ty = &nodes[id.0].ty;
-        // FixedArray is sized but still has a known meta (element count)
-        if let Type::FixedArray(_, n) = ty {
-            return Some(format!("{n}"));
-        }
-        if self.is_sized(ty) {
-            return None;
-        }
-        match &nodes[id.0].kind {
-            NodeKind::ArrayLiteral(elems) => Some(format!("{}", elems.len())),
-            NodeKind::ArrayRepeat { count, .. } | NodeKind::ArrayInit { count, .. } => {
-                let count = *count;
-                Some(self.emit_load(nodes, count))
-            }
-            NodeKind::ArraySizeCoerce { size, .. } => Some(format!("{size}")),
-            // A statement-position wrapper carries its inner value's length.
-            NodeKind::Expr(inner) => {
-                let inner = *inner;
-                self.emit_meta(nodes, inner)
-            }
-            // A `match`/`if` used as a value is not a place, so there is no
-            // stored length. When every branch's tail has the same statically
-            // known length (the usual shape: each arm an N-element array
-            // literal) that is the value's length whichever branch runs.
-            // `static_meta` evaluates and emits nothing — measuring a branch
-            // must not emit code belonging to a branch that will not be taken.
-            NodeKind::Match { .. } | NodeKind::IfExpr { .. } => {
-                Self::static_meta(nodes, id).map(|n| format!("{n}"))
-            }
-            NodeKind::StructLiteral { name, fields } => {
-                let dt = &self.module.datatypes[name.as_str()];
-                let last_field_name = dt.fields.last().unwrap().name.clone();
-                let last_init = fields.iter().find(|(n, _)| *n == last_field_name).unwrap();
-                self.emit_meta(nodes, last_init.1)
-            }
-            NodeKind::Local(var) => Some(format!("_vm{}", var.0)),
-            NodeKind::FieldAccess { object, .. } => self.emit_meta(nodes, *object),
-            NodeKind::Deref(inner) => {
-                let inner = *inner;
-                match &nodes[inner.0].ty {
-                    // The meta word sits at +8 of the fat pointer for nullable
-                    // refs too (the null check happens where the pointer half
-                    // is actually loaded, e.g. `emit_place`; reading the length
-                    // out of the 16-byte slot needs no check).
-                    Type::RefUnsized(_) | Type::UniqueUnsized(_) | Type::NullableRefUnsized(_) => {
-                        let (place, _) = self.emit_place(nodes, inner);
-                        let meta_tmp = self.fresh_tmp();
-                        self.linef(format!("uint64_t {meta_tmp} = *(uint64_t*)({place} + 8);"));
-                        Some(meta_tmp)
-                    }
-                    _ => None,
-                }
-            }
-            NodeKind::Slice { start, end, .. } => {
-                let start = *start;
-                let end = *end;
-                let start_expr = self.emit_load(nodes, start);
-                let end_expr = self.emit_load(nodes, end);
-                let tmp = self.fresh_tmp();
-                self.linef(format!(
-                    "uint64_t {tmp} = (uint64_t){end_expr} - (uint64_t){start_expr};"
-                ));
-                Some(tmp)
-            }
-            NodeKind::BinaryOp { op, left, right } if *op == BinOp::Add => {
-                let left = *left;
-                let right = *right;
-                let lm = self.emit_meta(nodes, left).unwrap();
-                let rm = self.emit_meta(nodes, right).unwrap();
-                let tmp = self.fresh_tmp();
-                self.linef(format!("uint64_t {tmp} = {lm} + {rm};"));
-                Some(tmp)
-            }
-            _ => None,
+        if let Type::FixedArray(_, n) = &nodes[id.0].ty {
+            Some(n.to_string())
+        } else if self.is_sized(&nodes[id.0].ty) {
+            None
+        } else {
+            self.emit_place(nodes, id).1
         }
     }
 
@@ -1852,20 +2151,12 @@ impl<'a> Codegen<'a> {
                     _ => unreachable!(),
                 };
                 let es = self.type_size(inner);
-                let ea = self.type_align(inner);
-                let mf = if self.type_contains_gc_ptr(inner) {
-                    "_mark_ptr_array"
-                } else {
-                    "_mark_noop"
-                };
-                let la_meta = self.emit_meta(nodes, left).unwrap();
-                let la_tmp = self.fresh_tmp();
-                self.emit_alloc(&la_tmp, format!("{la_meta} * {es}"), ea, mf);
-                self.emit_into(nodes, left, &la_tmp);
-                let ra_meta = self.emit_meta(nodes, right).unwrap();
-                let ra_tmp = self.fresh_tmp();
-                self.emit_alloc(&ra_tmp, format!("{ra_meta} * {es}"), ea, mf);
-                self.emit_into(nodes, right, &ra_tmp);
+                let left_value = self.prepare_value(nodes, left);
+                let la_tmp = self.allocate_prepared(&left_value);
+                let la_meta = left_value.meta.unwrap();
+                let right_value = self.prepare_value(nodes, right);
+                let ra_tmp = self.allocate_prepared(&right_value);
+                let ra_meta = right_value.meta.unwrap();
                 let eq_var = self.fresh_tmp();
                 self.linef(format!(
                     "uint8_t {eq_var} = ({la_meta} == {ra_meta}) ? 1 : 0;"
@@ -2212,6 +2503,12 @@ impl<'a> Codegen<'a> {
 
     /// Emit C code writing value directly into `dst`.
     fn emit_into(&mut self, nodes: &[Node], id: NodeId, dst: &str) {
+        if !self.is_sized(&nodes[id.0].ty) {
+            let prepared = self.prepare_value(nodes, id);
+            self.fill_prepared(&prepared, dst);
+            return;
+        }
+
         // Unit values are zero-sized and have no destination to write — skip.
         // (Unit-typed blocks produce a dummy literal node as their value.)
         if matches!(nodes[id.0].ty, Type::Unit | Type::Never)
@@ -2297,13 +2594,9 @@ impl<'a> Codegen<'a> {
                         self.emit_into(nodes, inner, &tmp);
                         self.linef(format!("*(uint8_t**){dst} = {tmp};"));
                     } else {
-                        let meta = self.emit_meta(nodes, inner).unwrap();
-                        let align = self.type_align(&inner_ty_clone);
-                        let mf = self.mark_fn_expr(&inner_ty_clone);
-                        let size_expr = self.emit_full_size_expr(&inner_ty_clone, &meta);
-                        let tmp = self.fresh_tmp();
-                        self.emit_alloc(&tmp, &size_expr, align, &mf);
-                        self.emit_into(nodes, inner, &tmp);
+                        let prepared = self.prepare_value(nodes, inner);
+                        let tmp = self.allocate_prepared(&prepared);
+                        let meta = prepared.meta.unwrap();
                         let wide_tmp = self.fresh_tmp();
                         self.linef(format!(
                             "uint8_t {wide_tmp}[16] __attribute__((aligned(16)));"
@@ -2327,13 +2620,9 @@ impl<'a> Codegen<'a> {
                     self.emit_into(nodes, inner, &tmp);
                     self.linef(format!("*(uint8_t**){dst} = {tmp};"));
                 } else {
-                    let meta = self.emit_meta(nodes, inner).unwrap();
-                    let align = self.type_align(&inner_ty_clone);
-                    let mf = self.mark_fn_expr(&inner_ty_clone);
-                    let size_expr = self.emit_full_size_expr(&inner_ty_clone, &meta);
-                    let tmp = self.fresh_tmp();
-                    self.emit_alloc(&tmp, &size_expr, align, &mf);
-                    self.emit_into(nodes, inner, &tmp);
+                    let prepared = self.prepare_value(nodes, inner);
+                    let tmp = self.allocate_prepared(&prepared);
+                    let meta = prepared.meta.unwrap();
                     let wide_tmp = self.fresh_tmp();
                     self.linef(format!(
                         "uint8_t {wide_tmp}[16] __attribute__((aligned(16)));"
@@ -2405,21 +2694,12 @@ impl<'a> Codegen<'a> {
             NodeKind::ArraySizeCoerce { value, size } => {
                 let value = *value;
                 let size = *size;
-                // Runtime check: meta == size. Throws a catchable Solar
-                // exception (same message as the interpreters); the call is
-                // kept off the happy path behind the compare. The check runs
-                // BEFORE the copy — `dst` is sized for `size` elements, so a
-                // longer source would write past it.
-                let meta = self.emit_meta(nodes, value).unwrap_or_else(|| {
-                    panic!(
-                        "internal error: cannot determine array length for coercion (node kind {:?})",
-                        nodes[value.0].kind
-                    )
-                });
+                let prepared = self.prepare_value(nodes, value);
+                let meta = prepared.meta.as_ref().unwrap();
                 self.linef(format!(
                     "if ((uint64_t){meta} != {size}u) {{ sol_assert_array_len((uint64_t){meta}, {size}u); }}"
                 ));
-                self.emit_into(nodes, value, dst);
+                self.fill_prepared(&prepared, dst);
             }
             NodeKind::BinaryOp { op, left, right } => {
                 let op = *op;
@@ -2431,38 +2711,9 @@ impl<'a> Codegen<'a> {
                     Type::Array(inner) | Type::FixedArray(inner, _) => Some((**inner).clone()),
                     _ => None,
                 };
-                if let Some(inner) = left_inner.filter(|_| op == BinOp::Add) {
-                    let es = self.type_size(&inner);
-                    let ea = self.type_align(&inner);
-                    let mf = if self.type_contains_gc_ptr(&inner) {
-                        "_mark_ptr_array"
-                    } else {
-                        "_mark_noop"
-                    };
-                    let lm = self.emit_meta(nodes, left).unwrap();
-                    let la_tmp = self.fresh_tmp();
-                    self.emit_alloc(&la_tmp, format!("{lm} * {es}"), ea, mf);
-                    self.emit_into(nodes, left, &la_tmp);
-                    let rm = self.emit_meta(nodes, right).unwrap();
-                    let ra_tmp = self.fresh_tmp();
-                    self.emit_alloc(&ra_tmp, format!("{rm} * {es}"), ea, mf);
-                    self.emit_into(nodes, right, &ra_tmp);
-                    // Concatenation copies array *data* halves, not fat values.
-                    let left_size = format!("{lm} * {es}");
-                    self.emit_copy_contents(
-                        dst,
-                        &la_tmp,
-                        &Type::Array(Box::new(inner.clone())),
-                        &left_size,
-                    );
-                    let right_dst = format!("({dst} + {lm} * {es})");
-                    let right_size = format!("{rm} * {es}");
-                    self.emit_copy_contents(
-                        &right_dst,
-                        &ra_tmp,
-                        &Type::Array(Box::new(inner)),
-                        &right_size,
-                    );
+                if left_inner.is_some() && op == BinOp::Add {
+                    let prepared = self.prepare_value(nodes, id);
+                    self.fill_prepared(&prepared, dst);
                 } else {
                     let val = self.emit_load_binop(nodes, op, left, right, &result_ty, &left_ty);
                     let c_ty = self.c_int_type(&result_ty);
@@ -2497,7 +2748,7 @@ impl<'a> Codegen<'a> {
             NodeKind::Loop { body } => {
                 // Loop expression: `break <v>` assigns its value into `dst`.
                 let body = body.clone();
-                self.loop_dst.push(dst.to_string());
+                self.loop_dst.push(LoopDestination::Into(dst.to_string()));
                 self.line("while (1) {");
                 self.indent += 1;
                 for &stmt_id in &body {
@@ -3392,12 +3643,6 @@ impl<'a> Codegen<'a> {
                 // unchanged. Embedded GC pointers stay reachable via the
                 // collector's conservative stack scan.
                 if noescape && self.stack_eligible(&ty) {
-                    let size = self.type_size(&ty);
-                    let align = self.type_align(&ty);
-                    self.linef(format!(
-                        "uint8_t _v{}_stk[{size}] __attribute__((aligned({align})));",
-                        var.0
-                    ));
                     self.linef(format!("uint8_t* _v{} = _v{}_stk;", var.0, var.0));
                     self.emit_into(nodes, value, &format!("_v{}", var.0));
                 } else if self.is_sized(&ty) {
@@ -3413,44 +3658,14 @@ impl<'a> Codegen<'a> {
                         self.linef(format!("uint64_t _vm{} = {n};", var.0));
                     }
                 } else {
-                    // A place-valued expression can select both its data pointer
-                    // and metadata at runtime (notably `if`/`match` expressions
-                    // whose branch tails are unsized places).  Keep those paired
-                    // and evaluate the selector only once.  Asking `emit_meta`
-                    // separately both loses conditional metadata and would emit
-                    // the selector a second time when `emit_into` copies it.
-                    let source = if is_place(nodes, value) {
-                        let (place, meta) = self.emit_place(nodes, value);
-                        Some((place, meta.unwrap()))
-                    } else {
-                        None
-                    };
-                    let meta = source
-                        .as_ref()
-                        .map(|(_, meta)| meta.clone())
-                        .or_else(|| self.emit_meta(nodes, value))
-                        .unwrap_or_else(|| {
-                            panic!(
-                                "missing metadata for unsized let value {:?} with type {:?}",
-                                nodes[value.0].kind, ty
-                            )
-                        });
-                    let align = self.type_align(&ty);
-                    let mf = self.mark_fn_expr(&ty);
-                    let size_expr = self.emit_full_size_expr(&ty, &meta);
-                    let tmp = self.fresh_tmp();
-                    self.emit_alloc(&tmp, &size_expr, align, &mf);
-                    if let Some((place, _)) = source {
-                        // `place` points at the data of the unsized value, not
-                        // at a 16-byte fat-pointer slot.  Copy its contents;
-                        // treating `[T]` as a value here would copy only the
-                        // first two machine words and corrupt longer slices.
-                        self.emit_copy_contents(&tmp, &place, &ty, &size_expr);
-                    } else {
-                        self.emit_into(nodes, value, &tmp);
-                    }
+                    let prepared = self.prepare_value(nodes, value);
+                    let tmp = self.allocate_prepared(&prepared);
                     self.linef(format!("uint8_t* _v{} = {tmp};", var.0));
-                    self.linef(format!("uint64_t _vm{} = {meta};", var.0));
+                    self.linef(format!(
+                        "uint64_t _vm{} = {};",
+                        var.0,
+                        prepared.meta.unwrap()
+                    ));
                 }
             }
             NodeKind::Assign { target, value } => {
@@ -3458,12 +3673,15 @@ impl<'a> Codegen<'a> {
                 let value = *value;
                 let (place, target_meta) = self.emit_place(nodes, target);
                 if let Some(ref tmeta) = target_meta {
-                    let vmeta = self.emit_meta(nodes, value).unwrap();
+                    let prepared = self.prepare_value(nodes, value);
+                    let vmeta = prepared.meta.as_ref().unwrap();
                     self.linef(format!(
-                        "if ((uint64_t){tmeta} != (uint64_t){vmeta}) {{ __builtin_trap(); }}"
+                        "if ((uint64_t){tmeta} != (uint64_t){vmeta}) {{ sol_assert_unsized_assignment_len_slow((uint64_t){tmeta}, (uint64_t){vmeta}); }}"
                     ));
+                    self.fill_prepared(&prepared, &place);
+                } else {
+                    self.emit_into(nodes, value, &place);
                 }
-                self.emit_into(nodes, value, &place);
             }
             NodeKind::If {
                 condition,
@@ -3491,6 +3709,12 @@ impl<'a> Codegen<'a> {
                 self.line("}");
             }
             NodeKind::Loop { body } => {
+                if !self.is_sized(&nodes[id.0].ty) {
+                    let prepared = self.prepare_value(nodes, id);
+                    self.allocate_prepared(&prepared);
+                    return;
+                }
+
                 // Statement-position loop (while/for, or a bare `loop`): any break
                 // value is written into a throwaway heap slot of the loop's type.
                 let body = body.clone();
@@ -3505,7 +3729,7 @@ impl<'a> Codegen<'a> {
                     self.emit_alloc(&tmp, size, align, &mf);
                     tmp
                 };
-                self.loop_dst.push(dst);
+                self.loop_dst.push(LoopDestination::Into(dst));
                 self.line("while (1) {");
                 self.indent += 1;
                 for &stmt_id in &body {
@@ -3517,12 +3741,33 @@ impl<'a> Codegen<'a> {
             }
             NodeKind::Break(value) => {
                 if let Some(v) = *value {
-                    let dst = self
-                        .loop_dst
-                        .last()
-                        .cloned()
-                        .expect("break value outside a loop");
-                    self.emit_into(nodes, v, &dst);
+                    match self.loop_dst.last().unwrap() {
+                        LoopDestination::Into(dst) => {
+                            let dst = dst.clone();
+                            self.emit_into(nodes, v, &dst);
+                        }
+                        LoopDestination::Prepare {
+                            selector,
+                            meta,
+                            snapshot,
+                            ..
+                        } => {
+                            let selector = selector.clone();
+                            let meta = meta.clone();
+                            let snapshot = *snapshot;
+                            let value = self.prepare_value_inner(nodes, v, snapshot);
+                            let LoopDestination::Prepare { values, .. } =
+                                self.loop_dst.last_mut().unwrap()
+                            else {
+                                unreachable!()
+                            };
+                            let index = values.len();
+                            let length = value.meta.clone().unwrap();
+                            values.push(value);
+                            self.linef(format!("{selector} = {index};"));
+                            self.linef(format!("{meta} = {length};"));
+                        }
+                    }
                 }
                 self.line("break;");
             }
@@ -3530,6 +3775,12 @@ impl<'a> Codegen<'a> {
                 self.line("continue;");
             }
             NodeKind::Expr(inner) => {
+                if !self.is_sized(&nodes[inner.0].ty) {
+                    let prepared = self.prepare_value(nodes, *inner);
+                    self.allocate_prepared(&prepared);
+                    return;
+                }
+
                 let inner = *inner;
                 match &nodes[inner.0].kind {
                     NodeKind::IntrinsicCall { .. } | NodeKind::Call { .. } => {

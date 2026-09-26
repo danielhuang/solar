@@ -1,0 +1,3 @@
+import mob from "./mob.solar";
+
+pub struct Control { pub owner: &mob::Mob }

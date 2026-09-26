@@ -1,0 +1,94 @@
+static calls: Uint = 0u;
+
+fn tick() -> Uint {
+	calls = calls + 1u;
+	calls
+}
+
+fn choose() -> Bool { tick(); true }
+struct Tail { tag: Uint, bytes: [Uint8] }
+enum Pick { First(Uint), Second }
+
+fn staged_join(flag: Bool) -> &[Uint8] {
+	("prefix" + if flag { "a" } else { "bb" })&
+}
+
+fn main() {
+	let a = "prefix" + if choose() { "a" } else { "long" };
+	assert(a == "prefixa");
+	assert(calls == 1u);
+	let b = if choose() {
+		let inner = tick();
+		{ let ignored = inner; "b" + "c" }
+	} else { "unused" };
+	assert(b == "bc");
+	assert(calls == 3u);
+	let c = "-" + match tick() { 4u => "four", _ => "wrong" };
+	assert(c == "-four");
+	let d = match Pick::First(2u) {
+		Pick::First(n) => [7u; n],
+		Pick::Second => [9u],
+	};
+	assert(d&.len() == 2u);
+	assert(d[1u] == 7u);
+	let e = loop {
+		if tick() < 6u { continue; }
+		break if choose() { "loop" } else { "other" };
+	};
+	assert(e == "loop");
+	assert(calls == 7u);
+	let tail = if choose() {
+		Tail { tag: tick(), bytes: "data" + "!" }
+	} else { Tail { tag: 0u, bytes: "x" } };
+	assert(tail.tag == 9u);
+	assert(tail.bytes == "data!");
+	let repeated = [tick(); tick()];
+	assert(repeated&.len() == 11u);
+	assert(repeated[10u] == 10u);
+	let generated = (if choose() { [2u; \i: Uint i + 20u] } else { [0u] }) +
+		[30u];
+	assert(generated[1u] == 21u);
+	assert(generated[2u] == 30u);
+	let fixed: [Uint8; 2] = if choose() { "ok" } else { "xx" };
+	assert(fixed[0u] == 'o');
+	let target = "abc";
+	target = if choose() { "def" } else { "ghi" };
+	assert(target == "def");
+	let borrowed = (if choose() { "yes" + "!" } else { "no" })&;
+	assert(borrowed@ == "yes!");
+	let zero = [tick(); 0u];
+	assert(zero&.len() == 0u);
+	assert(calls == 16u);
+
+	let unique = (if false { "unselected" } else { "unique" + "!" })^;
+	assert(unique@ == "unique!");
+	assert((if false { "wrong" } else { "right" }) == "right");
+	let scalar_loop = [loop { break 42u; }; 2u];
+	assert(scalar_loop[1u] == 42u);
+	let nested_loop = (loop {
+		loop { break; };
+		break match 9u { 0u => "zero", _ => "nine" };
+	}) +
+		"!";
+	assert(nested_loop == "nine!");
+	let from_scope = if true {
+		let local = "local";
+		local
+	} else { "unused" };
+	assert(from_scope == "local");
+	let source = [1u];
+	let saved = source + (if true { source[0u] = 9u; [2u] } else { [3u] });
+	assert(saved[0u] == 1u);
+	assert(source[0u] == 9u);
+	assert(staged_join(true)@ == "prefixa");
+	assert(staged_join(false)@ == "prefixbb");
+	let ordered = [tick(), { tick(); tick() }];
+	assert(ordered[0u] == 17u);
+	assert(ordered[1u] == 19u);
+	let repeated_block = [tick(); ({ tick(); 2u })];
+	assert(repeated_block[1u] == 20u);
+	let ordered_tail = Tail { tag: tick(), bytes: { tick(); "tail" } };
+	assert(ordered_tail.tag == 22u);
+	assert(calls == 23u);
+	println("staged"&);
+}

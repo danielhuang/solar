@@ -56,6 +56,15 @@ fn any() {
 }
 
 #[test]
+fn atomic_wide_array_copy() {
+    let output = run(
+        &fixture("atomic_wide_array_copy.solar"),
+        "atomic_wide_array_copy",
+    );
+    assert_eq!(output, "");
+}
+
+#[test]
 fn gc_keepalive() {
     let output = run(&fixture("gc_keepalive.solar"), "gc_keepalive");
     assert_eq!(output, "42\n9\n");
@@ -379,6 +388,81 @@ fn operator_overload() {
 fn array_concat() {
     let output = run(&fixture("array_concat.solar"), "array_concat");
     assert_eq!(output, "1\n2\n3\n4\n5\n10\n20\n30\n99\n");
+}
+
+#[test]
+fn unsized_expression_staging() {
+    let path = fixture("unsized_expression_staging.solar");
+    assert_eq!(run(&path, "unsized_expression_staging"), "staged\n");
+    test_utils::ensure_release_runtime_built();
+    let directory = tempdir::TempDir::new("solar-unsized-staging").unwrap();
+    let ir = solar::pipeline::compile(&path)
+        .unwrap()
+        .to_mangled()
+        .to_ir()
+        .optimized();
+    // A conditional concat must allocate its result only after preparing the
+    // chosen length; it does not need separate arrays for the two operands.
+    let generated = ir.to_c(&path.display().to_string());
+    let body = generated
+        .c_source
+        .lines()
+        .skip_while(|line| !(line.contains("staged_join") && line.ends_with(" {")))
+        .take_while(|line| *line != "}")
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!body.is_empty());
+    assert_eq!(body.matches(" = sol_alloc(").count(), 1, "{body}");
+    for options in [
+        solar::pipeline::CompileOptions::RELEASE,
+        solar::pipeline::CompileOptions::GC_SAN,
+        solar::pipeline::CompileOptions {
+            optimize: false,
+            ..solar::pipeline::CompileOptions::GC_SAN
+        },
+    ] {
+        let binary = ir
+            .to_c(&path.display().to_string())
+            .to_binary(directory.path().join("staged"), options);
+        assert_eq!(binary.run("unsized_expression_staging"), "staged\n");
+    }
+}
+
+#[test]
+fn conditional_unsized_metadata() {
+    let output = run(
+        &fixture("conditional_unsized_metadata.solar"),
+        "conditional_unsized_metadata",
+    );
+    assert_eq!(
+        output,
+        "a\nbigger\nprefixa\nprefixbb\n2\nprefixsuffix\n1\n99\n2\n3\n65\n90\n119\n119\n119\n"
+    );
+}
+
+#[test]
+fn conditional_unsized_metadata_release() {
+    test_utils::ensure_release_runtime_built();
+    let path = fixture("conditional_unsized_metadata.solar");
+    let directory = tempdir::TempDir::new("solar-conditional-unsized").unwrap();
+    for options in [
+        solar::pipeline::CompileOptions::RELEASE,
+        solar::pipeline::CompileOptions::GC_SAN,
+    ] {
+        let ir = solar::pipeline::compile(&path)
+            .unwrap()
+            .to_mangled()
+            .to_ir()
+            .optimized();
+        let binary = ir.to_c(&path.display().to_string()).to_binary(
+            directory.path().join("conditional_unsized_metadata"),
+            options,
+        );
+        assert_eq!(
+            binary.run("conditional_unsized_metadata_release"),
+            "a\nbigger\nprefixa\nprefixbb\n2\nprefixsuffix\n1\n99\n2\n3\n65\n90\n119\n119\n119\n"
+        );
+    }
 }
 
 #[test]

@@ -186,6 +186,11 @@ enum Unwind {
 /// Result of any evaluation that may propagate a non-local exit.
 type Eval<T> = Result<T, Unwind>;
 
+enum LoopDestination {
+    Into(usize),
+    Dynamic(Option<(usize, usize)>),
+}
+
 struct Interpreter<'a, 'io> {
     module: &'a Module,
     functions: HashMap<&'a str, &'a Function>,
@@ -197,7 +202,7 @@ struct Interpreter<'a, 'io> {
     files: FileTable<'io>,
     /// Result destinations of the enclosing loop expressions; `break <v>` writes
     /// the value into the innermost one.
-    loop_dst: Vec<usize>,
+    loop_dst: Vec<LoopDestination>,
     /// Return slots of the function bodies currently executing (innermost
     /// last); `return <v>` writes into the innermost one. A stack (not a
     /// parameter) because a `return` can sit inside a value-position body
@@ -772,9 +777,190 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             self.exec_stmt(nodes, id)?;
         }
         match &nodes[tail[0].0].kind {
-            NodeKind::Expr(inner) => self.eval_place(nodes, *inner),
+            NodeKind::Expr(inner) if is_place(nodes, *inner) => self.eval_place(nodes, *inner),
+            NodeKind::Expr(inner) => {
+                let inner = *inner;
+                let (addr, meta) = self.eval_array_value(nodes, inner)?;
+                Ok((addr, Some(meta)))
+            }
             _ => unreachable!(),
         }
+    }
+
+    fn eval_array_init(
+        &mut self,
+        nodes: &[Node],
+        init: NodeId,
+        n: usize,
+        elem_ty: &Type,
+        dst: usize,
+    ) -> Eval<()> {
+        let es = type_size(elem_ty, &self.module.datatypes);
+        // Eval init closure into a 16-byte tmp
+        let callee_ty = nodes[init.0].ty.clone();
+        let callee_addr = self.alloc_ty(&callee_ty);
+        self.eval_into(nodes, init, callee_addr)?;
+        let fn_idx = self.mem.load(callee_addr, 8) as usize;
+        let env_ptr = self.mem.load(callee_addr + 8, 8);
+
+        let func_name = self.fn_index_to_name[fn_idx].to_string();
+        let func = *self.functions.get(func_name.as_str()).unwrap();
+
+        for i in 0..n {
+            // Allocate space for Uint arg and store the index
+            let arg_addr = self.mem.alloc(8, 8);
+            self.mem.store(arg_addr, i as u64, 8);
+
+            let saved_vars = std::mem::take(&mut self.vars);
+            let saved_meta = std::mem::take(&mut self.var_meta);
+
+            // Set up captured variables from env
+            for cap in &func.env_captures {
+                let slot = env_ptr as usize + cap.index * 16;
+                let var_addr = self.mem.load(slot, 8) as usize;
+                self.vars.insert(cap.var, var_addr);
+                if cap.is_unsized {
+                    let meta = self.mem.load(slot + 8, 8) as usize;
+                    self.var_meta.insert(cap.var, meta);
+                }
+            }
+
+            // Set up parameter (single Uint param)
+            self.vars.insert(func.params[0].var, arg_addr);
+
+            self.exec_function_body(func, dst + i * es)?;
+
+            self.vars = saved_vars;
+            self.var_meta = saved_meta;
+        }
+        Ok(())
+    }
+
+    fn eval_array_value(&mut self, nodes: &[Node], id: NodeId) -> Eval<(usize, usize)> {
+        let ty = nodes[id.0].ty.clone();
+        match &nodes[id.0].kind {
+            NodeKind::Loop { body } => {
+                self.loop_dst.push(LoopDestination::Dynamic(None));
+                let result = loop {
+                    match self.exec_body(nodes, body) {
+                        Ok(()) | Err(Unwind::Continue) => {}
+                        Err(Unwind::Break) => break Ok(()),
+                        Err(other) => break Err(other),
+                    }
+                };
+                let LoopDestination::Dynamic(value) = self.loop_dst.pop().unwrap() else {
+                    unreachable!()
+                };
+                result?;
+                return Ok(value.unwrap());
+            }
+            NodeKind::ArrayRepeat { element, count } => {
+                let element_ty = &nodes[element.0].ty;
+                let saved = self.alloc_ty(element_ty);
+                self.eval_into(nodes, *element, saved)?;
+                let count = self.eval_load(nodes, *count)? as usize;
+                let addr = self.alloc_unsized(&ty, count);
+                let size = type_size(element_ty, &self.module.datatypes);
+                for index in 0..count {
+                    self.copy_value(addr + index * size, saved, element_ty, None);
+                }
+                return Ok((addr, count));
+            }
+            NodeKind::ArrayInit { count, init } => {
+                let length = self.eval_load(nodes, *count)? as usize;
+                let elem_ty = match &ty {
+                    Type::Array(inner) | Type::FixedArray(inner, _) => inner.as_ref(),
+                    _ => unreachable!(),
+                };
+                let addr = self.alloc_unsized(&ty, length);
+                self.eval_array_init(nodes, *init, length, elem_ty, addr)?;
+                return Ok((addr, length));
+            }
+
+            NodeKind::StructLiteral { name, fields } if !is_sized(&ty, &self.module.datatypes) => {
+                let mut prepared = Vec::new();
+                let mut metadata = 0;
+                for (field_name, node) in fields {
+                    let layout = self.module.datatypes[name.as_str()]
+                        .fields
+                        .iter()
+                        .find(|field| field.name == *field_name)
+                        .unwrap();
+                    let offset = layout.offset;
+                    let field_ty = layout.ty.clone();
+                    let (src, meta) = if is_sized(&field_ty, &self.module.datatypes) {
+                        let src = self.alloc_ty(&field_ty);
+                        self.eval_into(nodes, *node, src)?;
+                        (src, None)
+                    } else {
+                        let (src, meta) = self.eval_array_value(nodes, *node)?;
+                        metadata = meta;
+                        (src, Some(meta))
+                    };
+                    prepared.push((offset, src, field_ty, meta));
+                }
+                let addr = self.alloc_unsized(&ty, metadata);
+                for (offset, src, field_ty, meta) in prepared {
+                    self.copy_value(addr + offset, src, &field_ty, meta);
+                }
+                return Ok((addr, metadata));
+            }
+            _ => {}
+        }
+
+        if let NodeKind::BinaryOp {
+            op: BinOp::Add,
+            left,
+            right,
+        } = &nodes[id.0].kind
+            && matches!(ty, Type::Array(_) | Type::FixedArray(_, _))
+        {
+            let left = *left;
+            let right = *right;
+            let inner = match &nodes[left.0].ty {
+                Type::Array(inner) | Type::FixedArray(inner, _) => inner.as_ref(),
+                _ => unreachable!(),
+            };
+            let elem_size = type_size(inner, &self.module.datatypes);
+            let (left_addr, left_meta) = self.eval_array_value(nodes, left)?;
+            // Snapshot the left operand before evaluating the right one: a
+            // call on the right may mutate storage aliased by a left place.
+            let left_ty = Type::Array(Box::new(inner.clone()));
+            let left_snapshot = self.alloc_unsized(&left_ty, left_meta);
+            let left_size = left_meta * elem_size;
+            self.mem
+                .data
+                .copy_within(left_addr..left_addr + left_size, left_snapshot);
+            let (right_addr, right_meta) = self.eval_array_value(nodes, right)?;
+            let meta = left_meta + right_meta;
+            let addr = self.alloc_unsized(&ty, meta);
+            let right_size = right_meta * elem_size;
+            self.mem
+                .data
+                .copy_within(left_snapshot..left_snapshot + left_size, addr);
+            self.mem
+                .data
+                .copy_within(right_addr..right_addr + right_size, addr + left_size);
+            return Ok((addr, meta));
+        }
+        let meta = if is_place(nodes, id)
+            || matches!(
+                nodes[id.0].kind,
+                NodeKind::IfExpr { .. } | NodeKind::Match { .. }
+            ) {
+            let (addr, meta) = self.eval_place(nodes, id)?;
+            let meta = meta.or(match &ty {
+                Type::FixedArray(_, n) => Some(*n as usize),
+                _ => None,
+            });
+            return Ok((addr, meta.unwrap()));
+        } else {
+            self.compute_meta(nodes, id)?
+                .ok_or_else(|| self.thrown("internal error: cannot determine array length"))?
+        };
+        let addr = self.alloc_unsized(&ty, meta);
+        self.eval_into(nodes, id, addr)?;
+        Ok((addr, meta))
     }
 
     fn eval_load(&mut self, nodes: &[Node], id: NodeId) -> Eval<u64> {
@@ -1052,8 +1238,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             | NodeKind::Index { .. }
             | NodeKind::Slice { .. } => {
                 let ty = nodes[id.0].ty.clone();
-                let meta = self.compute_meta(nodes, id)?;
-                let (src, _) = self.eval_place(nodes, id)?;
+                let (src, meta) = self.eval_place(nodes, id)?;
                 self.copy_value(dst, src, &ty, meta);
             }
             NodeKind::IntegerLiteral(n) => {
@@ -1093,9 +1278,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                         self.eval_into(nodes, inner, tmp)?;
                         self.mem.store(dst, tmp as u64, 8);
                     } else {
-                        let meta = self.compute_meta(nodes, inner)?.unwrap();
-                        let tmp = self.alloc_unsized(&inner_ty, meta);
-                        self.eval_into(nodes, inner, tmp)?;
+                        let (tmp, meta) = self.eval_array_value(nodes, inner)?;
                         self.mem.store(dst, tmp as u64, 8);
                         self.mem.store(dst + 8, meta as u64, 8);
                     }
@@ -1112,11 +1295,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     self.eval_into(nodes, inner, ptr)?;
                     self.mem.store(dst, ptr as u64, 8);
                 } else {
-                    let meta = self.compute_meta(nodes, inner)?.unwrap();
-                    let size = full_size(&inner_ty, &self.module.datatypes, meta);
-                    let align = type_align(&inner_ty, &self.module.datatypes);
-                    let ptr = self.mem.alloc(size, align);
-                    self.eval_into(nodes, inner, ptr)?;
+                    let (source, meta) = self.eval_array_value(nodes, inner)?;
+                    let ptr = self.alloc_unsized(&inner_ty, meta);
+                    self.copy_value(ptr, source, &inner_ty, Some(meta));
                     self.mem.store(dst, ptr as u64, 8);
                     self.mem.store(dst + 8, meta as u64, 8);
                 }
@@ -1164,78 +1345,22 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 }
             }
             NodeKind::ArrayInit { count, init } => {
-                let count = *count;
-                let init = *init;
+                let n = self.eval_load(nodes, *count)? as usize;
                 let elem_ty = match &nodes[id.0].ty {
-                    Type::Array(inner) | Type::FixedArray(inner, _) => (**inner).clone(),
+                    Type::Array(inner) | Type::FixedArray(inner, _) => inner.as_ref(),
                     _ => unreachable!(),
                 };
-                let n = self.eval_load(nodes, count)? as usize;
-                let es = type_size(&elem_ty, &self.module.datatypes);
-
-                // Eval init closure into a 16-byte tmp
-                let callee_ty = nodes[init.0].ty.clone();
-                let callee_addr = self.alloc_ty(&callee_ty);
-                self.eval_into(nodes, init, callee_addr)?;
-                let fn_idx = self.mem.load(callee_addr, 8) as usize;
-                let env_ptr = self.mem.load(callee_addr + 8, 8);
-
-                let func_name = self.fn_index_to_name[fn_idx].to_string();
-                let func = *self.functions.get(func_name.as_str()).unwrap();
-
-                for i in 0..n {
-                    // Allocate space for Uint arg and store the index
-                    let arg_addr = self.mem.alloc(8, 8);
-                    self.mem.store(arg_addr, i as u64, 8);
-
-                    let saved_vars = std::mem::take(&mut self.vars);
-                    let saved_meta = std::mem::take(&mut self.var_meta);
-
-                    // Set up captured variables from env
-                    for cap in &func.env_captures {
-                        let slot = env_ptr as usize + cap.index * 16;
-                        let var_addr = self.mem.load(slot, 8) as usize;
-                        self.vars.insert(cap.var, var_addr);
-                        if cap.is_unsized {
-                            let meta = self.mem.load(slot + 8, 8) as usize;
-                            self.var_meta.insert(cap.var, meta);
-                        }
-                    }
-
-                    // Set up parameter (single Uint param)
-                    self.vars.insert(func.params[0].var, arg_addr);
-
-                    self.exec_function_body(func, dst + i * es)?;
-
-                    self.vars = saved_vars;
-                    self.var_meta = saved_meta;
-                }
+                self.eval_array_init(nodes, *init, n, elem_ty, dst)?;
             }
+
             NodeKind::ArraySizeCoerce { value, size } => {
-                let value = *value;
-                let size = *size;
-                // Check the length BEFORE the copy: `dst` is sized for `size`
-                // elements, so copying a longer slice first would write out of
-                // bounds. (compute_meta is place/length-based and safe to run
-                // before the value is evaluated.)
-                // A `[T; N]` source carries its length in its *type*, so no
-                // runtime metadata is needed — and `compute_meta` is
-                // place/length-based, so it returns `None` for a value that is
-                // not a place (a `match` result, a struct field read). Consult
-                // the static type first; only an unsized `[T]` needs the
-                // runtime length for the bounds check below.
-                let actual_meta = match &nodes[value.0].ty {
-                    Type::FixedArray(_, n) => *n as usize,
-                    _ => self.compute_meta(nodes, value)?.ok_or_else(|| {
-                        self.thrown("internal error: cannot determine array length for coercion")
-                    })?,
-                };
-                if actual_meta != size as usize {
+                let (src, actual_meta) = self.eval_array_value(nodes, *value)?;
+                if actual_meta != *size as usize {
                     return Err(self.thrown(&format!(
                         "array length mismatch: expected {size} elements, got {actual_meta}"
                     )));
                 }
-                self.eval_into(nodes, value, dst)?;
+                self.copy_value(dst, src, &nodes[value.0].ty, Some(actual_meta));
             }
             NodeKind::BinaryOp { op, left, right } => {
                 let op = *op;
@@ -1254,21 +1379,23 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     }
                     Some(inner) => {
                         let es = type_size(&inner, &self.module.datatypes);
-                        let la_meta = self.compute_meta(nodes, left)?.unwrap();
-                        let ra_meta = self.compute_meta(nodes, right)?.unwrap();
-                        let ea = type_align(&inner, &self.module.datatypes);
-                        let la = self.mem.alloc(la_meta * es, ea);
-                        self.eval_into(nodes, left, la)?;
-                        let ra = self.mem.alloc(ra_meta * es, ea);
-                        self.eval_into(nodes, right, ra)?;
+                        let (la, la_meta) = self.eval_array_value(nodes, left)?;
+                        // Preserve left-to-right value semantics when the
+                        // right expression mutates storage aliased by `left`.
+                        let left_ty = Type::Array(Box::new(inner.clone()));
+                        let left_snapshot = self.alloc_unsized(&left_ty, la_meta);
+                        let left_size = la_meta * es;
+                        self.mem.data.copy_within(la..la + left_size, left_snapshot);
+                        let (ra, ra_meta) = self.eval_array_value(nodes, right)?;
                         match op {
                             BinOp::Add => {
-                                let left_bytes = la_meta * es;
                                 let right_bytes = ra_meta * es;
-                                self.mem.data.copy_within(la..la + left_bytes, dst);
                                 self.mem
                                     .data
-                                    .copy_within(ra..ra + right_bytes, dst + left_bytes);
+                                    .copy_within(left_snapshot..left_snapshot + left_size, dst);
+                                self.mem
+                                    .data
+                                    .copy_within(ra..ra + right_bytes, dst + left_size);
                             }
                             BinOp::Eq | BinOp::Ne => {
                                 let total = la_meta * es;
@@ -1959,14 +2086,12 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let var = *var;
                 let value = *value;
                 let ty = nodes[value.0].ty.clone();
-                let unsized_place =
-                    !is_sized(&ty, &self.module.datatypes) && is_place(nodes, value);
+                let unsized_place = !is_sized(&ty, &self.module.datatypes);
                 let (addr, meta) = if unsized_place {
                     // Keep runtime-selected pointer and metadata together.  In
                     // particular, evaluating an `if`/`match` once tells us both
                     // which place to copy and how large that place is.
-                    let (src, meta) = self.eval_place(nodes, value)?;
-                    let meta = meta.unwrap();
+                    let (src, meta) = self.eval_array_value(nodes, value)?;
                     let addr = self.alloc_unsized(&ty, meta);
                     self.copy_value(addr, src, &ty, Some(meta));
                     (addr, Some(meta))
@@ -1991,13 +2116,16 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let value = *value;
                 let (place, target_meta) = self.eval_place(nodes, target)?;
                 if let Some(target_len) = target_meta {
-                    let value_len = self.compute_meta(nodes, value)?.unwrap();
-                    assert!(
-                        target_len == value_len,
-                        "unsized assignment: length mismatch ({target_len} vs {value_len})"
-                    );
+                    let (src, value_len) = self.eval_array_value(nodes, value)?;
+                    if target_len != value_len {
+                        return Err(self.thrown(&format!(
+                            "unsized assignment: length mismatch ({target_len} vs {value_len})"
+                        )));
+                    }
+                    self.copy_value(place, src, &nodes[value.0].ty, Some(value_len));
+                } else {
+                    self.eval_into(nodes, value, place)?;
                 }
-                self.eval_into(nodes, value, place)?;
             }
             NodeKind::If {
                 condition,
@@ -2015,6 +2143,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 }
             }
             NodeKind::Loop { body } => {
+                if !is_sized(&nodes[id.0].ty, &self.module.datatypes) {
+                    self.eval_array_value(nodes, id)?;
+                    return Ok(());
+                }
+
                 // A statement-position loop (while/for, or a bare `loop`): any
                 // break value is written into a throwaway slot of the loop's type.
                 let body = body.clone();
@@ -2028,8 +2161,17 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             }
             NodeKind::Break(value) => {
                 if let Some(v) = *value {
-                    let dst = *self.loop_dst.last().expect("break value outside a loop");
-                    self.eval_into(nodes, v, dst)?;
+                    match self.loop_dst.last().unwrap() {
+                        LoopDestination::Into(dst) => {
+                            let dst = *dst;
+                            self.eval_into(nodes, v, dst)?;
+                        }
+                        LoopDestination::Dynamic(_) => {
+                            let value = self.eval_array_value(nodes, v)?;
+                            *self.loop_dst.last_mut().unwrap() =
+                                LoopDestination::Dynamic(Some(value));
+                        }
+                    }
                 }
                 return Err(Unwind::Break);
             }
@@ -2040,6 +2182,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 // (`if`/`match`/`loop` bodies) propagate via `Unwind`.
                 let inner = *inner;
                 let ty = &nodes[inner.0].ty;
+                if !is_sized(ty, &self.module.datatypes) {
+                    self.eval_array_value(nodes, inner)?;
+                    return Ok(());
+                }
+
                 if *ty == Type::Unit {
                     self.eval_into(nodes, inner, 0)?;
                 } else {
@@ -2062,7 +2209,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
     /// writes its value. `Break` is caught here; `Return` (and `Thrown`) keep
     /// unwinding.
     fn run_loop(&mut self, nodes: &[Node], body: &[NodeId], dst: usize) -> Eval<()> {
-        self.loop_dst.push(dst);
+        self.loop_dst.push(LoopDestination::Into(dst));
         let result = loop {
             match self.exec_body(nodes, body) {
                 // A fall-through or `continue` starts the next iteration.

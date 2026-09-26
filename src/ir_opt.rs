@@ -962,7 +962,7 @@ mod tests {
     fn reflective_struct_hash_and_equality_escape_facts() {
         let m = ir_of(
             "pub struct Point { pub x: Int64, pub y: Int64, }\n\
-             fn main() { let map = hashbrown::HashMap#[Point, Int](); map&.insert(Point { x: 1i64, y: 2i64, }, 3); }\n",
+             fn main() { let map = hashbrown::HashMap#[Point, Int](); map&.insert(Point { x: 1i64, y: 2i64, }, 3); return; }\n",
         );
         let hash = m
             .functions

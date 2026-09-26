@@ -1,0 +1,3 @@
+fn main() {}
+
+import missing from "./not_present.solar";

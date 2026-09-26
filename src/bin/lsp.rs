@@ -4280,7 +4280,13 @@ fn compute_with_diagnostics(uri: &str, source: &str) -> (Document, HashMap<Strin
         })
         .collect();
     let (analysis, diagnostics) = match typed_ast::lower(&ast) {
-        Ok(typed) => (analysis_from_typed(typed, &source_map), HashMap::new()),
+        Ok(typed) => match typed.validate_entry_point(source_map.root_file_id()) {
+            Ok(()) => (analysis_from_typed(typed, &source_map), HashMap::new()),
+            Err(error) => (
+                analysis_from_typed(typed, &source_map),
+                diagnostics_from_errors(uri, source, std::slice::from_ref(&error), &source_map),
+            ),
+        },
         Err(error) => (
             None,
             diagnostics_from_errors(uri, source, std::slice::from_ref(&error), &source_map),
@@ -6076,6 +6082,20 @@ fn main() {
             json!({ "line": 0, "character": source.encode_utf16().count() })
         );
         assert_eq!(edits[0]["newText"], "fn f() { println(\"😀\"&); }\n");
+    }
+
+    #[test]
+    fn root_main_return_type_is_reported_as_a_diagnostic() {
+        let (uri, source, _) = fixture_document("tests/typecheck/main_returns_value.solar");
+        let (document, diagnostics) = compute_with_diagnostics(&uri, &source);
+
+        assert!(document.analysis.is_some());
+        let diagnostics = &diagnostics[&uri];
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic["message"].as_str().is_some_and(|message| {
+                message.contains("entry function `main` must return Unit or diverge")
+            })
+        }));
     }
 
     #[test]

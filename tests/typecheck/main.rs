@@ -81,6 +81,68 @@ fn monomorphization_error_retains_and_prints_the_call_chain() {
 }
 
 #[test]
+fn undefined_imported_nominal_type_is_reported_without_panicking() {
+    let path = fixture("undefined_imported_nominal/main.solar");
+    let (errors, source_map) = match solar::pipeline::compile(&path) {
+        Ok(_) => panic!("expected unknown type error"),
+        Err(error) => error,
+    };
+    assert!(error_chain(&errors[0]).contains("undefined type: Mob"));
+    assert_eq!(
+        source_map.get(errors[0].span.file_id).unwrap().0,
+        path.to_str().unwrap()
+    );
+    assert_eq!(errors[0].span.start.line, 2);
+}
+
+#[test]
+fn unbound_method_type_parameter_is_a_compile_error() {
+    let path = fixture("method_owner_type_param_requires_quantification.solar");
+    let (errors, source_map) = match solar::pipeline::compile(&path) {
+        Ok(_) => panic!("expected type-check failure"),
+        Err(error) => error,
+    };
+    assert!(error_chain(&errors[0]).contains("undefined type: T"));
+    assert!(matches!(errors[0].span.start.line, 6 | 8));
+    let mut cause = Some(&errors[0]);
+    while let Some(error) = cause {
+        assert_eq!(
+            source_map.get(error.span.file_id).unwrap().0,
+            path.to_str().unwrap()
+        );
+        cause = error.caused_by.as_deref();
+    }
+}
+
+#[test]
+fn generic_parameter_is_inferred_through_a_type_alias() {
+    compile_with_pipeline(&fixture("generic_type_alias_inference.solar"));
+}
+
+#[test]
+fn root_main_requires_unit_return_type() {
+    for name in ["main_returns_value.solar", "main_infers_value.solar"] {
+        let path = fixture(name);
+        let (errors, source_map) = match solar::pipeline::compile(&path) {
+            Ok(_) => panic!("accepted non-unit root main"),
+            Err(error) => error,
+        };
+        assert!(
+            error_chain(&errors[0]).contains("entry function `main` must return Unit or diverge")
+        );
+        assert_eq!(
+            source_map.get(errors[0].span.file_id).unwrap().0,
+            path.to_str().unwrap()
+        );
+    }
+}
+
+#[test]
+fn root_main_accepts_explicit_unit_return_type() {
+    compile_with_pipeline(&fixture("main_explicit_unit.solar"));
+}
+
+#[test]
 #[should_panic(expected = "field `kind` has non-C-representable type Kind: enums")]
 fn repr_c_rejects_enum_fields() {
     compile(&fixture("repr_c_enum_field.solar"));

@@ -304,3 +304,12 @@ pub extern "C-unwind" fn sol_assert_array_len_slow(actual: u64, expected: u64) {
         ));
     }
 }
+
+/// Throws the canonical runtime error for assigning a different-length slice
+/// into an existing unsized array value.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn sol_assert_unsized_assignment_len_slow(target: u64, value: u64) -> ! {
+    crate::panic::throw_message(format_args!(
+        "unsized assignment: length mismatch ({target} vs {value})"
+    ));
+}
