@@ -1336,12 +1336,10 @@ pub unsafe extern "C" fn sol_gc_mark(ctx: *mut u8, ptr: *mut u8) {
 #[unsafe(no_mangle)]
 pub static SOL_CONCURRENT_MARKING: AtomicBool = AtomicBool::new(false);
 
-/// Shades a pointer stored while concurrent marking is active.
+/// Shades a pointer after the LLVM write-barrier wrapper checks marking state.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_write_barrier_slow(dst: *mut u8, val: *mut u8) {
-    if SOL_CONCURRENT_MARKING.load(Ordering::Relaxed) {
-        unsafe { write_barrier_slow(dst, val) };
-    }
+    unsafe { write_barrier_slow(dst, val) };
 }
 
 #[cold]
@@ -1374,9 +1372,7 @@ unsafe fn write_barrier_slow(_dst: *mut u8, val: *mut u8) {
 /// to the LLVM `sol_gc_memcpy_barrier` wrapper, which forwards here while marking.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_gc_memcpy_barrier_slow(dst: *mut u8, size: usize) {
-    if SOL_CONCURRENT_MARKING.load(Ordering::Relaxed) {
-        unsafe { memcpy_barrier(dst, size) };
-    }
+    unsafe { memcpy_barrier(dst, size) };
 }
 
 /// Conservatively shade a just-copied region while marking is active: every
