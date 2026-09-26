@@ -28,7 +28,6 @@ impl ThreadPool {
                 .name(format!("solar-pool-{i}"))
                 .stack_size(4 * 1024 * 1024 * 1024)
                 .spawn(move || {
-                    crate::gc::block_gc_signal();
                     loop {
                         let job = match receiver.recv() {
                             Ok(j) => j,

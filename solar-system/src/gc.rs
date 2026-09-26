@@ -407,24 +407,6 @@ fn gc_signal() -> i32 {
     libc::SIGRTMIN() + 4
 }
 
-pub(crate) fn block_gc_signal() {
-    unsafe {
-        let mut set: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&mut set);
-        libc::sigaddset(&mut set, gc_signal());
-        libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
-    }
-}
-
-pub(crate) fn unblock_gc_signal() {
-    unsafe {
-        let mut set: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&mut set);
-        libc::sigaddset(&mut set, gc_signal());
-        libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Signal handler (async-signal-safe: only atomics, write, futex).
 // ---------------------------------------------------------------------------
@@ -629,18 +611,14 @@ pub extern "C-unwind" fn sol_collect_gc() {
     }
 }
 
-/// Spawn the dedicated collector thread. It blocks the GC signal (it is never a
-/// mutator and must not stop itself) and is never entered into THREAD_REGISTRY,
-/// so the stop-the-world signal sweep never targets it.
+/// Spawn the dedicated collector thread. It is never entered into
+/// THREAD_REGISTRY, so the stop-the-world signal sweep never targets it.
 pub(crate) fn spawn_gc_thread(
     statics: &'static [crate::StaticEntry],
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("solar-gc".into())
-        .spawn(move || {
-            block_gc_signal();
-            gc_thread_main(statics);
-        })
+        .spawn(move || gc_thread_main(statics))
         .unwrap()
 }
 

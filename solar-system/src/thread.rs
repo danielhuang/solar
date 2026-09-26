@@ -7,7 +7,7 @@ use rustix_futex_sync::RwLock;
 
 use crate::gc::{
     BIG_ALLOCS, BigAlloc, MY_SLOT, ORPHANED_TOTAL_ALLOCATIONS, THREAD_REGISTRY, ThreadAllocState,
-    ThreadSlot, block_gc_signal, unblock_gc_signal,
+    ThreadSlot,
 };
 
 // ---------------------------------------------------------------------------
@@ -39,20 +39,16 @@ fn register_thread(stack_base: *mut usize) {
         gc_waiting_epoch: AtomicU64::new(0),
     });
     let slot_ptr: *const ThreadSlot = &*slot;
-    block_gc_signal();
     THREAD_REGISTRY.write().unwrap().insert(tid, slot);
     MY_SLOT.set(slot_ptr);
-    unblock_gc_signal();
 }
 
 fn unregister_thread() {
     let tid = unsafe { libc::syscall(libc::SYS_gettid) } as i32;
-    // Hold GC_LOCK.read() so the GC can't run while we're unregistering.
-    // Without this, we deadlock: block_gc_signal stops the thread from
-    // responding to signals, while THREAD_REGISTRY.write() blocks behind
-    // the GC's read lock — and the GC is waiting for this thread to ack.
+    // Exclude stop-the-world pauses while removing the slot and publishing
+    // its remaining roots and allocations. The collector takes GC_LOCK.write()
+    // before selecting registered threads to signal.
     let _gc_guard = GC_LOCK.read();
-    block_gc_signal();
     if let Some(slot) = THREAD_REGISTRY.write().unwrap().remove(&tid) {
         if slot.tls_statics_len != 0 {
             let entries =
@@ -86,10 +82,8 @@ fn unregister_thread() {
             }
         }
     }
-    // Clear MY_SLOT before unblocking so a pending signal sees null
-    // and returns early, rather than accessing the freed slot.
+    // This thread no longer has a registered slot.
     MY_SLOT.set(std::ptr::null());
-    unblock_gc_signal();
 }
 
 // ---------------------------------------------------------------------------
