@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use test_utils::{run_ast_file, run_codegen_file, run_ir_file};
+use test_utils::{run_ast_file, run_codegen_file, run_tree_ir_file};
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -15,8 +15,8 @@ fn oob_index_ast() {
 
 #[test]
 #[should_panic(expected = "index out of bounds: index is 5 but length is 3")]
-fn oob_index_ir() {
-    run_ir_file(&fixture("oob_index.solar"));
+fn oob_index_tree_ir() {
+    run_tree_ir_file(&fixture("oob_index.solar"));
 }
 
 #[test]
@@ -33,8 +33,8 @@ fn null_deref_ast() {
 
 #[test]
 #[should_panic(expected = "null dereference")]
-fn null_deref_ir() {
-    run_ir_file(&fixture("null_deref.solar"));
+fn null_deref_tree_ir() {
+    run_tree_ir_file(&fixture("null_deref.solar"));
 }
 
 #[test]
@@ -51,8 +51,8 @@ fn oob_slice_ast() {
 
 #[test]
 #[should_panic(expected = "slice end (5) > length (3)")]
-fn oob_slice_ir() {
-    run_ir_file(&fixture("oob_slice.solar"));
+fn oob_slice_tree_ir() {
+    run_tree_ir_file(&fixture("oob_slice.solar"));
 }
 
 #[test]
@@ -69,8 +69,8 @@ fn destructure_bad_len_ast() {
 
 #[test]
 #[should_panic(expected = "array length mismatch: expected 2 elements, got 3")]
-fn destructure_bad_len_ir() {
-    run_ir_file(&fixture("destructure_bad_len.solar"));
+fn destructure_bad_len_tree_ir() {
+    run_tree_ir_file(&fixture("destructure_bad_len.solar"));
 }
 
 #[test]
@@ -87,8 +87,8 @@ fn uncaught_throw_ast() {
 
 #[test]
 #[should_panic(expected = "something went wrong")]
-fn uncaught_throw_ir() {
-    run_ir_file(&fixture("uncaught_throw.solar"));
+fn uncaught_throw_tree_ir() {
+    run_tree_ir_file(&fixture("uncaught_throw.solar"));
 }
 
 #[test]

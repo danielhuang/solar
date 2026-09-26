@@ -4,7 +4,7 @@
 // Two facts combine: a `match` binding is a place *alias* into the scrutinee
 // (codegen materialises it as `scrutinee_storage + payload_offset`, not a copy),
 // and Solar closures capture **by reference**. So a closure over a match
-// binding holds an interior pointer into the scrutinee's pointee. `ir_opt` did
+// binding holds an interior pointer into the scrutinee's pointee. `tree_ir_opt` did
 // not see either — `MakeClosure` captures were not recorded as address-taking
 // (only `Ref`/`Unique` were), and `mark_ref_base_deref` is driven off `Ref`
 // nodes so it never saw the binding — so the scrutinee's value parameter was

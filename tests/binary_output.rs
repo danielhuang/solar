@@ -12,7 +12,7 @@ fn check_output(path: PathBuf, options: CompileOptions) {
     let binary = solar::pipeline::compile(&source)
         .unwrap()
         .to_mangled()
-        .to_ir()
+        .to_tree_ir()
         .to_c(&source.display().to_string())
         .to_binary(&path, options);
 

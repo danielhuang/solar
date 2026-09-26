@@ -1,11 +1,11 @@
-//! In-place optimization passes over lowered IR.
+//! In-place optimization passes over lowered tree IR.
 
 use std::collections::{HashMap, HashSet};
 
 use crate::intrinsics::Intrinsic;
-use crate::ir::{MatchPattern, Module, Node, NodeId, NodeKind, Type, VarId};
+use crate::tree_ir::{MatchPattern, Module, Node, NodeId, NodeKind, Type, VarId};
 
-/// Run all IR optimization passes over `module` to a fixpoint, mutating it in
+/// Run all tree IR optimization passes over `module` to a fixpoint, mutating it in
 /// place. Both passes only ever flip flags `false` → `true` (monotonic) and
 /// report whether they changed anything, so this terminates: `analyze_param_escapes`
 /// iterates until parameter-escape facts stabilize (its transitive rule means
@@ -575,27 +575,28 @@ fn collect_locals(nodes: &[Node], id: NodeId, out: &mut HashSet<VarId>) {
 
 #[cfg(test)]
 mod tests {
-    use crate::{ir, pipeline};
+    use crate::{pipeline, tree_ir};
 
-    /// Compile `src` (a whole program) through to optimized IR. `to_ir` runs
+    /// Compile `src` (a whole program) through to optimized tree IR. `to_tree_ir` runs
     /// `optimized()` runs `analyze_param_escapes`, so the returned module has
     /// `param_noescape` populated (matching the release pipeline).
-    fn ir_of(src: &str) -> ir::Module {
+    fn tree_ir_of(src: &str) -> tree_ir::Module {
         use std::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(0);
         let uniq = N.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("ir_opt_{}_{uniq}.solar", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("tree_ir_opt_{}_{uniq}.solar", std::process::id()));
         std::fs::write(&path, src).unwrap();
         let result = pipeline::compile(&path);
         let _ = std::fs::remove_file(&path);
         let typed = result.unwrap_or_else(|(errs, _)| panic!("compile failed: {errs:?}"));
-        typed.to_mangled().to_ir().optimized().ir
+        typed.to_mangled().to_tree_ir().optimized().tree_ir
     }
 
-    /// Find a (root-file) function by its original name. IR names are
+    /// Find a (root-file) function by its original name. tree IR names are
     /// length-prefix mangled (`noesc` -> `5_noescG2_...`); a zero-parameter
     /// function keeps its plain name (`caller`). Accept either form.
-    fn find_func<'a>(m: &'a ir::Module, name: &str) -> &'a ir::Function {
+    fn find_func<'a>(m: &'a tree_ir::Module, name: &str) -> &'a tree_ir::Function {
         let needle = format!("{}_{}G", name.len(), name);
         m.functions
             .iter()
@@ -603,13 +604,13 @@ mod tests {
             .unwrap_or_else(|| panic!("function `{name}` not found"))
     }
 
-    fn noescape_of(m: &ir::Module, name: &str) -> Vec<bool> {
+    fn noescape_of(m: &tree_ir::Module, name: &str) -> Vec<bool> {
         find_func(m, name).param_noescape.clone()
     }
 
     #[test]
     fn noescape_basic() {
-        let m = ir_of(
+        let m = tree_ir_of(
             "fn noesc(x: Int, y: Int) -> Int { x + y }\n\
              fn addrfn(x: Int) -> &Int { x& }\n\
              fn main() { println(noesc(1, 2)); println(addrfn(5)@); }\n",
@@ -623,7 +624,7 @@ mod tests {
     #[test]
     fn noescape_partial() {
         // Only `b`'s address is taken; `a` and `c` are clean.
-        let m = ir_of(
+        let m = tree_ir_of(
             "fn partialfn(a: Int, b: Int, c: Int) -> &Int { let _ = a + c; b& }\n\
              fn main() { println(partialfn(1, 2, 3)@); }\n",
         );
@@ -634,7 +635,7 @@ mod tests {
     fn noescape_closure_capture() {
         // A parameter captured by a closure lowers to a `Ref`, so it must be
         // treated as escaping.
-        let m = ir_of(
+        let m = tree_ir_of(
             "fn capfn(captured: Int, plain: Int) -> fn() -> Int { let _ = plain; \\ captured }\n\
              fn main() { println(capfn(7, 9)()); }\n",
         );
@@ -646,7 +647,7 @@ mod tests {
         // `fwd` only forwards its pointer to `reads` (which just derefs), so the
         // fixpoint should mark `fwd`'s param non-escaping too. `leakfwd` forwards
         // to `leaks` (which returns it), so it stays escaping.
-        let m = ir_of(
+        let m = tree_ir_of(
             "fn reads(p: &Int) -> Int { p@ }\n\
              fn leaks(p: &Int) -> &Int { p }\n\
              fn fwd(q: &Int) -> Int { reads(q) }\n\
@@ -667,7 +668,7 @@ mod tests {
 
     #[test]
     fn noescape_reference_copy_must_be_contained() {
-        let m = ir_of(
+        let m = tree_ir_of(
             "fn reads(value: &Int) -> Int { value@ }\n\
              fn leaks(value: &Int) -> &Int { value }\n\
              fn reads_copy(value: &Int) -> Int { let copy = value; reads(copy) }\n\
@@ -680,7 +681,7 @@ mod tests {
 
     #[test]
     fn noescape_interior_reference_tracks_derived_reference() {
-        let m = ir_of(
+        let m = tree_ir_of(
             "struct Pair { value: Int, }\n\
              fn reads(value: &Int) -> Int { value@ }\n\
              fn reads_field(pair: &Pair) -> Int { reads(pair@.value&) }\n\
@@ -703,7 +704,7 @@ mod tests {
         // key_hash(key&)/find(key&)` pattern. `x&` flows to `reads` (which only
         // derefs), so `x` needs no per-call box. `leaktaker` forwards `y&` to
         // `leaks` (which returns it), so `y` stays escaping.
-        let m = ir_of(
+        let m = tree_ir_of(
             "fn reads(p: &Int) -> Int { p@ }\n\
              fn leaks(p: &Int) -> &Int { p }\n\
              fn taker(x: Int) -> Int { reads(x&) }\n\
@@ -716,7 +717,7 @@ mod tests {
 
     #[test]
     fn black_box_ref_argument_does_not_escape() {
-        let m = ir_of(
+        let m = tree_ir_of(
             "import {black_box_ref} from \"@intrinsics\";\n\
              fn hide(x: Int) -> Int { black_box_ref(x&); x }\n\
              fn main() { println(hide(3)); }\n",
@@ -726,7 +727,7 @@ mod tests {
 
     #[test]
     fn gc_keepalive_argument_does_not_escape() {
-        let m = ir_of(
+        let m = tree_ir_of(
             "import {gc_keepalive} from \"@intrinsics\";\n\
              fn keep(x: &Int) { gc_keepalive(x); }\n\
              fn main() { let x = 3; keep(x&); }\n",
@@ -737,15 +738,15 @@ mod tests {
     /// Whether the `let = <n>` binding (the `Let` whose value is the integer
     /// literal `n`) in function `name` is marked non-escaping. Targets the data
     /// binding specifically, ignoring compiler-generated reference temps.
-    fn int_let_noescape(m: &ir::Module, name: &str, n: i64) -> bool {
+    fn int_let_noescape(m: &tree_ir::Module, name: &str, n: i64) -> bool {
         let f = find_func(m, name);
         f.nodes
             .iter()
             .find_map(|node| {
-                if let ir::NodeKind::Let {
+                if let tree_ir::NodeKind::Let {
                     value, noescape, ..
                 } = &node.kind
-                    && matches!(f.nodes[value.0].kind, ir::NodeKind::IntegerLiteral(v) if v == n)
+                    && matches!(f.nodes[value.0].kind, tree_ir::NodeKind::IntegerLiteral(v) if v == n)
                 {
                     return Some(*noescape);
                 }
@@ -757,7 +758,7 @@ mod tests {
     #[test]
     fn let_noescape_address_never_taken() {
         // `z`'s address is never taken -> vacuously non-escaping.
-        let m = ir_of(
+        let m = tree_ir_of(
             "fn f() -> Int { let z = 99; z + 1 }\n\
              fn main() { println(f()); }\n",
         );
@@ -768,7 +769,7 @@ mod tests {
     fn let_noescape_direct_call() {
         // `a&` passed directly to `reads`, whose `&Int` param is only deref'd
         // (non-escaping) -> `a` is stack-eligible.
-        let m = ir_of(
+        let m = tree_ir_of(
             "fn reads(p: &Int) -> Int { p@ }\n\
              fn caller() -> Int { let a = 10; reads(a&) }\n\
              fn main() { println(caller()); }\n",
@@ -783,7 +784,7 @@ mod tests {
         // its only use forwards the pointer to `reads`' non-escaping param — so
         // storing `b&` into `rb` doesn't let `b` escape. `b` and the two-hop `c`
         // are both stack-allocatable.
-        let m = ir_of(
+        let m = tree_ir_of(
             "fn reads(p: &Int) -> Int { p@ }\n\
              fn caller() -> Int {\n\
                let b = 20; let rb = b&; let x = reads(rb);\n\
@@ -801,7 +802,7 @@ mod tests {
         // `leaks` returns its pointer param (escapes). Routing `c&` through a
         // binding `rc` that then feeds `leaks` does NOT make `c` non-escaping —
         // `rc` isn't contained (its contents reach an escaping place).
-        let m = ir_of(
+        let m = tree_ir_of(
             "fn leaks(p: &Int) -> &Int { p }\n\
              fn caller() -> Int { let c = 30; let rc = c&; leaks(rc)@ }\n\
              fn main() { println(caller()); }\n",
@@ -813,7 +814,7 @@ mod tests {
     #[test]
     fn let_noescape_direct_escaping_callee_not_marked() {
         // Direct `c&` to an escaping callee is still not marked.
-        let m = ir_of(
+        let m = tree_ir_of(
             "fn leaks(p: &Int) -> &Int { p }\n\
              fn caller() -> Int { let c = 30; leaks(c&)@ }\n\
              fn main() { println(caller()); }\n",
@@ -826,7 +827,7 @@ mod tests {
         // A static can retain the reference after both the try closure and the
         // initializing function return. The pointee must therefore remain a
         // heap allocation even though the assignment is nested in a try body.
-        let m = ir_of(
+        let m = tree_ir_of(
             "struct Large { value: Int, padding: Int, }\n\
              static SAVED: &?Large = null#[Large];\n\
              fn initialize() {\n\
@@ -846,13 +847,13 @@ mod tests {
             .iter()
             .find_map(|function| {
                 function.nodes.iter().find_map(|node| {
-                    let ir::NodeKind::Let {
+                    let tree_ir::NodeKind::Let {
                         value, noescape, ..
                     } = &node.kind
                     else {
                         return None;
                     };
-                    let ir::NodeKind::StructLiteral { name, fields } =
+                    let tree_ir::NodeKind::StructLiteral { name, fields } =
                         &function.nodes[value.0].kind
                     else {
                         return None;
@@ -861,7 +862,7 @@ mod tests {
                         && fields.iter().any(|(_, field)| {
                             matches!(
                                 function.nodes[field.0].kind,
-                                ir::NodeKind::IntegerLiteral(41)
+                                tree_ir::NodeKind::IntegerLiteral(41)
                             )
                         }))
                     .then_some((function, *noescape))
@@ -877,7 +878,7 @@ mod tests {
 
     #[test]
     fn match_call_scrutinee_is_stack_allocated_when_binding_does_not_escape() {
-        let m = ir_of(
+        let m = tree_ir_of(
             "fn find(x: Int) -> Option#[Int] { Option#[Int]::Some(x) }\n\
              fn get(p: &Int) -> Option#[&Int] {\n\
                match find(p@) {\n\
@@ -889,13 +890,13 @@ mod tests {
         );
         let get = find_func(&m, "get");
         let noescape = get.nodes.iter().find_map(|node| {
-            let ir::NodeKind::Let {
+            let tree_ir::NodeKind::Let {
                 value, noescape, ..
             } = &node.kind
             else {
                 return None;
             };
-            matches!(get.nodes[value.0].kind, ir::NodeKind::Call { ref function, .. } if function.contains("4_findG"))
+            matches!(get.nodes[value.0].kind, tree_ir::NodeKind::Call { ref function, .. } if function.contains("4_findG"))
                 .then_some(*noescape)
         });
         assert_eq!(noescape, Some(true), "optimized get IR: {:#?}", get.nodes);
@@ -903,7 +904,7 @@ mod tests {
 
     #[test]
     fn hashmap_get_find_result_is_stack_allocated() {
-        let m = ir_of(
+        let m = tree_ir_of(
             "fn main() {\n\
                let map = hashbrown::HashMap#[Uint64, Uint64]();\n\
                map&.insert(1u64, 2u64);\n\
@@ -912,13 +913,13 @@ mod tests {
         );
         let get = find_func(&m, "get");
         let noescape = get.nodes.iter().find_map(|node| {
-            let ir::NodeKind::Let {
+            let tree_ir::NodeKind::Let {
                 value, noescape, ..
             } = &node.kind
             else {
                 return None;
             };
-            matches!(get.nodes[value.0].kind, ir::NodeKind::Call { ref function, .. } if function.contains("method_4_findG"))
+            matches!(get.nodes[value.0].kind, tree_ir::NodeKind::Call { ref function, .. } if function.contains("method_4_findG"))
                 .then_some(*noescape)
         });
         assert_eq!(noescape, Some(true), "optimized get IR: {:#?}", get.nodes);
@@ -926,7 +927,7 @@ mod tests {
 
     #[test]
     fn index_value_does_not_escape_with_returned_element_reference() {
-        let m = ir_of(
+        let m = tree_ir_of(
             "fn select(values: &[Int], index: Uint) -> &Int { values@[index]& }\n\
              fn main() { let values: [Int] = [10, 20]; println(select(values&, 0u)@); }\n",
         );
@@ -937,7 +938,7 @@ mod tests {
 
     #[test]
     fn slice_bounds_do_not_escape_with_returned_slice_reference() {
-        let m = ir_of(
+        let m = tree_ir_of(
             "fn select(values: &[Int], start: Uint, end: Uint) -> &[Int] { values@[start..end]& }\n\
              fn main() { let values: [Int] = [10, 20]; println(select(values&, 0u, 1u)@[0u]); }\n",
         );
@@ -948,7 +949,7 @@ mod tests {
 
     #[test]
     fn escaping_reference_inside_index_is_still_detected() {
-        let m = ir_of(
+        let m = tree_ir_of(
             "fn leaks(value: &Uint) -> &Uint { value }\n\
              fn select(values: &[Int], index: Uint) -> &Int { values@[leaks(index&)@]& }\n\
              fn main() { let values: [Int] = [10, 20]; println(select(values&, 0u)@); }\n",
@@ -960,7 +961,7 @@ mod tests {
 
     #[test]
     fn reflective_struct_hash_and_equality_escape_facts() {
-        let m = ir_of(
+        let m = tree_ir_of(
             "pub struct Point { pub x: Int64, pub y: Int64, }\n\
              fn main() { let map = hashbrown::HashMap#[Point, Int](); map&.insert(Point { x: 1i64, y: 2i64, }, 3); return; }\n",
         );
@@ -982,7 +983,7 @@ mod tests {
             !hash
                 .nodes
                 .iter()
-                .any(|node| matches!(node.kind, ir::NodeKind::ArrayLiteral(_))),
+                .any(|node| matches!(node.kind, tree_ir::NodeKind::ArrayLiteral(_))),
             "unused reflected field names should not be materialized"
         );
         let eq = m
@@ -999,7 +1000,7 @@ mod tests {
         assert!(
             !eq.nodes
                 .iter()
-                .any(|node| matches!(node.kind, ir::NodeKind::ArrayLiteral(_))),
+                .any(|node| matches!(node.kind, tree_ir::NodeKind::ArrayLiteral(_))),
             "unused reflected field names should not be materialized"
         );
     }

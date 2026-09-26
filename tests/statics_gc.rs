@@ -17,7 +17,7 @@ fn build(src: &str, name: &str, options: CompileOptions) -> (tempdir::TempDir, P
     let typed = solar::pipeline::compile(&src_path).unwrap();
     let binary = typed
         .to_mangled()
-        .to_ir()
+        .to_tree_ir()
         .optimized()
         .to_c(&src_path.display().to_string())
         .to_binary(dir.join(name), options)

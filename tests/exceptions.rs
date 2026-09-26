@@ -56,10 +56,10 @@ fn main() {
 "#,
     )
     .unwrap();
-    let ir = solar::pipeline::compile(&source)
+    let tree_ir = solar::pipeline::compile(&source)
         .unwrap()
         .to_mangled()
-        .to_ir()
+        .to_tree_ir()
         .optimized();
     for (index, options) in [
         CompileOptions::RELEASE,
@@ -72,7 +72,7 @@ fn main() {
     .into_iter()
     .enumerate()
     {
-        let binary = ir
+        let binary = tree_ir
             .to_c(&source.display().to_string())
             .to_binary(directory.path().join(format!("lifetime-{index}")), options);
         assert_eq!(binary.run("exception lifetime"), "passed\n");
@@ -100,7 +100,7 @@ fn main() {
     let binary = solar::pipeline::compile(&source)
         .unwrap()
         .to_mangled()
-        .to_ir()
+        .to_tree_ir()
         .optimized()
         .to_c(&source.display().to_string())
         .to_binary(directory.path().join("uncaught"), CompileOptions::RELEASE);
@@ -127,7 +127,7 @@ fn production_exception_behavior_matches_interpreters() {
     let binary = solar::pipeline::compile(&source)
         .unwrap()
         .to_mangled()
-        .to_ir()
+        .to_tree_ir()
         .optimized()
         .to_c(&source.display().to_string())
         .to_binary(directory.path().join("exception"), CompileOptions::RELEASE);
@@ -163,12 +163,12 @@ fn main() {
     solar::ast_interp::interpret_to(&mangled.mangled, &b""[..], &mut ast_output);
     assert_eq!(ast_output, expected.as_bytes());
 
-    let ir = mangled.to_ir().optimized();
-    let mut ir_output = Vec::new();
-    solar::ir_interp::interpret_to(&ir.ir, &b""[..], &mut ir_output);
-    assert_eq!(ir_output, expected.as_bytes());
+    let tree_ir = mangled.to_tree_ir().optimized();
+    let mut tree_ir_output = Vec::new();
+    solar::tree_ir_interp::interpret_to(&tree_ir.tree_ir, &b""[..], &mut tree_ir_output);
+    assert_eq!(tree_ir_output, expected.as_bytes());
 
-    let binary = ir.to_c(&source.display().to_string()).to_binary(
+    let binary = tree_ir.to_c(&source.display().to_string()).to_binary(
         directory.path().join("unsized_assignment"),
         CompileOptions::RELEASE,
     );

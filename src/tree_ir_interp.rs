@@ -1,6 +1,6 @@
 use crate::ast::BinOp;
 use crate::intrinsics::{AtomicFetchOp, Intrinsic};
-use crate::ir::*;
+use crate::tree_ir::*;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 
@@ -209,7 +209,7 @@ struct Interpreter<'a, 'io> {
     /// reached through `eval_into`, which doesn't know the function's slot.
     ret_dst: Vec<usize>,
     /// Storage address of each `Module::statics` slot (zeroed at start; their
-    /// literal initial values are stored by the assignments IR lowering
+    /// literal initial values are stored by the assignments tree IR lowering
     /// prepended to `main`).
     static_addrs: Vec<usize>,
     /// Per-module concrete type identities used only by `Any` intrinsics.
@@ -561,7 +561,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         common
     }
 
-    /// A value's element count when it is known from the IR alone, evaluating
+    /// A value's element count when it is known from the tree IR alone, evaluating
     /// nothing. Used where running code would be wrong (untaken branches).
     fn static_meta(nodes: &[Node], id: NodeId) -> Option<usize> {
         if let Type::FixedArray(_, n) = &nodes[id.0].ty {
@@ -2310,14 +2310,14 @@ impl<'a, 'io> Interpreter<'a, 'io> {
     }
 }
 
-/// Interprets an IR module using process standard input and output.
+/// Interprets a tree IR module using process standard input and output.
 pub fn interpret(module: &Module) {
     let _memory_limit = solar_shared::memory_limit::MemoryLimit::start();
     let mut interp = Interpreter::new(module, std::io::stdin(), std::io::stdout());
     interp.run();
 }
 
-/// Interprets an IR module with explicit input and output streams.
+/// Interprets a tree IR module with explicit input and output streams.
 pub fn interpret_to(module: &Module, stdin: impl Read, stdout: impl Write) {
     let _memory_limit = solar_shared::memory_limit::MemoryLimit::start();
     let mut interp = Interpreter::new(module, stdin, stdout);
@@ -2446,7 +2446,7 @@ mod tests {
         static N: AtomicU64 = AtomicU64::new(0);
         let uniq = N.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "ir_interp_empty_array_ref_{}_{uniq}.solar",
+            "tree_ir_interp_empty_array_ref_{}_{uniq}.solar",
             std::process::id()
         ));
         std::fs::write(
@@ -2462,7 +2462,7 @@ mod tests {
         let result = pipeline::compile(&path);
         let _ = std::fs::remove_file(&path);
         let typed = result.unwrap_or_else(|(errors, _)| panic!("compile failed: {errors:?}"));
-        let module = typed.to_mangled().to_ir().optimized().ir;
+        let module = typed.to_mangled().to_tree_ir().optimized().tree_ir;
         let mut output = Vec::new();
         super::interpret_to(&module, std::io::empty(), &mut output);
         assert_eq!(String::from_utf8(output).unwrap(), "7\n");

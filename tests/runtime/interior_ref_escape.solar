@@ -1,4 +1,4 @@
-// Regression: escape analysis (ir_opt, release + optimized-IR debug builds)
+// Regression: escape analysis (tree_ir_opt, release + optimized-IR debug builds)
 // stack-placed a local whose interior reference escaped through a
 // ref-of-deref: `let r = leaf&; r@.b&` re-derives the pointer `r` holds into
 // a fresh reference, which is returned. `r`'s Deref use counted as a plain

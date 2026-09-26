@@ -17,7 +17,7 @@ fn run_fixture(fixture: &str, name: &str, options: CompileOptions, disabled: boo
         .map_err(|(errors, _)| errors)
         .unwrap()
         .to_mangled()
-        .to_ir()
+        .to_tree_ir()
         .optimized()
         .to_c(&source.display().to_string())
         .to_binary(directory.path().join(name), options);
@@ -73,7 +73,7 @@ fn collection_disabled() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/runtime/gc_disabled.solar");
     let expected = "collect_gc: GC is disabled\n";
     assert_eq!(test_utils::run_ast_file(&fixture), expected);
-    assert_eq!(test_utils::run_ir_file(&fixture), expected);
+    assert_eq!(test_utils::run_tree_ir_file(&fixture), expected);
     assert_eq!(
         run_fixture(
             "tests/runtime/gc_disabled.solar",

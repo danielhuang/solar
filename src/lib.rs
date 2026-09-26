@@ -16,12 +16,6 @@ pub mod fmt;
 pub mod interp_io;
 /// Compiler intrinsics.
 pub mod intrinsics;
-/// Lowered intermediate representation.
-pub mod ir;
-/// IR interpreter.
-pub mod ir_interp;
-/// IR optimization passes.
-pub mod ir_opt;
 /// AST with final symbol names.
 pub mod mangled_ast;
 /// Solar parser.
@@ -34,6 +28,12 @@ pub mod resolve;
 pub mod resolved_ast;
 /// Lexical scope utilities.
 pub mod scope;
+/// Lowered tree intermediate representation.
+pub mod tree_ir;
+/// Tree IR interpreter.
+pub mod tree_ir_interp;
+/// Tree IR optimization passes.
+pub mod tree_ir_opt;
 /// Typed and monomorphized AST.
 pub mod typed_ast;
 /// Types shared by compiler stages.

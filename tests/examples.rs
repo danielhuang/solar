@@ -22,12 +22,12 @@ fn example_files() -> Vec<PathBuf> {
 }
 
 #[test]
-fn all_examples_lower_to_ir() {
+fn all_examples_lower_to_tree_ir() {
     for path in &example_files() {
         let name = path.file_name().unwrap().to_str().unwrap();
         eprintln!("lowering {name}");
         let typed = solar::pipeline::compile(path).unwrap();
-        typed.to_mangled().to_ir();
+        typed.to_mangled().to_tree_ir();
     }
 }
 
@@ -43,7 +43,7 @@ fn all_examples_compile_debug() {
         solar::pipeline::compile(path)
             .unwrap()
             .to_mangled()
-            .to_ir()
+            .to_tree_ir()
             .optimized()
             .to_c(&path.display().to_string())
             .to_binary(directory.path().join(&test_name), CompileOptions::DEBUG);

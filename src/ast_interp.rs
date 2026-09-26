@@ -55,7 +55,7 @@ fn is_float(ty: &Type) -> bool {
 }
 
 /// Truncate a raw bitwise/shift result to an integer type's width, sign-
-/// extending for signed types. Mirrors the width-masking the IR interpreter and
+/// extending for signed types. Mirrors the width-masking the tree IR interpreter and
 /// the compiled backend apply, so e.g. `128u8 << 1u8` is `0`, not `256`.
 fn truncate_int(val: u64, ty: &Type) -> i64 {
     let bits = ty.int_bit_width();
@@ -1453,7 +1453,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                         match (&lv, &rv) {
                             // Floats are raw bit patterns in `Value::Int`.
                             (Value::Int(a), Value::Int(b)) if float => {
-                                Value::Int(crate::ir_interp::float_binop(
+                                Value::Int(crate::tree_ir_interp::float_binop(
                                     *op,
                                     *a as u64,
                                     *b as u64,
@@ -1961,9 +1961,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 Value::Ref(Rc::new(RefCell::new(Value::Array(Vec::new()))))
             }
             Intrinsic::MonotonicTime | Intrinsic::SystemTime => {
-                Value::Int(crate::ir_interp::time_ns(intrinsic) as i64)
+                Value::Int(crate::tree_ir_interp::time_ns(intrinsic) as i64)
             }
-            Intrinsic::NumCpus => Value::Int(crate::ir_interp::num_cpus() as i64),
+            Intrinsic::NumCpus => Value::Int(crate::tree_ir_interp::num_cpus() as i64),
             Intrinsic::Sqrt
             | Intrinsic::Sin
             | Intrinsic::Cos
@@ -1984,7 +1984,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     _ => unreachable!(),
                 };
                 let is_f32 = arguments[0].ty == crate::mangled_ast::Type::Float32;
-                Value::Int(crate::ir_interp::float_unary(intrinsic, raw, is_f32) as i64)
+                Value::Int(crate::tree_ir_interp::float_unary(intrinsic, raw, is_f32) as i64)
             }
             Intrinsic::Atan2 | Intrinsic::Pow => {
                 let a = match self.eval_expr(&arguments[0])? {
@@ -1996,7 +1996,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     _ => unreachable!(),
                 };
                 let is_f32 = arguments[0].ty == crate::mangled_ast::Type::Float32;
-                Value::Int(crate::ir_interp::float_binary(intrinsic, a, b, is_f32) as i64)
+                Value::Int(crate::tree_ir_interp::float_binary(intrinsic, a, b, is_f32) as i64)
             }
             Intrinsic::Exit => {
                 let code = match self.eval_expr(&arguments[0])? {
@@ -2128,8 +2128,12 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let Value::Int(old) = *slot.borrow() else {
                     unreachable!("atomic fetch requires an integer or Bool")
                 };
-                let new =
-                    crate::ir_interp::atomic_fetch_value(*op, old as u64, value as u64, result_ty);
+                let new = crate::tree_ir_interp::atomic_fetch_value(
+                    *op,
+                    old as u64,
+                    value as u64,
+                    result_ty,
+                );
                 *slot.borrow_mut() = Value::Int(new as i64);
                 Value::Int(old)
             }

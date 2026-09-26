@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::Once;
 
-use solar::pipeline::{CompileOptions, Ir, Mangled};
+use solar::pipeline::{CompileOptions, Mangled, TreeIr};
 
 static BUILD_RUNTIME: Once = Once::new();
 
@@ -40,10 +40,10 @@ pub fn run_ast(mangled: &Mangled) -> String {
     String::from_utf8(buf).unwrap()
 }
 
-/// Runs an IR program with the IR interpreter.
-pub fn run_ir(ir: &Ir) -> String {
+/// Runs a tree IR program with the tree IR interpreter.
+pub fn run_tree_ir(tree_ir: &TreeIr) -> String {
     let mut buf = Vec::new();
-    solar::ir_interp::interpret_to(&ir.ir, std::io::empty(), &mut buf);
+    solar::tree_ir_interp::interpret_to(&tree_ir.tree_ir, std::io::empty(), &mut buf);
     String::from_utf8(buf).unwrap()
 }
 
@@ -53,11 +53,11 @@ pub fn run_ast_file(file_path: &Path) -> String {
     run_ast(&mangled)
 }
 
-/// Compile a file and run the IR interpreter.
-pub fn run_ir_file(file_path: &Path) -> String {
+/// Compile a file and run the tree IR interpreter.
+pub fn run_tree_ir_file(file_path: &Path) -> String {
     let typed = solar::pipeline::compile(file_path).unwrap();
-    let ir = typed.to_mangled().to_ir();
-    run_ir(&ir)
+    let tree_ir = typed.to_mangled().to_tree_ir();
+    run_tree_ir(&tree_ir)
 }
 
 /// Compile a file and run via codegen.
@@ -67,7 +67,7 @@ pub fn run_codegen_file(file_path: &Path, test_name: &str) -> String {
     let typed = solar::pipeline::compile(file_path).unwrap();
     typed
         .to_mangled()
-        .to_ir()
+        .to_tree_ir()
         .to_c(&file_path.display().to_string())
         .to_binary(directory.path().join(test_name), CompileOptions::DEBUG)
         .run(test_name)
@@ -80,19 +80,19 @@ pub fn run(file_path: &Path, test_name: &str) -> String {
     let mangled = solar::pipeline::compile(file_path).unwrap().to_mangled();
     let ast_out = run_ast(&mangled);
     // Exercise optimized stack placement under ASAN.
-    let ir = mangled.to_ir().optimized();
-    let ir_out = run_ir(&ir);
+    let tree_ir = mangled.to_tree_ir().optimized();
+    let tree_ir_out = run_tree_ir(&tree_ir);
     assert_eq!(
-        ast_out, ir_out,
-        "ast_interp and ir_interp produced different output"
+        ast_out, tree_ir_out,
+        "ast_interp and tree_ir_interp produced different output"
     );
-    let codegen_out = ir
+    let codegen_out = tree_ir
         .to_c(&file_path.display().to_string())
         .to_binary(directory.path().join(test_name), CompileOptions::DEBUG)
         .run(test_name);
     assert_eq!(
-        ir_out, codegen_out,
-        "ir_interp and codegen produced different output"
+        tree_ir_out, codegen_out,
+        "tree_ir_interp and codegen produced different output"
     );
     ast_out
 }

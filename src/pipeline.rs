@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::error::{CompileError, SourceMap};
-use crate::{codegen, ir, ir_opt, mangled_ast, resolve, typed_ast};
+use crate::{codegen, mangled_ast, resolve, tree_ir, tree_ir_opt, typed_ast};
 
 const COMPILE_STACK_SIZE: usize = 64 << 20;
 
@@ -55,34 +55,34 @@ pub struct Mangled {
 }
 
 impl Mangled {
-    /// Lowers the program to IR.
-    pub fn to_ir(self) -> Ir {
-        let ir = ir::lower(&self.mangled);
-        Ir {
-            ir,
+    /// Lowers the program to tree IR.
+    pub fn to_tree_ir(self) -> TreeIr {
+        let tree_ir = tree_ir::lower(&self.mangled);
+        TreeIr {
+            tree_ir,
             source_map: self.source_map,
         }
     }
 }
 
-/// A lowered IR module.
-pub struct Ir {
-    /// IR module.
-    pub ir: ir::Module,
+/// A lowered tree IR module.
+pub struct TreeIr {
+    /// Tree IR module.
+    pub tree_ir: tree_ir::Module,
     /// Sources loaded during compilation.
     pub source_map: SourceMap,
 }
 
-impl Ir {
-    /// Runs the IR optimization passes.
-    pub fn optimized(mut self) -> Ir {
-        ir_opt::optimize(&mut self.ir);
+impl TreeIr {
+    /// Runs the tree IR optimization passes.
+    pub fn optimized(mut self) -> TreeIr {
+        tree_ir_opt::optimize(&mut self.tree_ir);
         self
     }
 
     /// Generates C source.
     pub fn to_c(&self, source_file: &str) -> CSource {
-        let c_source = codegen::generate(&self.ir, source_file, &self.source_map);
+        let c_source = codegen::generate(&self.tree_ir, source_file, &self.source_map);
         CSource {
             c_source,
             source_map: self.source_map.clone(),

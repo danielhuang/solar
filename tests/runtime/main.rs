@@ -46,7 +46,7 @@ fn any() {
     let c = solar::pipeline::compile(&path)
         .unwrap()
         .to_mangled()
-        .to_ir()
+        .to_tree_ir()
         .to_c(&path.display().to_string())
         .c_source;
     assert!(c.contains("UINT64_C(0x00ff0000000000"));
@@ -396,14 +396,14 @@ fn unsized_expression_staging() {
     assert_eq!(run(&path, "unsized_expression_staging"), "staged\n");
     test_utils::ensure_release_runtime_built();
     let directory = tempdir::TempDir::new("solar-unsized-staging").unwrap();
-    let ir = solar::pipeline::compile(&path)
+    let tree_ir = solar::pipeline::compile(&path)
         .unwrap()
         .to_mangled()
-        .to_ir()
+        .to_tree_ir()
         .optimized();
     // A conditional concat must allocate its result only after preparing the
     // chosen length; it does not need separate arrays for the two operands.
-    let generated = ir.to_c(&path.display().to_string());
+    let generated = tree_ir.to_c(&path.display().to_string());
     let body = generated
         .c_source
         .lines()
@@ -421,7 +421,7 @@ fn unsized_expression_staging() {
             ..solar::pipeline::CompileOptions::GC_SAN
         },
     ] {
-        let binary = ir
+        let binary = tree_ir
             .to_c(&path.display().to_string())
             .to_binary(directory.path().join("staged"), options);
         assert_eq!(binary.run("unsized_expression_staging"), "staged\n");
@@ -449,12 +449,12 @@ fn conditional_unsized_metadata_release() {
         solar::pipeline::CompileOptions::RELEASE,
         solar::pipeline::CompileOptions::GC_SAN,
     ] {
-        let ir = solar::pipeline::compile(&path)
+        let tree_ir = solar::pipeline::compile(&path)
             .unwrap()
             .to_mangled()
-            .to_ir()
+            .to_tree_ir()
             .optimized();
-        let binary = ir.to_c(&path.display().to_string()).to_binary(
+        let binary = tree_ir.to_c(&path.display().to_string()).to_binary(
             directory.path().join("conditional_unsized_metadata"),
             options,
         );
@@ -1324,12 +1324,16 @@ fn maybe_zeroed_gc() {
             ..solar::pipeline::CompileOptions::DEBUG
         },
     ] {
-        let ir = solar::pipeline::compile(&path)
+        let tree_ir = solar::pipeline::compile(&path)
             .unwrap()
             .to_mangled()
-            .to_ir();
-        let ir = if options.optimize { ir.optimized() } else { ir };
-        let output = ir
+            .to_tree_ir();
+        let tree_ir = if options.optimize {
+            tree_ir.optimized()
+        } else {
+            tree_ir
+        };
+        let output = tree_ir
             .to_c(&path.display().to_string())
             .to_binary(directory.path().join("maybe_zeroed_gc"), options)
             .run("maybe_zeroed_gc");

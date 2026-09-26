@@ -19,7 +19,7 @@ fn std_code_gets_std_line_directives() {
     let typed = pipeline::compile(&path).unwrap();
     let c = typed
         .to_mangled()
-        .to_ir()
+        .to_tree_ir()
         .to_c(&path.display().to_string())
         .c_source;
 

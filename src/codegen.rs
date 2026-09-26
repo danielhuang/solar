@@ -1,7 +1,7 @@
 use crate::ast::BinOp;
 use crate::error::SourceMap;
 use crate::intrinsics::Intrinsic;
-use crate::ir::*;
+use crate::tree_ir::*;
 use std::collections::{HashMap, HashSet};
 
 /// Upper size bound for placing a non-escaping local/param on the C stack. Above
@@ -39,7 +39,7 @@ enum LoopDestination {
     },
 }
 
-/// Generates a C translation unit for an IR module.
+/// Generates a C translation unit for a tree IR module.
 pub fn generate(module: &Module, source_file: &str, source_map: &SourceMap) -> String {
     let mut cg = Codegen {
         module,

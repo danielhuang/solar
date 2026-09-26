@@ -46,7 +46,7 @@ fn gc_san_runs_collections_without_rejecting_live_objects() {
     let binary = solar::pipeline::compile(&source)
         .unwrap()
         .to_mangled()
-        .to_ir()
+        .to_tree_ir()
         .optimized()
         .to_c(&source.display().to_string())
         .to_binary(dir.join("gc_san"), CompileOptions::GC_SAN);
@@ -84,7 +84,7 @@ fn gc_san_runs_without_lto_or_optimization() {
     let binary = solar::pipeline::compile(&source)
         .unwrap()
         .to_mangled()
-        .to_ir()
+        .to_tree_ir()
         .to_c(&source.display().to_string())
         .to_binary(dir.join("gc_san_unoptimized"), options);
     let result = Command::new(binary.path.canonicalize().unwrap())
@@ -117,7 +117,7 @@ fn gc_san_rejects_offset_ref_outside_its_source_allocation() {
     let c_source = solar::pipeline::compile(&source)
         .unwrap()
         .to_mangled()
-        .to_ir()
+        .to_tree_ir()
         .to_c(&source.display().to_string());
     assert!(
         c_source.c_source.matches("sol_offset_ref(").count() >= 2,
@@ -164,7 +164,7 @@ fn gc_runs_without_lto_gc_san_or_optimization() {
     let binary = solar::pipeline::compile(&source)
         .unwrap()
         .to_mangled()
-        .to_ir()
+        .to_tree_ir()
         .to_c(&source.display().to_string())
         .to_binary(dir.join("gc_unoptimized"), options);
     let result = Command::new(binary.path.canonicalize().unwrap())

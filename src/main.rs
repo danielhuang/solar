@@ -39,7 +39,7 @@ enum SolarCommand {
         source: PathBuf,
         #[command(flatten)]
         build: BuildOptions,
-        /// Run with the AST or IR interpreter instead of native code.
+        /// Run with the AST or tree IR interpreter instead of native code.
         #[arg(long, value_enum, conflicts_with_all = ["release", "gc_san"])]
         interp: Option<Interpreter>,
     },
@@ -71,7 +71,8 @@ impl BuildOptions {
 #[derive(Clone, Copy, ValueEnum)]
 enum Interpreter {
     Ast,
-    Ir,
+    #[value(name = "tree_ir")]
+    TreeIr,
 }
 
 fn main() -> ExitCode {
@@ -104,8 +105,8 @@ fn main() -> ExitCode {
             };
             match interp {
                 Some(Interpreter::Ast) => solar::ast_interp::interpret(&typed.to_mangled().mangled),
-                Some(Interpreter::Ir) => {
-                    solar::ir_interp::interpret(&typed.to_mangled().to_ir().ir)
+                Some(Interpreter::TreeIr) => {
+                    solar::tree_ir_interp::interpret(&typed.to_mangled().to_tree_ir().tree_ir)
                 }
                 None => {
                     let temporary = tempdir::TempDir::new("solar-run").unwrap();
@@ -134,9 +135,14 @@ fn typecheck(source: &Path) -> Result<Typed, ExitCode> {
 }
 
 fn compile_native(typed: Typed, source: &Path, destination: &Path, options: CompileOptions) {
-    let ir = typed.to_mangled().to_ir();
-    let ir = if options.optimize { ir.optimized() } else { ir };
-    ir.to_c(&source.to_string_lossy())
+    let tree_ir = typed.to_mangled().to_tree_ir();
+    let tree_ir = if options.optimize {
+        tree_ir.optimized()
+    } else {
+        tree_ir
+    };
+    tree_ir
+        .to_c(&source.to_string_lossy())
         .to_binary(destination, options);
 }
 

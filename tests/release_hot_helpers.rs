@@ -24,7 +24,7 @@ fn hot_helpers_preserve_runtime_results_and_exceptions() {
         let actual = solar::pipeline::compile(&source)
             .unwrap()
             .to_mangled()
-            .to_ir()
+            .to_tree_ir()
             .optimized()
             .to_c(&source.display().to_string())
             .to_binary(directory.path().join(name), CompileOptions::RELEASE)

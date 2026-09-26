@@ -39,7 +39,7 @@ fn specialized_allocators_retain_allocation_elision() {
     let bin = solar::pipeline::compile(&src_path)
         .unwrap()
         .to_mangled()
-        .to_ir()
+        .to_tree_ir()
         .optimized()
         .to_c(&src_path.display().to_string())
         .to_binary(dir.join("release_alloc_elision"), CompileOptions::RELEASE)

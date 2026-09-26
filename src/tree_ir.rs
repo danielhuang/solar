@@ -5,7 +5,7 @@ use crate::mangled_ast;
 use crate::scope::ScopeStack;
 use std::collections::HashMap;
 
-/// Type representation used by the IR.
+/// Type representation used by the tree IR.
 pub use crate::mangled_ast::Type;
 
 /// Memory layout of a struct or enum.
@@ -54,14 +54,14 @@ pub struct Module {
     /// Lowered functions.
     pub functions: Vec<Function>,
     /// Mutable globals in source order.
-    pub statics: Vec<IrStatic>,
+    pub statics: Vec<TreeIrStatic>,
     /// Synthetic function that restores thread-local statics to their literals.
     pub thread_local_init: Option<String>,
 }
 
 /// A mutable global slot.
 #[derive(Debug)]
-pub struct IrStatic {
+pub struct TreeIrStatic {
     /// Global symbol.
     pub name: String,
     /// Stored type.
@@ -118,7 +118,7 @@ pub struct Param {
     pub ty: Type,
 }
 
-/// An IR node with its type and source span.
+/// A tree IR node with its type and source span.
 #[derive(Debug)]
 pub struct Node {
     /// Node result type.
@@ -129,7 +129,7 @@ pub struct Node {
     pub span: SourceSpan,
 }
 
-/// A flat-tree IR operation.
+/// A tree IR operation.
 #[derive(Debug)]
 pub enum NodeKind {
     IntegerLiteral(i64),
@@ -221,7 +221,7 @@ pub enum NodeKind {
         /// its storage only flows into calls whose parameter is itself
         /// non-escaping). Codegen may then place it on the C stack instead of a
         /// `sol_alloc` heap box. Default `false` (conservatively may escape);
-        /// set by `ir_opt::analyze_let_noescape`.
+        /// set by `tree_ir_opt::analyze_let_noescape`.
         noescape: bool,
     },
     Assign {
@@ -272,7 +272,7 @@ pub enum MatchPattern {
     Wildcard(VarId, Type),
 }
 
-/// Lowers a mangled AST to IR.
+/// Lowers a mangled AST to tree IR.
 pub fn lower(source: &mangled_ast::SourceFile) -> Module {
     let datatypes = build_datatypes(source);
     let mut next_var = 0..;
@@ -283,10 +283,10 @@ pub fn lower(source: &mangled_ast::SourceFile) -> Module {
         collect_closure_captures(&func.body, &mut closure_captures);
     }
 
-    let statics: Vec<IrStatic> = source
+    let statics: Vec<TreeIrStatic> = source
         .statics
         .iter()
-        .map(|s| IrStatic {
+        .map(|s| TreeIrStatic {
             name: s.name.clone(),
             ty: s.ty.clone(),
             thread_local: s.thread_local,
@@ -1540,7 +1540,7 @@ impl<'a> FunctionLowerer<'a> {
                                 variant_index,
                                 binding,
                             } => {
-                                let binding_ir = binding.as_ref().map(|(name, ty)| {
+                                let binding_tree_ir = binding.as_ref().map(|(name, ty)| {
                                     let var = self.define(name);
                                     (var, ty.clone())
                                 });
@@ -1548,7 +1548,7 @@ impl<'a> FunctionLowerer<'a> {
                                     enum_name: enum_name.clone(),
                                     variant_name: variant_name.clone(),
                                     variant_index: *variant_index as u64,
-                                    binding: binding_ir,
+                                    binding: binding_tree_ir,
                                 }
                             }
                             mangled_ast::TypedPattern::IntegerLiteral(bits) => {
@@ -1808,7 +1808,7 @@ fn lower_function(
         is_unsafe: func.is_unsafe,
         inline_hint: func.inline_hint,
         // Conservative default: every parameter may escape. Refined by
-        // `ir_opt::analyze_param_escapes`.
+        // `tree_ir_opt::analyze_param_escapes`.
         param_noescape: vec![false; num_params],
     }
 }

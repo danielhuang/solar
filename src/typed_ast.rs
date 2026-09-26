@@ -10423,7 +10423,7 @@ fn is_atomic_compatible(ty: &Type, structs: &HashMap<TypeId, StructDef>) -> bool
     matches!(atomic_type_size(ty, structs), Some(1 | 2 | 4 | 8 | 16))
 }
 
-/// Computes the same `(size, alignment)` used by IR layout. Unsized types
+/// Computes the same `(size, alignment)` used by tree IR layout. Unsized types
 /// return `None`.
 fn type_layout(
     ty: &Type,

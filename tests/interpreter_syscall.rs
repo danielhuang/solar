@@ -47,7 +47,11 @@ fn stdout_syscall_retries_and_reports_errors_through_solar() {
         if ast {
             solar::ast_interp::interpret_to(&mangled.mangled, io::empty(), &mut output);
         } else {
-            solar::ir_interp::interpret_to(&mangled.to_ir().ir, io::empty(), &mut output);
+            solar::tree_ir_interp::interpret_to(
+                &mangled.to_tree_ir().tree_ir,
+                io::empty(),
+                &mut output,
+            );
         }
         assert_eq!(
             output.bytes,
@@ -71,7 +75,7 @@ fn interpreters_reject_other_syscalls_and_descriptors() {
         .unwrap();
         let mangled = solar::pipeline::compile(&source).unwrap().to_mangled();
         assert!(catch_unwind(AssertUnwindSafe(|| test_utils::run_ast(&mangled))).is_err());
-        let ir = mangled.to_ir();
-        assert!(catch_unwind(AssertUnwindSafe(|| test_utils::run_ir(&ir))).is_err());
+        let tree_ir = mangled.to_tree_ir();
+        assert!(catch_unwind(AssertUnwindSafe(|| test_utils::run_tree_ir(&tree_ir))).is_err());
     }
 }

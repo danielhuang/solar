@@ -20,7 +20,7 @@ fn fixture() -> std::path::PathBuf {
 
 #[test]
 fn interpreters_run_the_program() {
-    for interpreter in ["ast", "ir"] {
+    for interpreter in ["ast", "tree_ir"] {
         let output = solar()
             .arg("run")
             .arg(fixture())
@@ -94,7 +94,7 @@ fn cli_rejects_missing_arguments_and_conflicting_modes() {
         vec!["run", "source.solar", "--interp"],
         vec!["run", "source.solar", "--interp", "other"],
         vec!["run", "source.solar", "--interp", "ast", "--release"],
-        vec!["run", "source.solar", "--interp", "ir", "--gc-san"],
+        vec!["run", "source.solar", "--interp", "tree_ir", "--gc-san"],
     ] {
         let output = solar().args(&args).output().unwrap();
         assert_eq!(output.status.code(), Some(2), "{args:?}");
