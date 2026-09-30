@@ -8,12 +8,16 @@ use crate::heap::{self, MarkKind};
 use crate::init_cell::InitCell;
 use crate::mem::MarkFn;
 
-/// Cursor over slots claimed from one size class.
+/// Claimed run and cached free addresses for one size class.
 pub struct ThreadClassState {
-    /// Next unconsumed slot.
+    /// First slot of the next bitmap word to scan.
     pub cur: u64,
     /// Exclusive end of the claim.
     pub end: u64,
+    /// Free addresses from one bitmap word, filled from the end.
+    pub cache: [usize; 64],
+    /// Next cached address; 64 means the cache needs refilling.
+    pub cache_index: usize,
 }
 
 /// An unpublished large allocation.
@@ -48,7 +52,12 @@ impl ThreadAllocState {
     /// Creates empty per-thread allocator state.
     pub fn new() -> Self {
         Self {
-            classes: std::array::from_fn(|_| ThreadClassState { cur: 0, end: 0 }),
+            classes: std::array::from_fn(|_| ThreadClassState {
+                cur: 0,
+                end: 0,
+                cache: [0; 64],
+                cache_index: 64,
+            }),
             big_allocs: Vec::new(),
             total_allocations: 0,
         }
@@ -58,6 +67,7 @@ impl ThreadAllocState {
         for c in &mut self.classes {
             c.cur = 0;
             c.end = 0;
+            c.cache_index = 64;
         }
     }
 }
@@ -73,9 +83,9 @@ const MIN_SIZE_UNTIL_GC: usize = 1 << 30;
 
 /// GC trigger. Records `bytes` of freshly claimed memory — an arena run from
 /// `heap::claim_run` or one big allocation — and requests a cycle once the
-/// bytes claimed since the last cycle outgrow the traced live size that cycle
-/// found. `SOLAR_DISABLE_GC` gates only the request, so the accounting stays
-/// identical in disabled runs.
+/// bytes claimed since the last cycle exceed the traced live size that cycle
+/// found plus `MIN_SIZE_UNTIL_GC`. `SOLAR_DISABLE_GC` gates only the request,
+/// so the accounting stays identical in disabled runs.
 pub(crate) fn note_claimed(bytes: usize) {
     let claimed = CLAIMED_SINCE_GC.fetch_add(bytes, Ordering::Relaxed) + bytes;
     let threshold = LIVE_SIZE_FROM_LAST_GC.load(Ordering::Relaxed) + MIN_SIZE_UNTIL_GC;

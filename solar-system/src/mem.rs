@@ -2,8 +2,8 @@ use std::alloc::Layout;
 use std::sync::atomic::Ordering;
 
 use crate::gc::{
-    BigAllocLocal, ENABLE_ALLOC_PRINTS, SOL_CONCURRENT_MARKING, ThreadAllocState, note_claimed,
-    with_thread_slot,
+    BigAllocLocal, ENABLE_ALLOC_PRINTS, SOL_CONCURRENT_MARKING, ThreadAllocState, ThreadClassState,
+    note_claimed, with_thread_slot,
 };
 use crate::heap;
 
@@ -59,11 +59,11 @@ unsafe fn alloc_in_class<const CLASS: isize>(
             let state = &mut *slot.alloc.get();
             let addr = if CLASS == -1 {
                 match heap::size_class(size, align) {
-                    Some(class) => arena_allocate(state, class, size, mark_fn),
+                    Some(class) => arena_allocate::<-1>(state, class, size, mark_fn),
                     None => big_allocate(state, size, align, mark_fn),
                 }
             } else {
-                arena_allocate(state, CLASS as usize, size, mark_fn)
+                arena_allocate::<CLASS>(state, CLASS as usize, size, mark_fn)
             };
             account_alloc(state);
             addr
@@ -121,37 +121,23 @@ class_allocators!(
 /// Allocate `size` bytes (rounded up to a power-of-2 size class) from the
 /// arena. Returns a correctly-aligned pointer to **uninitialized** memory; the
 /// caller (codegen) zeroes it with an explicit `memset` that LLVM can elide.
-unsafe fn arena_allocate(
+/// `CLASS == -1` uses the runtime class; fixed classes stay specialized through
+/// the cold refill, without requiring that refill to inline into the fast path.
+unsafe fn arena_allocate<const CLASS: isize>(
     state: &mut ThreadAllocState,
     class: usize,
     size: usize,
     mark_fn: MarkFn,
 ) -> *mut u8 {
-    // Scan one allocation-bitmap word per recycled run segment.
-    let slot = 'find: loop {
-        let cs = &mut state.classes[class];
-        while cs.cur < cs.end {
-            let cur = cs.cur;
-            let w = unsafe { heap::alloc_word_load(class, (cur >> 6) as usize) };
-            if w & (1 << (cur & 63)) == 0 {
-                cs.cur = cur + 1;
-                break 'find cur as usize;
-            }
-            let free = !w & (u64::MAX << (cur & 63));
-            if free != 0 {
-                let s = (cur & !63) + free.trailing_zeros() as u64;
-                cs.cur = s + 1;
-                break 'find s as usize;
-            }
-            cs.cur = (cur | 63) + 1;
-        }
-        let (s, e) = heap::claim_run(class);
-        cs.cur = s;
-        cs.end = e;
-    };
-
+    let class = if CLASS == -1 { class } else { CLASS as usize };
+    let cs = &mut state.classes[class];
+    if cs.cache_index == 64 {
+        unsafe { refill_cache::<CLASS>(cs, class) };
+    }
+    let addr = cs.cache[cs.cache_index];
+    cs.cache_index += 1;
     let rbase = heap::region_base(class);
-    let addr = heap::slot_addr(rbase, slot, class);
+    let slot = heap::slot_index(addr, rbase, class);
 
     // Publish metadata before the allocation bit.
     if class >= heap::META_MIN_CLASS {
@@ -166,6 +152,95 @@ unsafe fn arena_allocate(
     }
 
     addr as *mut u8
+}
+
+/// Scan only on cache exhaustion. Claims contain whole bitmap words and are
+/// private to this mutator until GC resets both the claim and its cache.
+#[cold]
+unsafe fn refill_cache<const CLASS: isize>(cs: &mut ThreadClassState, class: usize) {
+    let class = if CLASS == -1 { class } else { CLASS as usize };
+    loop {
+        if cs.cur == cs.end {
+            (cs.cur, cs.end) = heap::claim_run(class);
+        }
+        let word_slot = cs.cur as usize;
+        cs.cur += 64;
+        let allocated = unsafe { heap::alloc_word_load(class, word_slot >> 6) };
+        if allocated == u64::MAX {
+            continue;
+        }
+        let base = heap::slot_addr(heap::region_base(class), word_slot, class);
+        fill_cache::<CLASS>(cs, base, class, !allocated);
+        return;
+    }
+}
+
+const CACHE_CHUNK_BITS: usize = 4;
+const CACHE_CHUNK_MASKS: usize = 1 << CACHE_CHUNK_BITS;
+
+/// Write a nibble's free slots, with both its class and bitmap known at compile time.
+/// The caller must provide an index in 4..=64, below previously packed entries.
+#[inline(always)]
+unsafe fn fill_chunk<const CLASS: isize, const MASK: u8>(
+    cache: &mut [usize; 64],
+    base: usize,
+    class: usize,
+    mut index: usize,
+) -> usize {
+    let class = if CLASS == -1 { class } else { CLASS as usize };
+    for bit in (0..CACHE_CHUNK_BITS).rev() {
+        if MASK & (1 << bit) != 0 {
+            index -= 1;
+            // SAFETY: the caller provides room for four entries, and the
+            // compile-time mask selects at most four decrements/stores.
+            unsafe {
+                *cache.get_unchecked_mut(index) = base + (bit << heap::slot_size_log(class));
+            }
+        }
+    }
+    index
+}
+
+fn fill_cache<const CLASS: isize>(cs: &mut ThreadClassState, base: usize, class: usize, free: u64) {
+    let class = if CLASS == -1 { class } else { CLASS as usize };
+    if free == u64::MAX {
+        // Fresh words need no bit scanning; this regular fill can vectorize.
+        for (bit, address) in cs.cache.iter_mut().enumerate().rev() {
+            *address = base + (bit << heap::slot_size_log(class));
+        }
+        cs.cache_index = 0;
+        return;
+    }
+    let mut index = 64;
+    for chunk in (0..64 / CACHE_CHUNK_BITS).rev() {
+        let bit = chunk * CACHE_CHUNK_BITS;
+        let mask = ((free >> bit) & (CACHE_CHUNK_MASKS as u64 - 1)) as u8;
+        let chunk_base = base + (bit << heap::slot_size_log(class));
+        // SAFETY: before chunk k, at most 4*k slots have been packed, so
+        // 64 - 4*k <= index <= 64 and there is room for this entire chunk.
+        index = unsafe {
+            match mask {
+                0 => fill_chunk::<CLASS, 0>(&mut cs.cache, chunk_base, class, index),
+                1 => fill_chunk::<CLASS, 1>(&mut cs.cache, chunk_base, class, index),
+                2 => fill_chunk::<CLASS, 2>(&mut cs.cache, chunk_base, class, index),
+                3 => fill_chunk::<CLASS, 3>(&mut cs.cache, chunk_base, class, index),
+                4 => fill_chunk::<CLASS, 4>(&mut cs.cache, chunk_base, class, index),
+                5 => fill_chunk::<CLASS, 5>(&mut cs.cache, chunk_base, class, index),
+                6 => fill_chunk::<CLASS, 6>(&mut cs.cache, chunk_base, class, index),
+                7 => fill_chunk::<CLASS, 7>(&mut cs.cache, chunk_base, class, index),
+                8 => fill_chunk::<CLASS, 8>(&mut cs.cache, chunk_base, class, index),
+                9 => fill_chunk::<CLASS, 9>(&mut cs.cache, chunk_base, class, index),
+                10 => fill_chunk::<CLASS, 10>(&mut cs.cache, chunk_base, class, index),
+                11 => fill_chunk::<CLASS, 11>(&mut cs.cache, chunk_base, class, index),
+                12 => fill_chunk::<CLASS, 12>(&mut cs.cache, chunk_base, class, index),
+                13 => fill_chunk::<CLASS, 13>(&mut cs.cache, chunk_base, class, index),
+                14 => fill_chunk::<CLASS, 14>(&mut cs.cache, chunk_base, class, index),
+                15 => fill_chunk::<CLASS, 15>(&mut cs.cache, chunk_base, class, index),
+                _ => unreachable!(),
+            }
+        };
+    }
+    cs.cache_index = index;
 }
 
 /// Record `bytes` of allocation against the trigger counter and, in batches,
@@ -312,4 +387,49 @@ pub extern "C-unwind" fn sol_assert_unsized_assignment_len_slow(target: u64, val
     crate::panic::throw_message(format_args!(
         "unsized assignment: length mismatch ({target} vs {value})"
     ));
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    #[test]
+    fn cached_addresses_cover_only_free_slots_in_ascending_order() {
+        let mut state = ThreadAllocState::new();
+        for (class, cs) in state.classes.iter_mut().enumerate() {
+            let base = 128 * heap::slot_size(class);
+            let chunk_masks = (0..64 / CACHE_CHUNK_BITS).flat_map(|chunk| {
+                (0..CACHE_CHUNK_MASKS as u64).flat_map(move |mask| {
+                    let free = mask << (chunk * CACHE_CHUNK_BITS);
+                    [free, !free]
+                })
+            });
+            for free in [u64::MAX, 0, 1, 1 << 63, 0xaaaa_5555_8000_0001]
+                .into_iter()
+                .chain(chunk_masks)
+            {
+                fill_cache::<-1>(cs, base, class, free);
+                let expected: Vec<_> = (0..64)
+                    .filter(|bit| free & (1 << bit) != 0)
+                    .map(|bit| base + bit * heap::slot_size(class))
+                    .collect();
+                assert_eq!(&cs.cache[cs.cache_index..], expected);
+            }
+        }
+    }
+
+    #[test]
+    fn resetting_claims_discards_partially_consumed_caches() {
+        let mut state = ThreadAllocState::new();
+        for (class, cs) in state.classes.iter_mut().enumerate() {
+            cs.cur = 64;
+            cs.end = 128;
+            fill_cache::<-1>(cs, 128 * heap::slot_size(class), class, u64::MAX);
+            cs.cache_index += 7;
+        }
+        state.reset_claims();
+        for cs in &state.classes {
+            assert_eq!((cs.cur, cs.end, cs.cache_index), (0, 0, 64));
+        }
+    }
 }
