@@ -131,20 +131,17 @@ pub extern "C" fn sol_fd_to_raw(fd_ptr: *mut u8) -> libc::c_int {
 /// Mirrors the heap's allocate path: set the allocated bit, advance the HWM,
 /// and be born marked if a concurrent mark is already in flight. The
 /// born-marked decision (read `SOL_CONCURRENT_MARKING`, conditionally set the
-/// mark bit) must not be interrupted by the STW signal — exactly like
-/// `sol_alloc_impl`'s allocate-black — so the registration runs in a GC critical
-/// section. (An un-registered fd is never swept, so a cycle landing between
-/// the fd-producing syscall and this call can't close it.) The caller must be
-/// a registered mutator thread.
+/// mark bit) must finish before a GC pause, exactly like `sol_alloc_impl`'s
+/// allocate-black. This registration contains no safepoints. An unregistered
+/// fd is never swept, so a cycle between the fd-producing syscall and this
+/// call cannot close it. The caller must be a registered mutator thread.
 pub(crate) unsafe fn register_new_fd(fd: usize) -> *mut u8 {
     unsafe {
-        crate::gc::with_signal_deferred(|_| {
-            (*alloc_word(fd)).fetch_or(bit_mask(fd), Ordering::Relaxed);
-            FD_HWM.fetch_max(fd as u64 + 1, Ordering::Relaxed);
-            if crate::gc::SOL_CONCURRENT_MARKING.load(Ordering::Relaxed) {
-                (*mark_word(fd)).fetch_or(bit_mask(fd), Ordering::Relaxed);
-            }
-        });
+        (*alloc_word(fd)).fetch_or(bit_mask(fd), Ordering::Relaxed);
+        FD_HWM.fetch_max(fd as u64 + 1, Ordering::Relaxed);
+        if crate::gc::SOL_CONCURRENT_MARKING.load(Ordering::Relaxed) {
+            (*mark_word(fd)).fetch_or(bit_mask(fd), Ordering::Relaxed);
+        }
     }
     (FD_BASE.get() + fd) as *mut u8
 }

@@ -123,14 +123,8 @@ pub unsafe extern "C" fn sol_env(out: *mut u8) {
 }
 
 /// Cached `available_parallelism` result, computed once by [`init_num_cpus`]
-/// during `sol_start`. On Linux `available_parallelism` reads the cgroup CPU
-/// quota, which does several system-allocator allocations (`Vec`/`PathBuf`/
-/// `String` in `std`'s `cgroups::quota`) — calling it from a registered
-/// mutator thread would need a GC critical section (the STW signal parking a
-/// thread mid-`malloc` deadlocks the collector's own pause allocations, the
-/// the path-copying file intrinsics' reasoning). Computing it before the GC thread or any
-/// mutator exists sidesteps that entirely and makes the intrinsic a plain
-/// load.
+/// during `sol_start`. Linux cgroup quota discovery allocates and reads files;
+/// caching it makes the intrinsic a plain load.
 static NUM_CPUS: InitCell<u64> = InitCell::new(0);
 
 /// Compute and cache the parallelism. Called once from `sol_start`, before

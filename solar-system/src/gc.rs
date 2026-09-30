@@ -198,8 +198,8 @@ fn slot_bucket(slot: &ThreadSlot) -> usize {
 
 /// Append `v` to this thread's gray buffer, flushing to a shard at capacity.
 /// Caller must own `slot` (single producer) and must run inside
-/// `with_signal_deferred` — the flush takes a shard lock that the GC thread
-/// also takes during a pause, so being parked here would deadlock. (The
+/// runtime code without safepoints: the flush takes a shard lock that the GC
+/// thread also takes during a pause, so being parked here would deadlock. (The
 /// pre-reserved buffer never reallocates: we flush when it reaches capacity.)
 #[inline]
 unsafe fn gray_enqueue_raw(slot: &ThreadSlot, v: usize) {
@@ -211,78 +211,13 @@ unsafe fn gray_enqueue_raw(slot: &ThreadSlot, v: usize) {
     }
 }
 
-/// Enter a GC critical section: bump `in_critical_section` so a STW signal
-/// arriving while we update per-thread GC structures defers (records
-/// `gc_pending_epoch`) instead of parking us mid-update. Pairs with
-/// `end_critical_section`; sections may nest.
-///
-/// The increment is a single `inc` instruction because a signal is only
-/// delivered between instructions: the same-thread handler therefore never
-/// reads a half-updated count. A plain `*p += 1` could compile to
-/// load/inc/store and let the handler observe a stale value.
-///
-/// The `asm!` has a memory operand and no `nomem`, so it is itself a compiler
-/// barrier: the protected work can't be hoisted ahead of the bump.
+/// Access the owning mutator's slot. Runtime code has no compiler-inserted
+/// safepoints, so its per-thread updates finish before the next GC pause.
 #[inline]
-pub(crate) unsafe fn begin_critical_section(slot: &ThreadSlot) {
-    unsafe {
-        asm!(
-            "inc qword ptr [{p}]",
-            p = in(reg) slot.in_critical_section.get(),
-            options(nostack),
-        );
-    }
-}
-
-/// Leave a GC critical section entered by `begin_critical_section`. The
-/// decrement is a single `dec` instruction (same signal-safety reason as the
-/// increment); we read its zero flag to learn whether this was the outermost
-/// section. Only then do we honor a deferred stop.
-///
-/// The `asm!` (memory operand, no `nomem`) is a compiler barrier, so the
-/// `gc_pending_epoch` load stays ordered *after* the decrement: otherwise the
-/// compiler could hoist the load before it, opening a window where a signal
-/// sees the count still nonzero, defers into `gc_pending_epoch`, and this load
-/// misses it — so the thread never acks the GC and the collector hangs forever.
-#[inline]
-pub(crate) unsafe fn end_critical_section(slot: &ThreadSlot) {
-    let outermost: u8;
-    unsafe {
-        asm!(
-            "dec qword ptr [{p}]",
-            "setz {z}",
-            p = in(reg) slot.in_critical_section.get(),
-            z = out(reg_byte) outermost,
-            options(nostack),
-        );
-    }
-    if outermost != 0 {
-        // `gc_pending_epoch` is only written by this thread's own GC signal
-        // handler (and only while the count was nonzero), so a plain load +
-        // reset suffices — no atomic RMW.
-        let pending = slot.gc_pending_epoch.load(Ordering::Acquire);
-        if pending != 0 {
-            slot.gc_pending_epoch.store(0, Ordering::Relaxed);
-            unsafe { self_suspend(slot, pending) };
-        }
-    }
-}
-
-/// Run `f` inside a GC critical section and return its result. Shared by
-/// `sol_alloc_impl` and the barrier / `sol_memcpy` gray-buffer updates — anything
-/// that touches per-thread GC structures (and may lock `GRAY`).
-#[inline]
-pub(crate) unsafe fn with_signal_deferred<R>(f: impl FnOnce(&ThreadSlot) -> R) -> R {
+pub(crate) unsafe fn with_thread_slot<R>(f: impl FnOnce(&ThreadSlot) -> R) -> R {
     let slot = MY_SLOT.get();
-    assert!(
-        !slot.is_null(),
-        "GC critical section on unregistered thread"
-    );
-    let slot = unsafe { &*slot };
-    unsafe { begin_critical_section(slot) };
-    let r = f(slot);
-    unsafe { end_critical_section(slot) };
-    r
+    assert!(!slot.is_null(), "GC operation on unregistered thread");
+    f(unsafe { &*slot })
 }
 
 /// Flush a thread's residual gray buffer into `GRAY`. Called at STW (owner
@@ -317,11 +252,11 @@ pub(crate) static BIG_ALLOCS: Mutex<BTreeMap<usize, BigAlloc>> = Mutex::new(BTre
 ///
 /// Newly-created big allocations live in the allocating thread's unpublished
 /// list until the next stop-the-world pause; older allocations live in the
-/// global registry. Defer the GC signal while consulting either collection so
-/// the collector cannot drain or sweep it underneath this lookup.
+/// global registry. This runtime lookup contains no safepoints, so the
+/// collector cannot drain or sweep either collection underneath it.
 pub(crate) unsafe fn same_big_allocation(source: usize, destination: usize) -> Option<bool> {
     unsafe {
-        with_signal_deferred(|slot| {
+        with_thread_slot(|slot| {
             let state = &*slot.alloc.get();
             if let Some(allocation) = state
                 .big_allocs
@@ -359,15 +294,9 @@ pub(crate) struct ThreadSlot {
     /// `sol_memcpy`). Flushed to `GRAY` at capacity by the owner, and drained
     /// by the GC thread at STW pause 2 while this thread is stopped.
     pub(crate) gray_buf: UnsafeCell<Vec<usize>>,
-    /// Nonzero while this thread is inside one or more nested GC critical
-    /// sections (`begin_critical_section`/`end_critical_section`) updating
-    /// per-thread structures. A nesting counter rather than a flag; it is
-    /// bumped with a single `inc`/`dec` instruction so the same-thread GC signal
-    /// handler never observes a torn value. If the GC signal arrives while it is
-    /// nonzero, the handler defers (stores `gc_pending_epoch`) and the outermost
-    /// `end_critical_section` self-suspends.
-    pub(crate) in_critical_section: UnsafeCell<u64>,
-    pub(crate) gc_pending_epoch: AtomicU64,
+    /// True only across the syscall entry poll, raw syscall, and return.
+    /// The GC signal handler may suspend this thread only in that interval.
+    pub(crate) in_syscall: AtomicBool,
     /// Set to epoch N when this thread acknowledges GC cycle N and is stopped.
     /// Monotonically increases.
     pub(crate) gc_waiting_epoch: AtomicU64,
@@ -391,8 +320,8 @@ pub(crate) static RETIRED_TLS_STATICS: Mutex<Vec<crate::StaticEntry>> = Mutex::n
 // Signal-handler-accessible globals.
 // ---------------------------------------------------------------------------
 
-/// Last completed GC generation. During cycle N this is N-1; set to N when the
-/// cycle finishes. Threads wait for it to reach their target generation.
+/// Last completed stop-the-world pause (three epochs per collection).
+/// Threads wait for it to reach the pause epoch they acknowledged.
 static GC_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
@@ -408,34 +337,96 @@ fn gc_signal() -> i32 {
 }
 
 // ---------------------------------------------------------------------------
-// Signal handler (async-signal-safe: only atomics, write, futex).
+// Safepoint page and signal handlers.
 // ---------------------------------------------------------------------------
 
+/// One dedicated Linux/x86-64 page, shared by generated safepoint polls.
+#[repr(C, align(4096))]
+pub struct SafepointPage([u8; 4096]);
+
+/// Readable between pauses and protected with PROT_NONE during a GC pause.
+#[unsafe(no_mangle)]
+pub static mut SOL_SAFEPOINT_PAGE: SafepointPage = SafepointPage([0; 4096]);
+
+/// Requested pause epoch, published before protecting the polling page.
+static GC_PAUSE_TARGET: AtomicU64 = AtomicU64::new(0);
+
+/// Poll only where no runtime locks or incomplete GC updates are held.
+#[inline(always)]
+pub(crate) fn safepoint() {
+    unsafe {
+        asm!(
+            "test byte ptr [rip + {page}], 0",
+            page = sym SOL_SAFEPOINT_PAGE,
+            options(nostack),
+        );
+    }
+}
+
+/// Executes a raw Linux syscall while allowing GC suspension. The entry poll
+/// closes the race where the GC signal arrives before in_syscall is published;
+/// the exit poll handles a signal delivered after the flag has been cleared.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sol_syscall(
+    number: i64,
+    arg1: i64,
+    arg2: i64,
+    arg3: i64,
+    arg4: i64,
+    arg5: i64,
+    arg6: i64,
+) -> i64 {
+    let slot = MY_SLOT.get();
+    assert!(!slot.is_null(), "syscall on unregistered thread");
+    let slot = unsafe { &*slot };
+    slot.in_syscall.store(true, Ordering::SeqCst);
+    safepoint();
+    let result: i64;
+    unsafe {
+        asm!(
+            "syscall",
+            inlateout("rax") number => result,
+            in("rdi") arg1, in("rsi") arg2, in("rdx") arg3,
+            in("r10") arg4, in("r8") arg5, in("r9") arg6,
+            lateout("rcx") _, lateout("r11") _,
+            options(nostack),
+        );
+    }
+    slot.in_syscall.store(false, Ordering::SeqCst);
+    safepoint();
+    result
+}
+
 unsafe extern "C" fn gc_signal_handler(
-    _sig: i32,
+    sig: i32,
     info: *mut libc::siginfo_t,
     context: *mut libc::c_void,
 ) {
-    let wait_epoch = unsafe { (*info).si_value().sival_ptr as u64 };
-
     let slot = MY_SLOT.get();
-    if slot.is_null() {
+    if sig == libc::SIGSEGV {
+        let address = unsafe { (*info).si_addr() } as usize;
+        let page = std::ptr::addr_of!(SOL_SAFEPOINT_PAGE) as usize;
+        if slot.is_null() || address != page {
+            // Preserve a real SIGSEGV termination/core dump for unrelated faults.
+            unsafe {
+                libc::signal(libc::SIGSEGV, libc::SIG_DFL);
+                libc::raise(libc::SIGSEGV);
+            }
+            return;
+        }
+    } else if slot.is_null() || !unsafe { &*slot }.in_syscall.load(Ordering::SeqCst) {
         return;
     }
     let slot = unsafe { &*slot };
-
-    if unsafe { core::ptr::read_volatile(slot.in_critical_section.get()) } != 0 {
-        slot.gc_pending_epoch.store(wait_epoch, Ordering::Release);
-        return;
+    let wait_epoch = GC_PAUSE_TARGET.load(Ordering::Acquire);
+    if wait_epoch <= GC_EPOCH.load(Ordering::Acquire) {
+        return; // A delayed syscall signal or a fault from an already-ended pause.
     }
 
-    // The kernel placed the ucontext (all interrupted registers) on the signal
-    // frame, below the interrupted RSP. Pointing `stack_top` at it makes the
-    // conservative stack scan cover those registers too — including caller-
-    // saved ones like rax holding freshly-allocated pointers.
+    // The signal frame captures all interrupted registers, including caller-
+    // saved values. Include it in the conservative scan of the mutator stack.
     slot.stack_top
         .store(context as *mut usize, Ordering::Release);
-
     let uc = context as *const libc::ucontext_t;
     let gregs = unsafe { &(*uc).uc_mcontext.gregs };
     let reg_indices = [
@@ -449,17 +440,21 @@ unsafe extern "C" fn gc_signal_handler(
     for (i, &ri) in reg_indices.iter().enumerate() {
         slot.saved_regs[i].store(gregs[ri as usize] as u64, Ordering::Release);
     }
-
     unsafe { notify_and_wait_for_gc(slot, wait_epoch) };
 }
 
 pub(crate) fn install_signal_handler() {
     unsafe {
+        assert_eq!(libc::sysconf(libc::_SC_PAGESIZE), 4096);
         let mut sa: libc::sigaction = std::mem::zeroed();
         sa.sa_sigaction = gc_signal_handler as *const () as usize;
         sa.sa_flags = libc::SA_SIGINFO | libc::SA_RESTART;
         libc::sigemptyset(&mut sa.sa_mask);
-        libc::sigaction(gc_signal(), &sa, std::ptr::null_mut());
+        // Both entry routes share the same saved context; never nest them.
+        libc::sigaddset(&mut sa.sa_mask, gc_signal());
+        libc::sigaddset(&mut sa.sa_mask, libc::SIGSEGV);
+        assert_eq!(libc::sigaction(gc_signal(), &sa, std::ptr::null_mut()), 0);
+        assert_eq!(libc::sigaction(libc::SIGSEGV, &sa, std::ptr::null_mut()), 0);
     }
 }
 
@@ -492,51 +487,6 @@ unsafe fn notify_and_wait_for_gc(slot: &ThreadSlot, wait_epoch: u64) {
                 std::ptr::null::<libc::timespec>(),
             );
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Cooperative self-suspend (from sol_alloc_impl when gc_pending_epoch is set).
-// ---------------------------------------------------------------------------
-
-pub(crate) unsafe fn self_suspend(slot: &ThreadSlot, wait_epoch: u64) {
-    unsafe {
-        asm!(
-            "call {}",
-            sym self_suspend_inner,
-            in("rdi") slot as *const ThreadSlot,
-            in("rsi") wait_epoch,
-            clobber_abi("C"),
-        );
-    }
-}
-
-unsafe extern "C" fn self_suspend_inner(slot: *const ThreadSlot, wait_epoch: u64) {
-    // Snapshot callee-saved registers before any Rust code can use them as
-    // scratch. rbx/rbp can't be explicit asm operands, so dump all six to a
-    // memory array via a pointer in rax.
-    let mut saved_regs: [u64; 6] = [0; 6];
-    unsafe {
-        asm!(
-            "mov [rax + 0], rbx",
-            "mov [rax + 8], rbp",
-            "mov [rax + 16], r12",
-            "mov [rax + 24], r13",
-            "mov [rax + 32], r14",
-            "mov [rax + 40], r15",
-            in("rax") saved_regs.as_mut_ptr(),
-            options(nostack, preserves_flags),
-        );
-    }
-    unsafe {
-        let slot = &*slot;
-        for (i, &val) in saved_regs.iter().enumerate() {
-            slot.saved_regs[i].store(val, Ordering::Release);
-        }
-        let rsp: *mut usize;
-        asm!("mov {}, rsp", out(reg) rsp);
-        slot.stack_top.store(rsp, Ordering::Release);
-        notify_and_wait_for_gc(slot, wait_epoch);
     }
 }
 
@@ -598,14 +548,16 @@ pub extern "C-unwind" fn sol_collect_gc() {
         if completed >= ticket {
             return;
         }
-        // GC signals remain enabled while waiting so our stack is scanned.
+        // A blocked collection caller must participate in every pause.
         unsafe {
-            libc::syscall(
+            sol_syscall(
                 libc::SYS_futex,
-                &GC_COMPLETED as *const AtomicU64,
-                libc::FUTEX_WAIT,
-                completed as u32,
-                std::ptr::null::<libc::timespec>(),
+                &GC_COMPLETED as *const AtomicU64 as i64,
+                libc::FUTEX_WAIT as i64,
+                completed as u32 as i64,
+                0,
+                0,
+                0,
             );
         }
     }
@@ -682,37 +634,27 @@ fn gc_thread_main(statics: &[crate::StaticEntry]) {
 // Stop-the-world primitives (run on the GC thread; mutators are the targets).
 // ---------------------------------------------------------------------------
 
-/// Signal every registered thread to stop at `target_epoch`, then wait until
-/// each acknowledges. Caller holds `GC_LOCK.write()` and the registry guard.
+/// Protect the polling page and signal every registered thread, then wait for
+/// acknowledgments from polls or syscall interruptions at `target_epoch`.
+/// Caller holds `GC_LOCK.write()` and the registry guard.
 unsafe fn signal_and_wait(registry: &HashMap<i32, Box<ThreadSlot>>, target_epoch: u64) {
+    GC_PAUSE_TARGET.store(target_epoch, Ordering::Release);
+    assert_eq!(
+        unsafe {
+            libc::mprotect(
+                std::ptr::addr_of_mut!(SOL_SAFEPOINT_PAGE).cast(),
+                4096,
+                libc::PROT_NONE,
+            )
+        },
+        0
+    );
     let pid = unsafe { libc::getpid() };
     let sig = gc_signal();
+    // Send to every registered mutator. The handler ignores runtime/generated
+    // code unless in_syscall is set; those threads stop at the protected page.
     for &tid in registry.keys() {
-        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        info.si_signo = sig;
-        info.si_code = libc::SI_QUEUE;
-        #[repr(C)]
-        struct SiginfoSetValue {
-            _si_signo: libc::c_int,
-            _si_errno: libc::c_int,
-            _si_code: libc::c_int,
-            _pad1: libc::c_int,
-            _pad2: libc::c_int,
-            si_value: libc::sigval,
-        }
-        let info_ptr = &mut info as *mut libc::siginfo_t as *mut SiginfoSetValue;
-        unsafe {
-            (*info_ptr).si_value = libc::sigval {
-                sival_ptr: target_epoch as *mut libc::c_void,
-            };
-            libc::syscall(
-                libc::SYS_rt_tgsigqueueinfo,
-                pid as i64,
-                tid as i64,
-                sig as i64,
-                &info as *const libc::siginfo_t,
-            );
-        }
+        assert_eq!(unsafe { libc::syscall(libc::SYS_tgkill, pid, tid, sig) }, 0);
     }
     for slot in registry.values() {
         loop {
@@ -739,6 +681,16 @@ unsafe fn signal_and_wait(registry: &HashMap<i32, Box<ThreadSlot>>, target_epoch
 /// Resume all stopped threads by advancing the global epoch (single writer:
 /// the GC thread). `target_epoch` is monotonically `prev + 1` per pause.
 unsafe fn resume_world(target_epoch: u64) {
+    assert_eq!(
+        unsafe {
+            libc::mprotect(
+                std::ptr::addr_of_mut!(SOL_SAFEPOINT_PAGE).cast(),
+                4096,
+                libc::PROT_READ | libc::PROT_WRITE,
+            )
+        },
+        0
+    );
     GC_EPOCH.store(target_epoch, Ordering::Release);
     unsafe {
         libc::syscall(
@@ -1363,7 +1315,7 @@ unsafe fn write_barrier_slow(_dst: *mut u8, val: *mut u8) {
     } else if !MARKING_HAS_BIG.load(Ordering::Relaxed) {
         return;
     }
-    unsafe { with_signal_deferred(|slot| gray_enqueue_raw(slot, v)) };
+    unsafe { with_thread_slot(|slot| gray_enqueue_raw(slot, v)) };
 }
 
 /// Bulk write barrier for optimizer-generated `llvm.memcpy`/`memmove` (and any
@@ -1384,7 +1336,7 @@ pub(crate) unsafe fn memcpy_barrier(dst: *mut u8, size: usize) {
     let arena_base = heap::arena_base();
     let has_big = MARKING_HAS_BIG.load(Ordering::Relaxed);
     unsafe {
-        with_signal_deferred(|slot| {
+        with_thread_slot(|slot| {
             let mut w = dst as *const usize;
             let end = (dst as *const u8).add(size & !7) as *const usize;
             while w < end {

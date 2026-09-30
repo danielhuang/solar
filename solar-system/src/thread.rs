@@ -1,7 +1,7 @@
 use std::arch::asm;
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 
 use rustix_futex_sync::RwLock;
 
@@ -19,6 +19,20 @@ use crate::gc::{
 
 pub(crate) static GC_LOCK: RwLock<()> = RwLock::new(());
 
+/// Wait for the lifecycle lock without preventing an active GC pause.
+fn gc_read_lock()
+-> rustix_futex_sync::lock_api::RwLockReadGuard<'static, rustix_futex_sync::RawRwLock, ()> {
+    loop {
+        if let Some(guard) = GC_LOCK.try_read() {
+            return guard;
+        }
+        if !MY_SLOT.get().is_null() {
+            crate::gc::safepoint();
+        }
+        std::thread::yield_now();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Thread registration
 // ---------------------------------------------------------------------------
@@ -34,8 +48,7 @@ fn register_thread(stack_base: *mut usize) {
         alloc: UnsafeCell::new(ThreadAllocState::new()),
         // Pre-reserve so the write barrier never reallocates on its hot path.
         gray_buf: UnsafeCell::new(Vec::with_capacity(crate::gc::GRAY_BUF_CAP)),
-        in_critical_section: UnsafeCell::new(0),
-        gc_pending_epoch: AtomicU64::new(0),
+        in_syscall: AtomicBool::new(false),
         gc_waiting_epoch: AtomicU64::new(0),
     });
     let slot_ptr: *const ThreadSlot = &*slot;
@@ -48,7 +61,9 @@ fn unregister_thread() {
     // Exclude stop-the-world pauses while removing the slot and publishing
     // its remaining roots and allocations. The collector takes GC_LOCK.write()
     // before selecting registered threads to signal.
-    let _gc_guard = GC_LOCK.read();
+    let _gc_guard = gc_read_lock();
+    // Delayed GC signals must never inspect a slot after it has been freed.
+    MY_SLOT.set(std::ptr::null());
     if let Some(slot) = THREAD_REGISTRY.write().unwrap().remove(&tid) {
         if slot.tls_statics_len != 0 {
             let entries =
@@ -82,8 +97,6 @@ fn unregister_thread() {
             }
         }
     }
-    // This thread no longer has a registered slot.
-    MY_SLOT.set(std::ptr::null());
 }
 
 // ---------------------------------------------------------------------------
@@ -161,7 +174,7 @@ pub unsafe extern "C" fn sol_thread_spawn(
     }
     unsafe impl Send for SendArgs {}
 
-    let gc_guard = GC_LOCK.read();
+    let gc_guard = gc_read_lock();
     let args = SendArgs {
         fn_ptr,
         env,

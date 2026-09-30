@@ -3,7 +3,7 @@ use std::sync::atomic::Ordering;
 
 use crate::gc::{
     BigAllocLocal, ENABLE_ALLOC_PRINTS, SOL_CONCURRENT_MARKING, ThreadAllocState, note_claimed,
-    with_signal_deferred,
+    with_thread_slot,
 };
 use crate::heap;
 
@@ -55,7 +55,7 @@ unsafe fn alloc_in_class<const CLASS: isize>(
     }
 
     unsafe {
-        with_signal_deferred(|slot| {
+        with_thread_slot(|slot| {
             let state = &mut *slot.alloc.get();
             let addr = if CLASS == -1 {
                 match heap::size_class(size, align) {

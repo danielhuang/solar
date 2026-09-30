@@ -71,8 +71,8 @@ pub struct SolarException {
     trace: SolSlice,
 }
 
-// A panic payload stays on its originating mutator thread. The GC critical
-// section protects all three references until the handler roots them again.
+// A panic payload stays on its originating mutator thread. Unwinding has no
+// safepoints; the catch handler roots all references before reentering Solar.
 unsafe impl Send for SolarException {}
 
 std::thread_local! {
@@ -143,9 +143,7 @@ unsafe fn exception_text(exception: &SolarException) -> String {
 pub unsafe extern "C-unwind" fn sol_capture_backtrace(dst: *mut SolSlice) {
     let slot = crate::gc::MY_SLOT.get();
     assert!(!slot.is_null());
-    unsafe { crate::gc::begin_critical_section(&*slot) };
     unsafe { dst.write(capture_backtrace()) };
-    unsafe { crate::gc::end_critical_section(&*slot) };
 }
 
 /// Resolves an instruction address into a GC-allocated, demangled byte string.
@@ -153,12 +151,10 @@ pub unsafe extern "C-unwind" fn sol_capture_backtrace(dst: *mut SolSlice) {
 pub unsafe extern "C-unwind" fn sol_resolve_address(dst: *mut SolSlice, address: usize) {
     let slot = crate::gc::MY_SLOT.get();
     assert!(!slot.is_null());
-    unsafe { crate::gc::begin_critical_section(&*slot) };
     {
         let text = solar_shared::trace::resolve_address(address);
         unsafe { dst.write(copy_bytes(text.as_bytes(), 1)) };
     }
-    unsafe { crate::gc::end_critical_section(&*slot) };
 }
 
 fn throw_raw(exception: SolarException) -> ! {
@@ -177,7 +173,6 @@ fn throw_raw(exception: SolarException) -> ! {
 pub unsafe extern "C-unwind" fn sol_throw(exception: *const SolarException) -> ! {
     let slot = crate::gc::MY_SLOT.get();
     assert!(!slot.is_null(), "sol_throw called on unregistered thread");
-    unsafe { crate::gc::begin_critical_section(&*slot) };
     throw_raw(unsafe { *exception })
 }
 
@@ -185,7 +180,6 @@ pub unsafe extern "C-unwind" fn sol_throw(exception: *const SolarException) -> !
 pub(crate) fn throw_str(msg: &'static str) -> ! {
     let slot = crate::gc::MY_SLOT.get();
     assert!(!slot.is_null(), "throw_str called on unregistered thread");
-    unsafe { crate::gc::begin_critical_section(&*slot) };
     let exception = unsafe {
         new_exception(
             SolSlice {
@@ -205,8 +199,7 @@ fn unit_payload() -> [usize; 2] {
     ]
 }
 
-/// Formats and captures a runtime failure inside the critical section protecting
-/// Rust allocator use and the exception's GC references across unwinding.
+/// Formats and captures a runtime failure without polling during unwinding.
 pub(crate) fn throw_message(args: std::fmt::Arguments) -> ! {
     if let Some(message) = args.as_str() {
         throw_str(message);
@@ -216,7 +209,6 @@ pub(crate) fn throw_message(args: std::fmt::Arguments) -> ! {
         !slot.is_null(),
         "throw_message called on unregistered thread"
     );
-    unsafe { crate::gc::begin_critical_section(&*slot) };
     let text = args.to_string();
     let message = unsafe { copy_bytes(text.as_bytes(), 1) };
     let exception = unsafe { new_exception(message, unit_payload()) };
@@ -240,14 +232,13 @@ pub unsafe extern "C-unwind" fn sol_try(
         match payload.downcast::<SolarException>() {
             Ok(exc) => {
                 let exception = *exc;
-                // Release the Rust allocation while allocator use is still protected.
+                // Release the Rust allocation before reentering generated Solar code.
                 drop(exc);
                 // Force a complete stack copy before permitting collection. The
                 // black box after the handler also keeps all fields live through it.
                 std::hint::black_box(&exception);
                 let slot = crate::gc::MY_SLOT.get();
                 assert!(!slot.is_null());
-                unsafe { crate::gc::end_critical_section(&*slot) };
                 unsafe { handler_fn(handler_env, exception) };
                 std::hint::black_box(&exception);
             }

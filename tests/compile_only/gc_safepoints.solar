@@ -1,0 +1,52 @@
+import intrinsics from "@intrinsics";
+
+fn main() {
+	let stop = 0u32;
+	let ready = 0u32;
+	let gate = 0u32;
+	let spinner = thread::spawn(\ {
+		let values = [17; 32u];
+		ready&.atomic_fetch_add(1u32);
+		// Must cooperate even though this loop never allocates or calls out.
+		while stop&.atomic_load() == 0u32 {}
+		assert(values[31u] == 17);
+	});
+	let sleeper = thread::spawn(\ {
+		let values = [23; 32u];
+		ready&.atomic_fetch_add(1u32);
+
+		while gate&.atomic_load() == 0u32 {
+			gate&.futex_wait(0u32);
+		}
+
+		assert(values[31u] == 23);
+	});
+	let racer = thread::spawn(\ {
+		ready&.atomic_fetch_add(1u32);
+
+		while stop&.atomic_load() == 0u32 {
+			assert(unsafe { intrinsics::syscall(39i64) } > 0i64);
+		}
+	});
+	let spawner = thread::spawn(\ {
+		ready&.atomic_fetch_add(1u32);
+
+		while stop&.atomic_load() == 0u32 {
+			thread::spawn(\ { let value = [42; 32u]; assert(value[0u] == 42); }).join();
+		}
+	});
+	while ready&.atomic_load() != 4u32 {}
+
+	for _ in 0..30 {
+		gc::collect_gc();
+	}
+
+	stop&.atomic_store(1u32);
+	gate&.atomic_store(1u32);
+	gate&.futex_wake();
+	spinner.join();
+	sleeper.join();
+	racer.join();
+	spawner.join();
+	println("safepoints passed"&);
+}

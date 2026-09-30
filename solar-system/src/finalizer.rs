@@ -4,8 +4,6 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::{LazyLock, Mutex};
 
-use crate::gc::with_signal_deferred;
-
 type RegisterTls = Option<unsafe extern "C" fn()>;
 type InitTls = Option<unsafe extern "C" fn(*mut c_void)>;
 
@@ -31,26 +29,19 @@ pub unsafe extern "C" fn sol_register_finalizer(
     if crate::gc::DISABLE_GC.get() {
         return;
     }
-    unsafe {
-        with_signal_deferred(|_| {
-            // A function value is 16 bytes, so its allocation is in the arena.
-            assert!(
-                (callback as usize).wrapping_sub(crate::heap::arena_base())
-                    < crate::heap::ARENA_SIZE
-            );
-            let old = REGISTRATIONS.lock().unwrap().insert(
-                callback as usize,
-                Registration {
-                    callback: callback as usize,
-                    pending: false,
-                    dispatched: false,
-                    register_tls,
-                    init_tls,
-                },
-            );
-            assert!(old.is_none(), "callback record registered twice");
-        });
-    }
+    // A function value is 16 bytes, so its allocation is in the arena.
+    assert!((callback as usize).wrapping_sub(crate::heap::arena_base()) < crate::heap::ARENA_SIZE);
+    let old = REGISTRATIONS.lock().unwrap().insert(
+        callback as usize,
+        Registration {
+            callback: callback as usize,
+            pending: false,
+            dispatched: false,
+            register_tls,
+            init_tls,
+        },
+    );
+    assert!(old.is_none(), "callback record registered twice");
 }
 
 /// Adds queued and executing callback records to the STW root snapshot.
@@ -112,9 +103,7 @@ unsafe extern "C" fn run_batch(batch: *mut c_void) {
             let words = callback as *const usize;
             let function: unsafe extern "C" fn(*mut c_void) = std::mem::transmute(*words);
             function(*words.add(1) as *mut c_void);
-            with_signal_deferred(|_| {
-                REGISTRATIONS.lock().unwrap().remove(&callback).unwrap();
-            });
+            REGISTRATIONS.lock().unwrap().remove(&callback).unwrap();
         }
     }
 }

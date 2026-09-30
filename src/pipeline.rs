@@ -279,6 +279,8 @@ fn compile_unoptimized(c_path: &Path, dir: &Path, bin_path: &Path, options: Comp
         } else {
             &wb_bc
         };
+        let polled_bc = dir.join("debug_safepoints.bc");
+        run_solar_pass("solar-safepoints", final_bc, &polled_bc);
 
         run_cmd_to_path(
             "clang",
@@ -287,7 +289,7 @@ fn compile_unoptimized(c_path: &Path, dir: &Path, bin_path: &Path, options: Comp
                 "-fsanitize=address",
                 "-fno-omit-frame-pointer",
                 "-fuse-ld=lld",
-                final_bc.to_str().unwrap(),
+                polled_bc.to_str().unwrap(),
                 "target/debug/libsolar_system.a",
                 "-lm",
                 "-lpthread",
@@ -461,6 +463,21 @@ fn compile_optimized(c_path: &Path, dir: &Path, bin_path: &Path, gc_san: bool) {
         &full_wb_bc
     };
 
+    // Finish optimizing/inlining the inserted barriers before adding polls.
+    // The native object step below must not run another LLVM IR optimizer.
+    let optimized_bc = dir.join("full_final_opt.bc");
+    run_cmd(
+        "opt",
+        &[
+            "-O3",
+            final_bc.to_str().unwrap(),
+            "-o",
+            optimized_bc.to_str().unwrap(),
+        ],
+    );
+    let polled_bc = dir.join("full_safepoints.bc");
+    run_solar_pass("solar-safepoints", &optimized_bc, &polled_bc);
+
     // Compile the instrumented program to a native object first. The bulk
     // runtime and all its dependencies are native archive members; the final
     // linker performs no LTO or runtime code generation.
@@ -472,8 +489,10 @@ fn compile_optimized(c_path: &Path, dir: &Path, bin_path: &Path, gc_san: bool) {
             "-c",
             "-march=native",
             "-O3",
+            "-Xclang",
+            "-disable-llvm-passes",
             "-g",
-            final_bc.to_str().unwrap(),
+            polled_bc.to_str().unwrap(),
         ],
         &program_obj,
     );

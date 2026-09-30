@@ -893,15 +893,7 @@ impl<'a> Codegen<'a> {
         self.line("#include <stdint.h>");
         self.line("#include <string.h>");
         self.line("");
-        self.line("static inline int64_t sol_syscall(int64_t number, int64_t arg1, int64_t arg2, int64_t arg3, int64_t arg4, int64_t arg5, int64_t arg6) {");
-        self.indent += 1;
-        self.line("register int64_t r10 __asm__(\"r10\") = arg4;");
-        self.line("register int64_t r8 __asm__(\"r8\") = arg5;");
-        self.line("register int64_t r9 __asm__(\"r9\") = arg6;");
-        self.line("__asm__ volatile(\"syscall\" : \"+a\"(number) : \"D\"(arg1), \"S\"(arg2), \"d\"(arg3), \"r\"(r10), \"r\"(r8), \"r\"(r9) : \"rcx\", \"r11\", \"memory\");");
-        self.line("return number;");
-        self.indent -= 1;
-        self.line("}");
+        self.line("extern int64_t sol_syscall(int64_t number, int64_t arg1, int64_t arg2, int64_t arg3, int64_t arg4, int64_t arg5, int64_t arg6);");
         self.line("");
         self.line("// Runtime externs");
         self.line("typedef void (*sol_mark_fn_t)(void*, uint8_t*, uint64_t);");

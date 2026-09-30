@@ -5,6 +5,8 @@
 // instruments heap pointer writes after optimization.
 
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/Analysis/CFG.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/IRBuilder.h"
@@ -41,6 +43,57 @@ bool isGeneratedFunc(const Function &F) {
   StringRef N = F.getName();
   return N.starts_with("solar_") || N == "main";
 }
+
+// Run after the last LLVM optimization pipeline. A function-entry poll covers
+// recursion and a poll on every DFS backedge covers all loops (including
+// irreducible control flow). Runtime and generated _mark_* functions must not
+// poll: their callers may hold collector locks or be GC workers themselves.
+struct SolarSafepoints : PassInfoMixin<SolarSafepoints> {
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
+    LLVMContext &Ctx = M.getContext();
+    auto *PageTy = ArrayType::get(Type::getInt8Ty(Ctx), 4096);
+    auto *Page = M.getNamedGlobal("SOL_SAFEPOINT_PAGE");
+    if (!Page) {
+      Page = new GlobalVariable(M, PageTy, false, GlobalValue::ExternalLinkage,
+                                nullptr, "SOL_SAFEPOINT_PAGE");
+      Page->setAlignment(Align(4096));
+      Page->setVisibility(GlobalValue::HiddenVisibility);
+      Page->setDSOLocal(true);
+    }
+    for (Function &F : M) {
+      if (F.isDeclaration() || !F.getName().starts_with("solar_"))
+        continue;
+      // These attributes were inferred before polls existed. A poll can enter
+      // the runtime and synchronize with the collector through a signal trap.
+      F.removeFnAttr(Attribute::Memory);
+      F.removeFnAttr(Attribute::NoSync);
+      F.removeFnAttr(Attribute::Speculatable);
+      SmallPtrSet<Instruction *, 16> Points;
+      Points.insert(&*F.getEntryBlock().getFirstInsertionPt());
+      SmallVector<std::pair<const BasicBlock *, const BasicBlock *>, 16> Edges;
+      FindFunctionBackedges(F, Edges);
+      for (auto [From, To] : Edges)
+        Points.insert(const_cast<BasicBlock *>(From)->getTerminator());
+      for (Instruction *At : Points) {
+        IRBuilder<> B(At);
+        auto *Poll = B.CreateLoad(Type::getInt8Ty(Ctx), Page, true);
+        Poll->setAlignment(Align(1));
+        Poll->setDebugLoc(barrierDebugLoc(At));
+      }
+    }
+    for (Function &F : M)
+      for (Instruction &I : instructions(F))
+        if (auto *Call = dyn_cast<CallBase>(&I))
+          if (Function *Callee = Call->getCalledFunction())
+            if (Callee->getName().starts_with("solar_")) {
+              Call->removeFnAttr(Attribute::Memory);
+              Call->removeFnAttr(Attribute::NoSync);
+              Call->removeFnAttr(Attribute::Speculatable);
+            }
+    return PreservedAnalyses::none();
+  }
+  static bool isRequired() { return true; }
+};
 
 bool isStackOrGlobalDest(Value *Dst) {
   const Value *Base = getUnderlyingObject(Dst);
@@ -399,6 +452,10 @@ llvmGetPassPluginInfo() {
                   }
                   if (Name == "solar-gc-sanitize") {
                     MPM.addPass(SolarGcSanitize());
+                    return true;
+                  }
+                  if (Name == "solar-safepoints") {
+                    MPM.addPass(SolarSafepoints());
                     return true;
                   }
                   return false;
