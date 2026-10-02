@@ -396,6 +396,13 @@ fn compile_optimized(c_path: &Path, dir: &Path, bin_path: &Path, gc_san: bool) {
             "-c",
             "-march=native",
             "-O3",
+            // Unroll once, after allocator specialization and before batching.
+            // Unlike -fno-unroll-loops, these limits do not add permanent
+            // llvm.loop.unroll.disable metadata to the generated loops.
+            "-mllvm",
+            "-unroll-max-count=1",
+            "-mllvm",
+            "-unroll-full-max-count=1",
             "-g",
         ];
         if ATTRIBUTOR_ENABLE_ALL {
@@ -429,7 +436,15 @@ fn compile_optimized(c_path: &Path, dir: &Path, bin_path: &Path, gc_san: bool) {
     eprintln!("=== Optimizing program and hot helpers ===");
     let full_opt_bc = dir.join("full_opt.bc");
     {
-        let mut opt_args = vec!["-O3"];
+        let mut opt_args = vec![
+            "-O3",
+            // An explicit count permits unrolling through allocator calls.
+            // LLVM still checks legality and handles leftover iterations.
+            "-unroll-count=8",
+            "-unroll-max-count=8",
+            "-unroll-full-max-count=8",
+            "-unroll-runtime",
+        ];
         if ATTRIBUTOR_ENABLE_ALL {
             opt_args.push("-attributor-enable=all");
         }
@@ -441,11 +456,14 @@ fn compile_optimized(c_path: &Path, dir: &Path, bin_path: &Path, gc_san: bool) {
         run_cmd("opt", &opt_args);
     }
 
+    let full_batched_bc = dir.join("full_batched.bc");
+    run_solar_pass("solar-batch-gc-alloc", &full_opt_bc, &full_batched_bc);
+
     // Lower an atomic memcpy intrinsic synthesized by LLVM's optimizer. Solar
     // provides unordered 128-bit copies through its atomic runtime helper, while
     // LLVM's native backend does not provide this intrinsic's runtime symbol.
     let full_atomic_memcpy_bc = dir.join("full_atomic_memcpy.bc");
-    lower_atomic_memcpy16(&full_opt_bc, &full_atomic_memcpy_bc);
+    lower_atomic_memcpy16(&full_batched_bc, &full_atomic_memcpy_bc);
 
     // Insert GC write barriers. This runs after `opt -O3` so barrier calls
     // don't block allocation elision/SROA; the final clang -O3 below inlines
@@ -470,6 +488,7 @@ fn compile_optimized(c_path: &Path, dir: &Path, bin_path: &Path, gc_san: bool) {
         "opt",
         &[
             "-O3",
+            "-disable-loop-unrolling",
             final_bc.to_str().unwrap(),
             "-o",
             optimized_bc.to_str().unwrap(),

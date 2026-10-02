@@ -223,7 +223,9 @@ unsafe fn gray_enqueue_raw(slot: &ThreadSlot, v: usize) {
 
 /// Access the owning mutator's slot. Runtime code has no compiler-inserted
 /// safepoints, so its per-thread updates finish before the next GC pause.
-#[inline]
+// Keep aggregate-returning allocation closures in the caller, avoiding an
+// extra call and an intermediate array copy on the allocation fast path.
+#[inline(always)]
 pub(crate) unsafe fn with_thread_slot<R>(f: impl FnOnce(&ThreadSlot) -> R) -> R {
     let slot = MY_SLOT.get();
     assert!(!slot.is_null(), "GC operation on unregistered thread");

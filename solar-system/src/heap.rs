@@ -270,15 +270,18 @@ pub unsafe fn alloc_word_load(class: usize, word: usize) -> u64 {
 #[inline]
 /// Marks a slot as allocated.
 pub unsafe fn set_allocated(class: usize, slot: usize) {
+    unsafe { alloc_word_or(class, slot >> 6, bit_mask(slot)) };
+}
+
+/// Publishes allocation bits in a bitmap word owned by the current mutator.
+#[inline]
+pub unsafe fn alloc_word_or(class: usize, word: usize, bits: u64) {
     // Non-atomic read-modify-write: the only thread that writes this word until
-    // the next stop-the-world (sweep) is the one that claimed `slot`'s run, and
+    // the next stop-the-world (sweep) is the one that claimed this word's run, and
     // claims are bitmap-word-aligned (see `claim_slots`), so no other thread
     // touches this word concurrently. Avoids a `LOCK OR` on the alloc hot path.
-    let w = unsafe { &*alloc_class_base(class).add(slot >> 6) };
-    w.store(
-        w.load(Ordering::Relaxed) | bit_mask(slot),
-        Ordering::Relaxed,
-    );
+    let w = unsafe { &*alloc_class_base(class).add(word) };
+    w.store(w.load(Ordering::Relaxed) | bits, Ordering::Relaxed);
 }
 /// Load a whole mark-bitmap word. Used by the batched marker to answer
 /// "newly marked?" when it rolls over to a new word; a plain (non-atomic)

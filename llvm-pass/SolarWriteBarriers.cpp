@@ -261,6 +261,149 @@ struct SolarSpecializeGcAlloc : PassInfoMixin<SolarSpecializeGcAlloc> {
   static bool isRequired() { return true; }
 };
 
+// Coalesce equal allocations in batches of up to eight within a block. Only pure
+// instructions and initialization stores to earlier objects in the group may
+// intervene: never hoist allocations across calls, publication, or control flow.
+// Run after allocation elision, before barriers and safepoint insertion.
+struct SolarBatchGcAlloc : PassInfoMixin<SolarBatchGcAlloc> {
+  // O3 may propagate constant arguments into the internal allocator wrapper
+  // and remove them from its signature. Recover the request from its tail call.
+  static SmallVector<Value *, 3> request(CallInst *Call) {
+    Function *F = Call ? Call->getCalledFunction() : nullptr;
+    if (!F || !F->getName().starts_with("sol_alloc_class_") ||
+        !Call->getType()->isPointerTy() ||
+        Call->hasOperandBundles() || Call->isMustTailCall())
+      return {};
+    SmallVector<Value *, 3> Args;
+    if (F->isDeclaration()) {
+      for (Value *V : Call->args())
+        Args.push_back(V);
+    } else {
+      for (Instruction &I : instructions(F)) {
+        auto *Inner = dyn_cast<CallInst>(&I);
+        Function *Target = Inner ? Inner->getCalledFunction() : nullptr;
+        if (!Target || !Target->getName().starts_with("sol_alloc_class_") ||
+            !Target->getName().ends_with("_impl"))
+          continue;
+        if (!Args.empty())
+          return {};
+        for (Value *V : Inner->args()) {
+          if (auto *A = dyn_cast<Argument>(V))
+            V = Call->getArgOperand(A->getArgNo());
+          Args.push_back(V);
+        }
+      }
+    }
+    if (Args.size() != 3 || !llvm::all_of(Args, [](Value *V) {
+          return isa<Constant>(V);
+        }))
+      return {};
+    auto *Size = dyn_cast<ConstantInt>(Args[0]);
+    auto *Alignment = dyn_cast<ConstantInt>(Args[1]);
+    if (!Size || !Alignment || Size->getBitWidth() != 64 ||
+        Alignment->getBitWidth() != 64 ||
+        std::max(Size->getZExtValue(), Alignment->getZExtValue()) >
+            (UINT64_C(1) << 30))
+      return {};
+    return Args;
+  }
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
+    LLVMContext &Ctx = M.getContext();
+    Type *Ptr = PointerType::getUnqual(Ctx);
+    Type *I64 = Type::getInt64Ty(Ctx);
+    unsigned Batches = 0;
+    for (Function &F : M) {
+      if (F.isDeclaration() || !isGeneratedFunc(F))
+        continue;
+      for (BasicBlock &BB : F) {
+        SmallVector<CallInst *, 16> Region;
+        auto Flush = [&]() {
+          while (!Region.empty()) {
+            auto Args = request(Region.front());
+            SmallVector<CallInst *, 8> Group;
+            for (CallInst *Call : Region)
+              if (Group.size() < 8 && request(Call) == Args)
+                Group.push_back(Call);
+            llvm::erase_if(Region, [&](CallInst *Call) {
+              return llvm::is_contained(Group, Call);
+            });
+            unsigned Count = Group.size();
+            if (Count == 1)
+              continue;
+            IRBuilder<> B(Group.front());
+            B.SetCurrentDebugLocation(barrierDebugLoc(Group.front()));
+            uint64_t Need = std::max<uint64_t>({
+                cast<ConstantInt>(Args[0])->getZExtValue(),
+                cast<ConstantInt>(Args[1])->getZExtValue(), 8});
+            unsigned Class = Log2_64_Ceil(Need) - 3;
+            std::string Name =
+                ("sol_alloc_class_" + Twine(Class) + "_batch" + Twine(Count)).str();
+            if (Count == 2) {
+              // x86-64 SysV returns the two-pointer repr(C) aggregate in
+              // two integer registers; larger batches use a hidden sret.
+              auto *ResultTy = StructType::get(Ctx, {I64, I64});
+              auto Batch = M.getOrInsertFunction(
+                  Name, FunctionType::get(ResultTy, {I64, I64, Ptr}, false));
+              auto *BatchCall = B.CreateCall(Batch, Args);
+              BatchCall->setDoesNotThrow();
+              for (unsigned N = 0; N != Count; ++N)
+                Group[N]->replaceAllUsesWith(
+                    B.CreateIntToPtr(B.CreateExtractValue(BatchCall, N), Ptr));
+            } else {
+              IRBuilder<> Entry(&*F.getEntryBlock().getFirstInsertionPt());
+              auto *SlotsTy = ArrayType::get(Ptr, Count);
+              Value *Slots = Entry.CreateAlloca(SlotsTy, nullptr, "alloc.batch");
+              auto Batch = M.getOrInsertFunction(
+                  Name, FunctionType::get(Type::getVoidTy(Ctx),
+                                          {Ptr, I64, I64, Ptr}, false));
+              auto SRet = Attribute::getWithStructRetType(Ctx, SlotsTy);
+              auto *BatchFn = cast<Function>(Batch.getCallee());
+              BatchFn->addParamAttr(0, SRet);
+              BatchFn->addParamAttr(0, Attribute::NoAlias);
+              auto *BatchCall = B.CreateCall(
+                  Batch, {Slots, Args[0], Args[1], Args[2]});
+              BatchCall->addParamAttr(0, SRet);
+              BatchCall->addParamAttr(0, Attribute::NoAlias);
+              BatchCall->setDoesNotThrow();
+              for (unsigned N = 0; N != Count; ++N) {
+                Value *Slot = B.CreateConstInBoundsGEP2_32(SlotsTy, Slots, 0, N);
+                Group[N]->replaceAllUsesWith(
+                    B.CreateLoad(Ptr, Slot, "alloc.address"));
+              }
+            }
+            for (CallInst *Old : Group)
+              Old->eraseFromParent();
+            ++Batches;
+          }
+        };
+        // Delay rewriting until the region is complete so initialization
+        // stores can still be recognized by their original allocation base.
+        for (Instruction &I : BB) {
+          auto Args = request(dyn_cast<CallInst>(&I));
+          if (!Args.empty()) {
+            Region.push_back(cast<CallInst>(&I));
+            continue;
+          }
+          if (auto *Store = dyn_cast<StoreInst>(&I)) {
+            const Value *Dest = getUnderlyingObject(Store->getPointerOperand());
+            if (!Store->isVolatile() && !Store->isAtomic() &&
+                llvm::is_contained(Region, Dest))
+              continue;
+          }
+          if (I.mayReadOrWriteMemory() || I.mayHaveSideEffects() ||
+              !isSafeToSpeculativelyExecute(&I))
+            Flush();
+        }
+        Flush();
+      }
+    }
+    if (Batches)
+      errs() << "solar-batch-gc-alloc: " << Batches << " batches\n";
+    return Batches ? PreservedAnalyses::none() : PreservedAnalyses::all();
+  }
+  static bool isRequired() { return true; }
+};
+
 struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
     LLVMContext &Ctx = M.getContext();
@@ -438,6 +581,10 @@ llvmGetPassPluginInfo() {
             PB.registerPipelineParsingCallback(
                 [](StringRef Name, ModulePassManager &MPM,
                    ArrayRef<PassBuilder::PipelineElement>) {
+                  if (Name == "solar-batch-gc-alloc") {
+                    MPM.addPass(SolarBatchGcAlloc());
+                    return true;
+                  }
                   if (Name == "solar-write-barriers") {
                     MPM.addPass(SolarWriteBarriers());
                     return true;

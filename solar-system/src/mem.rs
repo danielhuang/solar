@@ -40,34 +40,85 @@ pub extern "C" fn sol_gc_keepalive(value: *mut u8) {
 /// Allocates uninitialized GC-managed memory.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sol_alloc_impl(size: usize, align: usize, mark_fn: MarkFn) -> *mut u8 {
-    unsafe { alloc_in_class::<-1>(size, align, mark_fn) }
+    unsafe { alloc_in_class::<-1, 1>(size, align, mark_fn)[0] }
 }
 
+/// C-compatible carrier for an array returned by a batch allocator.
+#[repr(C)]
+pub struct AllocBatch<const BATCH: usize> {
+    /// Distinct addresses of uninitialized GC-managed objects.
+    pub addresses: [*mut u8; BATCH],
+}
+
+// Reuse the array implementation for both dynamic and fixed size classes.
+// Each fixed class expands inside its own scope; export_name supplies the ABI.
+macro_rules! batch_allocator {
+    ($name:ident, $batch:literal, $class:expr, $prefix:expr) => {
+        #[doc = concat!("Allocates ", stringify!($batch), " distinct, uninitialized objects with the same layout.")]
+        ///
+        /// # Safety
+        /// The layout and mark function must satisfy `sol_alloc_impl`'s
+        /// requirements. Initialize all returned objects before a GC safepoint.
+        #[unsafe(export_name = concat!($prefix, stringify!($batch)))]
+        #[inline(never)]
+        pub unsafe extern "C" fn $name(
+            size: usize,
+            align: usize,
+            mark_fn: MarkFn,
+        ) -> AllocBatch<$batch> {
+            AllocBatch {
+                addresses: unsafe { alloc_in_class::<$class, $batch>(size, align, mark_fn) },
+            }
+        }
+    };
+}
+
+macro_rules! batch_allocators {
+    ($class:expr, $prefix:expr) => {
+        batch_allocator!(sol_alloc_batch1, 1, $class, $prefix);
+        batch_allocator!(sol_alloc_batch2, 2, $class, $prefix);
+        batch_allocator!(sol_alloc_batch3, 3, $class, $prefix);
+        batch_allocator!(sol_alloc_batch4, 4, $class, $prefix);
+        batch_allocator!(sol_alloc_batch5, 5, $class, $prefix);
+        batch_allocator!(sol_alloc_batch6, 6, $class, $prefix);
+        batch_allocator!(sol_alloc_batch7, 7, $class, $prefix);
+        batch_allocator!(sol_alloc_batch8, 8, $class, $prefix);
+    };
+}
+
+batch_allocators!(-1, "sol_alloc_batch");
+
 #[inline(always)]
-unsafe fn alloc_in_class<const CLASS: isize>(
+unsafe fn alloc_in_class<const CLASS: isize, const BATCH: usize>(
     size: usize,
     align: usize,
     mark_fn: MarkFn,
-) -> *mut u8 {
+) -> [*mut u8; BATCH] {
+    const { assert!(BATCH > 0 && BATCH <= 64) };
     debug_assert!(CLASS == -1 || heap::size_class(size, align) == Some(CLASS as usize));
     if ENABLE_ALLOC_PRINTS.get() {
-        eprintln!("allocating new object: {size} bytes (align={align})");
+        for _ in 0..BATCH {
+            eprintln!("allocating new object: {size} bytes (align={align})");
+        }
     }
 
     unsafe {
-        with_thread_slot(|slot| {
-            let state = &mut *slot.alloc.get();
-            let addr = if CLASS == -1 {
-                match heap::size_class(size, align) {
-                    Some(class) => arena_allocate::<-1>(state, class, size, mark_fn),
-                    None => big_allocate(state, size, align, mark_fn),
-                }
-            } else {
-                arena_allocate::<CLASS>(state, CLASS as usize, size, mark_fn)
-            };
-            account_alloc(state);
-            addr
-        })
+        with_thread_slot(
+            #[inline(always)]
+            |slot| {
+                let state = &mut *slot.alloc.get();
+                let addresses = if CLASS == -1 {
+                    match heap::size_class(size, align) {
+                        Some(class) => arena_allocate::<-1, BATCH>(state, class, size, mark_fn),
+                        None => std::array::from_fn(|_| big_allocate(state, size, align, mark_fn)),
+                    }
+                } else {
+                    arena_allocate::<CLASS, BATCH>(state, CLASS as usize, size, mark_fn)
+                };
+                state.total_allocations += BATCH;
+                addresses
+            },
+        )
     }
 }
 
@@ -78,12 +129,13 @@ macro_rules! class_allocators {
         #[unsafe(no_mangle)]
         #[inline(never)]
         pub unsafe extern "C" fn $name(
-            size: usize,
-            align: usize,
-            mark_fn: MarkFn,
+            size: usize, align: usize, mark_fn: MarkFn,
         ) -> *mut u8 {
-            unsafe { alloc_in_class::<$class>(size, align, mark_fn) }
+            unsafe { alloc_in_class::<$class, 1>(size, align, mark_fn)[0] }
         }
+        const _: () = {
+            batch_allocators!($class, concat!("sol_alloc_class_", stringify!($class), "_batch"));
+        };
     )*};
 }
 
@@ -118,12 +170,58 @@ class_allocators!(
     (sol_alloc_class_27_impl, 27),
 );
 
+/// Allocate a fixed-size array of addresses. A cache contains free slots from
+/// exactly one bitmap word, so a batch that fits can publish all bits at once.
+#[inline(always)]
+unsafe fn arena_allocate<const CLASS: isize, const BATCH: usize>(
+    state: &mut ThreadAllocState,
+    class: usize,
+    size: usize,
+    mark_fn: MarkFn,
+) -> [*mut u8; BATCH] {
+    let class = if CLASS == -1 { class } else { CLASS as usize };
+    let cs = &mut state.classes[class];
+    if cs.cache_index == 64 {
+        unsafe { refill_cache::<CLASS>(cs, class) };
+        // SAFETY: refill skips full words and packs a nonempty set of free
+        // slots into the cache, so every normal return leaves an index < 64.
+        unsafe { std::hint::assert_unchecked(cs.cache_index < cs.cache.len()) };
+    }
+    // Consume sparse caches and batches crossing a word without dropping slots.
+    if cs.cache_index > 64 - BATCH {
+        return std::array::from_fn(|_| unsafe {
+            arena_allocate_one::<CLASS>(state, class, size, mark_fn)
+        });
+    }
+    let addresses: [usize; BATCH] = cs.cache[cs.cache_index..cs.cache_index + BATCH]
+        .try_into()
+        .unwrap();
+    cs.cache_index += BATCH;
+    let rbase = heap::region_base(class);
+    let mut bits = 0;
+    for addr in addresses {
+        let slot = heap::slot_index(addr, rbase, class);
+        if class >= heap::META_MIN_CLASS {
+            let m = unsafe { &mut *heap::meta_entry(class, slot) };
+            m.mark_fn = mark_fn as usize;
+            m.size = size as u64;
+        }
+        bits |= 1 << (slot & 63);
+    }
+    let word = heap::slot_index(addresses[0], rbase, class) >> 6;
+    unsafe { heap::alloc_word_or(class, word, bits) };
+    if SOL_CONCURRENT_MARKING.load(Ordering::Relaxed) {
+        unsafe { heap::mark_word_or(class, word, bits) };
+    }
+    addresses.map(|addr| addr as *mut u8)
+}
+
 /// Allocate `size` bytes (rounded up to a power-of-2 size class) from the
 /// arena. Returns a correctly-aligned pointer to **uninitialized** memory; the
 /// caller (codegen) zeroes it with an explicit `memset` that LLVM can elide.
 /// `CLASS == -1` uses the runtime class; fixed classes stay specialized through
 /// the cold refill, without requiring that refill to inline into the fast path.
-unsafe fn arena_allocate<const CLASS: isize>(
+unsafe fn arena_allocate_one<const CLASS: isize>(
     state: &mut ThreadAllocState,
     class: usize,
     size: usize,
@@ -241,14 +339,6 @@ fn fill_cache<const CLASS: isize>(cs: &mut ThreadClassState, base: usize, class:
         };
     }
     cs.cache_index = index;
-}
-
-/// Record `bytes` of allocation against the trigger counter and, in batches,
-/// the global back-pressure counter (`ALLOCATED_SINCE_GC`). Batching keeps the
-/// global atomic off the per-allocation hot path.
-#[inline]
-fn account_alloc(state: &mut ThreadAllocState) {
-    state.total_allocations += 1;
 }
 
 /// Allocate a >1 GiB object via the system allocator and record it in the
