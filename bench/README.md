@@ -1,6 +1,6 @@
 # Benchmarks
 
-Measured September 13, 2026 at Solar commit `94ddb81b`.
+All results measured October 2, 2026 at Solar commit `dcce65e0`.
 All Solar programs use release codegen and the separately linked release runtime.
 Build and reproduction commands are in [guide.md](guide.md).
 
@@ -10,7 +10,7 @@ Build and reproduction commands are in [guide.md](guide.md).
 | --- | --- |
 | CPU | Intel Core Ultra 9 275HX, 24 cores |
 | Memory | 93 GiB |
-| Linux | 7.1.6-arch1-1 |
+| Linux | 7.2.6-1-cachyos |
 | Intel P-state EPP | `balance_performance` |
 | Clang / external LLVM | 23.1.2 |
 | GCC / G++ | 14.2.0 |
@@ -22,11 +22,15 @@ Build and reproduction commands are in [guide.md](guide.md).
 | Sieve Java | OpenJDK 25.0.3 |
 | .NET SDK / runtime | 10.0.301 / 10.0.9 |
 
-The previous August results used EPP `power`, so changes from those results
-cannot be attributed to compiler or runtime changes alone. This is a shared
-machine; benchmarks ran sequentially, but background activity was not controlled.
-The allocation matrix started with load averages 3.03, 3.15, 5.10 and ended
-at 15.70, 14.88, 13.99. Treat close rankings cautiously given this load drift.
+The allocation tables use the second complete allocation rerun on October 2.
+Both allocation runs used the same benchmark binaries and `balance_performance`
+EPP. Sieve, loops, HashMap, and binary trees were rebuilt and measured afterward
+on the same kernel and EPP setting. This is a shared machine; benchmarks ran
+sequentially without CPU pinning, but background activity was not controlled.
+The allocation/GC matrix load averages were 1.76, 1.71, 1.73 (before) and
+5.16, 7.24, 7.00 (after). The C allocator matrix started at 5.16, 7.24, 7.00
+and ended at 11.75, 11.15, 9.18. The remaining benchmark groups started at 2.70, 2.10, 2.66
+and ended at 3.59, 2.54, 2.77. Treat close rankings cautiously.
 
 Tables report independent minima of wall time and per-run peak RSS across
 rounds; those minima can come from different runs. Memory values are MiB.
@@ -50,52 +54,52 @@ Node.js workers use independent V8 isolates, so their pauses can overlap.
 
 | runtime | Allocs3 wall | Allocs3 RSS | ThreadsList2 wall | ThreadsList2 RSS | Splay wall | Splay RSS | Allocs5 wall | Allocs5 RSS |
 |---|---|---|---|---|---|---|---|---|
-| Solar | 0.54 s | 763 MiB | 1.07 s | 2000 MiB | 4.65 s | 1301 MiB | 2.22 s | 3209 MiB |
-| C (malloc/free) | 1.67 s | 3034 MiB | 2.59 s | 99 MiB | 14.47 s | 48 MiB | 6.77 s | 3151 MiB |
-| Go | 2.08 s | 820 MiB | 9.94 s | 61 MiB | 5.85 s | 91 MiB | 18.67 s | 6306 MiB |
-| JS (Node/V8) | 6.57 s | 3204 MiB | 2.19 s | 752 MiB | 12.34 s | 346 MiB | 10.72 s | 3901 MiB |
-| Julia | 3.98 s | 1760 MiB | 6.54 s | 320 MiB | 16.99 s | 640 MiB | 31.14 s | 3115 MiB |
-| Java G1 | 2.93 s | 1943 MiB | 1.95 s | 3534 MiB | 7.23 s | 5093 MiB | 5.87 s | 5661 MiB |
-| Java Parallel | 3.17 s | 2339 MiB | 2.06 s | 2764 MiB | 4.88 s | 2779 MiB | 6.49 s | 3596 MiB |
-| Java ZGC gen | 1.57 s | 2348 MiB | 4.18 s | 3666 MiB | 10.84 s | 7522 MiB | 17.83 s | 8437 MiB |
-| Java ZGC non-gen | 1.53 s | 2921 MiB | 4.40 s | 8456 MiB | 7.16 s | 5303 MiB | 30.21 s | 16945 MiB |
-| Java Shenandoah | 0.79 s | 1567 MiB | 2.93 s | 6949 MiB | 5.03 s | 2163 MiB | 17.19 s | 8243 MiB |
-| C# Workstation | 4.41 s | 2339 MiB | 65.32 s | 1545 MiB | 76.28 s | 348 MiB | 79.14 s | 9750 MiB |
-| C# Server | 2.71 s | 2331 MiB | 16.19 s | 367 MiB | 15.34 s | 693 MiB | 8.40 s | 4668 MiB |
+| Solar | 0.38 s | 758 MiB | 1.14 s | 4808 MiB | 3.25 s | 1616 MiB | 2.76 s | 15169 MiB |
+| C (malloc/free) | 1.69 s | 3039 MiB | 2.36 s | 99 MiB | 7.83 s | 48 MiB | 5.16 s | 3151 MiB |
+| Go | 1.91 s | 813 MiB | 9.21 s | 62 MiB | 5.70 s | 91 MiB | 21.69 s | 5029 MiB |
+| JS (Node/V8) | 6.64 s | 3205 MiB | 2.14 s | 753 MiB | 9.99 s | 347 MiB | 10.24 s | 3903 MiB |
+| Julia | 3.98 s | 1761 MiB | 6.47 s | 320 MiB | 11.71 s | 659 MiB | 29.07 s | 3126 MiB |
+| Java G1 | 2.95 s | 1943 MiB | 1.43 s | 2993 MiB | 4.17 s | 4311 MiB | 5.38 s | 5662 MiB |
+| Java Parallel | 3.26 s | 2339 MiB | 1.43 s | 2769 MiB | 3.30 s | 2779 MiB | 5.35 s | 3458 MiB |
+| Java ZGC gen | 1.56 s | 2342 MiB | 2.83 s | 3807 MiB | 7.28 s | 7468 MiB | 14.55 s | 8433 MiB |
+| Java ZGC non-gen | 1.54 s | 2982 MiB | 3.06 s | 7942 MiB | 5.28 s | 5195 MiB | 23.28 s | 14961 MiB |
+| Java Shenandoah | 0.82 s | 1566 MiB | 1.60 s | 7092 MiB | 3.42 s | 2163 MiB | 14.00 s | 8225 MiB |
+| C# Workstation | 4.92 s | 2330 MiB | 45.42 s | 981 MiB | 48.40 s | 251 MiB | 55.88 s | 16777 MiB |
+| C# Server | 2.75 s | 2338 MiB | 8.45 s | 381 MiB | 10.44 s | 660 MiB | 6.25 s | 4696 MiB |
 
 ### GC pause latency
 
 | runtime | Allocs3 max | Allocs3 p50 | ThreadsList2 max | ThreadsList2 p50 | Splay max | Splay p50 | Allocs5 max | Allocs5 p50 |
 |---|---|---|---|---|---|---|---|---|
-| Solar | — | — | 4.01 | 0.18 | 0.63 | 0.02 | 2.46 | 0.22 |
+| Solar | — | — | 1.09 | 0.31 | 34.83 | 0.04 | 2.82 | 0.37 |
 | C (malloc/free) | none | none | none | none | none | none | none | none |
-| Go | 0.02 | 0.01 | 2.80 | 0.03 | 0.78 | 0.02 | 0.63 | 0.03 |
-| JS (Node/V8) | 1035.07 | 11.59 | 17.27 | 0.62 | 19.66 | 4.89 | 1312.06 | 1.26 |
-| Julia | 1103.51 | 224.32 | 15.97 | 4.14 | 168.52 | 104.36 | 2022.69 | 90.25 |
-| Java G1 | 473.31 | 224.26 | 11.40 | 4.96 | 138.51 | 32.16 | 543.19 | 122.95 |
-| Java Parallel | 1301.83 | 710.57 | 5.78 | 4.55 | 9.19 | 7.21 | 1573.84 | 6.55 |
-| Java ZGC gen | 0.02 | 0.02 | 0.08 | 0.03 | 0.04 | 0.02 | 0.07 | 0.03 |
-| Java ZGC non-gen | 0.01 | 0.01 | 0.06 | 0.02 | 0.03 | 0.02 | 0.04 | 0.02 |
-| Java Shenandoah | — | — | 0.61 | 0.04 | 0.37 | 0.04 | 864.93 | 0.05 |
-| C# Workstation | 41.15 | 17.37 | 49.94 | 21.04 | 148.60 | 48.36 | 87.96 | 21.26 |
-| C# Server | 272.10 | 26.75 | 49.49 | 12.82 | 69.38 | 31.34 | 588.11 | 21.03 |
+| Go | 0.19 | 0.02 | 1.90 | 0.03 | 0.98 | 0.02 | 0.52 | 0.03 |
+| JS (Node/V8) | 1004.24 | 11.52 | 10.49 | 0.56 | 17.80 | 3.49 | 1081.22 | 0.97 |
+| Julia | 1151.59 | 219.32 | 15.89 | 3.78 | 104.47 | 74.97 | 1743.64 | 86.20 |
+| Java G1 | 464.71 | 225.58 | 7.50 | 4.02 | 105.95 | 25.11 | 493.00 | 111.22 |
+| Java Parallel | 1324.66 | 725.21 | 6.72 | 4.02 | 6.41 | 4.75 | 1363.12 | 5.02 |
+| Java ZGC gen | 0.02 | 0.02 | 0.11 | 0.02 | 0.03 | 0.01 | 0.07 | 0.02 |
+| Java ZGC non-gen | 0.01 | 0.01 | 0.04 | 0.02 | 0.02 | 0.01 | 0.05 | 0.02 |
+| Java Shenandoah | — | — | 0.37 | 0.03 | 0.31 | 0.03 | 704.07 | 0.03 |
+| C# Workstation | 42.55 | 17.17 | 40.96 | 14.99 | 107.55 | 27.89 | 45.21 | 16.19 |
+| C# Server | 258.39 | 25.40 | 23.20 | 8.86 | 49.84 | 20.09 | 580.06 | 8.70 |
 
 ### Time represented by GC-pause samples
 
 | runtime | Allocs3 | ThreadsList2 | Splay | Allocs5 |
 |---|---|---|---|---|
-| Solar | 0.0% | 3.4% | 0.1% | 1.8% |
+| Solar | 0.0% | 1.1% | 1.8% | 0.2% |
 | C (malloc/free) | 0% | 0% | 0% | 0% |
-| Go | 0.0% | 2.3% | 0.2% | 0.0% |
-| JS (Node/V8) | 90.0% | 127.2% | 55.4% | 104.4% |
-| Julia | 75.1% | 69.6% | 48.9% | 86.3% |
-| Java G1 | 82.8% | 4.0% | 18.8% | 53.7% |
-| Java Parallel | 81.9% | 3.2% | 1.2% | 54.0% |
+| Go | 0.0% | 1.5% | 0.4% | 0.0% |
+| JS (Node/V8) | 91.0% | 122.1% | 56.0% | 103.0% |
+| Julia | 75.7% | 70.8% | 49.4% | 87.8% |
+| Java G1 | 83.0% | 4.5% | 26.3% | 56.2% |
+| Java Parallel | 81.4% | 3.6% | 1.2% | 58.6% |
 | Java ZGC gen | 0.0% | 0.1% | 0.0% | 0.0% |
 | Java ZGC non-gen | 0.0% | 0.0% | 0.0% | 0.0% |
-| Java Shenandoah | 0.0% | 0.1% | 0.0% | 6.8% |
-| C# Workstation | 49.8% | 85.1% | 69.7% | 79.0% |
-| C# Server | 50.4% | 81.9% | 44.9% | 45.0% |
+| Java Shenandoah | 0.0% | 0.1% | 0.0% | 6.2% |
+| C# Workstation | 51.0% | 85.7% | 66.8% | 79.8% |
+| C# Server | 46.9% | 76.9% | 41.3% | 40.7% |
 
 Pause values are milliseconds: each cell is the minimum across rounds of
 that run's maximum or median individual pause. A dash means no sample was
@@ -107,10 +111,10 @@ isolates pause independently.
 
 | Workload | Solar wall | Julia wall | Julia / Solar |
 | --- | ---: | ---: | ---: |
-| `allocs3` | 0.54 s | 3.98 s | 7.41× |
-| `threads_list2` | 1.07 s | 6.54 s | 6.11× |
-| `splay` | 4.65 s | 16.99 s | 3.65× |
-| `allocs5` | 2.22 s | 31.14 s | 14.04× |
+| `allocs3` | 0.38 s | 3.98 s | 10.57× |
+| `threads_list2` | 1.14 s | 6.47 s | 5.70× |
+| `splay` | 3.25 s | 11.71 s | 3.60× |
+| `allocs5` | 2.76 s | 29.07 s | 10.52× |
 
 ## C allocator comparison
 
@@ -121,12 +125,12 @@ The bump allocator retains every touched allocation.
 
 | allocator | allocs3 wall | allocs3 RSS | threads wall | threads RSS | splay wall | splay RSS | allocs5 wall | allocs5 RSS |
 |-----------|-------------:|------------:|-------------:|------------:|-------------:|------------:|-------------:|------------:|
-| Solar (separate run) | 0.54 s | 763 MiB | 1.07 s | 2000 MiB | 4.65 s | 1301 MiB | 2.22 s | 3209 MiB |
-| glibc     |      2.52 s |    3053 MiB |      4.62 s |      98 MiB |     18.45 s |      48 MiB |      7.10 s |    3149 MiB |
-| jemalloc  |      0.77 s |     793 MiB |      1.19 s |      55 MiB |      7.09 s |     108 MiB |      1.97 s |     845 MiB |
-| tcmalloc  |      0.75 s |     775 MiB |     72.21 s |      50 MiB |      6.56 s |      47 MiB |     60.78 s |     819 MiB |
-| mimalloc  |      0.58 s |     766 MiB |      0.88 s |      55 MiB |     45.16 s |      43 MiB |      1.35 s |     808 MiB |
-| bump      |      0.57 s |     764 MiB |      2.87 s |   14902 MiB |     13.88 s |    9962 MiB |      4.04 s |   19566 MiB |
+| Solar (separate run) | 0.38 s | 758 MiB | 1.14 s | 4808 MiB | 3.25 s | 1616 MiB | 2.76 s | 15169 MiB |
+| glibc | 1.87 s | 3053 MiB | 3.28 s | 97 MiB | 8.11 s | 48 MiB | 5.05 s | 3149 MiB |
+| jemalloc | 0.60 s | 794 MiB | 1.04 s | 55 MiB | 3.13 s | 133 MiB | 1.67 s | 845 MiB |
+| tcmalloc | 0.60 s | 775 MiB | 49.68 s | 50 MiB | 2.74 s | 47 MiB | 51.23 s | 818 MiB |
+| mimalloc | 0.47 s | 766 MiB | 0.70 s | 55 MiB | 15.76 s | 43 MiB | 1.16 s | 810 MiB |
+| bump | 0.47 s | 764 MiB | 2.25 s | 19937 MiB | 7.73 s | 9962 MiB | 2.70 s | 19819 MiB |
 
 Solar's allocation results above were measured separately and were not interleaved with this allocator matrix.
 
@@ -137,11 +141,11 @@ Five interleaved rounds over 100 million entries. Every run must print
 
 | runtime | wall | peak RSS |
 |---------|-----:|---------:|
-| Solar   | 1.82 s | 98 MiB |
-| C       | 1.71 s | 96 MiB |
-| Go      | 1.79 s | 97 MiB |
-| Java    | 1.90 s | 140 MiB |
-| C#      | 1.79 s | 130 MiB |
+| Solar   | 1.13 s | 98 MiB |
+| C       | 0.94 s | 96 MiB |
+| Go      | 0.97 s | 97 MiB |
+| Java    | 0.99 s | 141 MiB |
+| C#      | 0.98 s | 131 MiB |
 
 ## Loop optimization
 
@@ -152,12 +156,12 @@ The C reference uses Clang 23.1.2 with `-O3 -march=native`.
 
 | Runtime | Wall (s) | CPU (s) | Peak RSS (MiB) |
 | --- | ---: | ---: | ---: |
-| Solar loop2 | 0.452 | 0.430 | 10.5 |
-| Solar loop2fn5 | 0.543 | 0.510 | 10.2 |
-| C loop2 | 0.362 | 0.340 | 1.2 |
+| Solar loop2 | 0.395 | 0.380 | 10.5 |
+| Solar loop2fn5 | 0.399 | 0.390 | 12.2 |
+| C loop2 | 0.315 | 0.310 | 1.2 |
 
-`loop2fn5` took about 20% longer than `loop2` in this run; the expected
-release-performance equivalence was not observed.
+`loop2fn5` took about 0.9% longer than `loop2` in this run, within the
+variation observed across rounds.
 
 ## HashMap
 
@@ -168,11 +172,11 @@ All reported checksums match. Total is the sum of each phase's minimum.
 
 | phase | Solar (ms) | Rust (ms) | Solar/Rust | Solar RSS (MiB) | Rust RSS (MiB) | checksum match |
 |-------|-----------:|----------:|-----------:|---------------:|--------------:|:--------------:|
-| u64 | 164.1 | 137.4 | 1.19x | 70.5 | 52.6 | yes |
-| u32 | 161.6 | 121.0 | 1.34x | 68.0 | 52.6 | yes |
-| point | 237.7 | 164.6 | 1.44x | 99.4 | 76.4 | yes |
-| mixed | 247.4 | 184.6 | 1.34x | 99.2 | 76.4 | yes |
-| **total** | **810.7** | **607.5** | **1.33x** | | | |
+| u64 | 87.9 | 68.0 | 1.29x | 68.2 | 52.7 | yes |
+| u32 | 93.7 | 69.9 | 1.34x | 68.1 | 52.4 | yes |
+| point | 128.2 | 91.5 | 1.40x | 99.7 | 76.6 | yes |
+| mixed | 141.1 | 95.9 | 1.47x | 99.8 | 76.6 | yes |
+| **total** | **450.9** | **325.2** | **1.39x** | | | |
 
 ## Binary trees
 
@@ -184,7 +188,7 @@ with `-O3 -march=native`. CPU time is user plus system time.
 
 | Runtime | Wall (s) | CPU (s) | Peak RSS (MiB) |
 | --- | ---: | ---: | ---: |
-| Solar threaded | 1.645 | 8.740 | 1614.4 |
-| Solar single | 5.554 | 5.960 | 1174.2 |
-| C++ arena | 0.696 | 1.950 | 131.0 |
-| C malloc/free | 17.461 | 17.390 | 257.0 |
+| Solar threaded | 1.036 | 6.330 | 1755.0 |
+| Solar single | 3.443 | 3.910 | 1176.4 |
+| C++ arena | 0.419 | 1.470 | 131.0 |
+| C malloc/free | 7.831 | 7.790 | 257.2 |
