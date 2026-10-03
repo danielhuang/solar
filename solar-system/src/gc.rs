@@ -1302,13 +1302,13 @@ pub static SOL_CONCURRENT_MARKING: AtomicBool = AtomicBool::new(false);
 
 /// Shades a pointer after the LLVM write-barrier wrapper checks marking state.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sol_write_barrier_slow(dst: *mut u8, val: *mut u8) {
-    unsafe { write_barrier_slow(dst, val) };
+pub unsafe extern "C" fn sol_write_barrier_slow(val: *mut u8) {
+    unsafe { write_barrier_slow(val) };
 }
 
 #[cold]
 #[inline(never)]
-unsafe fn write_barrier_slow(_dst: *mut u8, val: *mut u8) {
+unsafe fn write_barrier_slow(val: *mut u8) {
     let v = val as usize;
     if v == 0 {
         return;

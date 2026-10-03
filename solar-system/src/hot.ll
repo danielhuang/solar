@@ -226,16 +226,16 @@ define weak_odr void @sol_carrying_mul_add(i64 %a, i64 %b, i64 %carry, i64 %add,
 ; Keep these definitions until the post-optimization write-barrier pass inserts
 ; calls. The final object compilation inlines the marking-state test.
 @SOL_CONCURRENT_MARKING = external global i8
-declare void @sol_write_barrier_slow(ptr, ptr) nounwind
+declare void @sol_write_barrier_slow(ptr) nounwind
 declare void @sol_gc_memcpy_barrier_slow(ptr, i64) nounwind
 
-define weak_odr void @sol_write_barrier(ptr %dst, ptr %value) alwaysinline nounwind {
+define weak_odr void @sol_write_barrier(ptr %value) alwaysinline nounwind {
 entry:
   %marking = load atomic i8, ptr @SOL_CONCURRENT_MARKING monotonic, align 1
   %active = icmp ne i8 %marking, 0
   br i1 %active, label %slow, label %done
 slow:
-  tail call void @sol_write_barrier_slow(ptr %dst, ptr %value)
+  tail call void @sol_write_barrier_slow(ptr %value)
   br label %done
 done:
   ret void

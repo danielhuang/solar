@@ -414,7 +414,7 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
 
     // These calls may be declarations when the runtime is linked separately.
     FunctionCallee WB = M.getOrInsertFunction(
-        "sol_write_barrier", FunctionType::get(VoidTy, {PtrTy, PtrTy}, false));
+        "sol_write_barrier", FunctionType::get(VoidTy, {PtrTy}, false));
     FunctionCallee MemB = M.getOrInsertFunction(
         "sol_gc_memcpy_barrier",
         FunctionType::get(VoidTy, {PtrTy, I64}, false));
@@ -460,7 +460,7 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
         IRBuilder<> B(SI->getNextNode());
         if (Val->getType()->isPointerTy()) {
           // Scalar pointer store: shade the stored value.
-          CallInst *C = B.CreateCall(WB, {Dst, Val});
+          CallInst *C = B.CreateCall(WB, {Val});
           C->setDebugLoc(barrierDebugLoc(SI));
           ++NStore;
         } else {
