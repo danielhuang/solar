@@ -7,6 +7,7 @@ a command changes directory explicitly.
 ## Contents
 
 - [Requirements](#requirements)
+- [Continuous integration](#continuous-integration)
 - [Source layout](#source-layout)
 - [Build the complete suite](#build-the-complete-suite)
 - [Run the allocation and GC matrix](#run-the-allocation-and-gc-matrix)
@@ -53,6 +54,40 @@ Run benchmarks on an otherwise idle machine when comparing small differences.
 Allow at least 22 GiB of memory for high-memory configurations: the full
 allocation/GC matrix and no-free bump allocator can exceed 19 GiB and 21 GiB
 RSS, respectively.
+
+## Continuous integration
+
+The CircleCI `benchmarks` job runs the complete suite on an Ubuntu 26.04 Linux
+VM with resource class `2xlarge`. It installs the comparison runtimes and
+allocator libraries, builds every program with `bash bench/build.sh`, and runs
+`python3 bench/ci_report.py`. Measurements run sequentially using the round
+counts below; the test job runs on a separate VM.
+
+The job uploads `target/benchmark-results` under the `benchmarks` artifact
+path. Start with `report.md` for result tables and group status. The directory
+also includes machine and tool versions, the build log, per-group logs,
+`results.json` with commands and exit statuses, and the allocation/GC, loops,
+and binary-trees harnesses' per-round JSON measurements. The other harnesses
+retain their measurements in text logs. A failed group fails the job after
+attempting the remaining groups; partial results are written between groups
+and are uploaded even when a benchmark fails.
+
+To reproduce the report locally after installing the requirements:
+
+```bash
+bash bench/build.sh
+python3 bench/ci_report.py
+```
+
+For a shorter check, run selected groups in a separate output directory:
+
+```bash
+python3 bench/ci_report.py --groups loops hashmap --output-dir target/bench-check
+```
+
+Reports record the measured checkout and tool versions. Compare results from
+similar hardware and toolchains; the existing README tables are historical
+measurements and are not overwritten by CI.
 
 ## Source layout
 
