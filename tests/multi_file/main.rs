@@ -301,3 +301,12 @@ fn method_with_local_anchor() {
     );
     assert_eq!(output, "42\n");
 }
+
+#[test]
+fn const_keyword_defaults() {
+    let output = run(
+        &fixture("const_keyword_defaults/main.solar"),
+        "const_keyword_defaults",
+    );
+    assert_eq!(output, "passed\n");
+}

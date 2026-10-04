@@ -1,141 +1,808 @@
 import {throw} from "lib.solar";
 
+// Linux x86-64 syscall numbers.
+
+/// Linux x86-64 openat syscall number.
+pub const SYS_OPENAT = 257i64;
+
+/// Linux x86-64 read syscall number.
+pub const SYS_READ = 0i64;
+
+/// Linux x86-64 write syscall number.
+pub const SYS_WRITE = 1i64;
+
+/// Linux x86-64 pread64 syscall number.
+pub const SYS_PREAD64 = 17i64;
+
+/// Linux x86-64 pwrite64 syscall number.
+pub const SYS_PWRITE64 = 18i64;
+
+/// Linux x86-64 fsync syscall number.
+pub const SYS_FSYNC = 74i64;
+
+/// Linux x86-64 flock syscall number.
+pub const SYS_FLOCK = 73i64;
+
+/// Linux x86-64 unlink syscall number.
+pub const SYS_UNLINK = 87i64;
+
+/// Linux x86-64 rmdir syscall number.
+pub const SYS_RMDIR = 84i64;
+
+/// Linux x86-64 rename syscall number.
+pub const SYS_RENAME = 82i64;
+
+/// Linux x86-64 mkdir syscall number.
+pub const SYS_MKDIR = 83i64;
+
+/// Linux x86-64 stat syscall number.
+pub const SYS_STAT = 4i64;
+
+/// Linux x86-64 getdents64 syscall number.
+pub const SYS_GETDENTS64 = 217i64;
+
+/// Linux x86-64 socket syscall number.
+pub const SYS_SOCKET = 41i64;
+
+/// Linux x86-64 connect syscall number.
+pub const SYS_CONNECT = 42i64;
+
+/// Linux x86-64 shutdown syscall number.
+pub const SYS_SHUTDOWN = 48i64;
+
+/// Linux x86-64 bind syscall number.
+pub const SYS_BIND = 49i64;
+
+/// Linux x86-64 listen syscall number.
+pub const SYS_LISTEN = 50i64;
+
+/// Linux x86-64 getsockname syscall number.
+pub const SYS_GETSOCKNAME = 51i64;
+
+/// Linux x86-64 setsockopt syscall number.
+pub const SYS_SETSOCKOPT = 54i64;
+
+/// Linux x86-64 accept4 syscall number.
+pub const SYS_ACCEPT4 = 288i64;
+
+/// Linux x86-64 futex syscall number.
+pub const SYS_FUTEX = 202i64;
+
+// File descriptors, open flags, permissions, and locks.
+
+/// The current working directory (-100 encoded as a syscall word).
+pub const AT_FDCWD = 18446744073709551516u64;
+
+/// Close the descriptor on exec.
+pub const O_CLOEXEC = 0o2000000;
+
+/// Open for reading only.
+pub const O_RDONLY = 0;
+
+/// Open for writing only.
+pub const O_WRONLY = 1;
+
+/// Open for reading and writing.
+pub const O_RDWR = 2;
+
+/// Create the file if it does not exist.
+pub const O_CREAT = 64;
+
+/// With O_CREAT, fail if the file already exists.
+pub const O_EXCL = 128;
+
+/// Truncate an existing file when opened for writing.
+pub const O_TRUNC = 512;
+
+/// Append writes to the end of the file.
+pub const O_APPEND = 1024;
+
+/// Require the opened path to be a directory.
+pub const O_DIRECTORY = 0o200000;
+
+/// Acquire a shared advisory file lock.
+pub const LOCK_SH = 1;
+
+/// Acquire an exclusive advisory file lock.
+pub const LOCK_EX = 2;
+
+/// Acquire an advisory file lock without blocking.
+pub const LOCK_NB = 4;
+
+/// Release an advisory file lock.
+pub const LOCK_UN = 8;
+
+/// Standard input file descriptor.
+pub const STDIN_FILENO = 0i32;
+
+/// Standard output file descriptor.
+pub const STDOUT_FILENO = 1i32;
+
+/// Standard error file descriptor.
+pub const STDERR_FILENO = 2i32;
+
+/// Default file permissions before applying the process umask.
+pub const DEFFILEMODE = 0o666u;
+
+/// Read, write, and execute permission bits for all users.
+pub const ACCESSPERMS = 0o777u;
+
+// Linux x86-64 file metadata and directory entry layouts.
+
+/// Mask selecting the file type in st_mode.
+pub const S_IFMT = 0o170000u32;
+
+/// File type bits for a regular file.
+pub const S_IFREG = 0o100000u32;
+
+/// File type bits for a directory.
+pub const S_IFDIR = 0o040000u32;
+
+/// Size of the Linux x86-64 stat structure in bytes.
+pub const STAT_SIZE = 144u;
+
+/// Byte offset of st_mode in Linux x86-64 stat.
+pub const STAT_MODE_OFFSET = 24u;
+
+/// Byte offset of st_size in Linux x86-64 stat.
+pub const STAT_SIZE_OFFSET = 48u;
+
+/// Byte offset of st_mtim.tv_sec in Linux x86-64 stat.
+pub const STAT_MTIME_SEC_OFFSET = 88u;
+
+/// Byte offset of st_mtim.tv_nsec in Linux x86-64 stat.
+pub const STAT_MTIME_NSEC_OFFSET = 96u;
+
+/// Byte offset of d_reclen in Linux linux_dirent64.
+pub const DIRENT64_RECLEN_OFFSET = 16u;
+
+/// Byte offset of d_type in Linux linux_dirent64.
+pub const DIRENT64_TYPE_OFFSET = 18u;
+
+/// Byte offset of d_name in Linux linux_dirent64.
+pub const DIRENT64_NAME_OFFSET = 19u;
+
+/// Directory entry type for a regular file.
+pub const DT_REG = 8u8;
+
+/// Directory entry type for a directory.
+pub const DT_DIR = 4u8;
+
+// Socket protocols, options, and Linux address layouts.
+
+/// IPv4 socket address family.
+pub const AF_INET = 2;
+
+/// IPv6 socket address family.
+pub const AF_INET6 = 10;
+
+/// Reliable, connection-oriented byte-stream socket type.
+pub const SOCK_STREAM = 1;
+
+/// Socket-level option namespace.
+pub const SOL_SOCKET = 1;
+
+/// Allow reuse of local socket addresses.
+pub const SO_REUSEADDR = 2;
+
+/// Select the default protocol for the socket type.
+pub const IPPROTO_IP = 0;
+
+/// TCP protocol number and socket option level.
+pub const IPPROTO_TCP = 6;
+
+/// Disable the TCP Nagle algorithm.
+pub const TCP_NODELAY = 1;
+
+/// Disable further reads from a socket.
+pub const SHUT_RD = 0;
+
+/// Disable further writes to a socket.
+pub const SHUT_WR = 1;
+
+/// Close the socket descriptor on exec.
+pub const SOCK_CLOEXEC = 0o2000000;
+
+/// Buffer size sufficient for Linux sockaddr_in and sockaddr_in6.
+pub const SOCKADDR_MAX = 28u;
+
+/// Size of Linux sockaddr_in in bytes.
+pub const SOCKADDR_IN_SIZE = 16u;
+
+/// Size of Linux sockaddr_in6 in bytes.
+pub const SOCKADDR_IN6_SIZE = 28u;
+
+/// Byte offset of the address family in Linux socket addresses.
+pub const SOCKADDR_FAMILY_OFFSET = 0u;
+
+/// Byte offset of the network-order port in sockaddr_in and sockaddr_in6.
+pub const SOCKADDR_PORT_OFFSET = 2u;
+
+/// Byte offset of sin_addr in Linux sockaddr_in.
+pub const SOCKADDR_IN_ADDR_OFFSET = 4u;
+
+/// Byte offset of sin6_addr in Linux sockaddr_in6.
+pub const SOCKADDR_IN6_ADDR_OFFSET = 8u;
+
+/// Exclusive end byte offset of sin6_addr in Linux sockaddr_in6.
+pub const SOCKADDR_IN6_ADDR_END = 24u;
+
+/// Size in bytes of an integer Linux socket option.
+pub const SOCKOPT_INT_SIZE = 4u64;
+
+// Time units used by Linux timestamps and timeouts.
+
+/// Nanoseconds per second in Linux timespec fields.
+pub const NSEC_PER_SEC = 1000000000u64;
+
+// Futex operations.
+
+/// Process-private futex wait operation.
+pub const FUTEX_WAIT_PRIVATE = 128i64;
+
+/// Process-private futex wake operation.
+pub const FUTEX_WAKE_PRIVATE = 129i64;
+
+/// Maximum signed Linux futex wake count, used to wake all waiters.
+pub const FUTEX_WAKE_ALL = 2147483647u32;
+
+// Defaults used by Solar's Linux wrappers.
+
+/// Default maximum number of pending connections in a TCP listener's queue.
+pub const TCP_LISTEN_BACKLOG = 128;
+
+/// Buffer size in bytes for each getdents64 batch.
+pub const GETDENTS_BUFFER_SIZE = 32768u;
+
+/// Solar futex timeout sentinel requesting an indefinite wait.
+pub const FUTEX_NO_TIMEOUT = 18446744073709551615u64;
+
+// Linux errno values.
+
+/// Linux errno: Operation not permitted.
+pub const EPERM = 1;
+
+/// Linux errno: No such file or directory.
+pub const ENOENT = 2;
+
+/// Linux errno: No such process.
+pub const ESRCH = 3;
+
+/// Linux errno: Interrupted system call.
+pub const EINTR = 4;
+
+/// Linux errno: Input/output error.
+pub const EIO = 5;
+
+/// Linux errno: No such device or address.
+pub const ENXIO = 6;
+
+/// Linux errno: Argument list too long.
+pub const E2BIG = 7;
+
+/// Linux errno: Exec format error.
+pub const ENOEXEC = 8;
+
+/// Linux errno: Bad file descriptor.
+pub const EBADF = 9;
+
+/// Linux errno: No child processes.
+pub const ECHILD = 10;
+
+/// Linux errno: Resource temporarily unavailable.
+pub const EAGAIN = 11;
+
+/// Linux errno: Cannot allocate memory.
+pub const ENOMEM = 12;
+
+/// Linux errno: Permission denied.
+pub const EACCES = 13;
+
+/// Linux errno: Bad address.
+pub const EFAULT = 14;
+
+/// Linux errno: Block device required.
+pub const ENOTBLK = 15;
+
+/// Linux errno: Device or resource busy.
+pub const EBUSY = 16;
+
+/// Linux errno: File exists.
+pub const EEXIST = 17;
+
+/// Linux errno: Invalid cross-device link.
+pub const EXDEV = 18;
+
+/// Linux errno: No such device.
+pub const ENODEV = 19;
+
+/// Linux errno: Not a directory.
+pub const ENOTDIR = 20;
+
+/// Linux errno: Is a directory.
+pub const EISDIR = 21;
+
+/// Linux errno: Invalid argument.
+pub const EINVAL = 22;
+
+/// Linux errno: Too many open files in system.
+pub const ENFILE = 23;
+
+/// Linux errno: Too many open files.
+pub const EMFILE = 24;
+
+/// Linux errno: Inappropriate ioctl for device.
+pub const ENOTTY = 25;
+
+/// Linux errno: Text file busy.
+pub const ETXTBSY = 26;
+
+/// Linux errno: File too large.
+pub const EFBIG = 27;
+
+/// Linux errno: No space left on device.
+pub const ENOSPC = 28;
+
+/// Linux errno: Illegal seek.
+pub const ESPIPE = 29;
+
+/// Linux errno: Read-only file system.
+pub const EROFS = 30;
+
+/// Linux errno: Too many links.
+pub const EMLINK = 31;
+
+/// Linux errno: Broken pipe.
+pub const EPIPE = 32;
+
+/// Linux errno: Numerical argument out of domain.
+pub const EDOM = 33;
+
+/// Linux errno: Numerical result out of range.
+pub const ERANGE = 34;
+
+/// Linux errno: Resource deadlock avoided.
+pub const EDEADLK = 35;
+
+/// Linux errno: File name too long.
+pub const ENAMETOOLONG = 36;
+
+/// Linux errno: No locks available.
+pub const ENOLCK = 37;
+
+/// Linux errno: Function not implemented.
+pub const ENOSYS = 38;
+
+/// Linux errno: Directory not empty.
+pub const ENOTEMPTY = 39;
+
+/// Linux errno: Too many levels of symbolic links.
+pub const ELOOP = 40;
+
+/// Linux errno: No message of desired type.
+pub const ENOMSG = 42;
+
+/// Linux errno: Identifier removed.
+pub const EIDRM = 43;
+
+/// Linux errno: Channel number out of range.
+pub const ECHRNG = 44;
+
+/// Linux errno: Level 2 not synchronized.
+pub const EL2NSYNC = 45;
+
+/// Linux errno: Level 3 halted.
+pub const EL3HLT = 46;
+
+/// Linux errno: Level 3 reset.
+pub const EL3RST = 47;
+
+/// Linux errno: Link number out of range.
+pub const ELNRNG = 48;
+
+/// Linux errno: Protocol driver not attached.
+pub const EUNATCH = 49;
+
+/// Linux errno: No CSI structure available.
+pub const ENOCSI = 50;
+
+/// Linux errno: Level 2 halted.
+pub const EL2HLT = 51;
+
+/// Linux errno: Invalid exchange.
+pub const EBADE = 52;
+
+/// Linux errno: Invalid request descriptor.
+pub const EBADR = 53;
+
+/// Linux errno: Exchange full.
+pub const EXFULL = 54;
+
+/// Linux errno: No anode.
+pub const ENOANO = 55;
+
+/// Linux errno: Invalid request code.
+pub const EBADRQC = 56;
+
+/// Linux errno: Invalid slot.
+pub const EBADSLT = 57;
+
+/// Linux errno: Bad font file format.
+pub const EBFONT = 59;
+
+/// Linux errno: Device not a stream.
+pub const ENOSTR = 60;
+
+/// Linux errno: No data available.
+pub const ENODATA = 61;
+
+/// Linux errno: Timer expired.
+pub const ETIME = 62;
+
+/// Linux errno: Out of streams resources.
+pub const ENOSR = 63;
+
+/// Linux errno: Machine is not on the network.
+pub const ENONET = 64;
+
+/// Linux errno: Package not installed.
+pub const ENOPKG = 65;
+
+/// Linux errno: Object is remote.
+pub const EREMOTE = 66;
+
+/// Linux errno: Link has been severed.
+pub const ENOLINK = 67;
+
+/// Linux errno: Advertise error.
+pub const EADV = 68;
+
+/// Linux errno: Srmount error.
+pub const ESRMNT = 69;
+
+/// Linux errno: Communication error on send.
+pub const ECOMM = 70;
+
+/// Linux errno: Protocol error.
+pub const EPROTO = 71;
+
+/// Linux errno: Multihop attempted.
+pub const EMULTIHOP = 72;
+
+/// Linux errno: RFS specific error.
+pub const EDOTDOT = 73;
+
+/// Linux errno: Bad message.
+pub const EBADMSG = 74;
+
+/// Linux errno: Value too large for defined data type.
+pub const EOVERFLOW = 75;
+
+/// Linux errno: Name not unique on network.
+pub const ENOTUNIQ = 76;
+
+/// Linux errno: File descriptor in bad state.
+pub const EBADFD = 77;
+
+/// Linux errno: Remote address changed.
+pub const EREMCHG = 78;
+
+/// Linux errno: Can not access a needed shared library.
+pub const ELIBACC = 79;
+
+/// Linux errno: Accessing a corrupted shared library.
+pub const ELIBBAD = 80;
+
+/// Linux errno: .lib section in a.out corrupted.
+pub const ELIBSCN = 81;
+
+/// Linux errno: Attempting to link in too many shared libraries.
+pub const ELIBMAX = 82;
+
+/// Linux errno: Cannot exec a shared library directly.
+pub const ELIBEXEC = 83;
+
+/// Linux errno: Invalid or incomplete multibyte or wide character.
+pub const EILSEQ = 84;
+
+/// Linux errno: Interrupted system call should be restarted.
+pub const ERESTART = 85;
+
+/// Linux errno: Streams pipe error.
+pub const ESTRPIPE = 86;
+
+/// Linux errno: Too many users.
+pub const EUSERS = 87;
+
+/// Linux errno: Socket operation on non-socket.
+pub const ENOTSOCK = 88;
+
+/// Linux errno: Destination address required.
+pub const EDESTADDRREQ = 89;
+
+/// Linux errno: Message too long.
+pub const EMSGSIZE = 90;
+
+/// Linux errno: Protocol wrong type for socket.
+pub const EPROTOTYPE = 91;
+
+/// Linux errno: Protocol not available.
+pub const ENOPROTOOPT = 92;
+
+/// Linux errno: Protocol not supported.
+pub const EPROTONOSUPPORT = 93;
+
+/// Linux errno: Socket type not supported.
+pub const ESOCKTNOSUPPORT = 94;
+
+/// Linux errno: Operation not supported.
+pub const EOPNOTSUPP = 95;
+
+/// Linux errno: Protocol family not supported.
+pub const EPFNOSUPPORT = 96;
+
+/// Linux errno: Address family not supported by protocol.
+pub const EAFNOSUPPORT = 97;
+
+/// Linux errno: Address already in use.
+pub const EADDRINUSE = 98;
+
+/// Linux errno: Cannot assign requested address.
+pub const EADDRNOTAVAIL = 99;
+
+/// Linux errno: Network is down.
+pub const ENETDOWN = 100;
+
+/// Linux errno: Network is unreachable.
+pub const ENETUNREACH = 101;
+
+/// Linux errno: Network dropped connection on reset.
+pub const ENETRESET = 102;
+
+/// Linux errno: Software caused connection abort.
+pub const ECONNABORTED = 103;
+
+/// Linux errno: Connection reset by peer.
+pub const ECONNRESET = 104;
+
+/// Linux errno: No buffer space available.
+pub const ENOBUFS = 105;
+
+/// Linux errno: Transport endpoint is already connected.
+pub const EISCONN = 106;
+
+/// Linux errno: Transport endpoint is not connected.
+pub const ENOTCONN = 107;
+
+/// Linux errno: Cannot send after transport endpoint shutdown.
+pub const ESHUTDOWN = 108;
+
+/// Linux errno: Too many references: cannot splice.
+pub const ETOOMANYREFS = 109;
+
+/// Linux errno: Connection timed out.
+pub const ETIMEDOUT = 110;
+
+/// Linux errno: Connection refused.
+pub const ECONNREFUSED = 111;
+
+/// Linux errno: Host is down.
+pub const EHOSTDOWN = 112;
+
+/// Linux errno: No route to host.
+pub const EHOSTUNREACH = 113;
+
+/// Linux errno: Operation already in progress.
+pub const EALREADY = 114;
+
+/// Linux errno: Operation now in progress.
+pub const EINPROGRESS = 115;
+
+/// Linux errno: Stale file handle.
+pub const ESTALE = 116;
+
+/// Linux errno: Structure needs cleaning.
+pub const EUCLEAN = 117;
+
+/// Linux errno: Not a XENIX named type file.
+pub const ENOTNAM = 118;
+
+/// Linux errno: No XENIX semaphores available.
+pub const ENAVAIL = 119;
+
+/// Linux errno: Is a named type file.
+pub const EISNAM = 120;
+
+/// Linux errno: Remote I/O error.
+pub const EREMOTEIO = 121;
+
+/// Linux errno: Disk quota exceeded.
+pub const EDQUOT = 122;
+
+/// Linux errno: No medium found.
+pub const ENOMEDIUM = 123;
+
+/// Linux errno: Wrong medium type.
+pub const EMEDIUMTYPE = 124;
+
+/// Linux errno: Operation canceled.
+pub const ECANCELED = 125;
+
+/// Linux errno: Required key not available.
+pub const ENOKEY = 126;
+
+/// Linux errno: Key has expired.
+pub const EKEYEXPIRED = 127;
+
+/// Linux errno: Key has been revoked.
+pub const EKEYREVOKED = 128;
+
+/// Linux errno: Key was rejected by service.
+pub const EKEYREJECTED = 129;
+
+/// Linux errno: Owner died.
+pub const EOWNERDEAD = 130;
+
+/// Linux errno: State not recoverable.
+pub const ENOTRECOVERABLE = 131;
+
+/// Linux errno: Operation not possible due to RF-kill.
+pub const ERFKILL = 132;
+
+/// Linux errno: Memory page has hardware error.
+pub const EHWPOISON = 133;
+
 /// Returns the conventional Linux message for a positive errno code.
 pub fn error_message(code: Int) -> &[Uint8] {
-	match code {
-		1 => "Operation not permitted"&,
-		2 => "No such file or directory"&,
-		3 => "No such process"&,
-		4 => "Interrupted system call"&,
-		5 => "Input/output error"&,
-		6 => "No such device or address"&,
-		7 => "Argument list too long"&,
-		8 => "Exec format error"&,
-		9 => "Bad file descriptor"&,
-		10 => "No child processes"&,
-		11 => "Resource temporarily unavailable"&,
-		12 => "Cannot allocate memory"&,
-		13 => "Permission denied"&,
-		14 => "Bad address"&,
-		15 => "Block device required"&,
-		16 => "Device or resource busy"&,
-		17 => "File exists"&,
-		18 => "Invalid cross-device link"&,
-		19 => "No such device"&,
-		20 => "Not a directory"&,
-		21 => "Is a directory"&,
-		22 => "Invalid argument"&,
-		23 => "Too many open files in system"&,
-		24 => "Too many open files"&,
-		25 => "Inappropriate ioctl for device"&,
-		26 => "Text file busy"&,
-		27 => "File too large"&,
-		28 => "No space left on device"&,
-		29 => "Illegal seek"&,
-		30 => "Read-only file system"&,
-		31 => "Too many links"&,
-		32 => "Broken pipe"&,
-		33 => "Numerical argument out of domain"&,
-		34 => "Numerical result out of range"&,
-		35 => "Resource deadlock avoided"&,
-		36 => "File name too long"&,
-		37 => "No locks available"&,
-		38 => "Function not implemented"&,
-		39 => "Directory not empty"&,
-		40 => "Too many levels of symbolic links"&,
-		42 => "No message of desired type"&,
-		43 => "Identifier removed"&,
-		44 => "Channel number out of range"&,
-		45 => "Level 2 not synchronized"&,
-		46 => "Level 3 halted"&,
-		47 => "Level 3 reset"&,
-		48 => "Link number out of range"&,
-		49 => "Protocol driver not attached"&,
-		50 => "No CSI structure available"&,
-		51 => "Level 2 halted"&,
-		52 => "Invalid exchange"&,
-		53 => "Invalid request descriptor"&,
-		54 => "Exchange full"&,
-		55 => "No anode"&,
-		56 => "Invalid request code"&,
-		57 => "Invalid slot"&,
-		59 => "Bad font file format"&,
-		60 => "Device not a stream"&,
-		61 => "No data available"&,
-		62 => "Timer expired"&,
-		63 => "Out of streams resources"&,
-		64 => "Machine is not on the network"&,
-		65 => "Package not installed"&,
-		66 => "Object is remote"&,
-		67 => "Link has been severed"&,
-		68 => "Advertise error"&,
-		69 => "Srmount error"&,
-		70 => "Communication error on send"&,
-		71 => "Protocol error"&,
-		72 => "Multihop attempted"&,
-		73 => "RFS specific error"&,
-		74 => "Bad message"&,
-		75 => "Value too large for defined data type"&,
-		76 => "Name not unique on network"&,
-		77 => "File descriptor in bad state"&,
-		78 => "Remote address changed"&,
-		79 => "Can not access a needed shared library"&,
-		80 => "Accessing a corrupted shared library"&,
-		81 => ".lib section in a.out corrupted"&,
-		82 => "Attempting to link in too many shared libraries"&,
-		83 => "Cannot exec a shared library directly"&,
-		84 => "Invalid or incomplete multibyte or wide character"&,
-		85 => "Interrupted system call should be restarted"&,
-		86 => "Streams pipe error"&,
-		87 => "Too many users"&,
-		88 => "Socket operation on non-socket"&,
-		89 => "Destination address required"&,
-		90 => "Message too long"&,
-		91 => "Protocol wrong type for socket"&,
-		92 => "Protocol not available"&,
-		93 => "Protocol not supported"&,
-		94 => "Socket type not supported"&,
-		95 => "Operation not supported"&,
-		96 => "Protocol family not supported"&,
-		97 => "Address family not supported by protocol"&,
-		98 => "Address already in use"&,
-		99 => "Cannot assign requested address"&,
-		100 => "Network is down"&,
-		101 => "Network is unreachable"&,
-		102 => "Network dropped connection on reset"&,
-		103 => "Software caused connection abort"&,
-		104 => "Connection reset by peer"&,
-		105 => "No buffer space available"&,
-		106 => "Transport endpoint is already connected"&,
-		107 => "Transport endpoint is not connected"&,
-		108 => "Cannot send after transport endpoint shutdown"&,
-		109 => "Too many references: cannot splice"&,
-		110 => "Connection timed out"&,
-		111 => "Connection refused"&,
-		112 => "Host is down"&,
-		113 => "No route to host"&,
-		114 => "Operation already in progress"&,
-		115 => "Operation now in progress"&,
-		116 => "Stale file handle"&,
-		117 => "Structure needs cleaning"&,
-		118 => "Not a XENIX named type file"&,
-		119 => "No XENIX semaphores available"&,
-		120 => "Is a named type file"&,
-		121 => "Remote I/O error"&,
-		122 => "Disk quota exceeded"&,
-		123 => "No medium found"&,
-		124 => "Wrong medium type"&,
-		125 => "Operation canceled"&,
-		126 => "Required key not available"&,
-		127 => "Key has expired"&,
-		128 => "Key has been revoked"&,
-		129 => "Key was rejected by service"&,
-		130 => "Owner died"&,
-		131 => "State not recoverable"&,
-		132 => "Operation not possible due to RF-kill"&,
-		133 => "Memory page has hardware error"&,
-		_ => "Unknown error"&,
+	if code == EPERM { return "Operation not permitted"&; }
+	if code == ENOENT { return "No such file or directory"&; }
+	if code == ESRCH { return "No such process"&; }
+	if code == EINTR { return "Interrupted system call"&; }
+	if code == EIO { return "Input/output error"&; }
+	if code == ENXIO { return "No such device or address"&; }
+	if code == E2BIG { return "Argument list too long"&; }
+	if code == ENOEXEC { return "Exec format error"&; }
+	if code == EBADF { return "Bad file descriptor"&; }
+	if code == ECHILD { return "No child processes"&; }
+	if code == EAGAIN { return "Resource temporarily unavailable"&; }
+	if code == ENOMEM { return "Cannot allocate memory"&; }
+	if code == EACCES { return "Permission denied"&; }
+	if code == EFAULT { return "Bad address"&; }
+	if code == ENOTBLK { return "Block device required"&; }
+	if code == EBUSY { return "Device or resource busy"&; }
+	if code == EEXIST { return "File exists"&; }
+	if code == EXDEV { return "Invalid cross-device link"&; }
+	if code == ENODEV { return "No such device"&; }
+	if code == ENOTDIR { return "Not a directory"&; }
+	if code == EISDIR { return "Is a directory"&; }
+	if code == EINVAL { return "Invalid argument"&; }
+	if code == ENFILE { return "Too many open files in system"&; }
+	if code == EMFILE { return "Too many open files"&; }
+	if code == ENOTTY { return "Inappropriate ioctl for device"&; }
+	if code == ETXTBSY { return "Text file busy"&; }
+	if code == EFBIG { return "File too large"&; }
+	if code == ENOSPC { return "No space left on device"&; }
+	if code == ESPIPE { return "Illegal seek"&; }
+	if code == EROFS { return "Read-only file system"&; }
+	if code == EMLINK { return "Too many links"&; }
+	if code == EPIPE { return "Broken pipe"&; }
+	if code == EDOM { return "Numerical argument out of domain"&; }
+	if code == ERANGE { return "Numerical result out of range"&; }
+	if code == EDEADLK { return "Resource deadlock avoided"&; }
+	if code == ENAMETOOLONG { return "File name too long"&; }
+	if code == ENOLCK { return "No locks available"&; }
+	if code == ENOSYS { return "Function not implemented"&; }
+	if code == ENOTEMPTY { return "Directory not empty"&; }
+	if code == ELOOP { return "Too many levels of symbolic links"&; }
+	if code == ENOMSG { return "No message of desired type"&; }
+	if code == EIDRM { return "Identifier removed"&; }
+	if code == ECHRNG { return "Channel number out of range"&; }
+	if code == EL2NSYNC { return "Level 2 not synchronized"&; }
+	if code == EL3HLT { return "Level 3 halted"&; }
+	if code == EL3RST { return "Level 3 reset"&; }
+	if code == ELNRNG { return "Link number out of range"&; }
+	if code == EUNATCH { return "Protocol driver not attached"&; }
+	if code == ENOCSI { return "No CSI structure available"&; }
+	if code == EL2HLT { return "Level 2 halted"&; }
+	if code == EBADE { return "Invalid exchange"&; }
+	if code == EBADR { return "Invalid request descriptor"&; }
+	if code == EXFULL { return "Exchange full"&; }
+	if code == ENOANO { return "No anode"&; }
+	if code == EBADRQC { return "Invalid request code"&; }
+	if code == EBADSLT { return "Invalid slot"&; }
+	if code == EBFONT { return "Bad font file format"&; }
+	if code == ENOSTR { return "Device not a stream"&; }
+	if code == ENODATA { return "No data available"&; }
+	if code == ETIME { return "Timer expired"&; }
+	if code == ENOSR { return "Out of streams resources"&; }
+	if code == ENONET { return "Machine is not on the network"&; }
+	if code == ENOPKG { return "Package not installed"&; }
+	if code == EREMOTE { return "Object is remote"&; }
+	if code == ENOLINK { return "Link has been severed"&; }
+	if code == EADV { return "Advertise error"&; }
+	if code == ESRMNT { return "Srmount error"&; }
+	if code == ECOMM { return "Communication error on send"&; }
+	if code == EPROTO { return "Protocol error"&; }
+	if code == EMULTIHOP { return "Multihop attempted"&; }
+	if code == EDOTDOT { return "RFS specific error"&; }
+	if code == EBADMSG { return "Bad message"&; }
+	if code == EOVERFLOW { return "Value too large for defined data type"&; }
+	if code == ENOTUNIQ { return "Name not unique on network"&; }
+	if code == EBADFD { return "File descriptor in bad state"&; }
+	if code == EREMCHG { return "Remote address changed"&; }
+	if code == ELIBACC { return "Can not access a needed shared library"&; }
+	if code == ELIBBAD { return "Accessing a corrupted shared library"&; }
+	if code == ELIBSCN { return ".lib section in a.out corrupted"&; }
+
+	if code == ELIBMAX {
+		return "Attempting to link in too many shared libraries"&;
 	}
+
+	if code == ELIBEXEC { return "Cannot exec a shared library directly"&; }
+
+	if code == EILSEQ {
+		return "Invalid or incomplete multibyte or wide character"&;
+	}
+
+	if code ==
+		ERESTART { return "Interrupted system call should be restarted"&; }
+
+	if code == ESTRPIPE { return "Streams pipe error"&; }
+	if code == EUSERS { return "Too many users"&; }
+	if code == ENOTSOCK { return "Socket operation on non-socket"&; }
+	if code == EDESTADDRREQ { return "Destination address required"&; }
+	if code == EMSGSIZE { return "Message too long"&; }
+	if code == EPROTOTYPE { return "Protocol wrong type for socket"&; }
+	if code == ENOPROTOOPT { return "Protocol not available"&; }
+	if code == EPROTONOSUPPORT { return "Protocol not supported"&; }
+	if code == ESOCKTNOSUPPORT { return "Socket type not supported"&; }
+	if code == EOPNOTSUPP { return "Operation not supported"&; }
+	if code == EPFNOSUPPORT { return "Protocol family not supported"&; }
+
+	if code ==
+		EAFNOSUPPORT { return "Address family not supported by protocol"&; }
+
+	if code == EADDRINUSE { return "Address already in use"&; }
+	if code == EADDRNOTAVAIL { return "Cannot assign requested address"&; }
+	if code == ENETDOWN { return "Network is down"&; }
+	if code == ENETUNREACH { return "Network is unreachable"&; }
+	if code == ENETRESET { return "Network dropped connection on reset"&; }
+	if code == ECONNABORTED { return "Software caused connection abort"&; }
+	if code == ECONNRESET { return "Connection reset by peer"&; }
+	if code == ENOBUFS { return "No buffer space available"&; }
+	if code == EISCONN { return "Transport endpoint is already connected"&; }
+	if code == ENOTCONN { return "Transport endpoint is not connected"&; }
+
+	if code == ESHUTDOWN {
+		return "Cannot send after transport endpoint shutdown"&;
+	}
+
+	if code == ETOOMANYREFS { return "Too many references: cannot splice"&; }
+	if code == ETIMEDOUT { return "Connection timed out"&; }
+	if code == ECONNREFUSED { return "Connection refused"&; }
+	if code == EHOSTDOWN { return "Host is down"&; }
+	if code == EHOSTUNREACH { return "No route to host"&; }
+	if code == EALREADY { return "Operation already in progress"&; }
+	if code == EINPROGRESS { return "Operation now in progress"&; }
+	if code == ESTALE { return "Stale file handle"&; }
+	if code == EUCLEAN { return "Structure needs cleaning"&; }
+	if code == ENOTNAM { return "Not a XENIX named type file"&; }
+	if code == ENAVAIL { return "No XENIX semaphores available"&; }
+	if code == EISNAM { return "Is a named type file"&; }
+	if code == EREMOTEIO { return "Remote I/O error"&; }
+	if code == EDQUOT { return "Disk quota exceeded"&; }
+	if code == ENOMEDIUM { return "No medium found"&; }
+	if code == EMEDIUMTYPE { return "Wrong medium type"&; }
+	if code == ECANCELED { return "Operation canceled"&; }
+	if code == ENOKEY { return "Required key not available"&; }
+	if code == EKEYEXPIRED { return "Key has expired"&; }
+	if code == EKEYREVOKED { return "Key has been revoked"&; }
+	if code == EKEYREJECTED { return "Key was rejected by service"&; }
+	if code == EOWNERDEAD { return "Owner died"&; }
+	if code == ENOTRECOVERABLE { return "State not recoverable"&; }
+	if code == ERFKILL { return "Operation not possible due to RF-kill"&; }
+	if code == EHWPOISON { return "Memory page has hardware error"&; }
+	"Unknown error"&
 }
 
 /// Throws an exception containing `operation`, the Linux error message, and

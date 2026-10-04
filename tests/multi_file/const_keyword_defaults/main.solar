@@ -1,0 +1,28 @@
+import config from "config.solar";
+import {VALUE} from "config.solar";
+
+fn defaults(value = VALUE, count = config::COUNT, label = config::LABEL) {
+	assert(value == 42);
+	assert(count == 4u);
+	assert(label@ == "constant");
+}
+
+fn forward(value = LATER) -> Int { value }
+
+struct Item {}
+method value(self: Item, value = config::VALUE) -> Int { value }
+
+fn main() {
+	defaults();
+	assert(forward() == 7);
+	assert(forward(value = 9) == 9);
+	let item = Item {};
+	assert(item.value() == 42);
+	assert(item.value(value = 11) == 11);
+
+	fn nested(count = config::COUNT) -> Uint { count }
+	assert(nested(6u) == 6u);
+	println("passed"&);
+}
+
+const LATER = 7;

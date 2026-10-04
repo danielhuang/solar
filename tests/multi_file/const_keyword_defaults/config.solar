@@ -1,0 +1,3 @@
+pub const VALUE = 42;
+pub const COUNT: Uint = 4u;
+pub const LABEL = "constant"&;

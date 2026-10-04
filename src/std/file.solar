@@ -18,16 +18,13 @@ fn nul_terminated(path: &[Uint8]) -> &[Uint8] {
 fn open_raw(path: &[Uint8], flags: Int, mode: Uint) -> FileDesc {
 	// Linux x86-64 openat(2). Keep close(2) private: FileDesc.close uses the
 	// runtime's dup-based stale-handle protection instead.
-	const SYS_OPENAT = 257i64;
-	const AT_FDCWD = 18446744073709551516u64; // -100 as a syscall word
-	const O_CLOEXEC = 0o2000000;
 	let nul_path = nul_terminated(path);
 	let raw = unsafe {
 		intrinsics::syscall(
-			SYS_OPENAT,
-			AT_FDCWD,
+			linux::SYS_OPENAT,
+			linux::AT_FDCWD,
 			nul_path,
-			Int64(flags + O_CLOEXEC),
+			Int64(flags + linux::O_CLOEXEC),
 			Uint64(mode),
 		)
 	};
@@ -49,25 +46,17 @@ pub fn open(
 	truncate = false,
 	new = false,
 	create = false,
-	mode = 0o666u,
+	mode = linux::DEFFILEMODE,
 ) -> FileDesc {
 	// POSIX open(2) flag bits (Linux values) — an implementation detail; the
 	// runtime always adds O_CLOEXEC. Combined by addition since they're disjoint.
-	const O_RDONLY = 0;
-	const O_WRONLY = 1;
-	const O_RDWR = 2;
-	const O_CREAT = 64;
-	const O_EXCL = 128;
-	const O_TRUNC = 512;
-	const O_APPEND = 1024;
-
 	let flags = if read {
-		if write { O_RDWR } else { O_RDONLY }
-	} else if write { O_WRONLY } else { O_RDONLY };
-	if create { flags = flags + O_CREAT; }
-	if new { flags = flags + O_EXCL; }
-	if truncate { flags = flags + O_TRUNC; }
-	if append { flags = flags + O_APPEND; }
+		if write { linux::O_RDWR } else { linux::O_RDONLY }
+	} else if write { linux::O_WRONLY } else { linux::O_RDONLY };
+	if create { flags = flags + linux::O_CREAT; }
+	if new { flags = flags + linux::O_EXCL; }
+	if truncate { flags = flags + linux::O_TRUNC; }
+	if append { flags = flags + linux::O_APPEND; }
 	open_raw(path, flags, mode)
 }
 
@@ -75,26 +64,24 @@ pub fn open(
 /// owned by the process for its whole lifetime, so the collector never
 /// auto-closes it.
 pub fn stdin() -> FileDesc {
-	unsafe { intrinsics::fd_from_raw(0i32) }
+	unsafe { intrinsics::fd_from_raw(linux::STDIN_FILENO) }
 }
 
 /// Returns a FileDesc for the process's standard output. Like stdin, the stream
 /// is process-owned and is never auto-closed by the collector.
 pub fn stdout() -> FileDesc {
-	unsafe { intrinsics::fd_from_raw(1i32) }
+	unsafe { intrinsics::fd_from_raw(linux::STDOUT_FILENO) }
 }
 
 /// Returns a FileDesc for the process's standard error. Like stdin/stdout, the
 /// stream is process-owned and is never auto-closed by the collector.
 pub fn stderr() -> FileDesc {
-	unsafe { intrinsics::fd_from_raw(2i32) }
+	unsafe { intrinsics::fd_from_raw(linux::STDERR_FILENO) }
 }
 
 /// Opens the directory at `path` for listing with `read_entries`.
 pub fn open_dir(path: &[Uint8]) -> FileDesc {
-	const O_RDONLY = 0;
-	const O_DIRECTORY = 0o200000;
-	open_raw(path, O_RDONLY + O_DIRECTORY, 0u)
+	open_raw(path, linux::O_RDONLY + linux::O_DIRECTORY, 0u)
 }
 
 /// "Closes" `f`: the underlying file is released now, but the fd number stays
@@ -107,14 +94,17 @@ pub method close(self: FileDesc) {
 /// Reads up to `buf`'s length bytes into `buf`, returning the number of bytes
 /// read (0 at end of file). A single read; may return fewer bytes than requested.
 pub method read(self: FileDesc, buf: &[Uint8]) -> Uint {
-	const SYS_READ = 0i64;
-
 	loop {
 		let result = unsafe {
-			intrinsics::syscall(SYS_READ, raw_fd(self), buf, Uint64(buf.len()))
+			intrinsics::syscall(
+				linux::SYS_READ,
+				raw_fd(self),
+				buf,
+				Uint64(buf.len()),
+			)
 		};
 
-		if result != 0i64 - 4i64 {
+		if result != 0i64 - Int64(linux::EINTR) {
 			return syscall_result(result, "file_read failed"&);
 		}
 	}
@@ -132,14 +122,17 @@ pub method read(self: FileDesc, max_size: Uint) -> &[Uint8] {
 /// Writes up to `src`'s length bytes, returning the number actually written. A
 /// single write; may write fewer bytes than requested.
 pub method write_partial(self: FileDesc, src: &[Uint8]) -> Uint {
-	const SYS_WRITE = 1i64;
-
 	loop {
 		let result = unsafe {
-			intrinsics::syscall(SYS_WRITE, raw_fd(self), src, Uint64(src.len()))
+			intrinsics::syscall(
+				linux::SYS_WRITE,
+				raw_fd(self),
+				src,
+				Uint64(src.len()),
+			)
 		};
 
-		if result != 0i64 - 4i64 {
+		if result != 0i64 - Int64(linux::EINTR) {
 			return syscall_result(result, "file_write_partial failed"&);
 		}
 	}
@@ -159,12 +152,10 @@ pub method write(self: FileDesc, src: &[Uint8]) {
 /// Reads up to `buf`'s length bytes at absolute byte `offset` (pread: the file
 /// cursor does not move). A single read; may return fewer bytes than requested.
 pub method read_at(self: FileDesc, buf: &[Uint8], offset: Uint) -> Uint {
-	const SYS_PREAD64 = 17i64;
-
 	loop {
 		let result = unsafe {
 			intrinsics::syscall(
-				SYS_PREAD64,
+				linux::SYS_PREAD64,
 				raw_fd(self),
 				buf,
 				Uint64(buf.len()),
@@ -172,7 +163,7 @@ pub method read_at(self: FileDesc, buf: &[Uint8], offset: Uint) -> Uint {
 			)
 		};
 
-		if result != 0i64 - 4i64 {
+		if result != 0i64 - Int64(linux::EINTR) {
 			return syscall_result(result, "file_read_at failed"&);
 		}
 	}
@@ -181,12 +172,10 @@ pub method read_at(self: FileDesc, buf: &[Uint8], offset: Uint) -> Uint {
 /// Writes up to `src`'s length bytes at absolute byte `offset` (pwrite: the file
 /// cursor does not move), returning the number actually written. A single write.
 pub method write_at_partial(self: FileDesc, src: &[Uint8], offset: Uint) -> Uint {
-	const SYS_PWRITE64 = 18i64;
-
 	loop {
 		let result = unsafe {
 			intrinsics::syscall(
-				SYS_PWRITE64,
+				linux::SYS_PWRITE64,
 				raw_fd(self),
 				src,
 				Uint64(src.len()),
@@ -194,7 +183,7 @@ pub method write_at_partial(self: FileDesc, src: &[Uint8], offset: Uint) -> Uint
 			)
 		};
 
-		if result != 0i64 - 4i64 {
+		if result != 0i64 - Int64(linux::EINTR) {
 			return syscall_result(result, "file_write_at failed"&);
 		}
 	}
@@ -214,12 +203,12 @@ pub method write_at(self: FileDesc, src: &[Uint8], offset: Uint) {
 
 /// Flushes the file's data and metadata to stable storage (fsync).
 pub method sync(self: FileDesc) {
-	const SYS_FSYNC = 74i64;
-
 	loop {
-		let result = unsafe { intrinsics::syscall(SYS_FSYNC, raw_fd(self)) };
+		let result = unsafe {
+			intrinsics::syscall(linux::SYS_FSYNC, raw_fd(self))
+		};
 
-		if result != 0i64 - 4i64 {
+		if result != 0i64 - Int64(linux::EINTR) {
 			linux::check_syscall(result, "file_sync failed"&);
 			break;
 		}
@@ -231,20 +220,16 @@ pub method sync(self: FileDesc) {
 /// false instead of waiting when the lock is held elsewhere. Locks are released
 /// with `unlock`, on `close`, or when the collector reclaims the FileDesc.
 pub method lock(self: FileDesc, exclusive = true, block = true) -> Bool {
-	const SYS_FLOCK = 73i64;
-	const LOCK_SH = 1;
-	const LOCK_EX = 2;
-	const LOCK_NB = 4;
-	let op = if exclusive { LOCK_EX } else { LOCK_SH };
-	if !block { op = op + LOCK_NB; }
+	let op = if exclusive { linux::LOCK_EX } else { linux::LOCK_SH };
+	if !block { op = op + linux::LOCK_NB; }
 
 	loop {
 		let result = unsafe {
-			intrinsics::syscall(SYS_FLOCK, raw_fd(self), Int64(op))
+			intrinsics::syscall(linux::SYS_FLOCK, raw_fd(self), Int64(op))
 		};
-		if result == 0i64 - 11i64 { return false; }
+		if result == 0i64 - Int64(linux::EAGAIN) { return false; }
 
-		if result != 0i64 - 4i64 {
+		if result != 0i64 - Int64(linux::EINTR) {
 			linux::check_syscall(result, "file_lock failed"&);
 			return true;
 		}
@@ -253,15 +238,16 @@ pub method lock(self: FileDesc, exclusive = true, block = true) -> Bool {
 
 /// Releases the advisory lock held on the file.
 pub method unlock(self: FileDesc) {
-	const SYS_FLOCK = 73i64;
-	const LOCK_UN = 8;
-
 	loop {
 		let result = unsafe {
-			intrinsics::syscall(SYS_FLOCK, raw_fd(self), Int64(LOCK_UN))
+			intrinsics::syscall(
+				linux::SYS_FLOCK,
+				raw_fd(self),
+				Int64(linux::LOCK_UN),
+			)
 		};
 
-		if result != 0i64 - 4i64 {
+		if result != 0i64 - Int64(linux::EINTR) {
 			linux::check_syscall(result, "file_lock failed"&);
 			break;
 		}
@@ -270,13 +256,12 @@ pub method unlock(self: FileDesc) {
 
 /// Deletes the file at `path`.
 pub fn remove(path: &[Uint8]) {
-	const SYS_UNLINK = 87i64;
 	let path = nul_terminated(path);
 
 	loop {
-		let result = unsafe { intrinsics::syscall(SYS_UNLINK, path) };
+		let result = unsafe { intrinsics::syscall(linux::SYS_UNLINK, path) };
 
-		if result != 0i64 - 4i64 {
+		if result != 0i64 - Int64(linux::EINTR) {
 			linux::check_syscall(result, "file_remove failed"&);
 			break;
 		}
@@ -285,13 +270,12 @@ pub fn remove(path: &[Uint8]) {
 
 /// Deletes the empty directory at `path`.
 pub fn remove_dir(path: &[Uint8]) {
-	const SYS_RMDIR = 84i64;
 	let path = nul_terminated(path);
 
 	loop {
-		let result = unsafe { intrinsics::syscall(SYS_RMDIR, path) };
+		let result = unsafe { intrinsics::syscall(linux::SYS_RMDIR, path) };
 
-		if result != 0i64 - 4i64 {
+		if result != 0i64 - Int64(linux::EINTR) {
 			linux::check_syscall(result, "dir_remove failed"&);
 			break;
 		}
@@ -300,14 +284,15 @@ pub fn remove_dir(path: &[Uint8]) {
 
 /// Atomically renames `old` to `new`, replacing `new` if it exists.
 pub fn rename(old: &[Uint8], new: &[Uint8]) {
-	const SYS_RENAME = 82i64;
 	let old = nul_terminated(old);
 	let new = nul_terminated(new);
 
 	loop {
-		let result = unsafe { intrinsics::syscall(SYS_RENAME, old, new) };
+		let result = unsafe {
+			intrinsics::syscall(linux::SYS_RENAME, old, new)
+		};
 
-		if result != 0i64 - 4i64 {
+		if result != 0i64 - Int64(linux::EINTR) {
 			linux::check_syscall(result, "file_rename failed"&);
 			break;
 		}
@@ -316,16 +301,15 @@ pub fn rename(old: &[Uint8], new: &[Uint8]) {
 
 /// Creates the directory at `path` (fails if it already exists). `mode` is the
 /// permission bits, filtered by the process umask.
-pub fn create_dir(path: &[Uint8], mode = 0o777u) {
-	const SYS_MKDIR = 83i64;
+pub fn create_dir(path: &[Uint8], mode = linux::ACCESSPERMS) {
 	let path = nul_terminated(path);
 
 	loop {
 		let result = unsafe {
-			intrinsics::syscall(SYS_MKDIR, path, Uint64(mode))
+			intrinsics::syscall(linux::SYS_MKDIR, path, Uint64(mode))
 		};
 
-		if result != 0i64 - 4i64 {
+		if result != 0i64 - Int64(linux::EINTR) {
 			linux::check_syscall(result, "dir_create failed"&);
 			break;
 		}
@@ -353,36 +337,43 @@ pub struct FileInfo {
 pub fn stat(path: &[Uint8]) -> FileInfo {
 	// Linux x86-64 stat(2), whose struct stat is 144 bytes. The fields used
 	// here are st_mode @ 24, st_size @ 48, and st_mtim @ 88.
-	const SYS_STAT = 4i64;
-	const S_IFMT = 0o170000u32;
-	const S_IFREG = 0o100000u32;
-	const S_IFDIR = 0o040000u32;
 	let path = nul_terminated(path);
-	let raw = [0u8; 144u];
+	let raw = [0u8; linux::STAT_SIZE];
 	let result = 0i64;
 
 	loop {
-		result = unsafe { intrinsics::syscall(SYS_STAT, path, raw&) };
-		if result != 0i64 - 4i64 { break; }
+		result = unsafe { intrinsics::syscall(linux::SYS_STAT, path, raw&) };
+		if result != 0i64 - Int64(linux::EINTR) { break; }
 	};
 
-	if result == 0i64 - 2i64 || result == 0i64 - 20i64 {
+	if result == 0i64 - Int64(linux::ENOENT) ||
+		result == 0i64 - Int64(linux::ENOTDIR) {
 		return FileInfo { found: false, size: 0u, mtime_nanos: 0u, kind: 0u };
 	}
 
 	linux::check_syscall(result, "file_stat failed"&);
 
-	let mode = intrinsics::u32_from_le(raw[24u..28u]);
-	let file_type = mode & S_IFMT;
-	let kind = if file_type == S_IFREG {
+	let mode = intrinsics::u32_from_le(
+		raw[linux::STAT_MODE_OFFSET..linux::STAT_MODE_OFFSET + 4u],
+	);
+	let file_type = mode & linux::S_IFMT;
+	let kind = if file_type == linux::S_IFREG {
 		0u
-	} else if file_type == S_IFDIR { 1u } else { 2u };
-	let seconds = intrinsics::u64_from_le(raw[88u..96u]);
-	let nanos = intrinsics::u64_from_le(raw[96u..104u]);
+	} else if file_type == linux::S_IFDIR { 1u } else { 2u };
+	let seconds = intrinsics::u64_from_le(
+		raw[linux::STAT_MTIME_SEC_OFFSET..linux::STAT_MTIME_SEC_OFFSET + 8u],
+	);
+	let nanos = intrinsics::u64_from_le(
+		raw[linux::STAT_MTIME_NSEC_OFFSET..linux::STAT_MTIME_NSEC_OFFSET + 8u],
+	);
 	FileInfo {
 		found: true,
-		size: Uint(intrinsics::u64_from_le(raw[48u..56u])),
-		mtime_nanos: Uint(seconds * 1000000000u64 + nanos),
+		size: Uint(
+			intrinsics::u64_from_le(
+				raw[linux::STAT_SIZE_OFFSET..linux::STAT_SIZE_OFFSET + 8u],
+			),
+		),
+		mtime_nanos: Uint(seconds * linux::NSEC_PER_SEC + nanos),
 		kind: kind,
 	}
 }
@@ -403,15 +394,19 @@ pub struct DirEntry {
 
 /// Reads all non-dot entries from an open directory.
 pub method read_entries(self: FileDesc) -> &[DirEntry] {
-	const SYS_GETDENTS64 = 217i64;
 	let out = [DirEntry { kind: 2u, name: "?"& }; 0u]^;
 
 	loop {
-		let batch = [0u8; 32768u];
+		let batch = [0u8; linux::GETDENTS_BUFFER_SIZE];
 		let result = unsafe {
-			intrinsics::syscall(SYS_GETDENTS64, raw_fd(self), batch&, 32768u64)
+			intrinsics::syscall(
+				linux::SYS_GETDENTS64,
+				raw_fd(self),
+				batch&,
+				Uint64(batch&.len()),
+			)
 		};
-		if result == 0i64 - 4i64 { continue; }
+		if result == 0i64 - Int64(linux::EINTR) { continue; }
 		let bytes_read = syscall_result(result, "dir_read failed"&);
 
 		if bytes_read == 0u {
@@ -424,18 +419,18 @@ pub method read_entries(self: FileDesc) -> &[DirEntry] {
 		while pos < bytes_read {
 			// linux_dirent64: d_reclen u16 @ 16, d_type u8 @ 18,
 			// followed by the NUL-terminated d_name @ 19.
-			let record_len = Uint(batch[pos + 16u]) +
-				(Uint(batch[pos + 17u]) << 8u);
-			let name_start = pos + 19u;
+			let record_len = Uint(batch[pos + linux::DIRENT64_RECLEN_OFFSET]) +
+				(Uint(batch[pos + linux::DIRENT64_RECLEN_OFFSET + 1u]) << 8u);
+			let name_start = pos + linux::DIRENT64_NAME_OFFSET;
 			let name_end = name_start;
 			while batch[name_end] != 0u8 { name_end = name_end + 1u; }
 			let name: [Uint8] = batch[name_start..name_end];
 
 			if name != "." && name != ".." {
-				let raw_kind = batch[pos + 18u];
-				let kind = if raw_kind == 8u8 {
+				let raw_kind = batch[pos + linux::DIRENT64_TYPE_OFFSET];
+				let kind = if raw_kind == linux::DT_REG {
 					0u
-				} else if raw_kind == 4u8 { 1u } else { 2u };
+				} else if raw_kind == linux::DT_DIR { 1u } else { 2u };
 				out = (out@ + [DirEntry { kind: kind, name: name& }])^;
 			}
 

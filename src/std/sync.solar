@@ -1,3 +1,4 @@
+import linux from "linux.solar";
 import {throw} from "lib.solar";
 import {
 	atomic_load,
@@ -92,19 +93,35 @@ pub method atomic_compare_exchange#[T](self: &T, expected: T, new: T) -> T {
 pub method futex_wait(
 	self: &Uint32,
 	expected: Uint32,
-	timeout: Uint64 = 18446744073709551615u64,
+	timeout: Uint64 = linux::FUTEX_NO_TIMEOUT,
 ) {
 	// FUTEX_WAIT | FUTEX_PRIVATE_FLAG. A null timeout waits indefinitely.
 	// Signals, timeout expiry, and value mismatches may return early; callers
 	// recheck their condition, so the raw syscall result is intentionally ignored.
-	if timeout == 18446744073709551615u64 {
-		unsafe { syscall(202i64, self, 128i64, Uint64(expected), 0u64); }
+	if timeout == linux::FUTEX_NO_TIMEOUT {
+		unsafe {
+			syscall(
+				linux::SYS_FUTEX,
+				self,
+				linux::FUTEX_WAIT_PRIVATE,
+				Uint64(expected),
+				0u64,
+			);
+		}
 	} else {
 		let ts = Timespec {
-			seconds: Int64(timeout / 1000000000u64),
-			nanoseconds: Int64(timeout % 1000000000u64),
+			seconds: Int64(timeout / linux::NSEC_PER_SEC),
+			nanoseconds: Int64(timeout % linux::NSEC_PER_SEC),
 		};
-		unsafe { syscall(202i64, self, 128i64, Uint64(expected), ts&); }
+		unsafe {
+			syscall(
+				linux::SYS_FUTEX,
+				self,
+				linux::FUTEX_WAIT_PRIVATE,
+				Uint64(expected),
+				ts&,
+			);
+		}
 	}
 
 	return;
@@ -113,13 +130,20 @@ pub method futex_wait(
 /// Wakes at most `count` waiters.
 pub method futex_wake(self: &Uint32, count: Uint32) {
 	// FUTEX_WAKE | FUTEX_PRIVATE_FLAG.
-	unsafe { syscall(202i64, self, 129i64, Uint64(count)); }
+	unsafe {
+		syscall(
+			linux::SYS_FUTEX,
+			self,
+			linux::FUTEX_WAKE_PRIVATE,
+			Uint64(count),
+		);
+	}
 	return;
 }
 
 /// Wakes all waiters.
 pub method futex_wake(self: &Uint32) {
-	self.futex_wake(2147483647u32);
+	self.futex_wake(linux::FUTEX_WAKE_ALL);
 }
 
 /// A futex-backed mutual exclusion lock.

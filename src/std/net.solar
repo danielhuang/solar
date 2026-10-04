@@ -13,36 +13,6 @@ pub struct TcpStream {
 	pub fd: FileDesc,
 }
 
-/// Linux socket constants (an implementation detail of this module).
-const AF_INET = 2;
-const AF_INET6 = 10;
-const SOCK_STREAM = 1;
-const SOL_SOCKET = 1;
-const SO_REUSEADDR = 2;
-const IPPROTO_TCP = 6;
-const TCP_NODELAY = 1;
-const SHUT_RD = 0;
-const SHUT_WR = 1;
-
-/// Linux x86-64 syscall numbers and flags (implementation details).
-const SYS_SOCKET = 41i64;
-const SYS_CONNECT = 42i64;
-const SYS_SHUTDOWN = 48i64;
-const SYS_BIND = 49i64;
-const SYS_LISTEN = 50i64;
-const SYS_GETSOCKNAME = 51i64;
-const SYS_SETSOCKOPT = 54i64;
-const SYS_ACCEPT4 = 288i64;
-const SOCK_CLOEXEC = 0o2000000;
-
-/// Raw Linux errno results used by the retry loops.
-const EINTR = 4i64;
-const EISCONN = 106i64;
-const EALREADY = 114i64;
-
-/// sockaddr_in is 16 bytes; sockaddr_in6 is 28.
-const SOCKADDR_MAX = 28u;
-
 fn raw_fd(fd: FileDesc) -> Int64 {
 	Int64(intrinsics::fd_to_raw(fd))
 }
@@ -50,10 +20,10 @@ fn raw_fd(fd: FileDesc) -> Int64 {
 fn socket_create(domain: Int) -> FileDesc {
 	let raw = unsafe {
 		intrinsics::syscall(
-			SYS_SOCKET,
+			linux::SYS_SOCKET,
 			Int64(domain),
-			Int64(SOCK_STREAM + SOCK_CLOEXEC),
-			0i64,
+			Int64(linux::SOCK_STREAM + linux::SOCK_CLOEXEC),
+			Int64(linux::IPPROTO_IP),
 		)
 	};
 	linux::check_syscall(raw, "socket_create failed"&);
@@ -62,14 +32,19 @@ fn socket_create(domain: Int) -> FileDesc {
 
 fn socket_bind(fd: FileDesc, addr: &[Uint8]) {
 	let result = unsafe {
-		intrinsics::syscall(SYS_BIND, raw_fd(fd), addr, Uint64(addr.len()))
+		intrinsics::syscall(
+			linux::SYS_BIND,
+			raw_fd(fd),
+			addr,
+			Uint64(addr.len()),
+		)
 	};
 	linux::check_syscall(result, "socket_bind failed"&);
 }
 
 fn socket_listen(fd: FileDesc, backlog: Int) {
 	let result = unsafe {
-		intrinsics::syscall(SYS_LISTEN, raw_fd(fd), Int64(backlog))
+		intrinsics::syscall(linux::SYS_LISTEN, raw_fd(fd), Int64(backlog))
 	};
 	linux::check_syscall(result, "socket_listen failed"&);
 }
@@ -78,11 +53,11 @@ fn socket_accept(fd: FileDesc) -> FileDesc {
 	loop {
 		let raw = unsafe {
 			intrinsics::syscall(
-				SYS_ACCEPT4,
+				linux::SYS_ACCEPT4,
 				raw_fd(fd),
 				0u64,
 				0u64,
-				Int64(SOCK_CLOEXEC),
+				Int64(linux::SOCK_CLOEXEC),
 			)
 		};
 
@@ -90,7 +65,7 @@ fn socket_accept(fd: FileDesc) -> FileDesc {
 			return unsafe { intrinsics::fd_from_raw(Int32(raw)) };
 		}
 
-		if raw != 0i64 - EINTR {
+		if raw != 0i64 - Int64(linux::EINTR) {
 			linux::check_syscall(raw, "socket_accept failed"&);
 		}
 	}
@@ -100,15 +75,16 @@ fn socket_connect(fd: FileDesc, addr: &[Uint8]) {
 	loop {
 		let result = unsafe {
 			intrinsics::syscall(
-				SYS_CONNECT,
+				linux::SYS_CONNECT,
 				raw_fd(fd),
 				addr,
 				Uint64(addr.len()),
 			)
 		};
-		if result == 0i64 || result == 0i64 - EISCONN { break; }
+		if result == 0i64 || result == 0i64 - Int64(linux::EISCONN) { break; }
 
-		if result != 0i64 - EINTR && result != 0i64 - EALREADY {
+		if result != 0i64 - Int64(linux::EINTR) &&
+			result != 0i64 - Int64(linux::EALREADY) {
 			linux::check_syscall(result, "socket_connect failed"&);
 		}
 	}
@@ -118,12 +94,12 @@ fn socket_set_option(fd: FileDesc, level: Int, name: Int, value: Int) {
 	let optval = Int32(value);
 	let result = unsafe {
 		intrinsics::syscall(
-			SYS_SETSOCKOPT,
+			linux::SYS_SETSOCKOPT,
 			raw_fd(fd),
 			Int64(level),
 			Int64(name),
 			optval&,
-			4u64,
+			linux::SOCKOPT_INT_SIZE,
 		)
 	};
 	linux::check_syscall(result, "socket_set_option failed"&);
@@ -132,7 +108,7 @@ fn socket_set_option(fd: FileDesc, level: Int, name: Int, value: Int) {
 fn socket_local_addr(fd: FileDesc, dst: &[Uint8]) -> Uint {
 	let len = Uint32(dst.len());
 	let result = unsafe {
-		intrinsics::syscall(SYS_GETSOCKNAME, raw_fd(fd), dst, len&)
+		intrinsics::syscall(linux::SYS_GETSOCKNAME, raw_fd(fd), dst, len&)
 	};
 	linux::check_syscall(result, "socket_local_addr failed"&);
 	Uint(len)
@@ -140,7 +116,7 @@ fn socket_local_addr(fd: FileDesc, dst: &[Uint8]) -> Uint {
 
 fn socket_shutdown(fd: FileDesc, how: Int) {
 	let result = unsafe {
-		intrinsics::syscall(SYS_SHUTDOWN, raw_fd(fd), Int64(how))
+		intrinsics::syscall(linux::SYS_SHUTDOWN, raw_fd(fd), Int64(how))
 	};
 	linux::check_syscall(result, "socket_shutdown failed"&);
 }
@@ -264,33 +240,42 @@ pub fn parse_ipv6(addr: &[Uint8], out: &[Uint8]) {
 /// sockaddr_in6 for an IPv6 literal. Port lands at bytes 2..4 (big-endian) in
 /// both layouts.
 fn build_sockaddr(sa: &[Uint8], addr: &[Uint8], port: Uint) -> Uint {
-	sa@[2u] = Uint8(port >> 8u);
-	sa@[3u] = Uint8(port & 255u);
+	sa@[linux::SOCKADDR_PORT_OFFSET] = Uint8(port >> 8u);
+	sa@[linux::SOCKADDR_PORT_OFFSET + 1u] = Uint8(port & 255u);
 
 	if is_ipv6(addr) {
-		sa@[0u] = 10u8; // AF_INET6, little-endian u16
+		sa@[linux::SOCKADDR_FAMILY_OFFSET] = Uint8(linux::AF_INET6); // AF_INET6, little-endian u16
 
 		// bytes 4..8: sin6_flowinfo (0); 8..24: sin6_addr; 24..28: scope id (0)
-		parse_ipv6(addr, sa@[8u..24u]&);
-		28u
+		parse_ipv6(
+			addr,
+			sa@[linux::SOCKADDR_IN6_ADDR_OFFSET..linux::SOCKADDR_IN6_ADDR_END]&,
+		);
+		linux::SOCKADDR_IN6_SIZE
 	} else {
-		sa@[0u] = 2u8; // AF_INET, little-endian u16
-		parse_ipv4_range(addr, 0u, addr.len(), sa, 4u);
-		16u
+		sa@[linux::SOCKADDR_FAMILY_OFFSET] = Uint8(linux::AF_INET); // AF_INET, little-endian u16
+		parse_ipv4_range(
+			addr,
+			0u,
+			addr.len(),
+			sa,
+			linux::SOCKADDR_IN_ADDR_OFFSET,
+		);
+		linux::SOCKADDR_IN_SIZE
 	}
 }
 
 fn family_of(addr: &[Uint8]) -> Int {
-	if is_ipv6(addr) { AF_INET6 } else { AF_INET }
+	if is_ipv6(addr) { linux::AF_INET6 } else { linux::AF_INET }
 }
 
 /// Creates a TCP socket bound to `addr:port` (port 0 asks the OS for an
 /// ephemeral port — read it back with `local_port`) and starts listening.
 /// SO_REUSEADDR is set so restarts don't trip over TIME_WAIT.
-pub fn listen(addr: &[Uint8], port: Uint, backlog = 128) -> TcpListener {
+pub fn listen(addr: &[Uint8], port: Uint, backlog = linux::TCP_LISTEN_BACKLOG) -> TcpListener {
 	let fd = socket_create(family_of(addr));
-	socket_set_option(fd, SOL_SOCKET, SO_REUSEADDR, 1);
-	let sa = [0u8; SOCKADDR_MAX];
+	socket_set_option(fd, linux::SOL_SOCKET, linux::SO_REUSEADDR, 1);
+	let sa = [0u8; linux::SOCKADDR_MAX];
 	let len = build_sockaddr(sa&, addr, port);
 	socket_bind(fd, sa[0u..len]&);
 	socket_listen(fd, backlog);
@@ -304,11 +289,12 @@ pub method accept(self: TcpListener) -> TcpStream {
 
 /// The port this listener is actually bound to (useful after binding port 0).
 pub method local_port(self: TcpListener) -> Uint {
-	let sa = [0u8; SOCKADDR_MAX];
+	let sa = [0u8; linux::SOCKADDR_MAX];
 	socket_local_addr(self.fd, sa&);
 
 	// sin_port and sin6_port are both big-endian at bytes 2..4.
-	Uint(sa[2u]) * 256u + Uint(sa[3u])
+	Uint(sa[linux::SOCKADDR_PORT_OFFSET]) * 256u +
+		Uint(sa[linux::SOCKADDR_PORT_OFFSET + 1u])
 }
 
 /// Stops accepting now instead of when the collector reclaims the listener.
@@ -319,7 +305,7 @@ pub method close(self: TcpListener) {
 /// Connects to `addr:port` (IPv4 or IPv6 literal) and returns the stream.
 pub fn connect(addr: &[Uint8], port: Uint) -> TcpStream {
 	let fd = socket_create(family_of(addr));
-	let sa = [0u8; SOCKADDR_MAX];
+	let sa = [0u8; linux::SOCKADDR_MAX];
 	let len = build_sockaddr(sa&, addr, port);
 	socket_connect(fd, sa[0u..len]&);
 	TcpStream { fd: fd }
@@ -351,18 +337,23 @@ pub method write(self: TcpStream, src: &[Uint8]) {
 /// Disables (on = true) Nagle's algorithm: small writes go out immediately
 /// instead of coalescing while an ack is outstanding.
 pub method set_nodelay(self: TcpStream, on: Bool) {
-	socket_set_option(self.fd, IPPROTO_TCP, TCP_NODELAY, if on { 1 } else { 0 });
+	socket_set_option(
+		self.fd,
+		linux::IPPROTO_TCP,
+		linux::TCP_NODELAY,
+		if on { 1 } else { 0 },
+	);
 }
 
 /// Half-closes the write side: the peer's next read returns 0 (EOF), while this
 /// side can keep reading the peer's remaining data.
 pub method shutdown_write(self: TcpStream) {
-	socket_shutdown(self.fd, SHUT_WR);
+	socket_shutdown(self.fd, linux::SHUT_WR);
 }
 
 /// Half-closes the read side.
 pub method shutdown_read(self: TcpStream) {
-	socket_shutdown(self.fd, SHUT_RD);
+	socket_shutdown(self.fd, linux::SHUT_RD);
 }
 
 /// Closes the connection now instead of when the collector reclaims the stream.

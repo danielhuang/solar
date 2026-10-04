@@ -849,10 +849,13 @@ fn literal_default_type(e: &ast::Expr) -> Option<ast::Type> {
 
 /// Validate a function/method's keyword parameters and bake inferred types.
 /// Optional (defaulted) parameters must follow all required ones, their
-/// defaults must be literals, and an `Infer` type is replaced by the default's
-/// inferred type. Run once at registration so the rest of the pipeline sees
-/// ordinary concretely-typed parameters.
-fn prepare_keyword_params(f: &mut ast::FunctionDef) -> Result<(), CompileError> {
+/// defaults must be literals or top-level constants. An `Infer` type is replaced
+/// by the default's inferred type. Run once at registration so the rest of the
+/// pipeline sees ordinary concretely-typed parameters.
+fn prepare_keyword_params(
+    f: &mut ast::FunctionDef,
+    consts: &HashMap<DefId, &ast::ConstDef>,
+) -> Result<(), CompileError> {
     let mut seen_default = false;
     for p in &mut f.parameters {
         match &p.default {
@@ -875,19 +878,27 @@ fn prepare_keyword_params(f: &mut ast::FunctionDef) -> Result<(), CompileError> 
                         p.span,
                     ));
                 }
-                if !is_literal_default(def) {
+                let constant = match &def.kind {
+                    ast::ExprKind::GlobalRef(id) => consts.get(id).copied(),
+                    _ => None,
+                };
+                let literal = constant.map_or(def, |c| &c.value);
+                if !is_literal_default(literal) {
                     return Err(CompileError::new(
-                        "default value of a keyword parameter must be a literal".to_string(),
+                        "default value of a keyword parameter must be a literal or top-level constant".to_string(),
                         def.span,
                     ));
                 }
                 if matches!(p.ty, ast::Type::Infer) {
-                    p.ty = literal_default_type(def).ok_or_else(|| {
-                        CompileError::new(
-                            "cannot infer keyword parameter type from its default".to_string(),
-                            def.span,
-                        )
-                    })?;
+                    p.ty = constant
+                        .and_then(|c| c.ty.clone())
+                        .or_else(|| literal_default_type(literal))
+                        .ok_or_else(|| {
+                            CompileError::new(
+                                "cannot infer keyword parameter type from its default".to_string(),
+                                def.span,
+                            )
+                        })?;
                 }
             }
         }
@@ -1818,6 +1829,24 @@ impl<'a> Lowerer<'a> {
         let mut associated_function_defs: HashMap<String, Vec<FunctionEntry>> = HashMap::new();
         let mut method_defs: HashMap<String, Vec<FunctionEntry>> = HashMap::new();
         let mut consts: HashMap<DefId, &ast::ConstDef> = HashMap::new();
+        // Register constants before functions so keyword defaults can refer to
+        // constants declared later or imported from another module.
+        for item in &source.items {
+            if let ast::TopLevelItem::Const(c) = item {
+                if !is_literal_default(&c.value) {
+                    return Err(CompileError::new(
+                        format!("const `{}` must be assigned a literal value", c.name),
+                        c.value.span,
+                    ));
+                }
+                if consts.insert(def_id_of_def(&c.name, c.span), c).is_some() {
+                    return Err(CompileError::new(
+                        format!("duplicate const definition: `{}`", c.name),
+                        c.span,
+                    ));
+                }
+            }
+        }
         let mut static_defs: Vec<&ast::StaticDef> = Vec::new();
         // Keyed by provenance `DefId`, not by bare name: two different files
         // may each declare `static FOO` (they are distinct globals, exactly like
@@ -1910,7 +1939,7 @@ impl<'a> Lowerer<'a> {
                         ));
                     }
                     let mut f = f.clone();
-                    prepare_keyword_params(&mut f)?;
+                    prepare_keyword_params(&mut f, &consts)?;
                     let entries = if f.associated_type.is_some() {
                         let key = format!("{:?}::{}", f.associated_type, f.name);
                         associated_function_defs.entry(key).or_default()
@@ -1939,7 +1968,7 @@ impl<'a> Lowerer<'a> {
                         ));
                     }
                     let mut m = m.clone();
-                    prepare_keyword_params(&mut m)?;
+                    prepare_keyword_params(&mut m, &consts)?;
                     let entries = method_defs.entry(m.name.clone()).or_default();
                     let overload_index = entries.len();
                     entries.push(FunctionEntry {
@@ -1953,23 +1982,9 @@ impl<'a> Lowerer<'a> {
                 ast::TopLevelItem::TypeAlias(_) => {
                     // Handled below after all items are collected
                 }
-                ast::TopLevelItem::Const(c) => {
-                    if !is_literal_default(&c.value) {
-                        return Err(CompileError::new(
-                            format!("const `{}` must be assigned a literal value", c.name),
-                            c.value.span,
-                        ));
-                    }
-                    if consts.insert(def_id_of_def(&c.name, c.span), c).is_some() {
-                        return Err(CompileError::new(
-                            format!("duplicate const definition: `{}`", c.name),
-                            c.span,
-                        ));
-                    }
-                }
+                ast::TopLevelItem::Const(_) => {}
                 ast::TopLevelItem::Static(st) => {
-                    // Like keyword-parameter defaults, the initial value must be
-                    // a literal (stored into the global before `main` runs);
+                    // The initial value must be a literal (stored into the global before `main` runs);
                     // state that needs init code is a nullable reference
                     // populated in `main`.
                     if !is_literal_default(&st.value) {
@@ -5458,7 +5473,7 @@ impl<'a> Lowerer<'a> {
             }
             ast::StatementKind::NestedFunction(fdef) => {
                 let mut fdef_owned = fdef.clone();
-                prepare_keyword_params(&mut fdef_owned)?;
+                prepare_keyword_params(&mut fdef_owned, &self.consts)?;
                 let fdef = &fdef_owned;
                 let mut seen_type_params = HashSet::new();
                 for type_param in fdef.type_params.iter().chain(&fdef.out_type_params) {
