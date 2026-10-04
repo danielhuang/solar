@@ -1,0 +1,63 @@
+version: 2.1
+
+jobs:
+  build:
+    machine:
+      image: ubuntu-2604:current
+    resource_class: large
+    environment:
+      CARGO_TERM_COLOR: always
+    steps:
+      - checkout
+      - run:
+          name: Install matching LLVM tools and development headers
+          command: |
+            curl --fail --silent --show-error --location \
+              https://apt.llvm.org/llvm-snapshot.gpg.key \
+              | sudo tee /usr/share/keyrings/apt.llvm.org.asc > /dev/null
+            echo 'deb [signed-by=/usr/share/keyrings/apt.llvm.org.asc] https://apt.llvm.org/resolute/ llvm-toolchain-resolute-23 main' \
+              | sudo tee /etc/apt/sources.list.d/llvm-23.list
+            sudo apt-get update
+            sudo apt-get install --yes --no-install-recommends \
+              build-essential pkg-config nodejs \
+              clang-23 llvm-23 llvm-23-dev lld-23 libclang-rt-23-dev
+            echo 'export PATH="$HOME/.cargo/bin:$HOME/.local/solar-ci/bin:/usr/lib/llvm-23/bin:$PATH"' >> "$BASH_ENV"
+      - run:
+          name: Install the pinned Rust toolchain
+          command: |
+            if ! command -v rustup > /dev/null; then
+              curl --fail --silent --show-error --location https://sh.rustup.rs \
+                | sh -s -- -y --profile minimal --default-toolchain none --no-modify-path
+            fi
+            rustup toolchain install "$(cat rust-toolchain)" --profile minimal
+      - restore_cache:
+          keys:
+            - v1-solar-tools-{{ arch }}-{{ checksum "rust-toolchain" }}-{{ checksum ".circleci/config.yml" }}
+      - run:
+          name: Install nextest and the tree-sitter CLI
+          command: |
+            cargo install --locked --root "$HOME/.local/solar-ci" \
+              --version 0.9.143 cargo-nextest
+            cargo install --locked --root "$HOME/.local/solar-ci" \
+              --version 0.25.6 tree-sitter-cli
+      - save_cache:
+          key: v1-solar-tools-{{ arch }}-{{ checksum "rust-toolchain" }}-{{ checksum ".circleci/config.yml" }}
+          paths:
+            - ~/.local/solar-ci
+      - restore_cache:
+          keys:
+            - v1-solar-cargo-{{ arch }}-{{ checksum "Cargo.lock" }}
+            - v1-solar-cargo-{{ arch }}-
+      - run:
+          name: Run workspace tests
+          command: cargo nextest run --workspace
+      - save_cache:
+          key: v1-solar-cargo-{{ arch }}-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/registry
+            - ~/.cargo/git
+
+workflows:
+  build-and-test:
+    jobs:
+      - build
