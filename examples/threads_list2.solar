@@ -5,7 +5,7 @@ fn main() {
 	let root = sentinel;
 	let is_done = false;
 
-	for _ in 0..16 {
+	for _ in 0u..thread::num_cpus() {
 		thread::spawn(\ {
 			for iter in 0..1000 {
 				let head = sentinel;

@@ -71,7 +71,7 @@ jobs:
   benchmarks:
     machine:
       image: ubuntu-2604:current
-    resource_class: 2xlarge
+    resource_class: large
     environment:
       CARGO_TERM_COLOR: always
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"

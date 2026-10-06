@@ -1,4 +1,4 @@
-# Port of examples/threads_list2.solar. Run with --threads=17: sixteen
+# Port of examples/threads_list2.solar. Run with --threads=auto,1: CPU-count
 # allocating workers plus the main task waiting for the first completion.
 mutable struct ListNode
     value::Int64
@@ -21,8 +21,9 @@ function churn!(shared, sentinel, iterations, list_size)
     @atomic shared.done = true
 end
 
-function churn_lists(; workers=16, iterations=1000, list_size=100_000)
-    @assert Threads.nthreads() >= workers + 1 "Use --threads=17 for the default workload"
+function churn_lists(; workers=Threads.nthreads(:default), iterations=1000, list_size=100_000)
+    @assert 0 < workers <= Threads.nthreads(:default)
+    @assert Threads.threadpool() == :interactive "Use --threads=auto,1 for the waiting main task"
     sentinel = ListNode(0, nothing)
     shared = SharedLists(sentinel, false)
     for _ in 1:workers

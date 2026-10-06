@@ -1,11 +1,11 @@
 // Go port of examples/allocs5.solar (and the Java/C/C# ports).
 //
 // Phase 1 (allocs3): builds a heap chain of 100M Chain cells that stays live
-// for the whole run -- the retained live set. Phase 2 (threads_list2): 16
-// goroutines each build, 1000 times, a fresh 100k-node singly-linked list and
-// publish the head into the shared atomic `root`; the previous list becomes
+// for the whole run -- the retained live set. Phase 2 (threads_list2): one goroutine
+// per available CPU builds, 1000 times, a fresh 100k-node singly-linked list and
+// publishes the head into the shared atomic `root`; the previous list becomes
 // garbage immediately. Go's concurrent GC therefore has to re-mark the ~800 MB
-// retained chain on every cycle while reclaiming the 1.6 billion-node churn --
+// retained chain on every cycle while reclaiming the allocation churn --
 // a combined large-live-set + high-garbage-rate test.
 //
 // As in the other ports, the first worker to finish sets isDone; main observes
@@ -14,6 +14,7 @@ package main
 
 import (
 	"fmt"
+	"runtime"
 	"sync/atomic"
 )
 
@@ -41,7 +42,7 @@ func main() {
 	// Phase 2: concurrent churn while the chain stays live.
 	sentinel := &Node{value: 0, next: nil}
 	root.Store(sentinel)
-	for t := 0; t < 16; t++ {
+	for t := 0; t < runtime.NumCPU(); t++ {
 		go func() {
 			for iter := 0; iter < 1000; iter++ {
 				head := sentinel

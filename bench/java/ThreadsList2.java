@@ -1,7 +1,7 @@
 // Java port of examples/threads_list2.solar.
 //
-// 16 worker threads each build, 1000 times, a fresh 100k-node singly-linked
-// list hanging off a shared sentinel, then publish the head into the shared
+// One worker per available CPU builds, 1000 times, a fresh 100k-node
+// singly-linked list hanging off a shared sentinel, then publish the head into the shared
 // `root`. The previous list becomes garbage as soon as `root` is overwritten,
 // so this is a concurrent allocate-and-discard (high garbage rate) benchmark.
 //
@@ -10,8 +10,8 @@
 //
 // Crucially the Solar process exits the moment `main` returns -- the first
 // worker to finish its 1000 iterations sets `is_done`, main observes it,
-// prints, and returns, abandoning the other 15 threads mid-flight. To
-// reproduce that semantics (and not run 16x the work) the Java workers are
+// prints, and returns, abandoning the remaining threads mid-flight. To
+// reproduce that semantics the Java workers are
 // daemon threads, so the JVM terminates them when main returns.
 public final class ThreadsList2 {
     static final class Node {
@@ -26,7 +26,7 @@ public final class ThreadsList2 {
     public static void main(String[] args) {
         final Node sentinel = new Node(0, null);
         root = sentinel;
-        for (int t = 0; t < 16; t++) {
+        for (int t = 0; t < Runtime.getRuntime().availableProcessors(); t++) {
             Thread th = new Thread(() -> {
                 for (int iter = 0; iter < 1000; iter++) {
                     Node head = sentinel;

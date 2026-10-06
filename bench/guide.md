@@ -58,7 +58,7 @@ RSS, respectively.
 ## Continuous integration
 
 The CircleCI `benchmarks` job runs the complete suite on an Ubuntu 26.04 Linux
-VM with resource class `2xlarge`. It installs the comparison runtimes and
+VM with resource class `large`. It installs the comparison runtimes and
 allocator libraries, builds every program with `bash bench/build.sh`, and runs
 `python3 bench/ci_report.py`. Measurements run sequentially using the round
 counts below; the test job runs on a separate VM.
@@ -202,6 +202,9 @@ non-generational ZGC, and Shenandoah. The .NET configurations select
 workstation and server GC at process startup. Node.js runs with an 8 GiB old
 space limit per isolate.
 
+The threaded allocation workloads use one worker per available CPU in each
+language. Restrict CPU affinity to compare runs at a fixed worker count.
+
 ### Julia allocation ports
 
 The four Julia ports require Julia 1.10 or newer and no external packages.
@@ -210,15 +213,15 @@ For standalone runs:
 
 ```bash
 julia --startup-file=no bench/julia/allocs3.jl
-julia --startup-file=no --threads=17 bench/julia/threads_list2.jl
+julia --startup-file=no --threads=auto,1 bench/julia/threads_list2.jl
 julia --startup-file=no bench/julia/splay.jl
-julia --startup-file=no --threads=17 bench/julia/allocs5.jl
+julia --startup-file=no --threads=auto,1 bench/julia/allocs5.jl
 ```
 
 The defaults match the allocation counts, payloads, random sequence, and
 checksums of the other ports. The threaded programs share one heap and atomic
-root, with sixteen workers plus a thread for the waiting main task. They exit
-when the first worker finishes. `allocs5` explicitly preserves its retained
+root, with one worker per available CPU plus a thread for the waiting main
+task. They exit when the first worker finishes. `allocs5` explicitly preserves its retained
 chain during churn. Mutable Julia nodes keep allocations as heap objects;
 object sizes and GC metadata differ from Solar.
 
@@ -227,11 +230,12 @@ All Julia process timings, including those in the matrix, include startup and
 JIT compilation, with no warmup. Traced runs preload `julia/gc_trace.jl`, which
 enables `GC.enable_logging(true)`; the harness reads individual `GC: pause`
 durations. Single-threaded workloads use one Julia worker thread, while the
-threaded workloads use seventeen. Julia GC thread counts retain their defaults.
+threaded workloads use `--threads=auto,1`. Julia GC thread counts retain
+their defaults.
 For a quick correctness check, include a file and call its parameterized driver:
 
 ```bash
-julia --startup-file=no --threads=17 -e \
+julia --startup-file=no --threads=auto,1 -e \
   'include("bench/julia/allocs5.jl"); combined(chain_size=10000, iterations=10, list_size=1000); exit(0)'
 julia --startup-file=no -e \
   'include("bench/julia/splay.jl"); main(outer_runs=2, runs=10)'

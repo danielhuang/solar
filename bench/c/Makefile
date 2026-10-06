@@ -8,13 +8,13 @@ all: allocs3 threads_list2 splay allocs5 sieve loop2
 allocs3: allocs3.c
 	$(CC) $(CFLAGS) -o $@ $<
 
-threads_list2: threads_list2.c
+threads_list2: threads_list2.c num_cpus.h
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $<
 
 splay: splay.c
 	$(CC) $(CFLAGS) -o $@ $<
 
-allocs5: allocs5.c
+allocs5: allocs5.c num_cpus.h
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $<
 
 sieve: sieve.c

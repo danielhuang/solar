@@ -1,7 +1,7 @@
 // JavaScript (Node.js) port of examples/threads_list2.solar.
 //
-// 16 workers each build, 1000 times, a fresh 100k-node singly-linked list
-// hanging off a sentinel, then publish the head into `root`; the previous
+// One worker per available CPU builds, 1000 times, a fresh 100k-node
+// singly-linked list hanging off a sentinel, then publish the head into `root`; the previous
 // list becomes garbage as soon as `root` is overwritten -- a concurrent
 // allocate-and-discard (high garbage rate) benchmark.
 //
@@ -11,15 +11,16 @@
 // per-worker module-level `root` (same allocation and garbage timing, no
 // cross-thread visibility), and Solar's `is_done` atomic becomes a
 // SharedArrayBuffer flag ([0] = done, [1] = the finisher's root.value).
-// This means 16 independent collectors each handle 1/16th of the churn
+// This means independent collectors each handle one worker's churn
 // instead of one collector handling all of it -- the closest possible port,
 // but note it sidesteps the multi-threaded-collector stress the other
 // runtimes face.
 //
 // Like the other ports, the process exits the moment the first worker
 // finishes (main busy-waits on the flag, prints, and exits, abandoning the
-// other 15 mid-flight).
+// remaining workers mid-flight).
 "use strict";
+const { availableParallelism } = require("node:os");
 const { Worker, isMainThread, workerData } = require("worker_threads");
 
 class Node {
@@ -29,7 +30,7 @@ class Node {
 if (isMainThread) {
   const sab = new SharedArrayBuffer(8);
   const flags = new Int32Array(sab);
-  for (let t = 0; t < 16; t++) {
+  for (let t = 0; t < availableParallelism(); t++) {
     new Worker(__filename, { workerData: sab });
   }
   // Spin, matching Solar's busy-wait (workers are real OS threads with their
@@ -37,7 +38,7 @@ if (isMainThread) {
   while (Atomics.load(flags, 0) === 0) { /* spin */ }
   console.log(Atomics.load(flags, 1));
   console.log("done");
-  process.exit(0); // abandon the other 15 workers
+  process.exit(0); // abandon the remaining workers
 } else {
   const flags = new Int32Array(workerData);
   const sentinel = new Node(0, null);

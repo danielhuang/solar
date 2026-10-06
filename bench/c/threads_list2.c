@@ -1,12 +1,12 @@
 // C port of examples/threads_list2.solar (and bench/java/ThreadsList2.java).
 //
-// 16 worker threads each build, 1000 times, a fresh 100k-node singly-linked
-// list hanging off a shared sentinel, publish the head into the shared `root`
+// One worker per available CPU builds, 1000 times, a fresh 100k-node
+// singly-linked list hanging off a shared sentinel, publish the head into the shared `root`
 // (an atomic store, matching Solar's `atomic_store`), and then -- because there
 // is no collector -- *manually free* the list they built in the previous
 // iteration. That makes this the manual-memory-management analogue of Solar's
 // concurrent allocate-and-discard test: identical allocation volume
-// (16 x 1000 x 100k = 1.6 billion `Node`s), with the reclamation that Solar's
+// (1000 x 100k `Node`s per worker), with the reclamation that Solar's
 // GC does concurrently instead paid inline by `free`.
 //
 // Differences forced by manual memory management:
@@ -19,8 +19,9 @@
 //     traffic matches the original.
 //
 // Like the Solar/Java ports, the first worker to finish sets `is_done`; `main`
-// observes it, prints, and returns, abandoning the other 15 threads (the
+// observes it, prints, and returns, abandoning the remaining threads (the
 // process exits on return, matching Solar and Java's daemon threads).
+#include "num_cpus.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -69,9 +70,12 @@ int main(void) {
     sentinel->next = NULL;
     atomic_store(&root, sentinel);
 
-    pthread_t th[16];
-    for (int t = 0; t < 16; t++)
-        pthread_create(&th[t], NULL, worker, NULL);
+    const int workers = num_cpus();
+    for (int t = 0; t < workers; t++) {
+        pthread_t thread;
+        int error = pthread_create(&thread, NULL, worker, NULL);
+        assert(error == 0);
+    }
 
     while (!atomic_load_explicit(&is_done, memory_order_acquire)) {
         /* spin, matching Solar's busy-wait */

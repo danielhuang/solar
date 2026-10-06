@@ -1,11 +1,11 @@
 // C port of examples/allocs5.solar (and bench/java/Allocs5.java).
 //
 // Phase 1 (allocs3): builds a heap chain of 100M `Chain` cells that is never
-// freed -- the retained live set. Phase 2 (threads_list2): 16 worker threads
-// each build, 1000 times, a fresh 100k-node singly-linked list, publish the
-// head into the shared `root`, and manually free the list they built the
+// freed -- the retained live set. Phase 2 (threads_list2): one worker
+// per available CPU builds, 1000 times, a fresh 100k-node singly-linked list, publishes the
+// head into the shared `root`, and manually frees the list it built the
 // previous iteration. In the GC-managed ports every collection must trace the
-// ~800 MB retained chain concurrently with the 1.6 billion-node churn; with
+// ~800 MB retained chain concurrently with the allocation churn; with
 // manual memory management the retained chain costs nothing after it is built
 // (no collector scans it), so this stays a malloc/free-throughput test with a
 // large resident footprint.
@@ -13,6 +13,7 @@
 // The same manual-memory caveats as threads_list2.c apply: each thread frees
 // only the lists IT built, never `root`, and main reads the always-live
 // sentinel/chain head rather than `root`.
+#include "num_cpus.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -75,9 +76,12 @@ int main(void) {
     sentinel->next = NULL;
     atomic_store(&root, sentinel);
 
-    pthread_t th[16];
-    for (int t = 0; t < 16; t++)
-        pthread_create(&th[t], NULL, worker, NULL);
+    const int workers = num_cpus();
+    for (int t = 0; t < workers; t++) {
+        pthread_t thread;
+        int error = pthread_create(&thread, NULL, worker, NULL);
+        assert(error == 0);
+    }
 
     while (!atomic_load_explicit(&is_done, memory_order_acquire)) {
         /* spin, matching Solar's busy-wait */

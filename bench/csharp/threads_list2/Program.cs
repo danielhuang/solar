@@ -1,10 +1,10 @@
 // C# port of examples/threads_list2.solar (and bench/java/ThreadsList2.java).
 //
-// 16 worker threads each build, 1000 times, a fresh 100k-node singly-linked
-// list hanging off a shared sentinel, then publish the head into the shared
+// One worker per available CPU builds, 1000 times, a fresh 100k-node
+// singly-linked list hanging off a shared sentinel, then publish the head into the shared
 // `root`. The previous list becomes garbage as soon as `root` is overwritten,
 // so this is a concurrent allocate-and-discard (high garbage rate) benchmark
-// (16 x 1000 x 100k = 1.6 billion Nodes), reclaimed by the .NET GC.
+// (1000 x 100k Nodes per worker), reclaimed by the .NET GC.
 //
 // Solar's nullable reference `next: &?Node` (`null#[Node]` when empty) becomes a
 // nullable `Node? next`. Solar `atomic_store`/`atomic_load` become Volatile
@@ -12,8 +12,8 @@
 //
 // Crucially the Solar process exits the moment `main` returns -- the first
 // worker to finish its 1000 iterations sets `is_done`, main observes it, prints,
-// and returns, abandoning the other 15 threads mid-flight. To reproduce that
-// semantics (and not run 16x the work) the C# workers are background threads, so
+// and returns, abandoning the remaining threads mid-flight. To reproduce that
+// semantics the C# workers are background threads, so
 // the runtime terminates them when main returns -- the analogue of Java daemon
 // threads and Go goroutines.
 
@@ -37,7 +37,7 @@ internal static class ThreadsList2
     {
         Node sentinel = new Node(0, null);
         root = sentinel;
-        for (int t = 0; t < 16; t++)
+        for (int t = 0; t < Environment.ProcessorCount; t++)
         {
             Thread th = new Thread(() =>
             {

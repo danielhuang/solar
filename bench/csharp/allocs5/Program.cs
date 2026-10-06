@@ -1,16 +1,16 @@
 // C# port of examples/allocs5.solar (and bench/java/Allocs5.java).
 //
 // Phase 1 (allocs3): builds a heap chain of 100M Chain cells that stays live
-// for the whole run -- the retained live set. Phase 2 (threads_list2): 16
-// worker threads each build, 1000 times, a fresh 100k-node singly-linked list
-// and publish the head into the shared volatile `root`; the previous list
+// for the whole run -- the retained live set. Phase 2 (threads_list2): one worker
+// per available CPU builds, 1000 times, a fresh 100k-node singly-linked list
+// and publishes the head into the shared volatile `root`; the previous list
 // becomes garbage immediately. The .NET GC therefore has to trace the large
-// retained chain (promoted to gen2) while keeping up with the 1.6 billion-node
-// ephemeral churn -- a combined large-live-set + high-garbage-rate test.
+// retained chain (promoted to gen2) while keeping up with the allocation
+// churn -- a combined large-live-set + high-garbage-rate test.
 //
 // As in ThreadsList2, the workers are background threads: the first to finish
 // sets isDone, main observes it, reads the chain head to keep it live, prints,
-// and returns, terminating the other 15.
+// and returns, terminating the remaining workers.
 
 GcPause.MaybeStart();
 
@@ -46,7 +46,7 @@ internal static class Allocs5
         // Phase 2: concurrent churn while the chain stays live.
         Node sentinel = new Node(0, null);
         root = sentinel;
-        for (int t = 0; t < 16; t++)
+        for (int t = 0; t < Environment.ProcessorCount; t++)
         {
             Thread th = new Thread(() =>
             {

@@ -2,7 +2,7 @@
 include("allocs3.jl")
 include("threads_list2.jl")
 
-function combined(; chain_size=100_000_000, workers=16, iterations=1000,
+function combined(; chain_size=100_000_000, workers=Threads.nthreads(:default), iterations=1000,
                   list_size=100_000)
     chain = build_chain(chain_size)
     GC.@preserve chain begin

@@ -81,7 +81,7 @@ def contenders(stem: str, cls: str):
         ("JS (Node/V8)",     ["node", *NODE_OPTS,
                               str(ROOT / "bench/js" / f"{stem}.js")], {}, "node"),
         ("Julia",            ["julia", "--startup-file=no",
-                              "--threads=17" if stem in ("threads_list2", "allocs5") else "--threads=1",
+                              "--threads=auto,1" if stem in ("threads_list2", "allocs5") else "--threads=1",
                               str(ROOT / "bench/julia" / f"{stem}.jl")], {}, "julia"),
         ("Java G1",          [*java, "-XX:+UseG1GC", cls],           {}, "java"),
         ("Java Parallel",    [*java, "-XX:+UseParallelGC", cls],     {}, "java"),

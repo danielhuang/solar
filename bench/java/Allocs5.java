@@ -1,16 +1,16 @@
 // Java port of examples/allocs5.solar.
 //
 // Phase 1 (allocs3): builds a heap chain of 100M Chain cells that stays live
-// for the whole run -- the retained live set. Phase 2 (threads_list2): 16
-// worker threads each build, 1000 times, a fresh 100k-node singly-linked list
-// and publish the head into the shared volatile `root`; the previous list
+// for the whole run -- the retained live set. Phase 2 (threads_list2): one worker
+// per available CPU builds, 1000 times, a fresh 100k-node singly-linked list
+// and publishes the head into the shared volatile `root`; the previous list
 // becomes garbage immediately. The collector therefore has to trace the large
-// retained chain on every cycle while keeping up with the 1.6 billion-node
+// retained chain on every cycle while keeping up with the allocation
 // churn -- a combined large-live-set + high-garbage-rate test.
 //
 // As in ThreadsList2, the workers are daemon threads: the first to finish sets
 // isDone, main observes it, reads the chain head to keep it live, prints, and
-// returns, terminating the other 15.
+// returns, terminating the remaining workers.
 public final class Allocs5 {
     static final class Chain {
         final Chain next; // null == empty (null#[Chain]), else points to prev
@@ -36,7 +36,7 @@ public final class Allocs5 {
         // Phase 2: concurrent churn while the chain stays live.
         final Node sentinel = new Node(0, null);
         root = sentinel;
-        for (int t = 0; t < 16; t++) {
+        for (int t = 0; t < Runtime.getRuntime().availableProcessors(); t++) {
             Thread th = new Thread(() -> {
                 for (int iter = 0; iter < 1000; iter++) {
                     Node head = sentinel;

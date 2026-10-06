@@ -12,14 +12,14 @@ fn main() {
 		chain = Chain { next: prev& };
 	}
 
-	// Phase 2 (threads_list2): 16 threads churn short-lived 100k-node lists
+	// Phase 2 (threads_list2): One worker per available CPU churns short-lived 100k-node lists
 	// while the chain above stays live, so every GC cycle has to trace the
 	// large retained set concurrently with a high allocation rate.
 	let sentinel = (Node { value: 0, next: null#[Node] })&;
 	let root = sentinel;
 	let is_done = false;
 
-	for _ in 0..16 {
+	for _ in 0u..thread::num_cpus() {
 		thread::spawn(\ {
 			for iter in 0..1000 {
 				let head = sentinel;
