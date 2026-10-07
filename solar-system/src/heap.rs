@@ -1,6 +1,9 @@
 //! Address-partitioned size-class heap.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::VecDeque;
+use std::ops::Range;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::init_cell::InitCell;
 
@@ -127,6 +130,76 @@ static NEXT_SLOT: [AtomicU64; NUM_CLASSES] = [const { AtomicU64::new(0) }; NUM_C
 /// past it.
 static HWM: [AtomicU64; NUM_CLASSES] = [const { AtomicU64::new(0) }; NUM_CLASSES];
 
+/// Completed sweep regions, consumed in publication order so new arrivals do
+/// not interrupt a partially claimed region. Claims are split under the mutex.
+/// The hint avoids locking when there is no published region; a stale false hint
+/// merely sends an allocator to the fresh frontier.
+struct SweptRuns {
+    available: AtomicBool,
+    ranges: Mutex<VecDeque<Range<u64>>>,
+}
+
+impl SweptRuns {
+    const fn new() -> Self {
+        Self {
+            available: AtomicBool::new(false),
+            ranges: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    fn publish(&self, range: Range<u64>) {
+        let mut ranges = self.ranges.lock().unwrap();
+        ranges.push_back(range);
+        self.available.store(true, Ordering::Relaxed);
+    }
+
+    fn claim(&self, slots: u64) -> Option<u64> {
+        if !self.available.load(Ordering::Relaxed) {
+            return None;
+        }
+        let mut ranges = self.ranges.lock().unwrap();
+        let range = ranges.front_mut()?;
+        let start = range.start;
+        let end = start + slots;
+        assert!(end <= range.end);
+        range.start = end;
+        if range.is_empty() {
+            ranges.pop_front();
+            if ranges.is_empty() {
+                self.available.store(false, Ordering::Relaxed);
+            }
+        }
+        Some(start)
+    }
+
+    fn clear(&self) {
+        self.ranges.lock().unwrap().clear();
+        self.available.store(false, Ordering::Relaxed);
+    }
+}
+
+static SWEPT_RUNS: [SweptRuns; NUM_CLASSES] = [const { SweptRuns::new() }; NUM_CLASSES];
+
+/// Publishes a completed, claim-aligned sweep region for concurrent reuse.
+/// The sweeper must never touch its bitmap words again this cycle, and the
+/// normal allocation frontier must remain above every published region.
+pub(crate) unsafe fn publish_swept_range(class: usize, word_start: usize, word_end: usize) {
+    let start = word_start as u64 * 64;
+    let end = word_end as u64 * 64;
+    let claim = claim_slots(class) as u64;
+    assert!(start < end && start.is_multiple_of(claim) && end.is_multiple_of(claim));
+    SWEPT_RUNS[class].publish(start..end);
+}
+
+/// Discards unused sweep regions before moving any allocation frontier back.
+/// Requires stopped mutators and joined sweep workers; cached claims must also
+/// be abandoned before allocation resumes.
+pub(crate) fn clear_swept_ranges() {
+    for runs in &SWEPT_RUNS {
+        runs.clear();
+    }
+}
+
 unsafe fn mmap_reserve(size: usize, what: &str) -> usize {
     let p = unsafe {
         libc::mmap(
@@ -157,6 +230,19 @@ pub fn init() {
         let alloc_bits = mmap_reserve(BITMAP_TOTAL, "alloc bitmap");
         let mark_bits = mmap_reserve(BITMAP_TOTAL, "mark bitmap");
         let meta = mmap_reserve(META_TOTAL, "metadata table");
+        // Large small-object bitmaps can share page-table fault locks across
+        // many mutators. Allow huge backing after the first 2 MiB of each
+        // conservative class, preserving small-heap demand-paging granularity.
+        // This is optional advice; allocation and GC do not depend on it.
+        const HUGE_PAGE: usize = 2 * 1024 * 1024;
+        for class in 0..META_MIN_CLASS {
+            let base = alloc_bits + bitmap_class_offset(class);
+            let start = (base + HUGE_PAGE).next_multiple_of(HUGE_PAGE);
+            let end = (base + slots_per_region(class) / 8) & !(HUGE_PAGE - 1);
+            if start < end {
+                let _ = libc::madvise(start as *mut libc::c_void, end - start, libc::MADV_HUGEPAGE);
+            }
+        }
         // SAFETY: `init` runs once from `sol_start`, before any thread that
         // reads these cells is spawned.
         ALLOC_BITS.set(alloc_bits);
@@ -283,6 +369,24 @@ pub unsafe fn alloc_word_or(class: usize, word: usize, bits: u64) {
     let w = unsafe { &*alloc_class_base(class).add(word) };
     w.store(w.load(Ordering::Relaxed) | bits, Ordering::Relaxed);
 }
+/// Releases unconsumed reservations in a word still exclusively owned by the
+/// allocator. No returned allocation or older survivor may appear in `bits`.
+#[inline]
+pub(crate) unsafe fn release_reserved_bits(class: usize, word: usize, bits: u64) {
+    let w = unsafe { &*alloc_class_base(class).add(word) };
+    w.store(w.load(Ordering::Relaxed) & !bits, Ordering::Relaxed);
+}
+/// Publishes every remaining free slot through `last` in an owned bitmap word,
+/// returning exactly the newly allocated bits. Initialize metadata for all
+/// these slots before calling. `last` must be in 0..64.
+#[inline]
+pub unsafe fn alloc_word_through(class: usize, word: usize, last: usize) -> u64 {
+    let prefix = u64::MAX >> (63 - last);
+    let w = unsafe { &*alloc_class_base(class).add(word) };
+    let allocated = w.load(Ordering::Relaxed);
+    w.store(allocated | prefix, Ordering::Relaxed);
+    prefix & !allocated
+}
 /// Load a whole mark-bitmap word. Used by the batched marker to answer
 /// "newly marked?" when it rolls over to a new word; a plain (non-atomic)
 /// load is enough — see `mark_slot_batched` in `gc`.
@@ -335,15 +439,35 @@ pub unsafe fn meta_entry(class: usize, slot: usize) -> *mut MetaEntry {
 // Allocation frontier.
 // ---------------------------------------------------------------------------
 
-/// Claim a fresh run of slots for `class`. Returns `[start, end)` slot indices.
+/// Claim a disjoint run of slots for `class`. Returns `[start, end)` slot indices.
 /// The run may contain survivors from a previous cycle (after a frontier
 /// reset) — the caller must skip slots whose allocated bit is set.
+/// `populate` requests bounded eager backing after the caller has exhausted a
+/// previous claim, avoiding extra page work for one-off allocations.
 #[inline]
-pub fn claim_run(class: usize) -> (u64, u64) {
+pub fn claim_run(class: usize, populate: bool) -> (u64, u64) {
     let n = claim_slots(class) as u64;
+    if let Some(start) = SWEPT_RUNS[class].claim(n) {
+        // The queue's mutex acquires the sweeper's completed bitmap writes.
+        // This claim is disjoint from both fresh claims and other reused ones.
+        crate::gc::note_claimed((n as usize) << slot_size_log(class));
+        return (start, start + n);
+    }
     let s = NEXT_SLOT[class].fetch_add(n, Ordering::Relaxed);
     let e = s + n;
-    HWM[class].fetch_max(e, Ordering::Relaxed);
+    let previous_hwm = HWM[class].fetch_max(e, Ordering::Relaxed);
+    if populate && e > previous_hwm {
+        let first = s.max(previous_hwm) as usize;
+        let addr = slot_addr(region_base(class), first, class);
+        let bytes = ((e as usize - first) << slot_size_log(class)).min(CLAIM_BYTES);
+        // Populate fresh pages in one kernel operation instead of taking a
+        // user-mode fault per page. Cap eager backing for large size classes,
+        // whose minimum 64-slot claims can span many gigabytes. Unsupported
+        // kernels retain demand paging.
+        unsafe {
+            let _ = libc::madvise(addr as *mut libc::c_void, bytes, libc::MADV_POPULATE_WRITE);
+        }
+    }
     // The GC trigger lives here rather than in `sol_alloc_impl`: a claim is the
     // rare, amortized event (one per `CLAIM_BYTES` run), so pacing on claimed
     // bytes keeps the per-allocation path free of trigger bookkeeping.
@@ -427,8 +551,8 @@ pub unsafe fn lookup_arena(p: usize) -> Option<(usize, usize, usize, MarkKind)> 
 /// allocated-but-unmarked slots become free, marked slots stay allocated, and
 /// the mark word is cleared for the next cycle. Returns `(live_slots,
 /// freed_slots)` in this range. Caller must ensure ranges don't overlap across
-/// concurrent calls (they're partitioned by the sweep driver) and that all
-/// mutators are stopped.
+/// concurrent calls (they're partitioned by the sweep driver) and that no
+/// mutator can allocate into these words until this call completes.
 pub unsafe fn sweep_word_range(class: usize, word_start: usize, word_end: usize) -> (u64, u64) {
     let abase = alloc_class_base(class);
     let mbase = mark_class_base(class);
@@ -484,12 +608,111 @@ pub fn live_slots() -> (usize, usize) {
 }
 
 #[cfg(test)]
+/// Initializes the shared heap once across runtime unit tests.
+pub(crate) fn init_for_tests() {
+    static INITIALIZED: std::sync::Once = std::sync::Once::new();
+    INITIALIZED.call_once(init);
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn completed_regions_give_disjoint_claims_for_every_class() {
+        for class in 0..NUM_CLASSES {
+            let runs = SweptRuns::new();
+            let n = claim_slots(class) as u64;
+            for i in 0..8 {
+                runs.publish(i * 2 * n..(i + 1) * 2 * n);
+            }
+            let mut claims = std::thread::scope(|scope| {
+                let jobs: Vec<_> = (0..4)
+                    .map(|_| {
+                        let runs = &runs;
+                        scope.spawn(move || {
+                            let mut claims = Vec::new();
+                            while let Some(claim) = runs.claim(n) {
+                                claims.push((claim, claim + n));
+                            }
+                            claims
+                        })
+                    })
+                    .collect();
+                jobs.into_iter()
+                    .flat_map(|job| job.join().unwrap())
+                    .collect::<Vec<_>>()
+            });
+            claims.sort_unstable();
+            assert_eq!(claims.len(), 8 * 2);
+            for (i, (start, end)) in claims.into_iter().enumerate() {
+                assert_eq!((start, end), (i as u64 * n, (i as u64 + 1) * n));
+            }
+
+            runs.publish(0..2 * n);
+            assert_eq!(runs.claim(n), Some(0));
+            runs.clear();
+            assert_eq!(runs.claim(n), None);
+            runs.publish(2 * n..3 * n);
+            assert_eq!(runs.claim(n), Some(2 * n));
+            assert_eq!(runs.claim(n), None);
+        }
+    }
+
+    #[test]
+    fn published_region_can_be_reused_while_another_region_is_unswept() {
+        init_for_tests();
+        // Other heap tests use class zero. These two regions are private here.
+        let class = 2;
+        let n = claim_slots(class) as u64;
+        let words = n as usize / 64;
+        unsafe {
+            alloc_word_or(class, 0, 3);
+            mark_word_or(class, 0, 2);
+            alloc_word_or(class, words, 4);
+        }
+        let runs = SweptRuns::new();
+        assert_eq!(runs.claim(n), None);
+        std::thread::scope(|scope| {
+            let (publish, published) = std::sync::mpsc::channel();
+            let (allocated, allocation) = std::sync::mpsc::channel();
+            let runs = &runs;
+            scope.spawn(move || {
+                published.recv().unwrap();
+                assert_eq!(runs.claim(n), Some(0));
+                // Publication exposes the survivor and cleared mark bits.
+                assert_eq!(unsafe { alloc_word_load(class, 0) }, 2);
+                assert_eq!(unsafe { mark_word_load(class, 0) }, 0);
+                unsafe { alloc_word_or(class, 0, 1) };
+                allocated.send(()).unwrap();
+            });
+            assert_eq!(unsafe { sweep_word_range(class, 0, words) }, (1, 1));
+            runs.publish(0..n);
+            publish.send(()).unwrap();
+            allocation.recv().unwrap();
+            assert_eq!(unsafe { alloc_word_load(class, words) }, 4);
+            assert_eq!(unsafe { sweep_word_range(class, words, 2 * words) }, (0, 1));
+            // Finishing the remaining sweep must preserve the reused slot.
+            assert_eq!(unsafe { alloc_word_load(class, 0) }, 3);
+        });
+
+        // The next cycle retains the replacement but not the old survivor.
+        // Retire an unconsumed previous-cycle entry before sweeping again:
+        // republishing a region must never leave two ways to claim it.
+        runs.publish(n..2 * n);
+        runs.clear();
+        unsafe { mark_word_or(class, 0, 1) };
+        assert_eq!(unsafe { sweep_word_range(class, 0, 2 * words) }, (1, 1));
+        assert_eq!(unsafe { alloc_word_load(class, 0) }, 1);
+        assert_eq!(unsafe { mark_word_load(class, 0) }, 0);
+        runs.publish(0..n);
+        assert_eq!(runs.claim(n), Some(0));
+        assert_eq!(runs.claim(n), None);
+    }
+
+    #[test]
     fn allocation_range_check_rejects_swept_slots() {
-        init();
+        init_for_tests();
         let class = 0;
         let addr = region_base(class);
 

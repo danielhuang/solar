@@ -271,6 +271,7 @@ struct SolarBatchGcAlloc : PassInfoMixin<SolarBatchGcAlloc> {
   static SmallVector<Value *, 3> request(CallInst *Call) {
     Function *F = Call ? Call->getCalledFunction() : nullptr;
     if (!F || !F->getName().starts_with("sol_alloc_class_") ||
+        F->getName().contains("_batch") ||
         !Call->getType()->isPointerTy() ||
         Call->hasOperandBundles() || Call->isMustTailCall())
       return {};
@@ -311,7 +312,7 @@ struct SolarBatchGcAlloc : PassInfoMixin<SolarBatchGcAlloc> {
     LLVMContext &Ctx = M.getContext();
     Type *Ptr = PointerType::getUnqual(Ctx);
     Type *I64 = Type::getInt64Ty(Ctx);
-    unsigned Batches = 0;
+    unsigned Batches = 0, NewbornValues = 0;
     for (Function &F : M) {
       if (F.isDeclaration() || !isGeneratedFunc(F))
         continue;
@@ -328,8 +329,11 @@ struct SolarBatchGcAlloc : PassInfoMixin<SolarBatchGcAlloc> {
               return llvm::is_contained(Group, Call);
             });
             unsigned Count = Group.size();
-            if (Count == 1)
+            if (Count == 1) {
+              Group.front()->setMetadata("solar.gc.newborn", MDNode::get(Ctx, {}));
+              ++NewbornValues;
               continue;
+            }
             IRBuilder<> B(Group.front());
             B.SetCurrentDebugLocation(barrierDebugLoc(Group.front()));
             uint64_t Need = std::max<uint64_t>({
@@ -340,35 +344,39 @@ struct SolarBatchGcAlloc : PassInfoMixin<SolarBatchGcAlloc> {
                 ("sol_alloc_class_" + Twine(Class) + "_batch" + Twine(Count)).str();
             if (Count == 2) {
               // x86-64 SysV returns the two-pointer repr(C) aggregate in
-              // two integer registers; larger batches use a hidden sret.
+              // two integer registers; larger batches use an address view.
               auto *ResultTy = StructType::get(Ctx, {I64, I64});
               auto Batch = M.getOrInsertFunction(
                   Name, FunctionType::get(ResultTy, {I64, I64, Ptr}, false));
               auto *BatchCall = B.CreateCall(Batch, Args);
               BatchCall->setDoesNotThrow();
-              for (unsigned N = 0; N != Count; ++N)
-                Group[N]->replaceAllUsesWith(
-                    B.CreateIntToPtr(B.CreateExtractValue(BatchCall, N), Ptr));
-            } else {
-              IRBuilder<> Entry(&*F.getEntryBlock().getFirstInsertionPt());
-              auto *SlotsTy = ArrayType::get(Ptr, Count);
-              Value *Slots = Entry.CreateAlloca(SlotsTy, nullptr, "alloc.batch");
-              auto Batch = M.getOrInsertFunction(
-                  Name, FunctionType::get(Type::getVoidTy(Ctx),
-                                          {Ptr, I64, I64, Ptr}, false));
-              auto SRet = Attribute::getWithStructRetType(Ctx, SlotsTy);
-              auto *BatchFn = cast<Function>(Batch.getCallee());
-              BatchFn->addParamAttr(0, SRet);
-              BatchFn->addParamAttr(0, Attribute::NoAlias);
-              auto *BatchCall = B.CreateCall(
-                  Batch, {Slots, Args[0], Args[1], Args[2]});
-              BatchCall->addParamAttr(0, SRet);
-              BatchCall->addParamAttr(0, Attribute::NoAlias);
-              BatchCall->setDoesNotThrow();
               for (unsigned N = 0; N != Count; ++N) {
-                Value *Slot = B.CreateConstInBoundsGEP2_32(SlotsTy, Slots, 0, N);
-                Group[N]->replaceAllUsesWith(
-                    B.CreateLoad(Ptr, Slot, "alloc.address"));
+                auto *Address = cast<Instruction>(
+                    B.CreateIntToPtr(B.CreateExtractValue(BatchCall, N), Ptr));
+                Address->setMetadata("solar.gc.newborn", MDNode::get(Ctx, {}));
+                Group[N]->replaceAllUsesWith(Address);
+                ++NewbornValues;
+              }
+            } else {
+              auto *SlotsTy = ArrayType::get(Ptr, Count);
+              auto Batch = M.getOrInsertFunction(
+                  Name + "_view", FunctionType::get(Ptr, {I64, I64, Ptr}, false));
+              auto *BatchCall = B.CreateCall(Batch, Args);
+              BatchCall->setDoesNotThrow();
+              // The view aliases allocator TLS. Read all addresses immediately;
+              // do not mark it noalias or invariant, since the next allocator
+              // call may overwrite the same storage.
+              for (unsigned N = 0; N != Count; ++N) {
+                Value *Slot = B.CreateConstInBoundsGEP2_32(SlotsTy, BatchCall, 0, N);
+                auto *Address = B.CreateLoad(Ptr, Slot, "alloc.address");
+                // Later optimization must not sink a borrowed-view read past
+                // a loop where the final safepoint pass will insert a poll.
+                // A live volatile result must be materialized, not reloaded
+                // from allocator storage after the collector may have run.
+                Address->setVolatile(true);
+                Address->setMetadata("solar.gc.newborn", MDNode::get(Ctx, {}));
+                Group[N]->replaceAllUsesWith(Address);
+                ++NewbornValues;
               }
             }
             for (CallInst *Old : Group)
@@ -399,7 +407,8 @@ struct SolarBatchGcAlloc : PassInfoMixin<SolarBatchGcAlloc> {
     }
     if (Batches)
       errs() << "solar-batch-gc-alloc: " << Batches << " batches\n";
-    return Batches ? PreservedAnalyses::none() : PreservedAnalyses::all();
+    return (Batches || NewbornValues) ? PreservedAnalyses::none()
+                                     : PreservedAnalyses::all();
   }
   static bool isRequired() { return true; }
 };
@@ -420,6 +429,7 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
         FunctionType::get(VoidTy, {PtrTy, I64}, false));
 
     unsigned NStore = 0, NVec = 0, NMem = 0, NSkipStack = 0, NSkipPlain = 0;
+    unsigned NSkipNewborn = 0;
 
     for (Function &F : M) {
       if (F.isDeclaration())
@@ -431,19 +441,66 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
       // Collect first because instrumentation mutates the instruction list.
       SmallVector<StoreInst *, 32> Stores;
       SmallVector<AnyMemTransferInst *, 8> Mems;
+      SmallVector<AtomicRMWInst *, 8> Exchanges;
+      SmallVector<AtomicCmpXchgInst *, 8> Compares;
+      SmallVector<CallInst *, 8> WideCalls;
+      SmallPtrSet<StoreInst *, 32> NewbornStores;
+      // Allocations are born black during concurrent marking. An exact new
+      // allocation value needs no shading until a possible suspension point.
+      // Be conservative across calls, possible polling loads, and block
+      // boundaries. Tagged allocation-view loads cannot be safepoints.
+      // This is about the stored value: a new destination may still receive an
+      // old white reference, which must retain its barrier. Pointer arithmetic
+      // is deliberately not followed, since it may reach a different slot.
+      for (BasicBlock &BB : F) {
+        SmallPtrSet<Value *, 32> Newborn;
+        for (Instruction &I : BB) {
+          auto *Load = dyn_cast<LoadInst>(&I);
+          if (isa<CallBase>(I) ||
+              (Load && Load->isVolatile() && !I.getMetadata("solar.gc.newborn")))
+            Newborn.clear();
+          if (I.getType()->isPointerTy() && I.getMetadata("solar.gc.newborn")) {
+            Newborn.insert(&I);
+            // This proof belongs to the allocation-to-barrier pipeline stage,
+            // not to arbitrary instructions produced by later optimization.
+            I.setMetadata("solar.gc.newborn", nullptr);
+          }
+          if (auto *Store = dyn_cast<StoreInst>(&I))
+            if (Newborn.contains(Store->getValueOperand()))
+              NewbornStores.insert(Store);
+        }
+      }
       for (Instruction &I : instructions(F)) {
         if (auto *SI = dyn_cast<StoreInst>(&I)) {
           Type *VTy = SI->getValueOperand()->getType();
           // Pointer stores are precise; wider stores cover optimizer-created
           // aggregates that may contain pointer words.
-          if (VTy->isPtrOrPtrVectorTy() || DL.getTypeStoreSize(VTy) > 8)
+          if (VTy->isPtrOrPtrVectorTy() || DL.getTypeStoreSize(VTy) > 8 ||
+              (SI->isAtomic() && DL.getTypeStoreSize(VTy) == 8))
             Stores.push_back(SI);
-        } else if (auto *MT = dyn_cast<AnyMemTransferInst>(&I)) {
-          // Tagged transfers are pointer-free; synthesized transfers are not.
-          if (MT->getMetadata("solar.nobarrier"))
-            ++NSkipPlain;
-          else
-            Mems.push_back(MT);
+        } else if (auto *RMW = dyn_cast<AtomicRMWInst>(&I)) {
+          if (RMW->getOperation() == AtomicRMWInst::Xchg &&
+              DL.getTypeStoreSize(RMW->getValOperand()->getType()) >= 8)
+            Exchanges.push_back(RMW);
+        } else if (auto *CX = dyn_cast<AtomicCmpXchgInst>(&I)) {
+          if (DL.getTypeStoreSize(CX->getNewValOperand()->getType()) >= 8)
+            Compares.push_back(CX);
+        } else if (auto *Call = dyn_cast<CallInst>(&I)) {
+          if (Function *Callee = Call->getCalledFunction()) {
+            StringRef N = Callee->getName();
+            if (N == "sol_store_128_unordered" || N == "sol_load_128_unordered" ||
+                N == "sol_copy_128_unordered" || N == "sol_atomic_store_128_rel" ||
+                N == "sol_atomic_load_128_acq" ||
+                N == "sol_atomic_compare_exchange_128_acq_rel")
+              WideCalls.push_back(Call);
+          }
+          // Intrinsics are also CallInsts, so collect transfers here too.
+          if (auto *MT = dyn_cast<AnyMemTransferInst>(Call)) {
+            if (MT->getMetadata("solar.nobarrier"))
+              ++NSkipPlain;
+            else
+              Mems.push_back(MT);
+          }
         }
       }
 
@@ -457,10 +514,15 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
         // Constants cannot name live GC allocations.
         if (isa<Constant>(Val))
           continue;
+        if (NewbornStores.contains(SI)) {
+          ++NSkipNewborn;
+          continue;
+        }
         IRBuilder<> B(SI->getNextNode());
-        if (Val->getType()->isPointerTy()) {
-          // Scalar pointer store: shade the stored value.
-          CallInst *C = B.CreateCall(WB, {Val});
+        if (Val->getType()->isPointerTy() || Val->getType()->isIntegerTy(64)) {
+          // C atomics represent references as integer-valued stores.
+          Value *Pointer = Val->getType()->isPointerTy() ? Val : B.CreateIntToPtr(Val, PtrTy);
+          CallInst *C = B.CreateCall(WB, {Pointer});
           C->setDebugLoc(barrierDebugLoc(SI));
           ++NStore;
         } else {
@@ -470,6 +532,55 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
           C->setDebugLoc(barrierDebugLoc(SI));
           ++NVec;
         }
+      }
+
+      auto ShadeAtomicValue = [&](Instruction *At, Value *Dst, Value *Val,
+                                  Value *Succeeded) {
+        if (isStackOrGlobalDest(Dst))
+          return;
+        IRBuilder<> B(At->getNextNode());
+        if (Succeeded)
+          Val = B.CreateSelect(Succeeded, Val, Constant::getNullValue(Val->getType()));
+        if (Val->getType()->isPointerTy()) {
+          B.CreateCall(WB, {Val})->setDebugLoc(barrierDebugLoc(At));
+        } else {
+          unsigned Bits = DL.getTypeStoreSize(Val->getType()) * 8;
+          Type *WordTy = IntegerType::get(Ctx, Bits);
+          Value *Words = B.CreateBitCast(Val, WordTy);
+          for (unsigned Bit = 0; Bit < Bits; Bit += 64) {
+            Value *Word = Bit ? B.CreateLShr(Words, Bit) : Words;
+            Word = B.CreateZExtOrTrunc(Word, I64);
+            B.CreateCall(WB, {B.CreateIntToPtr(Word, PtrTy)})
+                ->setDebugLoc(barrierDebugLoc(At));
+          }
+        }
+        ++NStore;
+      };
+      for (AtomicRMWInst *RMW : Exchanges)
+        ShadeAtomicValue(RMW, RMW->getPointerOperand(), RMW->getValOperand(), nullptr);
+      for (AtomicCmpXchgInst *CX : Compares) {
+        if (isStackOrGlobalDest(CX->getPointerOperand()))
+          continue;
+        IRBuilder<> B(CX->getNextNode());
+        Value *Succeeded = B.CreateExtractValue(CX, 1);
+        // Insert after the success extraction so all uses are dominated.
+        ShadeAtomicValue(cast<Instruction>(Succeeded), CX->getPointerOperand(),
+                         CX->getNewValOperand(), Succeeded);
+      }
+      for (CallInst *Call : WideCalls) {
+        IRBuilder<> B(Call->getNextNode());
+        auto ShadeDestination = [&](unsigned Arg) {
+          Value *Dst = Call->getArgOperand(Arg);
+          if (!isStackOrGlobalDest(Dst)) {
+            B.CreateCall(MemB, {Dst, ConstantInt::get(I64, 16)})
+                ->setDebugLoc(barrierDebugLoc(Call));
+            ++NMem;
+          }
+        };
+        ShadeDestination(0);
+        if (Call->getCalledFunction()->getName() ==
+            "sol_atomic_compare_exchange_128_acq_rel")
+          ShadeDestination(1);
       }
 
       for (AnyMemTransferInst *MT : Mems) {
@@ -487,8 +598,11 @@ struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
 
     }
     (void)NSkipPlain;
+    if (NSkipNewborn)
+      errs() << "solar-write-barriers: " << NSkipNewborn
+             << " newborn-value barriers omitted\n";
 
-    return (NStore || NVec || NMem) ? PreservedAnalyses::none()
+    return (NStore || NVec || NMem || NSkipNewborn) ? PreservedAnalyses::none()
                                      : PreservedAnalyses::all();
   }
 

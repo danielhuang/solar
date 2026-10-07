@@ -1,7 +1,198 @@
 //! Batched allocation lowering and retained object graphs across collection.
 
 use solar::pipeline::CompileOptions;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+#[test]
+fn batch_results_remain_roots_while_waiting_for_concurrent_collection() {
+    test_utils::ensure_release_runtime_built();
+    let directory = tempdir::TempDir::new("solar-test").unwrap();
+    let source = directory.path().join("view-roots.solar");
+    let mut program =
+        String::from("import {black_box_ref} from \"@intrinsics\";\nstruct Node { value: Int }\n");
+    for n in 0..8 {
+        program.push_str(&format!("static KEEP{n}: &?Node = null#[Node];\n"));
+    }
+    program.push_str(
+        r#"
+fn main() {
+    let ready = false;
+    let done = false;
+    thread::spawn(\ {
+        while ready&.atomic_load() == false {}
+        for _ in 0..3 { gc::collect_gc(); }
+        done&.atomic_store(true);
+    });
+"#,
+    );
+    for n in 0..8 {
+        program.push_str(&format!("let a{n} = (Node {{ value: {n} }})&;\n"));
+    }
+    program.push_str("ready&.atomic_store(true);\nwhile done&.atomic_load() == false {}\n");
+    for n in 0..8 {
+        program.push_str(&format!("KEEP{n} = a{n};\n"));
+    }
+    for n in 0..8 {
+        program.push_str(&format!(
+            "black_box_ref(a{n});\nassert(a{n}@.value == {n});\n"
+        ));
+    }
+    program.push_str("println(\"views live\"&);\n}\n");
+    std::fs::write(&source, program).unwrap();
+    let binary = solar::pipeline::compile(&source)
+        .unwrap()
+        .to_mangled()
+        .to_tree_ir()
+        .optimized()
+        .to_c(&source.display().to_string())
+        .to_binary(directory.path().join("view-roots"), CompileOptions::GC_SAN);
+    let disassembly = Command::new("objdump")
+        .args(["-d", "--disassemble=solar_main"])
+        .arg(&binary.path)
+        .output()
+        .unwrap();
+    assert!(disassembly.status.success(), "{disassembly:?}");
+    assert!(
+        String::from_utf8_lossy(&disassembly.stdout).contains("<sol_alloc_class_0_batch8_view>"),
+        "{}",
+        String::from_utf8_lossy(&disassembly.stdout)
+    );
+    let mut child = Command::new(binary.path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            panic!(
+                "view-root collection timed out: {:?}",
+                child.wait_with_output().unwrap()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let result = child.wait_with_output().unwrap();
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(result.stdout, b"views live\n");
+}
+
+#[test]
+fn borrowed_batch_addresses_are_loaded_before_later_loop_polls() {
+    let directory = tempdir::TempDir::new("solar-test").unwrap();
+    let input = directory.path().join("view.ll");
+    let output = directory.path().join("view-out.ll");
+    std::fs::write(
+        &input,
+        r#"
+declare ptr @sol_alloc_class_0(i64, i64, ptr)
+define ptr @solar_view_before_poll(ptr %flag, i64 %choice) {
+entry:
+  %a = call ptr @sol_alloc_class_0(i64 8, i64 8, ptr null)
+  %b = call ptr @sol_alloc_class_0(i64 8, i64 8, ptr null)
+  %c = call ptr @sol_alloc_class_0(i64 8, i64 8, ptr null)
+  br label %wait
+wait:
+  %running = load volatile i8, ptr %flag
+  %done = icmp eq i8 %running, 0
+  br i1 %done, label %exit, label %wait
+exit:
+  %first = icmp eq i64 %choice, 0
+  %second = icmp eq i64 %choice, 1
+  %tail = select i1 %second, ptr %b, ptr %c
+  %result = select i1 %first, ptr %a, ptr %tail
+  ret ptr %result
+}
+"#,
+    )
+    .unwrap();
+    let result = Command::new("opt")
+        .arg(format!("-load-pass-plugin={}", env!("SOLAR_WB_PLUGIN")))
+        .args([
+            "-passes=solar-batch-gc-alloc,solar-write-barriers,default<O3>,solar-safepoints,verify",
+            "-S",
+        ])
+        .arg(input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{result:?}");
+    let ir = std::fs::read_to_string(output).unwrap();
+    let entry = ir
+        .split("entry:")
+        .nth(1)
+        .unwrap()
+        .split("wait:")
+        .next()
+        .unwrap();
+    assert_eq!(entry.matches("load volatile ptr").count(), 3, "{ir}");
+    assert!(ir.contains("SOL_SAFEPOINT_PAGE"), "{ir}");
+}
+
+#[test]
+fn newborn_barriers_require_exact_values_without_suspension_boundaries() {
+    let directory = tempdir::TempDir::new("solar-test").unwrap();
+    // Cover scalar returns, two-register returns, and every address-view batch size.
+    for count in 1..=8 {
+        let input = directory.path().join("newborn.ll");
+        let output = directory.path().join("newborn-out.ll");
+        let mut ir = String::from(
+            "@SOL_SAFEPOINT_PAGE = external global [4096 x i8]\n\
+             declare ptr @sol_alloc_class_0(i64, i64, ptr)\n\
+             declare void @may_poll()\n\
+             define void @solar_example(ptr %out, ptr %old) {\n",
+        );
+        for n in 0..count {
+            ir.push_str(&format!(
+                "%a{n} = call ptr @sol_alloc_class_0(i64 8, i64 8, ptr null)\n"
+            ));
+        }
+        // A fresh destination does not make an older stored reference safe.
+        ir.push_str("store ptr %old, ptr %a0\n");
+        for n in 0..count {
+            ir.push_str(&format!(
+                "store atomic ptr %a{n}, ptr %out release, align 8\n"
+            ));
+        }
+        ir.push_str(
+            "%offset = getelementptr i8, ptr %a0, i64 8\n\
+             store ptr %offset, ptr %out\n\
+             %poll = load volatile i8, ptr @SOL_SAFEPOINT_PAGE, align 1\n\
+             store ptr %a0, ptr %out\n\
+             call void @may_poll()\n\
+             store ptr %a0, ptr %out\n\
+             br label %next\n\
+             next:\n\
+             store ptr %a0, ptr %out\n\
+             ret void\n}\n",
+        );
+        std::fs::write(&input, ir).unwrap();
+        let result = Command::new("opt")
+            .arg(format!("-load-pass-plugin={}", env!("SOLAR_WB_PLUGIN")))
+            .args([
+                "-passes=solar-batch-gc-alloc,solar-write-barriers,verify",
+                "-S",
+            ])
+            .arg(&input)
+            .arg("-o")
+            .arg(&output)
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{result:?}");
+        let ir = std::fs::read_to_string(&output).unwrap();
+        assert_eq!(
+            ir.matches("call void @sol_write_barrier(").count(),
+            5,
+            "batch={count}: {ir}"
+        );
+        assert!(ir.contains("call void @sol_write_barrier(ptr %old)"));
+        assert!(ir.contains("call void @sol_write_barrier(ptr %offset)"));
+        assert!(!ir.contains("!solar.gc.newborn"));
+    }
+}
 
 #[test]
 fn batches_only_equal_allocations_without_intervening_publication_or_calls() {
@@ -46,7 +237,8 @@ define ptr @solar_example(ptr %out) {{
         assert!(result.status.success(), "{result:?}");
         let ir = std::fs::read_to_string(output).unwrap();
         assert_eq!(
-            ir.matches("call void @sol_alloc_class_0_batch4").count(),
+            ir.matches("call ptr @sol_alloc_class_0_batch4_view")
+                .count(),
             expected4,
             "{name}: {ir}"
         );
@@ -57,11 +249,12 @@ define ptr @solar_example(ptr %out) {{
             "{name}: {ir}"
         );
         assert_eq!(
-            ir.matches("call void @sol_alloc_class_0_batch3").count(),
+            ir.matches("call ptr @sol_alloc_class_0_batch3_view")
+                .count(),
             expected3,
             "{name}: {ir}"
         );
-        assert_eq!(ir.matches("call ptr @sol_alloc_class_0").count(), scalar);
+        assert_eq!(ir.matches("call ptr @sol_alloc_class_0(").count(), scalar);
     }
 }
 
@@ -105,7 +298,10 @@ fn splits_groups_at_eight_and_preserves_single_leftovers() {
                 .lines()
                 .filter(|line| {
                     line.contains("call ")
-                        && line.contains(&format!("@sol_alloc_class_0_batch{batch}("))
+                        && line.contains(&format!(
+                            "@sol_alloc_class_0_batch{batch}{}(",
+                            if batch >= 3 { "_view" } else { "" }
+                        ))
                 })
                 .count();
             assert_eq!(calls, expected, "count={count}, batch={batch}: {ir}");
@@ -169,7 +365,7 @@ fn main() {
         assert!(disassembly.status.success(), "{disassembly:?}");
         assert!(
             String::from_utf8_lossy(&disassembly.stdout)
-                .contains(&format!("<sol_alloc_class_0_batch{batch}>")),
+                .contains(&format!("<sol_alloc_class_0_batch{batch}_view>")),
             "{}",
             String::from_utf8_lossy(&disassembly.stdout)
         );
@@ -209,6 +405,16 @@ extern AllocBatchBATCH sol_alloc_class_4_batchBATCH(size_t, size_t, mark_fn);
 extern AllocBatchBATCH sol_alloc_class_5_batchBATCH(size_t, size_t, mark_fn);
 typedef AllocBatchBATCH (*batch_fnBATCH)(size_t, size_t, mark_fn);
 static batch_fnBATCH class_allocatorsBATCH[] = {sol_alloc_class_0_batchBATCH,sol_alloc_class_1_batchBATCH,sol_alloc_class_2_batchBATCH,sol_alloc_class_3_batchBATCH,sol_alloc_class_4_batchBATCH,sol_alloc_class_5_batchBATCH};
+#if BATCH >= 3
+extern void **sol_alloc_class_0_batchBATCH_view(size_t, size_t, mark_fn);
+extern void **sol_alloc_class_1_batchBATCH_view(size_t, size_t, mark_fn);
+extern void **sol_alloc_class_2_batchBATCH_view(size_t, size_t, mark_fn);
+extern void **sol_alloc_class_3_batchBATCH_view(size_t, size_t, mark_fn);
+extern void **sol_alloc_class_4_batchBATCH_view(size_t, size_t, mark_fn);
+extern void **sol_alloc_class_5_batchBATCH_view(size_t, size_t, mark_fn);
+typedef void **(*view_fnBATCH)(size_t, size_t, mark_fn);
+static view_fnBATCH view_allocatorsBATCH[] = {sol_alloc_class_0_batchBATCH_view,sol_alloc_class_1_batchBATCH_view,sol_alloc_class_2_batchBATCH_view,sol_alloc_class_3_batchBATCH_view,sol_alloc_class_4_batchBATCH_view,sol_alloc_class_5_batchBATCH_view};
+#endif
 static void checkBATCH(void) {
     const size_t sizes[] = {1, 8, 9, 64, 127, 128, 129, 256};
     for (size_t k = 0; k < sizeof(sizes) / sizeof(sizes[0]); ++k) {
@@ -220,10 +426,18 @@ static void checkBATCH(void) {
         for (size_t n = 1; n < (1 + 65 * BATCH); n += BATCH) {
             size_t class = 0;
             while ((8u << class) < size || (8u << class) < align) ++class;
+#if BATCH >= 3
+            if (((n - 1) / BATCH) % 3 == 0) {
+                void **view = view_allocatorsBATCH[class](size, align, mark);
+                memcpy(&pointers[n], view, BATCH * sizeof(void*));
+            } else
+#endif
+            {
             AllocBatchBATCH batch = ((n - 1) / BATCH) % 2 == 0
                 ? class_allocatorsBATCH[class](size, align, mark)
                 : sol_alloc_batchBATCH(size, align, mark);
             memcpy(&pointers[n], batch.addresses, sizeof(batch.addresses));
+            }
             for (size_t j = n; j < n + BATCH; ++j) {
                 assert((uintptr_t)pointers[j] % align == 0);
                 for (size_t i = 0; i < j; ++i)

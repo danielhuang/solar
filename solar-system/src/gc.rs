@@ -8,16 +8,18 @@ use crate::heap::{self, MarkKind};
 use crate::init_cell::InitCell;
 use crate::mem::MarkFn;
 
-/// Claimed run and cached free addresses for one size class.
+/// Claimed run and cached available addresses for one size class.
 pub struct ThreadClassState {
     /// First slot of the next bitmap word to scan.
     pub cur: u64,
     /// Exclusive end of the claim.
     pub end: u64,
-    /// Free addresses from one bitmap word, filled from the end.
+    /// Available addresses from one bitmap word, filled from the end.
     pub cache: [usize; 64],
     /// Next cached address; 64 means the cache needs refilling.
     pub cache_index: usize,
+    /// Unconsumed entries are zeroed, published reservations owned by this cache.
+    pub(crate) prepared: bool,
 }
 
 /// An unpublished large allocation.
@@ -40,6 +42,9 @@ pub struct ThreadAllocState {
     pub big_allocs: Vec<BigAllocLocal>,
     /// Allocation count owned by this thread.
     pub total_allocations: usize,
+    /// Address-view storage for batches that cross an allocation-cache boundary.
+    /// Valid until the next batch-view allocation on this thread.
+    pub batch_addresses: [usize; 8],
 }
 
 impl Default for ThreadAllocState {
@@ -57,14 +62,17 @@ impl ThreadAllocState {
                 end: 0,
                 cache: [0; 64],
                 cache_index: 64,
+                prepared: false,
             }),
             big_allocs: Vec::new(),
             total_allocations: 0,
+            batch_addresses: [0; 8],
         }
     }
-    /// Discards cached allocation claims.
+    /// Releases unused reservations and discards cached allocation claims.
     pub fn reset_claims(&mut self) {
-        for c in &mut self.classes {
+        for (class, c) in self.classes.iter_mut().enumerate() {
+            unsafe { crate::mem::release_prepared_cache(c, class) };
             c.cur = 0;
             c.end = 0;
             c.cache_index = 64;
@@ -935,6 +943,14 @@ unsafe fn parallel_sweep_arena(sweep_words: &[usize]) -> (usize, usize, Vec<u64>
                 if freed != 0 {
                     per_class[c].1.fetch_add(freed, Ordering::Relaxed);
                 }
+                // Publish only after all allocation/mark bitmap accesses in
+                // this range have finished. Prefer completely empty regions
+                // while sweeping: they refill dense caches without repeatedly
+                // scanning survivors. Fragmented space remains available to
+                // the ordinary frontier reset after the sweep finishes.
+                if !GC_SAN.get() && live == 0 {
+                    unsafe { heap::publish_swept_range(c, ws, we) };
+                }
             });
             w = end;
         }
@@ -1069,6 +1085,14 @@ unsafe fn run_gc_cycle(statics: &[crate::StaticEntry]) {
         gray_seed(&roots);
 
         MARKING_HAS_BIG.store(big_len != 0, Ordering::Release);
+        // Reservations prepared before marking must also be born black when
+        // consumed after resume. Returned objects retain their existing color.
+        for slot in registry.values() {
+            let state = unsafe { &mut *slot.alloc.get() };
+            for (class, cache) in state.classes.iter_mut().enumerate() {
+                unsafe { crate::mem::mark_prepared_cache(cache, class) };
+            }
+        }
         SOL_CONCURRENT_MARKING.store(true, Ordering::Release);
 
         unsafe { resume_world(epoch1) };
@@ -1087,7 +1111,8 @@ unsafe fn run_gc_cycle(statics: &[crate::StaticEntry]) {
     // current `hwm`) and push the frontier up to it, then abandon every thread's
     // cached claim. After resume, allocations claim slots strictly above `hwm`,
     // so the concurrent sweep of `[0, hwm)` and the mutators touch disjoint
-    // bitmap words — keeping `set_allocated`'s non-atomic RMW sound.
+    // bitmap words — keeping `set_allocated`'s non-atomic RMW sound. Completed
+    // sweep regions can then be handed to allocators through a separate queue.
     let pause2_start = std::time::Instant::now();
     let epoch2 = epoch1 + 1;
     let big_live;
@@ -1172,8 +1197,8 @@ unsafe fn run_gc_cycle(statics: &[crate::StaticEntry]) {
     let pause2_elapsed = pause2_start.elapsed();
 
     // ===== Concurrent sweep: arena sweep of [0, hwm) while mutators run. =====
-    // Mutators allocate from [hwm, …) (disjoint bitmap words), so the sweeper has
-    // exclusive access to the swept region's alloc/mark words — no new atomics.
+    // Mutators use fresh space or exclusively claim completed sweep regions.
+    // No region is published until its sweeper has finished touching it.
     let sweep_start = std::time::Instant::now();
     let (arena_live, arena_freed, live_slots) = unsafe { parallel_sweep_arena(&sweep_words) };
     let sweep_elapsed = sweep_start.elapsed();
@@ -1197,6 +1222,10 @@ unsafe fn run_gc_cycle(statics: &[crate::StaticEntry]) {
         unsafe { signal_and_wait(&registry, epoch3) };
         p3_signal = sig_start.elapsed();
 
+        // A frontier reset can traverse these regions again. Discard their
+        // separate queue entries and all cached claims before resuming.
+        heap::clear_swept_ranges();
+
         // In release mode, refill mostly-empty classes from slot 0. GC-San keeps
         // the frontier monotonic so a stale pointer can never alias a replacement
         // object. Compare against the same < 50%-live heuristic the STW sweep
@@ -1216,11 +1245,7 @@ unsafe fn run_gc_cycle(statics: &[crate::StaticEntry]) {
             st.reset_claims();
         }
 
-        // Estimate traced live = total marked − bytes born black during the mark
-        // window. This excludes float from the trigger's pacing basis, breaking
-        // the runaway feedback where float inflates "live", which would inflate
-        // the trigger threshold, which permits more float. Saturating: born-black
-        // can exceed marked when most float died.
+        // Publish the marked live-byte count as the next cycle's pacing basis.
         LIVE_SIZE_FROM_LAST_GC.store(new_total_live_size, Ordering::Release);
 
         // Reset the trigger accounting last. Held high until now (not pause 2)
@@ -1349,10 +1374,14 @@ pub(crate) unsafe fn memcpy_barrier(dst: *mut u8, size: usize) {
     let has_big = MARKING_HAS_BIG.load(Ordering::Relaxed);
     unsafe {
         with_thread_slot(|slot| {
-            let mut w = dst as *const usize;
-            let end = (dst as *const u8).add(size & !7) as *const usize;
-            while w < end {
-                let v = *w;
+            // Copies can start between pointer fields. Scan complete aligned
+            // words, using atomic loads because a concurrent atomic store may
+            // replace the destination again before this barrier executes.
+            let start = (dst as usize).next_multiple_of(size_of::<usize>());
+            let end = (dst as usize + size) & !(size_of::<usize>() - 1);
+            let mut w = start as *const AtomicUsize;
+            while (w as usize) < end {
+                let v = (*w).load(Ordering::Relaxed);
                 if v != 0 {
                     if v.wrapping_sub(arena_base) < heap::ARENA_SIZE {
                         // White-only shading (see `write_barrier_slow`).

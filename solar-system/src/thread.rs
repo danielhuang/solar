@@ -79,7 +79,8 @@ fn unregister_thread() {
         // (Objects reachable only from its stack and never stored to the heap
         // are legitimately dead; anything published went through the barrier.)
         unsafe { crate::gc::flush_gray_buf(&slot) };
-        let alloc_state = slot.alloc.into_inner();
+        let mut alloc_state = slot.alloc.into_inner();
+        alloc_state.reset_claims();
         ORPHANED_TOTAL_ALLOCATIONS.fetch_add(alloc_state.total_allocations, Ordering::Relaxed);
         // The thread's arena allocations live in the global bitmaps already;
         // only its not-yet-published big allocations need handing over.

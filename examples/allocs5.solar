@@ -1,3 +1,5 @@
+import {black_box_ref} from "@intrinsics";
+
 struct Chain { next: &?Chain }
 
 struct Node { value: Int, next: &?Node }
@@ -37,6 +39,10 @@ fn main() {
 
 	while is_done&.atomic_load() == false {}
 	println(root@.value);
+
+	// Preserve the complete retained graph through the churn phase even when
+	// the optimizer can prove the non-null check below.
+	black_box_ref(chain&);
 
 	if chain.next != null#[Chain] {
 		println("chain-live"&);

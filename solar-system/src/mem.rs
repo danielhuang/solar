@@ -88,6 +88,105 @@ macro_rules! batch_allocators {
 
 batch_allocators!(-1, "sol_alloc_batch");
 
+macro_rules! batch_view_allocator {
+    ($name:ident, $batch:literal, $class:expr) => {
+        /// Compiler-only allocation view over thread-local address storage.
+        ///
+        /// # Safety
+        /// Read every returned address before another allocation or safepoint,
+        /// and initialize all objects before a safepoint. The layout and mark
+        /// function must satisfy the fixed-class allocator's requirements.
+        #[doc(hidden)]
+        #[unsafe(export_name = concat!("sol_alloc_class_", stringify!($class), "_batch", stringify!($batch), "_view"))]
+        #[inline(never)]
+        pub unsafe extern "C" fn $name(
+            size: usize,
+            align: usize,
+            mark_fn: MarkFn,
+        ) -> *const usize {
+            unsafe { alloc_view_in_class::<$class, $batch>(size, align, mark_fn) }
+        }
+    };
+}
+
+#[inline(always)]
+unsafe fn alloc_view_in_class<const CLASS: isize, const BATCH: usize>(
+    size: usize,
+    align: usize,
+    mark_fn: MarkFn,
+) -> *const usize {
+    const { assert!(CLASS >= 0 && BATCH >= 3 && BATCH <= 8) };
+    debug_assert_eq!(heap::size_class(size, align), Some(CLASS as usize));
+    if ENABLE_ALLOC_PRINTS.get() {
+        for _ in 0..BATCH {
+            eprintln!("allocating new object: {size} bytes (align={align})");
+        }
+    }
+    unsafe {
+        with_thread_slot(
+            #[inline(always)]
+            |slot| {
+                let state = &mut *slot.alloc.get();
+                let cs = &mut state.classes[CLASS as usize];
+                if cs.cache_index == 64 {
+                    refill_cache::<CLASS>(cs, CLASS as usize);
+                    std::hint::assert_unchecked(cs.cache_index < 64);
+                }
+                let start = cs.cache_index;
+                let view = if start <= 64 - BATCH {
+                    allocate_cached_view::<CLASS, BATCH>(state, size, mark_fn)
+                } else {
+                    let addresses =
+                        arena_allocate::<CLASS, BATCH>(state, CLASS as usize, size, mark_fn);
+                    for (out, address) in state.batch_addresses.iter_mut().zip(addresses) {
+                        *out = address as usize;
+                    }
+                    state.batch_addresses.as_ptr()
+                };
+                state.total_allocations += BATCH;
+                view
+            },
+        )
+    }
+}
+
+/// Consume a batch that fits in the current cache, without copying addresses.
+#[inline(always)]
+unsafe fn allocate_cached_view<const CLASS: isize, const BATCH: usize>(
+    state: &mut ThreadAllocState,
+    size: usize,
+    mark_fn: MarkFn,
+) -> *const usize {
+    let class = CLASS as usize;
+    let cs = &mut state.classes[class];
+    let start = cs.cache_index;
+    debug_assert!(start <= 64 - BATCH);
+    if class < heap::META_MIN_CLASS && cs.prepared {
+        cs.cache_index += BATCH;
+        return unsafe { cs.cache.as_ptr().add(start) };
+    }
+    let rbase = heap::region_base(class);
+    let first = heap::slot_index(cs.cache[start], rbase, class);
+    let last = heap::slot_index(cs.cache[start + BATCH - 1], rbase, class);
+    if class >= heap::META_MIN_CLASS {
+        for &address in &cs.cache[start..start + BATCH] {
+            let slot = heap::slot_index(address, rbase, class);
+            let metadata = unsafe { &mut *heap::meta_entry(class, slot) };
+            metadata.mark_fn = mark_fn as usize;
+            metadata.size = size as u64;
+        }
+    }
+    cs.cache_index += BATCH;
+    // The cache contains every free slot in ascending order. The next batch
+    // consumes all remaining free bits through its last address. Older live
+    // slots in that prefix retain their existing marks.
+    let bits = unsafe { heap::alloc_word_through(class, first >> 6, last & 63) };
+    if SOL_CONCURRENT_MARKING.load(Ordering::Relaxed) {
+        unsafe { heap::mark_word_or(class, first >> 6, bits) };
+    }
+    unsafe { cs.cache.as_ptr().add(start) }
+}
+
 #[inline(always)]
 unsafe fn alloc_in_class<const CLASS: isize, const BATCH: usize>(
     size: usize,
@@ -135,6 +234,12 @@ macro_rules! class_allocators {
         }
         const _: () = {
             batch_allocators!($class, concat!("sol_alloc_class_", stringify!($class), "_batch"));
+            batch_view_allocator!(sol_alloc_batch3_view, 3, $class);
+            batch_view_allocator!(sol_alloc_batch4_view, 4, $class);
+            batch_view_allocator!(sol_alloc_batch5_view, 5, $class);
+            batch_view_allocator!(sol_alloc_batch6_view, 6, $class);
+            batch_view_allocator!(sol_alloc_batch7_view, 7, $class);
+            batch_view_allocator!(sol_alloc_batch8_view, 8, $class);
         };
     )*};
 }
@@ -197,6 +302,9 @@ unsafe fn arena_allocate<const CLASS: isize, const BATCH: usize>(
         .try_into()
         .unwrap();
     cs.cache_index += BATCH;
+    if class < heap::META_MIN_CLASS && cs.prepared {
+        return addresses.map(|addr| addr as *mut u8);
+    }
     let rbase = heap::region_base(class);
     let mut bits = 0;
     for addr in addresses {
@@ -234,6 +342,9 @@ unsafe fn arena_allocate_one<const CLASS: isize>(
     }
     let addr = cs.cache[cs.cache_index];
     cs.cache_index += 1;
+    if class < heap::META_MIN_CLASS && cs.prepared {
+        return addr as *mut u8;
+    }
     let rbase = heap::region_base(class);
     let slot = heap::slot_index(addr, rbase, class);
 
@@ -259,7 +370,7 @@ unsafe fn refill_cache<const CLASS: isize>(cs: &mut ThreadClassState, class: usi
     let class = if CLASS == -1 { class } else { CLASS as usize };
     loop {
         if cs.cur == cs.end {
-            (cs.cur, cs.end) = heap::claim_run(class);
+            (cs.cur, cs.end) = heap::claim_run(class, cs.end != 0);
         }
         let word_slot = cs.cur as usize;
         cs.cur += 64;
@@ -268,9 +379,74 @@ unsafe fn refill_cache<const CLASS: isize>(cs: &mut ThreadClassState, class: usi
             continue;
         }
         let base = heap::slot_addr(heap::region_base(class), word_slot, class);
+        cs.prepared = false;
         fill_cache::<CLASS>(cs, base, class, !allocated);
+        if class < heap::META_MIN_CLASS
+            && !crate::gc::GC_SAN.get()
+            && !SOL_CONCURRENT_MARKING.load(Ordering::Relaxed)
+        {
+            unsafe { prepare_cache(cs, base, class, word_slot >> 6, !allocated) };
+        }
         return;
     }
+}
+
+/// Zero and publish free conservative slots once, before any address is returned.
+unsafe fn prepare_cache(
+    cs: &mut ThreadClassState,
+    base: usize,
+    class: usize,
+    word: usize,
+    free: u64,
+) {
+    debug_assert!(class < heap::META_MIN_CLASS && free != 0);
+    let size = heap::slot_size(class);
+    if free == u64::MAX {
+        unsafe { (base as *mut u8).write_bytes(0, 64 * size) };
+    } else {
+        for &address in &cs.cache[cs.cache_index..] {
+            unsafe { (address as *mut u8).write_bytes(0, size) };
+        }
+    }
+    if SOL_CONCURRENT_MARKING.load(Ordering::Relaxed) {
+        unsafe { heap::mark_word_or(class, word, free) };
+    }
+    unsafe { heap::alloc_word_or(class, word, free) };
+    cs.prepared = true;
+}
+
+/// Remaining addresses belong to one bitmap word and exclude returned objects.
+fn remaining_reservations(cs: &ThreadClassState, class: usize) -> Option<(usize, u64)> {
+    if !cs.prepared || cs.cache_index == 64 {
+        return None;
+    }
+    let region = heap::region_base(class);
+    let first = heap::slot_index(cs.cache[cs.cache_index], region, class);
+    let mut bits = 0;
+    for &address in &cs.cache[cs.cache_index..] {
+        let slot = heap::slot_index(address, region, class);
+        debug_assert_eq!(slot >> 6, first >> 6);
+        bits |= 1 << (slot & 63);
+    }
+    Some((first >> 6, bits))
+}
+
+/// Premarks only unconsumed reservations during the first stop-the-world pause.
+pub(crate) unsafe fn mark_prepared_cache(cs: &ThreadClassState, class: usize) {
+    if let Some((word, bits)) = remaining_reservations(cs, class) {
+        unsafe { heap::mark_word_or(class, word, bits) };
+    }
+}
+
+/// Releases unused reservations before claim abandonment or thread exit. The
+/// caller owns the cache and excludes ownership resets. Marks need not be
+/// cleared here: every refill returns at least one allocation before any poll,
+/// so sweep still visits this word and clears its marks before any later reuse.
+pub(crate) unsafe fn release_prepared_cache(cs: &mut ThreadClassState, class: usize) {
+    if let Some((word, bits)) = remaining_reservations(cs, class) {
+        unsafe { heap::release_reserved_bits(class, word, bits) };
+    }
+    cs.prepared = false;
 }
 
 const CACHE_CHUNK_BITS: usize = 4;
@@ -482,6 +658,207 @@ pub extern "C-unwind" fn sol_assert_unsized_assignment_len_slow(target: u64, val
 #[cfg(test)]
 mod cache_tests {
     use super::*;
+
+    #[test]
+    fn preparation_is_deferred_during_concurrent_marking() {
+        unsafe extern "C" fn mark(_: *mut u8, _: *mut u8, _: u64) {}
+        heap::init_for_tests();
+        let class = 3;
+        let size = heap::slot_size(class);
+        SOL_CONCURRENT_MARKING.store(true, Ordering::Relaxed);
+        let mut active = ThreadAllocState::new();
+        let address = unsafe { arena_allocate_one::<3>(&mut active, class, size, mark) };
+        let slot = heap::slot_index(address as usize, heap::region_base(class), class);
+        assert!(!active.classes[class].prepared);
+        assert_eq!(
+            unsafe { heap::alloc_word_load(class, slot >> 6) },
+            1 << (slot & 63)
+        );
+        assert_eq!(
+            unsafe { heap::mark_word_load(class, slot >> 6) },
+            1 << (slot & 63)
+        );
+        SOL_CONCURRENT_MARKING.store(false, Ordering::Relaxed);
+        let mut idle = ThreadAllocState::new();
+        let address = unsafe { arena_allocate_one::<3>(&mut idle, class, size, mark) };
+        let slot = heap::slot_index(address as usize, heap::region_base(class), class);
+        assert!(idle.classes[class].prepared);
+        assert_eq!(unsafe { heap::alloc_word_load(class, slot >> 6) }, u64::MAX);
+        idle.reset_claims();
+        assert_eq!(
+            unsafe { heap::alloc_word_load(class, slot >> 6) },
+            1 << (slot & 63)
+        );
+    }
+
+    #[test]
+    fn prepared_caches_preserve_survivors_and_release_unused_reservations() {
+        unsafe extern "C" fn mark(_: *mut u8, _: *mut u8, _: u64) {}
+        fn check<const CLASS: isize, const BATCH: usize>(word: &mut usize) {
+            let class = CLASS as usize;
+            let size = heap::slot_size(class);
+            for marking_at_refill in [false, true] {
+                for allocated in [0, 1, 1 << 63, 0xaaaa_5555_8000_0001] {
+                    let free: Vec<_> = (0..64).filter(|bit| allocated & (1 << bit) == 0).collect();
+                    let base = heap::slot_addr(heap::region_base(class), *word * 64, class);
+                    unsafe {
+                        (base as *mut u8).write_bytes(0xa5, size * 64);
+                        heap::alloc_word_or(class, *word, allocated);
+                    }
+                    let mut state = ThreadAllocState::new();
+                    let cs = &mut state.classes[class];
+                    cs.cur = ((*word + 1) * 64) as u64;
+                    fill_cache::<CLASS>(cs, base, class, !allocated);
+                    SOL_CONCURRENT_MARKING.store(marking_at_refill, Ordering::Relaxed);
+                    unsafe { prepare_cache(cs, base, class, *word, !allocated) };
+                    assert!(cs.prepared);
+                    assert_eq!(unsafe { heap::alloc_word_load(class, *word) }, u64::MAX);
+                    for bit in 0..64 {
+                        let bytes = unsafe {
+                            std::slice::from_raw_parts((base + bit * size) as *const u8, size)
+                        };
+                        let expected = if allocated & (1 << bit) == 0 { 0 } else { 0xa5 };
+                        assert!(bytes.iter().all(|&b| b == expected));
+                    }
+                    let first =
+                        unsafe { arena_allocate_one::<CLASS>(&mut state, class, size, mark) };
+                    assert_eq!(first as usize, base + free[0] * size);
+                    let mut consumed = 1 << free[0];
+                    if !marking_at_refill {
+                        assert_eq!(unsafe { heap::mark_word_load(class, *word) }, 0);
+                        unsafe { mark_prepared_cache(&state.classes[class], class) };
+                        assert_eq!(
+                            unsafe { heap::mark_word_load(class, *word) },
+                            !allocated & !consumed
+                        );
+                        // The first returned object is an ordinary pre-existing
+                        // root, traced separately from unused reservations.
+                        unsafe { heap::mark_word_or(class, *word, consumed) };
+                        SOL_CONCURRENT_MARKING.store(true, Ordering::Relaxed);
+                    }
+                    let addresses =
+                        unsafe { arena_allocate::<CLASS, BATCH>(&mut state, class, size, mark) };
+                    for (address, bit) in addresses.into_iter().zip(&free[1..]) {
+                        assert_eq!(address as usize, base + bit * size);
+                        consumed |= 1 << bit;
+                    }
+                    if BATCH >= 3 {
+                        let view =
+                            unsafe { allocate_cached_view::<CLASS, BATCH>(&mut state, size, mark) };
+                        for (&address, bit) in unsafe { std::slice::from_raw_parts(view, BATCH) }
+                            .iter()
+                            .zip(&free[1 + BATCH..])
+                        {
+                            assert_eq!(address, base + bit * size);
+                            consumed |= 1 << bit;
+                        }
+                    }
+                    assert_eq!(unsafe { heap::alloc_word_load(class, *word) }, u64::MAX);
+                    assert_eq!(unsafe { heap::mark_word_load(class, *word) }, !allocated);
+                    SOL_CONCURRENT_MARKING.store(false, Ordering::Relaxed);
+                    state.reset_claims();
+                    assert!(!state.classes[class].prepared);
+                    assert_eq!(
+                        unsafe { heap::alloc_word_load(class, *word) },
+                        allocated | consumed
+                    );
+                    assert_eq!(
+                        unsafe { heap::sweep_word_range(class, *word, *word + 1) },
+                        (consumed.count_ones() as u64, allocated.count_ones() as u64)
+                    );
+                    assert_eq!(unsafe { heap::alloc_word_load(class, *word) }, consumed);
+                    assert_eq!(unsafe { heap::mark_word_load(class, *word) }, 0);
+                    // A following cycle must not inherit reservation marks.
+                    assert_eq!(
+                        unsafe { heap::sweep_word_range(class, *word, *word + 1) },
+                        (0, consumed.count_ones() as u64)
+                    );
+                    *word += 1;
+                }
+            }
+        }
+        heap::init_for_tests();
+        fn class<const CLASS: isize>() {
+            let mut word = 4096;
+            check::<CLASS, 1>(&mut word);
+            check::<CLASS, 2>(&mut word);
+            check::<CLASS, 3>(&mut word);
+            check::<CLASS, 4>(&mut word);
+            check::<CLASS, 5>(&mut word);
+            check::<CLASS, 6>(&mut word);
+            check::<CLASS, 7>(&mut word);
+            check::<CLASS, 8>(&mut word);
+        }
+        class::<0>();
+        class::<1>();
+        class::<2>();
+        class::<3>();
+    }
+
+    #[test]
+    fn cached_views_publish_only_consumed_free_slots() {
+        unsafe extern "C" fn mark(_: *mut u8, _: *mut u8, _: u64) {}
+        fn check<const CLASS: isize, const BATCH: usize>(word: &mut usize) {
+            let class = CLASS as usize;
+            let size = heap::slot_size(class);
+            let mut state = ThreadAllocState::new();
+            let mut random = 0x1234_5678_9abc_def0u64;
+            for allocated in [0, 1, 1 << 63, 0x5555_aaaa_8000_0001]
+                .into_iter()
+                .chain((0..256).map(|_| {
+                    random ^= random << 13;
+                    random ^= random >> 7;
+                    random ^= random << 17;
+                    random
+                }))
+            {
+                let free: Vec<_> = (0..64).filter(|bit| allocated & (1 << bit) == 0).collect();
+                unsafe { heap::alloc_word_or(class, *word, allocated) };
+                let base = heap::slot_addr(heap::region_base(class), *word * 64, class);
+                state.classes[class].cur = ((*word + 1) * 64) as u64;
+                fill_cache::<CLASS>(&mut state.classes[class], base, class, !allocated);
+                let mut consumed = 0;
+                for batch in free.as_chunks::<BATCH>().0 {
+                    let view =
+                        unsafe { allocate_cached_view::<CLASS, BATCH>(&mut state, size, mark) };
+                    let addresses = unsafe { std::slice::from_raw_parts(view, BATCH) };
+                    for (&address, &bit) in addresses.iter().zip(batch) {
+                        assert_eq!(address, base + bit * size);
+                        if class >= heap::META_MIN_CLASS {
+                            let metadata = unsafe { &*heap::meta_entry(class, *word * 64 + bit) };
+                            assert_eq!(metadata.size, size as u64);
+                            assert_eq!(metadata.mark_fn, mark as *const () as usize);
+                        }
+                        consumed |= 1 << bit;
+                    }
+                    assert_eq!(
+                        unsafe { heap::alloc_word_load(class, *word) },
+                        allocated | consumed
+                    );
+                    assert_eq!(unsafe { heap::mark_word_load(class, *word) }, consumed);
+                }
+                *word += 1;
+            }
+        }
+        heap::init_for_tests();
+        SOL_CONCURRENT_MARKING.store(true, Ordering::Relaxed);
+        fn check_class<const CLASS: isize>() {
+            // Keep clear of the ranges used by the independent sweep tests.
+            let mut word = 1024;
+            check::<CLASS, 3>(&mut word);
+            check::<CLASS, 4>(&mut word);
+            check::<CLASS, 5>(&mut word);
+            check::<CLASS, 6>(&mut word);
+            check::<CLASS, 7>(&mut word);
+            check::<CLASS, 8>(&mut word);
+        }
+        check_class::<0>();
+        check_class::<1>();
+        check_class::<2>();
+        check_class::<3>();
+        check_class::<4>();
+        SOL_CONCURRENT_MARKING.store(false, Ordering::Relaxed);
+    }
 
     #[test]
     fn cached_addresses_cover_only_free_slots_in_ascending_order() {

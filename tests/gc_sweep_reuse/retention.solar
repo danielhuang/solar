@@ -1,0 +1,74 @@
+import {black_box_ref} from "@intrinsics";
+
+struct Data { values: [Int; 32] }
+struct Node { value: Int, next: &?Node, data: &Data }
+
+fn prepend(value: Int, tail: &?Node) -> &Node {
+	(Node { value: value, next: tail, data: (Data { values: [value; 32u] })& })&
+}
+
+fn check(head: &?Node, count: Int, first: Int) {
+	let node = head;
+
+	for i in 0..count {
+		let expected = first + (count - i - 1) * 4;
+		assert(node@.value == expected);
+		assert(node@.data@.values[0u] == expected);
+		assert(node@.data@.values[31u] == expected);
+		node = node@.next;
+	}
+}
+
+fn worker(seed: Int, ready: &Uint32, stop: &Uint32, progress: &Uint32) {
+	let keep: &?Node = null#[Node];
+
+	for i in 0..1000 {
+		keep = prepend(seed + i * 4, keep);
+	}
+
+	ready.atomic_fetch_add(1u32);
+	let generation = 0;
+
+	while stop.atomic_load() == 0u32 {
+		let head = keep;
+		let first = seed + 4000 + generation * 8000;
+
+		for i in 0..2000 {
+			head = prepend(first + i * 4, head);
+		}
+
+		check(head, 2000, first);
+		check(keep, 1000, seed);
+		black_box_ref(head@&);
+		generation = generation + 1;
+		progress.atomic_fetch_add(1u32);
+	}
+
+	check(keep, 1000, seed);
+	black_box_ref(keep@&);
+}
+
+fn main() {
+	let ready = 0u32;
+	let stop = 0u32;
+	let progress = 0u32;
+	let a = thread::spawn(\ { worker(0, ready&, stop&, progress&); });
+	let b = thread::spawn(\ { worker(1, ready&, stop&, progress&); });
+	let c = thread::spawn(\ { worker(2, ready&, stop&, progress&); });
+	let d = thread::spawn(\ { worker(3, ready&, stop&, progress&); });
+	while ready&.atomic_load() != 4u32 {}
+
+	for _ in 0..12 {
+		let before = progress&.atomic_load();
+		gc::collect_gc();
+		// Require allocation progress between collections, even with few CPUs.
+		while progress&.atomic_load() - before < 4u32 {}
+	}
+
+	stop&.atomic_store(1u32);
+	a.join();
+	b.join();
+	c.join();
+	d.join();
+	println("sweep reuse passed"&);
+}
