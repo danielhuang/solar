@@ -438,12 +438,8 @@ fn compile_optimized(c_path: &Path, dir: &Path, bin_path: &Path, gc_san: bool) {
     {
         let mut opt_args = vec![
             "-O3",
-            // An explicit count permits unrolling through allocator calls.
-            // LLVM still checks legality and handles leftover iterations.
-            "-unroll-count=8",
-            "-unroll-max-count=8",
-            "-unroll-full-max-count=8",
-            "-unroll-runtime",
+            // Select allocation loops only after inlining and allocation elision.
+            "-disable-loop-unrolling",
         ];
         if ATTRIBUTOR_ENABLE_ALL {
             opt_args.push("-attributor-enable=all");
@@ -456,8 +452,15 @@ fn compile_optimized(c_path: &Path, dir: &Path, bin_path: &Path, gc_san: bool) {
         run_cmd("opt", &opt_args);
     }
 
+    let full_unrolled_bc = dir.join("full_unrolled.bc");
+    run_solar_pass(
+        "function(loop-simplify),solar-allocation-unroll,function(loop-unroll)",
+        &full_opt_bc,
+        &full_unrolled_bc,
+    );
+
     let full_batched_bc = dir.join("full_batched.bc");
-    run_solar_pass("solar-batch-gc-alloc", &full_opt_bc, &full_batched_bc);
+    run_solar_pass("solar-batch-gc-alloc", &full_unrolled_bc, &full_batched_bc);
 
     // Lower an atomic memcpy intrinsic synthesized by LLVM's optimizer. Solar
     // provides unordered 128-bit copies through its atomic runtime helper, while

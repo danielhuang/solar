@@ -6,6 +6,8 @@
 
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Analysis/CFG.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DebugInfoMetadata.h"
@@ -43,6 +45,79 @@ bool isGeneratedFunc(const Function &F) {
   StringRef N = F.getName();
   return N.starts_with("solar_") || N == "main";
 }
+
+// Force unrolling only when a direct allocation belongs to this loop and is
+// reached on every backedge. Ignore the header's zero-trip exit, but reject
+// body exits that can bypass the allocation. Allocations inside a child loop
+// do not qualify the parent: the child may execute zero times.
+struct SolarAllocationUnroll : PassInfoMixin<SolarAllocationUnroll> {
+  static bool isAllocation(const Instruction &I) {
+    const auto *Call = dyn_cast<CallInst>(&I);
+    const Function *F = Call ? Call->getCalledFunction() : nullptr;
+    if (!F || !Call->getType()->isPointerTy())
+      return false;
+    StringRef Name = F->getName();
+    if (Name == "sol_alloc" || Name == "sol_alloc_impl")
+      return true;
+    if (!Name.consume_front("sol_alloc_class_"))
+      return false;
+    unsigned Class;
+    return !Name.consumeInteger(10, Class) && Class < 28 &&
+           (Name.empty() || Name == "_impl");
+  }
+
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+    auto &FAM = AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
+    for (Function &F : M) {
+      if (F.isDeclaration() || !isGeneratedFunc(F))
+        continue;
+      auto &LI = FAM.getResult<LoopAnalysis>(F);
+      auto &DT = FAM.getResult<DominatorTreeAnalysis>(F);
+      for (Loop *L : LI.getLoopsInPreorder()) {
+        SmallVector<BasicBlock *, 4> Latches, Exits;
+        L->getLoopLatches(Latches);
+        L->getExitingBlocks(Exits);
+        bool Allocate = false;
+        for (BasicBlock *BB : L->blocks()) {
+          if (LI.getLoopFor(BB) != L || Latches.empty() ||
+              !llvm::all_of(Latches, [&](BasicBlock *Latch) {
+                return DT.dominates(BB, Latch);
+              }) ||
+              !llvm::all_of(Exits, [&](BasicBlock *Exit) {
+                return Exit == L->getHeader() || DT.dominates(BB, Exit);
+              }))
+            continue;
+          if (llvm::any_of(*BB, isAllocation)) {
+            Allocate = true;
+            break;
+          }
+        }
+        LLVMContext &Ctx = M.getContext();
+        SmallVector<Metadata *, 8> MDs{nullptr};
+        if (MDNode *Old = L->getLoopID())
+          for (unsigned I = 1; I < Old->getNumOperands(); ++I) {
+            auto *Node = dyn_cast_or_null<MDNode>(Old->getOperand(I));
+            auto *Key = Node && Node->getNumOperands()
+                            ? dyn_cast_or_null<MDString>(Node->getOperand(0))
+                            : nullptr;
+            if (!Key || !Key->getString().starts_with("llvm.loop.unroll."))
+              MDs.push_back(Old->getOperand(I));
+          }
+        if (Allocate)
+          MDs.push_back(MDNode::get(Ctx, {
+              MDString::get(Ctx, "llvm.loop.unroll.count"),
+              ConstantAsMetadata::get(ConstantInt::get(Type::getInt32Ty(Ctx), 8))}));
+        else
+          MDs.push_back(MDNode::get(
+              Ctx, MDString::get(Ctx, "llvm.loop.unroll.disable")));
+        MDNode *ID = MDNode::getDistinct(Ctx, MDs);
+        ID->replaceOperandWith(0, ID);
+        L->setLoopID(ID);
+      }
+    }
+    return PreservedAnalyses::none();
+  }
+};
 
 // Run after the last LLVM optimization pipeline. A function-entry poll covers
 // recursion and a poll on every DFS backedge covers all loops (including
@@ -695,6 +770,10 @@ llvmGetPassPluginInfo() {
             PB.registerPipelineParsingCallback(
                 [](StringRef Name, ModulePassManager &MPM,
                    ArrayRef<PassBuilder::PipelineElement>) {
+                  if (Name == "solar-allocation-unroll") {
+                    MPM.addPass(SolarAllocationUnroll());
+                    return true;
+                  }
                   if (Name == "solar-batch-gc-alloc") {
                     MPM.addPass(SolarBatchGcAlloc());
                     return true;
