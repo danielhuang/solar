@@ -189,7 +189,7 @@ fn main() {
     try { throw(original); } catch (e: Failure) {
         let standard: std::Exception = e;
         assert(standard.message@ == "standard exception");
-        assert(standard.payload.downcast#[Unit]() != null#[Unit]);
+        assert(standard.payload.downcast#[()]() != null#[()]);
         assert(ref_eq(standard.trace, original.trace));
     }
     println("passed"&);

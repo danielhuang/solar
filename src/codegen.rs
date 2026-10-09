@@ -88,7 +88,7 @@ struct Codegen<'a> {
     /// `line()` pins them all to the statement's own line. `None` = synthetic glue,
     /// emitted with no directive.
     cur_loc: Option<(usize, String)>,
-    /// True while emitting a function whose return type is `Unit`/`Never`, for
+    /// True while emitting a function whose return type is `()`/`Never`, for
     /// which no `_ret` slot is declared — an explicit `return <unit expr>;`
     /// must therefore evaluate the expression for its effects and `return;`.
     cur_fn_returns_nothing: bool,
@@ -870,7 +870,7 @@ impl<'a> Codegen<'a> {
         self.line("const char* sol_payload_type_name(uint64_t type) {");
         self.indent += 1;
         self.line("type &= UINT64_C(0x0000ffffffffffff);");
-        self.line("if (type == 0) return \"Unit\";");
+        self.line("if (type == 0) return \"()\";");
         let mut types = self
             .any_type_ids
             .iter()
@@ -2438,7 +2438,7 @@ impl<'a> Codegen<'a> {
                         self.indent -= 1;
                         self.line("}");
                     }
-                    // Unit variants: no data to copy
+                    // Payload-free variants: no data to copy
                 }
                 // Store the destination's discriminant last, with release
                 // ordering, so a concurrent reader that observes the tag also
@@ -2501,8 +2501,8 @@ impl<'a> Codegen<'a> {
             return;
         }
 
-        // Unit values are zero-sized and have no destination to write — skip.
-        // (Unit-typed blocks produce a dummy literal node as their value.)
+        // Empty tuples are zero-sized and have no destination to write — skip.
+        // (Blocks returning () produce a dummy literal node as their value.)
         if matches!(nodes[id.0].ty, Type::Unit | Type::Never)
             && matches!(
                 nodes[id.0].kind,
@@ -3556,7 +3556,7 @@ impl<'a> Codegen<'a> {
             Intrinsic::CarryingMulAdd => {
                 // args 0..4 are scalar Uint64 values; args 4,5 are &Uint64
                 // out-params (pointers). The runtime writes the low/high halves
-                // of `a*b + carry + add` through them. Returns Unit.
+                // of `a*b + carry + add` through them. Returns ().
                 let a = self.emit_load(nodes, args[0]);
                 let b = self.emit_load(nodes, args[1]);
                 let carry = self.emit_load(nodes, args[2]);
@@ -3766,7 +3766,7 @@ impl<'a> Codegen<'a> {
             NodeKind::Continue => {
                 self.line("continue;");
             }
-            NodeKind::Discard(inner)
+            NodeKind::Expr(inner)
                 if matches!(
                     nodes[inner.0].kind,
                     NodeKind::IntegerLiteral(_)
@@ -3774,7 +3774,7 @@ impl<'a> Codegen<'a> {
                         | NodeKind::BooleanLiteral(_)
                         | NodeKind::Null
                 ) => {}
-            NodeKind::Discard(inner)
+            NodeKind::Expr(inner)
                 if (nodes[inner.0].ty.is_numeric() || nodes[inner.0].ty == Type::Bool)
                     && matches!(
                         nodes[inner.0].kind,
@@ -3790,7 +3790,7 @@ impl<'a> Codegen<'a> {
                 let value = self.emit_load(nodes, *inner);
                 self.linef(format!("(void)({value});"));
             }
-            NodeKind::Discard(inner) | NodeKind::Expr(inner) => {
+            NodeKind::Expr(inner) => {
                 if !self.is_sized(&nodes[inner.0].ty) {
                     let prepared = self.prepare_value(nodes, *inner);
                     self.allocate_prepared(&prepared);

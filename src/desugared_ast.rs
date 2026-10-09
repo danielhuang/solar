@@ -170,15 +170,10 @@ impl Desugarer {
                     paired,
                 })
             }
-            ast::StatementKind::Discard(expr) => one(ast::StatementKind::Discard(self.expr(expr))),
             ast::StatementKind::Expression(expr) => {
                 one(ast::StatementKind::Expression(self.expr(expr)))
             }
             ast::StatementKind::Return(expr) => one(ast::StatementKind::Return(self.expr(expr))),
-            ast::StatementKind::ReturnVoid => one(ast::StatementKind::Return(ast::Expr {
-                kind: ast::ExprKind::Block(Vec::new()),
-                span,
-            })),
             ast::StatementKind::Break(value) => one(ast::StatementKind::Break(
                 value.map(|value| self.expr(value)),
             )),
@@ -477,6 +472,11 @@ impl Desugarer {
             body,
             else_body: Vec::new(),
         })];
+        let mut ignored_body = ignored_body;
+        ignored_body.push(statement(ast::StatementKind::Expression(ast::Expr {
+            kind: ast::ExprKind::TupleLiteral(Vec::new()),
+            span,
+        })));
         let match_next = ast::Expr {
             kind: ast::ExprKind::Match {
                 scrutinee: Box::new(next),
@@ -513,8 +513,14 @@ impl Desugarer {
             },
             span,
         };
-        let loop_statement = statement(ast::StatementKind::Discard(ast::Expr {
-            kind: ast::ExprKind::Loop(vec![statement(ast::StatementKind::Discard(match_next))]),
+        let loop_statement = statement(ast::StatementKind::Expression(ast::Expr {
+            kind: ast::ExprKind::Loop(vec![
+                statement(ast::StatementKind::Expression(match_next)),
+                statement(ast::StatementKind::Expression(ast::Expr {
+                    kind: ast::ExprKind::TupleLiteral(Vec::new()),
+                    span,
+                })),
+            ]),
             span,
         }));
 

@@ -7,10 +7,10 @@ fn tick() -> Int {
 	CALLS
 }
 
-fn take_unit(value: Unit) {}
+fn take_unit(value: ()) {}
 
 fn inferred_discard() { tick(); }
-fn explicit_discard() -> Unit { tick(); }
+fn explicit_discard() -> () { tick(); }
 fn inferred_tail() { tick() }
 fn explicit_tail() -> Int { tick() }
 fn returned() { return tick(); }
@@ -37,12 +37,12 @@ fn inferred_match_returns(choice: Choice) {
 }
 
 fn main() {
-	let plain: Unit = { tick(); };
-	let nested: Unit = { ({ tick(); }); };
-	let unsafe_unit: Unit = unsafe { tick(); };
-	let discarded_block: Unit = { ({ tick() }); };
-	let if_unit: Unit = if true { tick(); } else { 99; };
-	let match_unit: Unit = match Choice::First {
+	let plain: () = { tick(); };
+	let nested: () = { ({ tick(); }); };
+	let unsafe_unit: () = unsafe { tick(); };
+	let discarded_block: () = { ({ tick() }); };
+	let if_unit: () = if true { tick(); } else { 99; };
+	let match_unit: () = match Choice::First {
 		Choice::First => { tick(); },
 		Choice::Second => { 99; },
 	};
@@ -57,7 +57,7 @@ fn main() {
 
 	let inferred_closure = \ { tick(); };
 	let annotated_closure: fn() = \ { tick(); };
-	let explicit_closure = \ -> Unit { tick(); };
+	let explicit_closure = \ -> () { tick(); };
 	take_unit(inferred_closure());
 	take_unit(annotated_closure());
 	take_unit(explicit_closure());
@@ -74,7 +74,7 @@ fn main() {
 	let tail_closure = \ { tick() };
 	assert(tail_closure() == 17);
 	assert(returned() == 18);
-	let unsafe_discard: Unit = { unsafe { 99 }; };
+	let unsafe_discard: () = { unsafe { 99 }; };
 	take_unit(unsafe_discard);
 	assert(inferred_return_branches(true) == 41);
 	assert(inferred_return_branches(false) == 42);
@@ -102,7 +102,7 @@ fn main() {
 		if true { break tick(); } else { 99; };
 	};
 	assert(branch_break == 22);
-	let discarded_loop: Unit = { loop { break tick(); }; };
+	let discarded_loop: () = { loop { break tick(); }; };
 	take_unit(discarded_loop);
 	assert(CALLS == 23);
 

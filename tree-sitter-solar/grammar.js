@@ -324,7 +324,7 @@ module.exports = grammar({
     parenthesized_expression: ($) => seq("(", $._expression_with_struct, ")"),
 
     tuple_literal: ($) =>
-      seq("(", $._expression_with_struct, ",", $._expression_with_struct, repeat(seq(",", $._expression_with_struct)), optional(","), ")"),
+      choice(seq("(", ")"), seq("(", $._expression_with_struct, ",", $._expression_with_struct, repeat(seq(",", $._expression_with_struct)), optional(","), ")")),
 
     // Precedence follows Rust (loosest → tightest). All binary operators must
     // stay below the postfix operators (deref/reference/unique at 70) so that
@@ -567,7 +567,7 @@ module.exports = grammar({
           optional(seq("->", field("return_type", $._type)))),
 
     tuple_type: ($) =>
-      seq("(", $._type, ",", $._type, repeat(seq(",", $._type)), optional(","), ")"),
+      choice(seq("(", ")"), seq("(", $._type, ",", $._type, repeat(seq(",", $._type)), optional(","), ")")),
 
     fn_type_param_list: ($) =>
       seq($.fn_type_param, repeat(seq(",", $.fn_type_param)), optional(",")),

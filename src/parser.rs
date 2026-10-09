@@ -647,6 +647,18 @@ fn convert_block(node: tree_sitter::Node, source: &str) -> Vec<Statement> {
             kind: StatementKind::Expression(convert_expr(tail, source)),
             span,
         });
+    } else {
+        let mut span = source_span(node);
+        span.start = span.end;
+        span.start.col -= 1;
+        span.end = span.start;
+        stmts.push(Statement {
+            kind: StatementKind::Expression(Expr {
+                kind: ExprKind::TupleLiteral(Vec::new()),
+                span,
+            }),
+            span,
+        });
     }
     stmts
 }
@@ -791,18 +803,25 @@ fn convert_expression_statement(node: tree_sitter::Node, source: &str) -> Statem
     let span = source_span(node);
     let expr_node = code_children(node).into_iter().next().unwrap();
     Statement {
-        kind: StatementKind::Discard(convert_expr(expr_node, source)),
+        kind: StatementKind::Expression(convert_expr(expr_node, source)),
         span,
     }
 }
 
 fn convert_return_statement(node: tree_sitter::Node, source: &str) -> Statement {
     let span = source_span(node);
-    let kind = node
-        .child_by_field_name("value")
-        .map_or(StatementKind::ReturnVoid, |value| {
-            StatementKind::Return(convert_expr(value, source))
-        });
+    let value = node.child_by_field_name("value").map_or_else(
+        || {
+            let mut value_span = span;
+            value_span.start = value_span.end;
+            Expr {
+                kind: ExprKind::TupleLiteral(Vec::new()),
+                span: value_span,
+            }
+        },
+        |value| convert_expr(value, source),
+    );
+    let kind = StatementKind::Return(value);
     Statement { kind, span }
 }
 

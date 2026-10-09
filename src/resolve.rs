@@ -1187,13 +1187,12 @@ fn rewrite_statement(stmt: &mut Statement, ctx: &RewriteCtx, locals: &mut HashSe
             rewrite_expr(object, ctx, locals);
             rewrite_statements(body, ctx, locals);
         }
-        StatementKind::Discard(expr) | StatementKind::Expression(expr) => {
+        StatementKind::Expression(expr) => {
             rewrite_expr(expr, ctx, locals);
         }
         StatementKind::Return(expr) => {
             rewrite_expr(expr, ctx, locals);
         }
-        StatementKind::ReturnVoid => unreachable!("surface return reached name resolution"),
         StatementKind::NestedFunction(fdef) => {
             locals.insert(Ident::user(fdef.name.clone()));
             rewrite_function_body(fdef, ctx);

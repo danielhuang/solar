@@ -1,0 +1,28 @@
+fn identity#[out T](value: T) -> T { value }
+fn bare_return() -> () { return; }
+fn explicit_return() -> () { return (); }
+fn unit_tail() -> () { () }
+fn integer_tail() -> Int { 1 }
+fn terminated_tail() -> () { 1; }
+fn nested(value: (&(), ((), Int))) -> (&(), ((), Int)) { value }
+
+fn main() {
+	let value: () = ();
+	let empty: () = {};
+	let terminated: () = { 1; };
+	let closure: fn() -> () = \ -> () { () };
+	let bare_closure: fn() -> () = \ { return; };
+	let explicit_closure: fn() -> () = \ { return (); };
+	let generic: () = identity#[()](value);
+	let pair = nested((generic&, ((), integer_tail())));
+	assert(pair.1.1 == 1);
+	assert(({ 1 }) == 1);
+	bare_return();
+	explicit_return();
+	unit_tail();
+	terminated_tail();
+	closure();
+	bare_closure();
+	explicit_closure();
+	println("passed"&);
+}

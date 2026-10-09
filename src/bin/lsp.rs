@@ -1986,6 +1986,7 @@ fn ast_type_matches(
             _ => false,
         },
         ast::Type::Tuple(expected) => match actual {
+            Type::Unit => expected.is_empty(),
             Type::Struct(id)
                 if id.def.file == ast::SYNTHETIC_FILE
                     && id.def.name == "0tuple" =>
@@ -2019,7 +2020,6 @@ fn primitive_type(name: &str) -> Option<typed_ast::Type> {
         ast::PrimitiveType::Bool => Type::Bool,
         ast::PrimitiveType::FileDesc => Type::FileDesc,
         ast::PrimitiveType::Any => Type::Any,
-        ast::PrimitiveType::Unit => Type::Unit,
         ast::PrimitiveType::Never => Type::Never,
     })
 }
@@ -2054,7 +2054,6 @@ fn collect_expression_types(
     match &statement.kind {
         StatementKind::Let { value, .. }
         | StatementKind::Expression(value)
-        | StatementKind::Discard(value)
         | StatementKind::Return(value) => collect_expression_type(value, target, out),
         StatementKind::Assignment {
             target: left,
@@ -3718,7 +3717,6 @@ impl DefFinder<'_> {
         match &statement.kind {
             StatementKind::Let { value, .. }
             | StatementKind::Expression(value)
-            | StatementKind::Discard(value)
             | StatementKind::Return(value) => self.walk_expr(value),
             StatementKind::Assignment { target, value } => {
                 self.walk_expr(target);
@@ -5031,9 +5029,9 @@ impl BindingSignatureCollector<'_> {
                 self.record_declaration(statement.span, name, ty);
                 self.walk_expr(value);
             }
-            StatementKind::Discard(value)
-            | StatementKind::Expression(value)
-            | StatementKind::Return(value) => self.walk_expr(value),
+            StatementKind::Expression(value) | StatementKind::Return(value) => {
+                self.walk_expr(value)
+            }
             StatementKind::Assignment { target, value } => {
                 self.walk_expr(target);
                 self.walk_expr(value);
@@ -5229,7 +5227,6 @@ fn collect_statement_overlays(
     match &statement.kind {
         StatementKind::Let { value, .. }
         | StatementKind::Expression(value)
-        | StatementKind::Discard(value)
         | StatementKind::Return(value) => collect_expr_overlays(value, file_id, overlays),
         StatementKind::Assignment { target, value } => {
             collect_expr_overlays(target, file_id, overlays);
@@ -6096,7 +6093,7 @@ fn main() {
         let diagnostics = &diagnostics[&uri];
         assert!(diagnostics.iter().any(|diagnostic| {
             diagnostic["message"].as_str().is_some_and(|message| {
-                message.contains("entry function `main` must return Unit or diverge")
+                message.contains("entry function `main` must return () or diverge")
             })
         }));
     }
@@ -6676,6 +6673,20 @@ fn main() {
                 assert!(contents.contains(&format!("{name}: {ty}")), "{contents}");
             }
         }
+    }
+
+    #[test]
+    fn empty_tuple_types_support_diagnostics_and_inlay_hints() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/runtime/empty_tuple.solar");
+        let uri = format!("file://{}", path.display());
+        let source = "fn identity#[out T](value: T) -> T { value }\nfn main() { let value = identity#[()](()); let empty = {}; let tail = { 1; }; let integer = { 1 }; }\n";
+        let (document, diagnostics) = compute_with_diagnostics(&uri, source);
+        assert!(diagnostics.values().all(Vec::is_empty), "{diagnostics:?}");
+        let hints = inlay_hints(source, &document, None);
+        let labels = hint_labels(&hints);
+        assert_eq!(labels.iter().filter(|label| **label == ": ()").count(), 3);
+        assert!(labels.contains(&": Int"), "{labels:?}");
     }
 
     #[test]

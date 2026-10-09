@@ -8,6 +8,12 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 #[test]
+fn empty_tuple() {
+    let output = run(&fixture("empty_tuple.solar"), "empty_tuple");
+    assert_eq!(output, "passed\n");
+}
+
+#[test]
 fn block_tail_semicolons() {
     let output = run(
         &fixture("block_tail_semicolons.solar"),

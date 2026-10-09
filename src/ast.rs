@@ -471,13 +471,9 @@ pub enum StatementKind {
         /// lockstep. `object` is then a 2-tuple `(a, b)`.
         paired: bool,
     },
-    /// An expression evaluated for effects; its value is discarded by `;`.
-    Discard(Expr),
-    /// An unterminated expression, yielding its value when last in a block.
+    /// An expression, yielding its value only when last in a block.
     Expression(Expr),
     Return(Expr),
-    /// A surface `return;`, before it is normalized to a Unit-valued return.
-    ReturnVoid,
     /// `break;` (no value) or `break <expr>;` (value, only inside a `loop`).
     Break(Option<Expr>),
     Continue,
@@ -713,7 +709,6 @@ pub enum PrimitiveType {
     Bool,
     FileDesc,
     Any,
-    Unit,
     Never,
 }
 
@@ -734,7 +729,6 @@ pub const PRIMITIVE_TYPES: &[(PrimitiveType, &str)] = &[
     (PrimitiveType::Bool, "Bool"),
     (PrimitiveType::FileDesc, "FileDesc"),
     (PrimitiveType::Any, "Any"),
-    (PrimitiveType::Unit, "Unit"),
     (PrimitiveType::Never, "Never"),
 ];
 
@@ -772,7 +766,6 @@ impl PrimitiveType {
             PrimitiveType::Bool
             | PrimitiveType::FileDesc
             | PrimitiveType::Any
-            | PrimitiveType::Unit
             | PrimitiveType::Never => None,
         }
     }

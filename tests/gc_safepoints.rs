@@ -74,7 +74,7 @@ fn unrelated_segv_remains_fatal() {
 #include <stddef.h>
 #include <stdint.h>
 extern void sol_start(void (*)(void*), void*, size_t, void (*)(void));
-const char *sol_payload_type_name(uint64_t tag) { return "Unit"; }
+const char *sol_payload_type_name(uint64_t tag) { return "()"; }
 static void body(void *env) {
     void *page = mmap(0, 4096, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     __asm__ volatile("testb $0, (%0)" : : "r"(page) : "memory", "cc");

@@ -36,7 +36,7 @@ fn imported_main_may_return_a_value() {
     assert!(
         errors[0]
             .message
-            .contains("entry function `main` must return Unit or diverge")
+            .contains("entry function `main` must return () or diverge")
     );
 }
 

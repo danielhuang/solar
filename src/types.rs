@@ -46,6 +46,7 @@ pub enum Type<I> {
     /// A type-erased reference to a sized value. Its 16-byte representation is
     /// a traced pointer followed by a compiler-private concrete-type tag.
     Any,
+    /// The empty tuple `()`, a zero-sized value.
     Unit,
     Never,
 }
@@ -326,11 +327,8 @@ impl<I: fmt::Display> fmt::Display for Type<I> {
     }
 }
 
-/// Display a concrete payload type with demangled struct and enum names.
+/// Display a concrete payload type with demangled names and `()` for the empty tuple.
 pub(crate) fn payload_type_name(ty: &Type<String>) -> String {
-    if *ty == Type::Unit {
-        return String::from("Unit");
-    }
     ty.map_id(|name| solar_shared::trace::pretty_name(name))
         .to_string()
 }

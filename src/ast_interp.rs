@@ -1295,6 +1295,14 @@ impl<'a, 'io> Interpreter<'a, 'io> {
     }
 
     fn eval_expr(&mut self, expr: &Expr) -> Eval<Value> {
+        if expr.ty == Type::Unit
+            && matches!(
+                expr.kind,
+                ExprKind::BooleanLiteral(_) | ExprKind::IntegerLiteral(_)
+            )
+        {
+            return Ok(Value::Unit);
+        }
         Ok(match &expr.kind {
             ExprKind::Identifier(_)
             | ExprKind::Global(_)
@@ -2386,7 +2394,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             // `return`/`break`/`continue` inside a compound expression (a
             // trailing `if`/`match`/`loop`/block in a loop body, say)
             // propagate via `Unwind`.
-            StatementKind::Discard(expr) | StatementKind::Expression(expr) => {
+            StatementKind::Expression(expr) => {
                 self.eval_expr(expr)?;
             }
             StatementKind::Return(expr) => {
@@ -2464,7 +2472,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
     }
 
     /// Execute a function body, returning the function's return value.
-    /// If return_type is non-Unit, the last Expression statement is the
+    /// If return_type is not `()`, the last Expression statement is the
     /// implicit return. This is the function boundary: a `return` unwinding
     /// out of the body (even from a value-position sub-body) is caught here,
     /// so it never escapes a closure into the enclosing function.

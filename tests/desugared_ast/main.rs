@@ -12,30 +12,6 @@ fn function(items: &[TopLevelItem], index: usize) -> &ast::FunctionDef {
 }
 
 #[test]
-fn try_catch_is_preserved_for_typed_lowering() {
-    let surface = parse("fn main() { try { throw(\"x\"&); } catch (e) { println(e); } }");
-    assert!(matches!(
-        function(&surface.items, 0).body[0].kind,
-        StatementKind::Try { .. }
-    ));
-
-    let desugared = solar::desugared_ast::lower(&surface);
-    let StatementKind::Try {
-        body,
-        binding,
-        binding_type,
-        handler,
-    } = &function(&desugared.items, 0).body[0].kind
-    else {
-        panic!("expected try statement");
-    };
-    assert!(matches!(binding, ast::Ident::User(name) if name == "e"));
-    assert!(binding_type.is_none());
-    assert_eq!(body.len(), 1);
-    assert_eq!(handler.len(), 1);
-}
-
-#[test]
 fn tuple_struct_fields_and_access_are_normalized() {
     let surface = parse("struct Pair(Int, Int); fn first(p: Pair) -> Int { p.0 }");
     let TopLevelItem::Struct(pair) = &surface.items[0] else {

@@ -594,7 +594,19 @@ fn static_doc(definition: &StaticDef, context: &SourceContext<'_>) -> Doc {
     .group()
 }
 
+fn implicit_unit(expression: &Expr) -> bool {
+    position(expression.span.start) == position(expression.span.end)
+        && matches!(&expression.kind, ExprKind::TupleLiteral(elements) if elements.is_empty())
+}
+
 fn block_doc(statements: &[Statement], boundary: SourceSpan, context: &SourceContext<'_>) -> Doc {
+    let statements = if statements.last().is_some_and(|statement| {
+        matches!(&statement.kind, StatementKind::Expression(expression) if implicit_unit(expression))
+    }) {
+        &statements[..statements.len() - 1]
+    } else {
+        statements
+    };
     let boundary = block_span(statements, boundary, context);
     if statements.is_empty() {
         let comments = gap_trivia(context, boundary.start, boundary.end)
@@ -663,13 +675,7 @@ fn statement_has_block(statement: &Statement) -> bool {
             | StatementKind::NestedFunction(_)
     ) || matches!(
         &statement.kind,
-        StatementKind::Discard(Expr {
-            kind: ExprKind::Block(_)
-                | ExprKind::If { .. }
-                | ExprKind::Loop(_)
-                | ExprKind::Closure { .. },
-            ..
-        }) | StatementKind::Expression(Expr {
+        StatementKind::Expression(Expr {
             kind: ExprKind::Block(_)
                 | ExprKind::If { .. }
                 | ExprKind::Loop(_)
@@ -812,16 +818,24 @@ fn statement_doc(statement: &Statement, context: &SourceContext<'_>) -> Doc {
             block_doc(body, statement.span, context),
         ])
         .group(),
-        StatementKind::Discard(expression) => {
-            Doc::concat([expr_doc(expression, context), Doc::text(";")])
-        }
-        StatementKind::Expression(expression) => expr_doc(expression, context),
+        StatementKind::Expression(expression) => Doc::concat([
+            expr_doc(expression, context),
+            if context.source
+                [context.offset(statement.span.start)..context.offset(statement.span.end)]
+                .trim_end()
+                .ends_with(';')
+            {
+                Doc::text(";")
+            } else {
+                Doc::Nil
+            },
+        ]),
+        StatementKind::Return(expression) if implicit_unit(expression) => Doc::text("return;"),
         StatementKind::Return(expression) => Doc::concat([
             Doc::text("return "),
             expr_doc(expression, context),
             Doc::text(";"),
         ]),
-        StatementKind::ReturnVoid => Doc::text("return;"),
         StatementKind::Break(value) => Doc::concat([
             Doc::text("break"),
             value.as_ref().map_or(Doc::Nil, |value| {

@@ -295,7 +295,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
 
     fn any_type_name(&self, tag: u64) -> String {
         if tag == crate::types::ANY_TYPE_TAG_PREFIX {
-            String::from("Unit")
+            String::from("()")
         } else {
             let ty = self
                 .any_type_ids
@@ -389,7 +389,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     let field_ty = field.ty.clone();
                     self.copy_value(dst + offset, src + offset, &field_ty, None);
                 }
-                // Unit variants: nothing beyond the discriminant
+                // Payload-free variants: nothing beyond the discriminant
             }
             Type::Struct(name)
                 if type_contains_unique(ty, &self.module.datatypes)
@@ -1230,6 +1230,16 @@ impl<'a, 'io> Interpreter<'a, 'io> {
     }
 
     fn eval_into(&mut self, nodes: &[Node], id: NodeId, dst: usize) -> Eval<()> {
+        // The frontend represents () using a zero-sized dummy literal.
+        // It has no memory destination, even when used as a branch tail.
+        if matches!(nodes[id.0].ty, Type::Unit | Type::Never)
+            && matches!(
+                nodes[id.0].kind,
+                NodeKind::BooleanLiteral(_) | NodeKind::IntegerLiteral(_)
+            )
+        {
+            return Ok(());
+        }
         match &nodes[id.0].kind {
             NodeKind::Local(_)
             | NodeKind::Global(_)
@@ -2176,7 +2186,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 return Err(Unwind::Break);
             }
             NodeKind::Continue => return Err(Unwind::Continue),
-            NodeKind::Discard(inner)
+            NodeKind::Expr(inner)
                 if matches!(
                     nodes[inner.0].kind,
                     NodeKind::IntegerLiteral(_)
@@ -2184,7 +2194,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                         | NodeKind::BooleanLiteral(_)
                         | NodeKind::Null
                 ) => {}
-            NodeKind::Discard(inner)
+            NodeKind::Expr(inner)
                 if (nodes[inner.0].ty.is_numeric() || nodes[inner.0].ty == Type::Bool)
                     && matches!(
                         nodes[inner.0].kind,
@@ -2199,7 +2209,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             {
                 self.eval_load(nodes, *inner)?;
             }
-            NodeKind::Discard(inner) | NodeKind::Expr(inner) => {
+            NodeKind::Expr(inner) => {
                 // A statement-position expression, evaluated for side effects
                 // only. `return`/`break`/`continue` inside a compound expression
                 // (`if`/`match`/`loop` bodies) propagate via `Unwind`.
@@ -2210,7 +2220,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     return Ok(());
                 }
 
-                if *ty == Type::Unit {
+                if matches!(*ty, Type::Unit | Type::Never) {
                     self.eval_into(nodes, inner, 0)?;
                 } else {
                     let tmp = self.alloc_ty(ty);
@@ -2461,6 +2471,49 @@ pub(crate) fn time_ns(intrinsic: &Intrinsic) -> u64 {
 #[cfg(test)]
 mod tests {
     use crate::pipeline;
+
+    #[test]
+    fn unit_tail_and_statement_literals_do_not_allocate_or_write() {
+        use super::*;
+
+        let module = Module {
+            datatypes: HashMap::new(),
+            functions: Vec::new(),
+            statics: Vec::new(),
+            thread_local_init: None,
+        };
+        let nodes = [
+            Node {
+                ty: Type::Unit,
+                kind: NodeKind::BooleanLiteral(false),
+                span: Default::default(),
+            },
+            Node {
+                ty: Type::Unit,
+                kind: NodeKind::Expr(NodeId(0)),
+                span: Default::default(),
+            },
+            Node {
+                ty: Type::Int,
+                kind: NodeKind::IntegerLiteral(42),
+                span: Default::default(),
+            },
+            Node {
+                ty: Type::Int,
+                kind: NodeKind::Expr(NodeId(2)),
+                span: Default::default(),
+            },
+        ];
+        let mut interp = Interpreter::new(&module, std::io::empty(), std::io::sink());
+        interp.mem.data[0] = 0xa5;
+        let initial_addr = interp.mem.next_addr;
+
+        assert!(interp.exec_stmt(&nodes, NodeId(3)).is_ok());
+        assert!(interp.exec_stmt(&nodes, NodeId(1)).is_ok());
+        assert!(interp.exec_branch_into(&nodes, &[NodeId(1)], 0).is_ok());
+        assert_eq!(interp.mem.next_addr, initial_addr);
+        assert_eq!(interp.mem.data[0], 0xa5);
+    }
 
     #[test]
     fn nullable_reference_to_empty_array_is_non_null() {

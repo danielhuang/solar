@@ -246,8 +246,7 @@ pub enum NodeKind {
     Break(Option<NodeId>),
     Continue,
     Not(NodeId),
-    /// Evaluate an expression without making it a value-producing body tail.
-    Discard(NodeId),
+    /// Evaluate an expression; only the final expression produces a body value.
     Expr(NodeId),
     Return(NodeId),
 }
@@ -424,9 +423,7 @@ fn collect_closure_captures(
                 collect_closure_captures_expr(condition, map);
                 collect_closure_captures(body, map);
             }
-            mangled_ast::StatementKind::Discard(e) | mangled_ast::StatementKind::Expression(e) => {
-                collect_closure_captures_expr(e, map)
-            }
+            mangled_ast::StatementKind::Expression(e) => collect_closure_captures_expr(e, map),
             mangled_ast::StatementKind::Return(e) => collect_closure_captures_expr(e, map),
             mangled_ast::StatementKind::Break(value) => {
                 if let Some(v) = value {
@@ -1463,7 +1460,7 @@ impl<'a> FunctionLowerer<'a> {
                     let body = self.lower_body(stmts);
                     self.pending_stmts.extend(body);
                     self.pop_scope();
-                    // Unit-typed block: return a dummy unit node
+                    // Block returning (): return a dummy empty-tuple node
                     self.push(Node {
                         ty: Type::Unit,
                         kind: NodeKind::BooleanLiteral(false),
@@ -1718,21 +1715,9 @@ impl<'a> FunctionLowerer<'a> {
                     span: stmt.span,
                 })
             }
-            mangled_ast::StatementKind::Discard(expr) => {
-                let id = self.lower_expr(expr);
-                self.push(Node {
-                    ty: if expr.ty == Type::Never {
-                        Type::Never
-                    } else {
-                        Type::Unit
-                    },
-                    kind: NodeKind::Discard(id),
-                    span: stmt.span,
-                })
-            }
             mangled_ast::StatementKind::Expression(expr) => {
-                // Only unterminated expressions can produce a body's tail value.
-                // Compound expressions still propagate statement control flow.
+                // Normalized bodies end in a value expression, including an
+                // explicit () tail when source expressions were terminated.
                 let id = self.lower_expr(expr);
                 self.push(Node {
                     ty: expr.ty.clone(),

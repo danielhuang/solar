@@ -36,7 +36,7 @@ fn print_test_struct(x: &TestStruct) {
 }
 
 // return type can be inferred from an unterminated tail expression. A final
-// expression with `;` is discarded, so the block returns Unit instead.
+// expression with `;` is discarded, so the block returns () instead.
 // The optional `(inline)` attribute (also valid on `method`) hints codegen to
 // mark it for inlining; the interpreters ignore it.
 pub fn(inline) add(a: Int, b: Int) {

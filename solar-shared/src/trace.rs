@@ -170,7 +170,7 @@ impl<'a> Parser<'a> {
                 }
                 let ret = self.parse_type()?;
                 let p = params.join(", ");
-                if ret == "Unit" || ret == "()" {
+                if ret == "()" {
                     Some(format!("fn({p})"))
                 } else {
                     Some(format!("fn({p}) -> {ret}"))
@@ -318,7 +318,7 @@ mod tests {
             "lib::write_stdout(&[Uint8])",
         );
         check(
-            "solar_8_while_fnG2_F0_4_BoolF0_4_Unit",
+            "solar_8_while_fnG2_F0_4_BoolF0_4_0T0_",
             "while_fn(fn() -> Bool, fn())",
         );
         check("solar___method_9_to_stringG1_3_Int", "Int.to_string()");

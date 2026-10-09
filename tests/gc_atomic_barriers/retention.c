@@ -16,7 +16,7 @@ extern void sol_gc_mark(void *, void *);
 extern void sol_enable_gc_san(void);
 extern void sol_gc_san_check(const void *, size_t);
 extern unsigned char SOL_SAFEPOINT_PAGE[];
-const char *sol_payload_type_name(uint64_t tag) { return "Unit"; }
+const char *sol_payload_type_name(uint64_t tag) { return "()"; }
 
 #define OP(name) extern void name(void *, uintptr_t);
 OP(solar_store) OP(solar_exchange) OP(solar_compare)

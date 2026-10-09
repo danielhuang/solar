@@ -19,6 +19,23 @@ fn collect_solar_files(directory: &Path, files: &mut Vec<PathBuf>) {
 }
 
 #[test]
+fn empty_tuple_preserves_explicit_syntax_and_semicolons() {
+    let source = "fn main(){let x:()=();1;return;}\nfn explicit()->(){return ();}\nfn tail()->(){()}\nfn empty(){}\n";
+    let formatted = solar::fmt::format_source(source).unwrap();
+    assert_eq!(solar::fmt::format_source(&formatted).unwrap(), formatted);
+    assert!(formatted.contains("let x: () = ();"));
+    assert!(formatted.contains("1;"));
+    assert!(formatted.contains("return;"));
+    assert!(formatted.contains("return ();"));
+    assert!(formatted.contains("fn tail() -> () { () }"));
+    assert!(formatted.contains("fn empty() {}"));
+    assert_eq!(
+        formatted.matches("()").count(),
+        source.matches("()").count()
+    );
+}
+
+#[test]
 fn all_solar_sources_are_formatted() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();

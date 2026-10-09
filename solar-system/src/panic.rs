@@ -87,11 +87,11 @@ unsafe extern "C" {
     fn sol_payload_type_name(tag: u64) -> *const std::ffi::c_char;
 }
 
-// Runtime unit tests have no generated program and only use the Unit payload.
+// Runtime unit tests have no generated program and only use the () payload.
 #[cfg(test)]
 unsafe fn sol_payload_type_name(tag: u64) -> *const std::ffi::c_char {
     assert_eq!(tag, solar_shared::ANY_UNIT_TAG);
-    c"Unit".as_ptr()
+    c"()".as_ptr()
 }
 
 unsafe fn copy_bytes(bytes: &[u8], align: usize) -> SolSlice {
@@ -176,7 +176,7 @@ pub unsafe extern "C-unwind" fn sol_throw(exception: *const SolarException) -> !
     throw_raw(unsafe { *exception })
 }
 
-/// Throws a runtime failure with a Unit payload and a trace from the failure site.
+/// Throws a runtime failure with a () payload and a trace from the failure site.
 pub(crate) fn throw_str(msg: &'static str) -> ! {
     let slot = crate::gc::MY_SLOT.get();
     assert!(!slot.is_null(), "throw_str called on unregistered thread");

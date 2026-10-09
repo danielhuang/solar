@@ -222,7 +222,7 @@ pub fn assert(condition: Bool) {
 pub struct Exception {
 	/// Human-readable description of the failure.
 	pub message: &[Uint8],
-	/// Optional application data; message-only throws carry Unit.
+	/// Optional application data; message-only throws carry ().
 	pub payload: Any,
 	/// Saved instruction addresses, resolved only when formatting the exception.
 	pub trace: &[Uint],
@@ -239,9 +239,9 @@ pub fn Exception::(message: &[Uint8], payload: Any) -> Exception {
 	}
 }
 
-/// Constructs an exception with a Unit payload.
+/// Constructs an exception with a () payload.
 pub fn Exception::(message: &[Uint8]) -> Exception {
-	let unit: Unit = {};
+	let unit = ();
 	Exception(message, Any(unit&))
 }
 
@@ -264,7 +264,7 @@ pub fn throw(exception: Exception) {
 	intrinsics::throw(exception);
 }
 
-/// Throws a recoverable exception with a Unit payload.
+/// Throws a recoverable exception with a () payload.
 pub fn throw(message: &[Uint8]) {
 	throw(Exception(message));
 }

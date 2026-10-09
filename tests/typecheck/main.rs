@@ -43,6 +43,17 @@ fn compile_with_pipeline(file_path: &Path) {
 }
 
 #[test]
+fn old_unit_name_is_not_a_builtin() {
+    let source = "fn main() { let value: Unit = (); }";
+    let ast = solar::parser::parse(source).unwrap();
+    let desugared = solar::desugared_ast::lower(&ast);
+    let resolved = solar::resolved_ast::SourceFile {
+        items: desugared.items,
+    };
+    assert!(solar::typed_ast::lower(&resolved).is_err());
+}
+
+#[test]
 fn discarded_tails_do_not_supply_values() {
     for name in [
         "block_tail_discarded.solar",
@@ -144,7 +155,7 @@ fn root_main_requires_unit_return_type() {
             Err(error) => error,
         };
         assert!(
-            error_chain(&errors[0]).contains("entry function `main` must return Unit or diverge")
+            error_chain(&errors[0]).contains("entry function `main` must return () or diverge")
         );
         assert_eq!(
             source_map.get(errors[0].span.file_id).unwrap().0,
@@ -403,11 +414,11 @@ fn array_index_requires_uint() {
 }
 
 #[test]
-#[should_panic(
-    expected = "function `bad` should return Int, but body does not end with an expression"
-)]
 fn bad_no_return_expr() {
-    compile(&fixture("typecheck_bad_no_return_expr.solar"));
+    assert!(
+        solar::pipeline::compile(&fixture("typecheck_bad_no_return_expr.solar")).is_err(),
+        "accepted an Int-returning function whose body ends in a let declaration",
+    );
 }
 
 #[test]

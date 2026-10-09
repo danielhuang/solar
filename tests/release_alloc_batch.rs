@@ -390,7 +390,7 @@ fn batch_runtime_handles_alignment_metadata_classes_and_cache_boundaries() {
 extern void sol_start(void (*)(void*), void*, size_t, void (*)(void));
 typedef void (*mark_fn)(void*, void*, uint64_t);
 extern void *sol_alloc_impl(size_t, size_t, mark_fn);
-const char *sol_payload_type_name(uint64_t tag) { return "Unit"; }
+const char *sol_payload_type_name(uint64_t tag) { return "()"; }
 static void mark(void *ctx, void *p, uint64_t size) {}
 "#,
     );

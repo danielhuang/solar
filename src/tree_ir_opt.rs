@@ -472,7 +472,6 @@ fn collect_locals(nodes: &[Node], id: NodeId, out: &mut HashSet<VarId>) {
         | NodeKind::Unique(n)
         | NodeKind::Not(n)
         | NodeKind::Expr(n)
-        | NodeKind::Discard(n)
         | NodeKind::Return(n)
         | NodeKind::ArraySizeCoerce { value: n, .. } => collect_locals(nodes, *n, out),
         NodeKind::Index { object, index } => {

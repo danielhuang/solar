@@ -151,7 +151,6 @@ fn from_ast_type_with_subst(ty: &ast::Type, subst: &HashMap<String, Type>) -> Ty
                     ast::PrimitiveType::Bool => Type::Bool,
                     ast::PrimitiveType::FileDesc => Type::FileDesc,
                     ast::PrimitiveType::Any => Type::Any,
-                    ast::PrimitiveType::Unit => Type::Unit,
                     ast::PrimitiveType::Never => Type::Never,
                 }
             } else {
@@ -195,6 +194,9 @@ fn from_ast_type_with_subst(ty: &ast::Type, subst: &HashMap<String, Type>) -> Ty
             ),
         },
         ast::Type::Tuple(types) => {
+            if types.is_empty() {
+                return Type::Unit;
+            }
             let concrete_args: Vec<Type> = types
                 .iter()
                 .map(|t| from_ast_type_with_subst(t, subst))
@@ -673,16 +675,12 @@ fn apply_subst_to_ast_statement(
                 .collect(),
             paired: *paired,
         },
-        ast::StatementKind::Discard(expr) => {
-            ast::StatementKind::Discard(apply_subst_to_ast_expr(expr, subst))
-        }
         ast::StatementKind::Expression(expr) => {
             ast::StatementKind::Expression(apply_subst_to_ast_expr(expr, subst))
         }
         ast::StatementKind::Return(expr) => {
             ast::StatementKind::Return(apply_subst_to_ast_expr(expr, subst))
         }
-        ast::StatementKind::ReturnVoid => ast::StatementKind::ReturnVoid,
         ast::StatementKind::Break(value) => {
             ast::StatementKind::Break(value.as_ref().map(|v| apply_subst_to_ast_expr(v, subst)))
         }
@@ -931,7 +929,7 @@ pub struct SourceFile {
 }
 
 impl SourceFile {
-    /// Ensures the root module's entry function returns Unit or diverges.
+    /// Ensures the root module's entry function returns () or diverges.
     /// Other modules may declare ordinary `main` functions with any return
     /// type.
     pub fn validate_entry_point(&self, root_file_id: Option<u32>) -> Result<(), CompileError> {
@@ -949,7 +947,7 @@ impl SourceFile {
             && !matches!(function.return_type, Type::Unit | Type::Never)
         {
             return Err(CompileError::new(
-                "entry function `main` must return Unit or diverge".to_string(),
+                "entry function `main` must return () or diverge".to_string(),
                 function.def_span,
             ));
         }
@@ -1057,8 +1055,6 @@ pub enum StatementKind {
         condition: Expr,
         body: Vec<Statement>,
     },
-    /// An expression evaluated for effects, never a block tail.
-    Discard(Expr),
     Expression(Expr),
     Return(Expr),
     Break(Option<Expr>),
@@ -1069,7 +1065,7 @@ pub enum StatementKind {
 fn statement_diverges(statement: &Statement) -> bool {
     match &statement.kind {
         StatementKind::Return(_) | StatementKind::Break(_) | StatementKind::Continue => true,
-        StatementKind::Expression(expr) | StatementKind::Discard(expr) => expr.ty == Type::Never,
+        StatementKind::Expression(expr) => expr.ty == Type::Never,
         StatementKind::Let { value, .. } => value.ty == Type::Never,
         StatementKind::Assignment { target, value } => {
             target.ty == Type::Never || value.ty == Type::Never
@@ -1819,7 +1815,7 @@ struct LoopCtx {
     /// `while`/`for`, which are statements and accept only valueless `break`.
     is_value_loop: bool,
     /// Unified type of `break` values seen so far. `None` means no `break` has
-    /// been encountered yet. A valueless `break` contributes `Unit`.
+    /// been encountered yet. A valueless `break` contributes `()`.
     break_ty: Option<Type>,
 }
 
@@ -2676,7 +2672,7 @@ impl<'a> Lowerer<'a> {
             },
             // A function whose body diverges (returns Never) coerces to a function
             // with the same parameters and any return type. Never is zero-sized and
-            // codegens identically to Unit, so a closure ending in `loop {}` can be
+            // codegens identically to (), so a closure ending in `loop {}` can be
             // passed where e.g. `fn()` is expected without a trailing `{}`.
             (
                 Type::Function {
@@ -2831,7 +2827,7 @@ impl<'a> Lowerer<'a> {
                     return self.resolve_ast_type(&resolved);
                 }
                 // A source enum/struct may share a spelling with a primitive
-                // alias such as `Unit`; resolved DefId provenance takes
+                // alias such as `Int`; resolved DefId provenance takes
                 // precedence over primitive-name fallback.
                 let plain_id = TypeId::plain(name.clone());
                 if self.enums.contains_key(name) || self.lowered_enums.contains_key(&plain_id) {
@@ -2915,6 +2911,9 @@ impl<'a> Lowerer<'a> {
                 })
             }
             ast::Type::Tuple(types) => {
+                if types.is_empty() {
+                    return Ok(Type::Unit);
+                }
                 let element_types: Vec<Type> = types
                     .iter()
                     .map(|t| self.resolve_ast_type(t))
@@ -3001,6 +3000,9 @@ impl<'a> Lowerer<'a> {
                 })
             }
             ast::Type::Tuple(types) => {
+                if types.is_empty() {
+                    return Ok(Type::Unit);
+                }
                 let element_types: Vec<Type> = types
                     .iter()
                     .map(|t| self.resolve_ast_type_with_subst(t, subst))
@@ -3461,7 +3463,7 @@ impl<'a> Lowerer<'a> {
             Type::Bool => ast::Type::Named(DefId::new(0, "Bool")),
             Type::FileDesc => ast::Type::Named(DefId::new(0, "FileDesc")),
             Type::Any => ast::Type::Named(DefId::new(0, "Any")),
-            Type::Unit => ast::Type::Named(DefId::new(0, "Unit")),
+            Type::Unit => ast::Type::Tuple(Vec::new()),
             Type::Never => ast::Type::Named(DefId::new(0, "Never")),
             Type::NullableRef(inner) | Type::NullableRefUnsized(inner) => {
                 ast::Type::NullableReference(Box::new(self.concrete_type_to_ast_type(inner)))
@@ -3616,6 +3618,9 @@ impl<'a> Lowerer<'a> {
                 }
             }
             ast::Type::Tuple(types) => {
+                if types.is_empty() {
+                    return *concrete == Type::Unit;
+                }
                 if let Type::Struct(mangled) = concrete
                     && let Some(sdef) = self.lowered_structs.get(mangled)
                 {
@@ -4822,7 +4827,7 @@ impl<'a> Lowerer<'a> {
             span,
         };
         lowered.push(Statement {
-            kind: StatementKind::Discard(intrinsic),
+            kind: StatementKind::Expression(intrinsic),
             span,
         });
 
@@ -4832,7 +4837,7 @@ impl<'a> Lowerer<'a> {
         enum_def.variants[TRY_BREAK_VARIANT].inner_type = context.break_ty.clone();
 
         let empty_body = || ast::Expr {
-            kind: ast::ExprKind::Block(Vec::new()),
+            kind: ast::ExprKind::TupleLiteral(Vec::new()),
             span,
         };
         let arm = |variant_name: &str,
@@ -4849,7 +4854,7 @@ impl<'a> Lowerer<'a> {
                 empty_body()
             } else {
                 ast::Expr {
-                    kind: ast::ExprKind::Block(statements),
+                    kind: Self::unit_block(statements, span),
                     span,
                 }
             },
@@ -4913,7 +4918,7 @@ impl<'a> Lowerer<'a> {
             span,
         })?;
         lowered.push(Statement {
-            kind: StatementKind::Discard(replay),
+            kind: StatementKind::Expression(replay),
             span,
         });
         Ok(lowered)
@@ -5044,7 +5049,7 @@ impl<'a> Lowerer<'a> {
     fn lower_never_try_control(&self, value: Expr, span: ast::SourceSpan) -> Vec<Statement> {
         vec![
             Statement {
-                kind: StatementKind::Discard(value),
+                kind: StatementKind::Expression(value),
                 span,
             },
             Statement {
@@ -5054,10 +5059,21 @@ impl<'a> Lowerer<'a> {
         ]
     }
 
+    fn unit_block(mut statements: Vec<ast::Statement>, span: ast::SourceSpan) -> ast::ExprKind {
+        statements.push(ast::Statement {
+            kind: ast::StatementKind::Expression(ast::Expr {
+                kind: ast::ExprKind::TupleLiteral(Vec::new()),
+                span,
+            }),
+            span,
+        });
+        ast::ExprKind::Block(statements)
+    }
+
     fn unit_expr(span: ast::SourceSpan) -> Expr {
         Expr {
             ty: Type::Unit,
-            kind: ExprKind::Block(Vec::new()),
+            kind: ExprKind::BooleanLiteral(false),
             span,
         }
     }
@@ -5371,7 +5387,7 @@ impl<'a> Lowerer<'a> {
                 body,
                 paired,
             } => self.lower_match_reflect_variant(stmt.span, pattern, object, body, *paired),
-            ast::StatementKind::ForIn { .. } | ast::StatementKind::ReturnVoid => {
+            ast::StatementKind::ForIn { .. } => {
                 unreachable!("surface statement reached typed AST lowering")
             }
             ast::StatementKind::Try {
@@ -5380,10 +5396,6 @@ impl<'a> Lowerer<'a> {
                 binding_type,
                 handler,
             } => self.lower_try_statement(stmt.span, body, binding, binding_type.as_ref(), handler),
-            ast::StatementKind::Discard(expr) => Ok(vec![Statement {
-                kind: StatementKind::Discard(self.lower_expr(expr)?),
-                span: stmt.span,
-            }]),
             ast::StatementKind::Expression(expr) => Ok(vec![Statement {
                 kind: StatementKind::Expression(self.lower_expr(expr)?),
                 span: stmt.span,
@@ -6878,6 +6890,9 @@ impl<'a> Lowerer<'a> {
                 }
             }
             ast::ExprKind::TupleLiteral(elements) => {
+                if elements.is_empty() {
+                    return Ok(Self::unit_expr(expr.span));
+                }
                 if elements.len() < 2 {
                     return Err(CompileError::new(
                         "tuple must have at least 2 elements".to_string(),
@@ -7829,7 +7844,7 @@ impl<'a> Lowerer<'a> {
             });
             block_stmts.extend(body.iter().cloned());
             outer_stmts.push(ast::Statement {
-                kind: ast::StatementKind::Discard(ast::Expr {
+                kind: ast::StatementKind::Expression(ast::Expr {
                     kind: ast::ExprKind::Block(block_stmts),
                     span,
                 }),
@@ -7838,8 +7853,8 @@ impl<'a> Lowerer<'a> {
         }
 
         self.lower_statement(&ast::Statement {
-            kind: ast::StatementKind::Discard(ast::Expr {
-                kind: ast::ExprKind::Block(outer_stmts),
+            kind: ast::StatementKind::Expression(ast::Expr {
+                kind: Self::unit_block(outer_stmts, span),
                 span,
             }),
             span,
@@ -8044,7 +8059,7 @@ impl<'a> Lowerer<'a> {
 
         self.lower_statement(&ast::Statement {
             kind: ast::StatementKind::Expression(ast::Expr {
-                kind: ast::ExprKind::Block(outer_stmts),
+                kind: Self::unit_block(outer_stmts, span),
                 span,
             }),
             span,
@@ -8236,7 +8251,7 @@ impl<'a> Lowerer<'a> {
         let outer_stmts = vec![let_tmp(&tmp0, obj0), let_tmp(&tmp1, obj1), match_stmt];
         self.lower_statement(&ast::Statement {
             kind: ast::StatementKind::Expression(ast::Expr {
-                kind: ast::ExprKind::Block(outer_stmts),
+                kind: Self::unit_block(outer_stmts, span),
                 span,
             }),
             span,
@@ -8429,7 +8444,7 @@ impl<'a> Lowerer<'a> {
         }
 
         let match_stmt = ast::Statement {
-            kind: ast::StatementKind::Discard(ast::Expr {
+            kind: ast::StatementKind::Expression(ast::Expr {
                 kind: ast::ExprKind::Match {
                     scrutinee: Box::new(ast::Expr {
                         kind: ast::ExprKind::Deref(Box::new(ast::Expr {
@@ -8456,8 +8471,8 @@ impl<'a> Lowerer<'a> {
             match_stmt,
         ];
         self.lower_statement(&ast::Statement {
-            kind: ast::StatementKind::Discard(ast::Expr {
-                kind: ast::ExprKind::Block(outer_stmts),
+            kind: ast::StatementKind::Expression(ast::Expr {
+                kind: Self::unit_block(outer_stmts, span),
                 span,
             }),
             span,
