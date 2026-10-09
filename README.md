@@ -8,14 +8,6 @@ Solar is also a target for any derived languages (similar to how Java's JVM is a
 
 Solar's syntax is similar to Rust (with a few differences); see [`example.solar`](examples/example.solar) for an overview.
 
-## Block values
-
-A block evaluates to its final expression only when that expression has no
-trailing semicolon: `{ 42 }` has type `Int`, while `{ 42; }` has type `Unit`.
-This also applies to function and closure bodies, unsafe blocks, and blocks in
-`if` and `match` branches. Discarded expressions still execute their side effects;
-`return`, `break`, and non-returning expressions retain their control-flow behavior.
-
 ## Performance
 
 Solar lowers to native code and gets optimal performance for workloads that are not allocation-heavy, such as [`sieve.solar`](examples/sieve.solar).
