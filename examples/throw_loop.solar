@@ -16,9 +16,13 @@ fn main() {
 		}
 	});
 
-	loop {
+	for _ in 0..1000000 {
 		try {
 			println(1 / 0);
 		} catch (e) {}
 	}
+
+	black_box(root);
+
+	{}
 }
