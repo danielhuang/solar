@@ -1187,7 +1187,7 @@ fn rewrite_statement(stmt: &mut Statement, ctx: &RewriteCtx, locals: &mut HashSe
             rewrite_expr(object, ctx, locals);
             rewrite_statements(body, ctx, locals);
         }
-        StatementKind::Expression(expr) => {
+        StatementKind::Discard(expr) | StatementKind::Expression(expr) => {
             rewrite_expr(expr, ctx, locals);
         }
         StatementKind::Return(expr) => {

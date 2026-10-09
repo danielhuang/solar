@@ -246,6 +246,8 @@ pub enum NodeKind {
     Break(Option<NodeId>),
     Continue,
     Not(NodeId),
+    /// Evaluate an expression without making it a value-producing body tail.
+    Discard(NodeId),
     Expr(NodeId),
     Return(NodeId),
 }
@@ -422,7 +424,9 @@ fn collect_closure_captures(
                 collect_closure_captures_expr(condition, map);
                 collect_closure_captures(body, map);
             }
-            mangled_ast::StatementKind::Expression(e) => collect_closure_captures_expr(e, map),
+            mangled_ast::StatementKind::Discard(e) | mangled_ast::StatementKind::Expression(e) => {
+                collect_closure_captures_expr(e, map)
+            }
             mangled_ast::StatementKind::Return(e) => collect_closure_captures_expr(e, map),
             mangled_ast::StatementKind::Break(value) => {
                 if let Some(v) = value {
@@ -1714,14 +1718,21 @@ impl<'a> FunctionLowerer<'a> {
                     span: stmt.span,
                 })
             }
+            mangled_ast::StatementKind::Discard(expr) => {
+                let id = self.lower_expr(expr);
+                self.push(Node {
+                    ty: if expr.ty == Type::Never {
+                        Type::Never
+                    } else {
+                        Type::Unit
+                    },
+                    kind: NodeKind::Discard(id),
+                    span: stmt.span,
+                })
+            }
             mangled_ast::StatementKind::Expression(expr) => {
-                // Every expression statement — including a `loop` — is wrapped in
-                // `NodeKind::Expr`, so downstream tail detection (function bodies,
-                // if/match arm values) uniformly recognizes a trailing expression.
-                // A raw `NodeKind::Loop` statement therefore only ever comes from
-                // the `while`/`for` desugaring. Statement executors special-case
-                // `Expr(Loop)` (like `Expr(IfExpr)`/`Expr(Match)`) so `return`
-                // still propagates out of a statement-position loop.
+                // Only unterminated expressions can produce a body's tail value.
+                // Compound expressions still propagate statement control flow.
                 let id = self.lower_expr(expr);
                 self.push(Node {
                     ty: expr.ty.clone(),

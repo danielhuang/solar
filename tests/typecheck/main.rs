@@ -43,6 +43,22 @@ fn compile_with_pipeline(file_path: &Path) {
 }
 
 #[test]
+fn discarded_tails_do_not_supply_values() {
+    for name in [
+        "block_tail_discarded.solar",
+        "function_tail_discarded.solar",
+        "closure_tail_discarded.solar",
+        "if_tail_discarded.solar",
+        "match_tail_discarded.solar",
+    ] {
+        assert!(
+            solar::pipeline::compile(&fixture(name)).is_err(),
+            "accepted a discarded tail as a value in {name}",
+        );
+    }
+}
+
+#[test]
 fn example_typechecks() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/example.solar");
     compile_with_pipeline(&path);

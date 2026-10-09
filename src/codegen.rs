@@ -3766,7 +3766,31 @@ impl<'a> Codegen<'a> {
             NodeKind::Continue => {
                 self.line("continue;");
             }
-            NodeKind::Expr(inner) => {
+            NodeKind::Discard(inner)
+                if matches!(
+                    nodes[inner.0].kind,
+                    NodeKind::IntegerLiteral(_)
+                        | NodeKind::FloatLiteral(_)
+                        | NodeKind::BooleanLiteral(_)
+                        | NodeKind::Null
+                ) => {}
+            NodeKind::Discard(inner)
+                if (nodes[inner.0].ty.is_numeric() || nodes[inner.0].ty == Type::Bool)
+                    && matches!(
+                        nodes[inner.0].kind,
+                        NodeKind::Local(_)
+                            | NodeKind::Global(_)
+                            | NodeKind::FieldAccess { .. }
+                            | NodeKind::Deref(_)
+                            | NodeKind::Index { .. }
+                            | NodeKind::BinaryOp { .. }
+                            | NodeKind::Not(_)
+                    ) =>
+            {
+                let value = self.emit_load(nodes, *inner);
+                self.linef(format!("(void)({value});"));
+            }
+            NodeKind::Discard(inner) | NodeKind::Expr(inner) => {
                 if !self.is_sized(&nodes[inner.0].ty) {
                     let prepared = self.prepare_value(nodes, *inner);
                     self.allocate_prepared(&prepared);

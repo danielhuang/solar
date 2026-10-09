@@ -1,0 +1,2 @@
+fn discarded() -> Int { 1; }
+fn main() { discarded(); }

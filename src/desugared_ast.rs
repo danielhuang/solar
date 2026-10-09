@@ -170,6 +170,7 @@ impl Desugarer {
                     paired,
                 })
             }
+            ast::StatementKind::Discard(expr) => one(ast::StatementKind::Discard(self.expr(expr))),
             ast::StatementKind::Expression(expr) => {
                 one(ast::StatementKind::Expression(self.expr(expr)))
             }
@@ -512,8 +513,8 @@ impl Desugarer {
             },
             span,
         };
-        let loop_statement = statement(ast::StatementKind::Expression(ast::Expr {
-            kind: ast::ExprKind::Loop(vec![statement(ast::StatementKind::Expression(match_next))]),
+        let loop_statement = statement(ast::StatementKind::Discard(ast::Expr {
+            kind: ast::ExprKind::Loop(vec![statement(ast::StatementKind::Discard(match_next))]),
             span,
         }));
 

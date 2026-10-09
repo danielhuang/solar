@@ -8,6 +8,15 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 #[test]
+fn block_tail_semicolons() {
+    let output = run(
+        &fixture("block_tail_semicolons.solar"),
+        "block_tail_semicolons",
+    );
+    assert_eq!(output, "passed\n");
+}
+
+#[test]
 fn iterator() {
     let output = run(&fixture("iterator.solar"), "iterator");
     assert_eq!(output, "passed\n");

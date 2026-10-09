@@ -640,7 +640,7 @@ fn convert_block(node: tree_sitter::Node, source: &str) -> Vec<Statement> {
             _ => {}
         }
     }
-    // A tail expression (no semicolon) becomes a normal Expression statement
+    // Only an unterminated tail expression supplies the block's value.
     if let Some(tail) = node.child_by_field_name("tail") {
         let span = source_span(tail);
         stmts.push(Statement {
@@ -791,7 +791,7 @@ fn convert_expression_statement(node: tree_sitter::Node, source: &str) -> Statem
     let span = source_span(node);
     let expr_node = code_children(node).into_iter().next().unwrap();
     Statement {
-        kind: StatementKind::Expression(convert_expr(expr_node, source)),
+        kind: StatementKind::Discard(convert_expr(expr_node, source)),
         span,
     }
 }

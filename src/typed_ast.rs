@@ -673,6 +673,9 @@ fn apply_subst_to_ast_statement(
                 .collect(),
             paired: *paired,
         },
+        ast::StatementKind::Discard(expr) => {
+            ast::StatementKind::Discard(apply_subst_to_ast_expr(expr, subst))
+        }
         ast::StatementKind::Expression(expr) => {
             ast::StatementKind::Expression(apply_subst_to_ast_expr(expr, subst))
         }
@@ -1054,10 +1057,57 @@ pub enum StatementKind {
         condition: Expr,
         body: Vec<Statement>,
     },
+    /// An expression evaluated for effects, never a block tail.
+    Discard(Expr),
     Expression(Expr),
     Return(Expr),
     Break(Option<Expr>),
     Continue,
+}
+
+/// A control-flow exit remains diverging even when it has no value tail.
+fn statement_diverges(statement: &Statement) -> bool {
+    match &statement.kind {
+        StatementKind::Return(_) | StatementKind::Break(_) | StatementKind::Continue => true,
+        StatementKind::Expression(expr) | StatementKind::Discard(expr) => expr.ty == Type::Never,
+        StatementKind::Let { value, .. } => value.ty == Type::Never,
+        StatementKind::Assignment { target, value } => {
+            target.ty == Type::Never || value.ty == Type::Never
+        }
+        StatementKind::If {
+            condition,
+            body,
+            else_body,
+        } => {
+            condition.ty == Type::Never
+                || (body_type(body) == Type::Never && body_type(else_body) == Type::Never)
+        }
+        StatementKind::While { condition, .. } => condition.ty == Type::Never,
+    }
+}
+
+/// The normal result of a body, or Never if execution cannot reach its end.
+fn body_type(body: &[Statement]) -> Type {
+    if body.iter().any(statement_diverges) {
+        return Type::Never;
+    }
+    match body.last().map(|statement| &statement.kind) {
+        Some(StatementKind::Expression(expr)) => expr.ty.clone(),
+        _ => Type::Unit,
+    }
+}
+
+fn inferred_return_type(body: &[Statement], returns: &[(Type, ast::SourceSpan)]) -> Type {
+    let ty = body_type(body);
+    if ty == Type::Never {
+        returns
+            .iter()
+            .find(|(ty, _)| *ty != Type::Never)
+            .map(|(ty, _)| ty.clone())
+            .unwrap_or(Type::Never)
+    } else {
+        ty
+    }
 }
 
 /// An expression with its type and source span.
@@ -4278,7 +4328,7 @@ impl<'a> Lowerer<'a> {
 
         let return_type = if let Some(rt) = explicit_return_type {
             // Explicit return type: validate the body produces the right type
-            if rt != Type::Unit {
+            if rt != Type::Unit && body_type(&body) != Type::Never {
                 // A tail expression is subject to the same coercions as an
                 // explicit `return` (which lowers through `try_coerce`).
                 // Without this, `fn f(p: &P) -> &?P { p }` was an error while
@@ -4336,15 +4386,7 @@ impl<'a> Lowerer<'a> {
             }
             rt
         } else {
-            // Infer return type from the last expression in the body
-            let inferred = body
-                .last()
-                .and_then(|s| match &s.kind {
-                    StatementKind::Expression(expr) => Some(expr.ty.clone()),
-                    StatementKind::Return(expr) => Some(expr.ty.clone()),
-                    _ => None,
-                })
-                .unwrap_or(Type::Unit);
+            let inferred = inferred_return_type(&body, &self.inference_returns);
             if !inferred.is_sized(&self.lowered_structs) {
                 return Err(CompileError::new(
                     format!(
@@ -4780,7 +4822,7 @@ impl<'a> Lowerer<'a> {
             span,
         };
         lowered.push(Statement {
-            kind: StatementKind::Expression(intrinsic),
+            kind: StatementKind::Discard(intrinsic),
             span,
         });
 
@@ -4871,7 +4913,7 @@ impl<'a> Lowerer<'a> {
             span,
         })?;
         lowered.push(Statement {
-            kind: StatementKind::Expression(replay),
+            kind: StatementKind::Discard(replay),
             span,
         });
         Ok(lowered)
@@ -5002,7 +5044,7 @@ impl<'a> Lowerer<'a> {
     fn lower_never_try_control(&self, value: Expr, span: ast::SourceSpan) -> Vec<Statement> {
         vec![
             Statement {
-                kind: StatementKind::Expression(value),
+                kind: StatementKind::Discard(value),
                 span,
             },
             Statement {
@@ -5338,6 +5380,10 @@ impl<'a> Lowerer<'a> {
                 binding_type,
                 handler,
             } => self.lower_try_statement(stmt.span, body, binding, binding_type.as_ref(), handler),
+            ast::StatementKind::Discard(expr) => Ok(vec![Statement {
+                kind: StatementKind::Discard(self.lower_expr(expr)?),
+                span: stmt.span,
+            }]),
             ast::StatementKind::Expression(expr) => Ok(vec![Statement {
                 kind: StatementKind::Expression(self.lower_expr(expr)?),
                 span: stmt.span,
@@ -7128,22 +7174,9 @@ impl<'a> Lowerer<'a> {
                     .collect();
                 self.pop_scope();
 
-                // Extract tail expression type from each branch
-                let then_ty = lowered_then
-                    .last()
-                    .and_then(|s| match &s.kind {
-                        StatementKind::Expression(e) => Some(e.ty.clone()),
-                        _ => None,
-                    })
-                    .unwrap_or(Type::Unit);
-                let else_ty = lowered_else
-                    .last()
-                    .and_then(|s| match &s.kind {
-                        StatementKind::Expression(e) => Some(e.ty.clone()),
-                        _ => None,
-                    })
-                    .unwrap_or(Type::Unit);
-                if then_ty != else_ty {
+                let then_ty = body_type(&lowered_then);
+                let else_ty = body_type(&lowered_else);
+                if then_ty != else_ty && then_ty != Type::Never && else_ty != Type::Never {
                     return Err(CompileError::new(
                         format!(
                             "if expression branch type mismatch: then is {then_ty}, else is {else_ty}"
@@ -7151,9 +7184,14 @@ impl<'a> Lowerer<'a> {
                         expr.span,
                     ));
                 }
+                let result_ty = if then_ty == Type::Never {
+                    else_ty
+                } else {
+                    then_ty
+                };
 
                 Ok(Expr {
-                    ty: then_ty,
+                    ty: result_ty,
                     kind: ExprKind::If {
                         condition: Box::new(lowered_cond),
                         then_body: lowered_then,
@@ -7172,13 +7210,7 @@ impl<'a> Lowerer<'a> {
                     .flatten()
                     .collect();
                 self.pop_scope();
-                let ty = lowered
-                    .last()
-                    .and_then(|s| match &s.kind {
-                        StatementKind::Expression(e) => Some(e.ty.clone()),
-                        _ => None,
-                    })
-                    .unwrap_or(Type::Unit);
+                let ty = body_type(&lowered);
                 Ok(Expr {
                     ty,
                     kind: ExprKind::Block(lowered),
@@ -7196,13 +7228,7 @@ impl<'a> Lowerer<'a> {
                 self.unsafe_depth = previous_unsafe_depth;
                 let lowered: Vec<Statement> = lowered?.into_iter().flatten().collect();
                 self.pop_scope();
-                let ty = lowered
-                    .last()
-                    .and_then(|statement| match &statement.kind {
-                        StatementKind::Expression(expression) => Some(expression.ty.clone()),
-                        _ => None,
-                    })
-                    .unwrap_or(Type::Unit);
+                let ty = body_type(&lowered);
                 Ok(Expr {
                     ty,
                     kind: ExprKind::Block(lowered),
@@ -7464,7 +7490,7 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        let result_ty = result_ty.unwrap_or(Type::Unit);
+        let result_ty = result_ty.unwrap_or(Type::Never);
         Ok(Expr {
             ty: result_ty,
             kind: ExprKind::Match {
@@ -7574,7 +7600,7 @@ impl<'a> Lowerer<'a> {
         // the wildcard to backends that emit an if/else chain.
         typed_arms.truncate(wildcard_index + 1);
 
-        let result_ty = result_ty.unwrap_or(Type::Unit);
+        let result_ty = result_ty.unwrap_or(Type::Never);
         Ok(Expr {
             ty: result_ty,
             kind: ExprKind::Match {
@@ -7803,7 +7829,7 @@ impl<'a> Lowerer<'a> {
             });
             block_stmts.extend(body.iter().cloned());
             outer_stmts.push(ast::Statement {
-                kind: ast::StatementKind::Expression(ast::Expr {
+                kind: ast::StatementKind::Discard(ast::Expr {
                     kind: ast::ExprKind::Block(block_stmts),
                     span,
                 }),
@@ -7812,7 +7838,7 @@ impl<'a> Lowerer<'a> {
         }
 
         self.lower_statement(&ast::Statement {
-            kind: ast::StatementKind::Expression(ast::Expr {
+            kind: ast::StatementKind::Discard(ast::Expr {
                 kind: ast::ExprKind::Block(outer_stmts),
                 span,
             }),
@@ -8403,7 +8429,7 @@ impl<'a> Lowerer<'a> {
         }
 
         let match_stmt = ast::Statement {
-            kind: ast::StatementKind::Expression(ast::Expr {
+            kind: ast::StatementKind::Discard(ast::Expr {
                 kind: ast::ExprKind::Match {
                     scrutinee: Box::new(ast::Expr {
                         kind: ast::ExprKind::Deref(Box::new(ast::Expr {
@@ -8430,7 +8456,7 @@ impl<'a> Lowerer<'a> {
             match_stmt,
         ];
         self.lower_statement(&ast::Statement {
-            kind: ast::StatementKind::Expression(ast::Expr {
+            kind: ast::StatementKind::Discard(ast::Expr {
                 kind: ast::ExprKind::Block(outer_stmts),
                 span,
             }),
@@ -8558,7 +8584,7 @@ impl<'a> Lowerer<'a> {
 
         // Determine return type
         let fn_return_type = if let Some(rt) = explicit_return_type {
-            if rt != Type::Unit {
+            if rt != Type::Unit && body_type(&lowered_body) != Type::Never {
                 let last_ty = lowered_body.last().and_then(|s| match &s.kind {
                     StatementKind::Expression(expr) => Some(&expr.ty),
                     StatementKind::Return(expr) => Some(&expr.ty),
@@ -8585,14 +8611,7 @@ impl<'a> Lowerer<'a> {
             }
             rt
         } else {
-            lowered_body
-                .last()
-                .and_then(|s| match &s.kind {
-                    StatementKind::Expression(expr) => Some(expr.ty.clone()),
-                    StatementKind::Return(expr) => Some(expr.ty.clone()),
-                    _ => None,
-                })
-                .unwrap_or(Type::Unit)
+            inferred_return_type(&lowered_body, &self.inference_returns)
         };
 
         if !fn_return_type.is_sized(&self.lowered_structs) {

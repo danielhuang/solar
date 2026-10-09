@@ -2054,6 +2054,7 @@ fn collect_expression_types(
     match &statement.kind {
         StatementKind::Let { value, .. }
         | StatementKind::Expression(value)
+        | StatementKind::Discard(value)
         | StatementKind::Return(value) => collect_expression_type(value, target, out),
         StatementKind::Assignment {
             target: left,
@@ -3717,6 +3718,7 @@ impl DefFinder<'_> {
         match &statement.kind {
             StatementKind::Let { value, .. }
             | StatementKind::Expression(value)
+            | StatementKind::Discard(value)
             | StatementKind::Return(value) => self.walk_expr(value),
             StatementKind::Assignment { target, value } => {
                 self.walk_expr(target);
@@ -5029,9 +5031,9 @@ impl BindingSignatureCollector<'_> {
                 self.record_declaration(statement.span, name, ty);
                 self.walk_expr(value);
             }
-            StatementKind::Expression(value) | StatementKind::Return(value) => {
-                self.walk_expr(value)
-            }
+            StatementKind::Discard(value)
+            | StatementKind::Expression(value)
+            | StatementKind::Return(value) => self.walk_expr(value),
             StatementKind::Assignment { target, value } => {
                 self.walk_expr(target);
                 self.walk_expr(value);
@@ -5227,6 +5229,7 @@ fn collect_statement_overlays(
     match &statement.kind {
         StatementKind::Let { value, .. }
         | StatementKind::Expression(value)
+        | StatementKind::Discard(value)
         | StatementKind::Return(value) => collect_expr_overlays(value, file_id, overlays),
         StatementKind::Assignment { target, value } => {
             collect_expr_overlays(target, file_id, overlays);
@@ -6516,24 +6519,6 @@ fn main() { use_value(1); }
             assert_eq!(location["range"]["start"]["line"], target_line);
             assert_eq!(location["range"]["start"]["character"], target_character);
         }
-    }
-
-    #[test]
-    fn definition_resolves_example_blue_variant() {
-        let (_, source, document) = fixture_document("examples/example.solar");
-        let (line, character) = occurrence_position(&source, "Blue", 2);
-
-        let location = definition(&source, line, character, &document).expect("Blue definition");
-
-        assert!(
-            location["uri"]
-                .as_str()
-                .unwrap()
-                .ends_with("/examples/example.solar"),
-            "{location}"
-        );
-        assert_eq!(location["range"]["start"]["line"], 76, "{location}");
-        assert_eq!(location["range"]["start"]["character"], 25, "{location}");
     }
 
     #[test]

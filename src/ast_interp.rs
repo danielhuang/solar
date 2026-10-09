@@ -2386,7 +2386,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             // `return`/`break`/`continue` inside a compound expression (a
             // trailing `if`/`match`/`loop`/block in a loop body, say)
             // propagate via `Unwind`.
-            StatementKind::Expression(expr) => {
+            StatementKind::Discard(expr) | StatementKind::Expression(expr) => {
                 self.eval_expr(expr)?;
             }
             StatementKind::Return(expr) => {

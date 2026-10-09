@@ -1,0 +1,4 @@
+fn main() {
+	let discarded = \ -> Int { 1; };
+	discarded();
+}

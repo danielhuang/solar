@@ -471,6 +471,9 @@ pub enum StatementKind {
         /// lockstep. `object` is then a 2-tuple `(a, b)`.
         paired: bool,
     },
+    /// An expression evaluated for effects; its value is discarded by `;`.
+    Discard(Expr),
+    /// An unterminated expression, yielding its value when last in a block.
     Expression(Expr),
     Return(Expr),
     /// A surface `return;`, before it is normalized to a Unit-valued return.

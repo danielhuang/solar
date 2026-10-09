@@ -663,7 +663,13 @@ fn statement_has_block(statement: &Statement) -> bool {
             | StatementKind::NestedFunction(_)
     ) || matches!(
         &statement.kind,
-        StatementKind::Expression(Expr {
+        StatementKind::Discard(Expr {
+            kind: ExprKind::Block(_)
+                | ExprKind::If { .. }
+                | ExprKind::Loop(_)
+                | ExprKind::Closure { .. },
+            ..
+        }) | StatementKind::Expression(Expr {
             kind: ExprKind::Block(_)
                 | ExprKind::If { .. }
                 | ExprKind::Loop(_)
@@ -806,14 +812,10 @@ fn statement_doc(statement: &Statement, context: &SourceContext<'_>) -> Doc {
             block_doc(body, statement.span, context),
         ])
         .group(),
-        StatementKind::Expression(expression) => Doc::concat([
-            expr_doc(expression, context),
-            if context.text(statement.span).trim_end().ends_with(';') {
-                Doc::text(";")
-            } else {
-                Doc::Nil
-            },
-        ]),
+        StatementKind::Discard(expression) => {
+            Doc::concat([expr_doc(expression, context), Doc::text(";")])
+        }
+        StatementKind::Expression(expression) => expr_doc(expression, context),
         StatementKind::Return(expression) => Doc::concat([
             Doc::text("return "),
             expr_doc(expression, context),

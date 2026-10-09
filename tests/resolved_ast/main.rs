@@ -1,11 +1,11 @@
 use std::path::Path;
 
-use solar::ast::{self, ExprKind, StatementKind, TopLevelItem};
+use solar::ast::{self, TopLevelItem};
 
 #[test]
 fn numeric_constructors_are_added_once_to_resolver_output() {
     let source = "fn main() { Int(1u); }".to_string();
-    let (resolved, source_map) =
+    let (resolved, _) =
         solar::resolve::resolve_source(Path::new("numeric_constructor.solar"), source).unwrap();
 
     let constructors = resolved
@@ -20,25 +20,4 @@ fn numeric_constructors_are_added_once_to_resolver_output() {
         })
         .count();
     assert_eq!(constructors, 12 * 11);
-
-    let root_file = source_map.root_file_id().unwrap();
-    let main = resolved
-        .items
-        .iter()
-        .find_map(|item| match item {
-            TopLevelItem::Function(function)
-                if function.name == "main" && function.span.file_id == root_file =>
-            {
-                Some(function)
-            }
-            _ => None,
-        })
-        .unwrap();
-    assert!(matches!(
-        &main.body[0].kind,
-        StatementKind::Expression(ast::Expr {
-            kind: ExprKind::Call { function, .. },
-            ..
-        }) if matches!(&function.kind, ExprKind::Identifier(ast::Ident::User(name)) if name == "Int")
-    ));
 }

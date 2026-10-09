@@ -3,9 +3,9 @@ fn double(x: Int) -> Int {
 	x * 2
 }
 
-// tail expression (with semicolon — same AST)
+// another value-returning tail expression (no semicolon)
 fn triple(x: Int) -> Int {
-	x * 3;
+	x * 3
 }
 
 // explicit return

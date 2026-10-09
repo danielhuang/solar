@@ -1,0 +1,8 @@
+enum Choice { First, Second }
+
+fn main() {
+	let value = match Choice::First {
+		Choice::First => { 1; },
+		Choice::Second => 2,
+	};
+}

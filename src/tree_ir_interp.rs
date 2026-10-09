@@ -2176,7 +2176,30 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 return Err(Unwind::Break);
             }
             NodeKind::Continue => return Err(Unwind::Continue),
-            NodeKind::Expr(inner) => {
+            NodeKind::Discard(inner)
+                if matches!(
+                    nodes[inner.0].kind,
+                    NodeKind::IntegerLiteral(_)
+                        | NodeKind::FloatLiteral(_)
+                        | NodeKind::BooleanLiteral(_)
+                        | NodeKind::Null
+                ) => {}
+            NodeKind::Discard(inner)
+                if (nodes[inner.0].ty.is_numeric() || nodes[inner.0].ty == Type::Bool)
+                    && matches!(
+                        nodes[inner.0].kind,
+                        NodeKind::Local(_)
+                            | NodeKind::Global(_)
+                            | NodeKind::FieldAccess { .. }
+                            | NodeKind::Deref(_)
+                            | NodeKind::Index { .. }
+                            | NodeKind::BinaryOp { .. }
+                            | NodeKind::Not(_)
+                    ) =>
+            {
+                self.eval_load(nodes, *inner)?;
+            }
+            NodeKind::Discard(inner) | NodeKind::Expr(inner) => {
                 // A statement-position expression, evaluated for side effects
                 // only. `return`/`break`/`continue` inside a compound expression
                 // (`if`/`match`/`loop` bodies) propagate via `Unwind`.

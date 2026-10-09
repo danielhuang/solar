@@ -1,0 +1,114 @@
+static CALLS: Int = 0;
+
+enum Choice { First, Second }
+
+fn tick() -> Int {
+	CALLS = CALLS + 1;
+	CALLS
+}
+
+fn take_unit(value: Unit) {}
+
+fn inferred_discard() { tick(); }
+fn explicit_discard() -> Unit { tick(); }
+fn inferred_tail() { tick() }
+fn explicit_tail() -> Int { tick() }
+fn returned() { return tick(); }
+fn diverging() -> Never { throw("stop"&); }
+
+fn return_branch(flag: Bool) -> Int {
+	if flag { return 31; } else { 32 }
+}
+
+fn return_from_try() -> Int {
+	try { return 33; } catch (e) { 99; }
+	34
+}
+
+fn inferred_return_branches(flag: Bool) {
+	if flag { return 41; } else { return 42; }
+}
+
+fn inferred_match_returns(choice: Choice) {
+	match choice {
+		Choice::First => { return 43; },
+		Choice::Second => { return 44; },
+	}
+}
+
+fn main() {
+	let plain: Unit = { tick(); };
+	let nested: Unit = { ({ tick(); }); };
+	let unsafe_unit: Unit = unsafe { tick(); };
+	let discarded_block: Unit = { ({ tick() }); };
+	let if_unit: Unit = if true { tick(); } else { 99; };
+	let match_unit: Unit = match Choice::First {
+		Choice::First => { tick(); },
+		Choice::Second => { 99; },
+	};
+	take_unit(plain);
+	take_unit(nested);
+	take_unit(unsafe_unit);
+	take_unit(discarded_block);
+	take_unit(if_unit);
+	take_unit(match_unit);
+	take_unit(inferred_discard());
+	take_unit(explicit_discard());
+
+	let inferred_closure = \ { tick(); };
+	let annotated_closure: fn() = \ { tick(); };
+	let explicit_closure = \ -> Unit { tick(); };
+	take_unit(inferred_closure());
+	take_unit(annotated_closure());
+	take_unit(explicit_closure());
+	assert(CALLS == 11);
+
+	let block_value: Int = { tick() };
+	let nested_value: Int = { { tick() } };
+	let unsafe_value: Int = unsafe { tick() };
+	assert(block_value == 12);
+	assert(nested_value == 13);
+	assert(unsafe_value == 14);
+	assert(inferred_tail() == 15);
+	assert(explicit_tail() == 16);
+	let tail_closure = \ { tick() };
+	assert(tail_closure() == 17);
+	assert(returned() == 18);
+	let unsafe_discard: Unit = { unsafe { 99 }; };
+	take_unit(unsafe_discard);
+	assert(inferred_return_branches(true) == 41);
+	assert(inferred_return_branches(false) == 42);
+	assert(inferred_match_returns(Choice::First) == 43);
+	assert(inferred_match_returns(Choice::Second) == 44);
+	let returning_closure = \ {
+		if true { return 45; } else { return 46; }
+	};
+	assert(returning_closure() == 45);
+
+	let if_value = if false { diverging(); } else { tick() };
+	let match_value = match Choice::Second {
+		Choice::First => { diverging(); },
+		Choice::Second => { tick() },
+	};
+	assert(if_value == 19);
+	assert(match_value == 20);
+	assert(return_branch(true) == 31);
+	assert(return_branch(false) == 32);
+	assert(return_from_try() == 33);
+
+	let break_value = loop { ({ break tick(); }); };
+	assert(break_value == 21);
+	let branch_break = loop {
+		if true { break tick(); } else { 99; };
+	};
+	assert(branch_break == 22);
+	let discarded_loop: Unit = { loop { break tick(); }; };
+	take_unit(discarded_loop);
+	assert(CALLS == 23);
+
+	try { tick(); 99; } catch (e) { tick(); 99; }
+	try { diverging(); } catch (e) { tick(); 99; }
+	assert(CALLS == 25);
+	println("passed"&);
+	99; // A trailing comment does not make this a value tail.
+}

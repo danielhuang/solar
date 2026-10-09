@@ -23,6 +23,4 @@ fn main() {
 	}
 
 	black_box(root);
-
-	{}
 }
