@@ -6,6 +6,9 @@ Resolved syntax highlighting is provided by the Solar language server as VS
 Code **semantic tokens**. A small TextMate grammar provides lexical fallback
 highlighting.
 
+Dotted reflection keywords such as `for.reflect_fields_pair` are highlighted as
+a single keyword, including the dot.
+
 ## Features
 
 - Compiler diagnostics while editing; each open file is checked as a program root.
