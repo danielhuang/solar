@@ -859,8 +859,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let saved = self.alloc_ty(element_ty);
                 self.eval_into(nodes, *element, saved)?;
                 let count = self.eval_load(nodes, *count)? as usize;
-                let addr = self.alloc_unsized(&ty, count);
                 let size = type_size(element_ty, &self.module.datatypes);
+                count
+                    .checked_mul(size)
+                    .ok_or_else(|| self.thrown("integer overflow in multiplication"))?;
+                let addr = self.alloc_unsized(&ty, count);
                 for index in 0..count {
                     self.copy_value(addr + index * size, saved, element_ty, None);
                 }
@@ -872,6 +875,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     Type::Array(inner) | Type::FixedArray(inner, _) => inner.as_ref(),
                     _ => unreachable!(),
                 };
+                length
+                    .checked_mul(type_size(elem_ty, &self.module.datatypes))
+                    .ok_or_else(|| self.thrown("integer overflow in multiplication"))?;
                 let addr = self.alloc_unsized(&ty, length);
                 self.eval_array_init(nodes, *init, length, elem_ty, addr)?;
                 return Ok((addr, length));

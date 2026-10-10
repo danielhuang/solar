@@ -1361,7 +1361,7 @@ impl<'a> Codegen<'a> {
                 let left = self.prepare_value_inner(nodes, *left, true);
                 let right = self.prepare_value_inner(nodes, *right, snapshot);
                 let meta = format!(
-                    "({} + {})",
+                    "sol_checked_add_uint({}, {})",
                     left.meta.as_ref().unwrap(),
                     right.meta.as_ref().unwrap()
                 );
@@ -1776,11 +1776,12 @@ impl<'a> Codegen<'a> {
     }
 
     /// Emit a C expression computing full_size of a type given a metadata variable name.
+    /// Dynamic byte counts must throw before a wrapped allocation can be used.
     fn emit_full_size_expr(&self, ty: &Type, meta: &str) -> String {
         match ty {
             Type::Array(inner) => {
                 let es = self.type_size(inner);
-                format!("({meta} * {es})")
+                format!("sol_checked_mul_uint((uint64_t)({meta}), {es}u)")
             }
             Type::Struct(name) => {
                 let dt = &self.module.datatypes[name.as_str()];
@@ -1791,7 +1792,11 @@ impl<'a> Codegen<'a> {
                     let tail_expr = self.emit_full_size_expr(&last.ty, meta);
                     let base = last.offset;
                     let al = dt.align;
-                    format!("(({base} + {tail_expr} + {al} - 1) & ~(uint64_t)({al} - 1))")
+                    format!(
+                        "(sol_checked_add_uint(sol_checked_add_uint({base}u, {tail_expr}), {}u) & ~(uint64_t)({}u))",
+                        al - 1,
+                        al - 1
+                    )
                 }
             }
             _ => format!("{}", self.type_size(ty)),

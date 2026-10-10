@@ -1384,6 +1384,12 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     Value::Int(n) => n as usize,
                     _ => unreachable!(),
                 };
+                let (Type::Array(inner) | Type::FixedArray(inner, _)) = &expr.ty else {
+                    unreachable!()
+                };
+                let element_size = ast_type_layout(inner, self.structs, self.enums).unwrap().0;
+                n.checked_mul(element_size)
+                    .ok_or_else(|| self.thrown("integer overflow in multiplication"))?;
                 let mut slots = Vec::with_capacity(n);
                 for _ in 0..n {
                     slots.push(Rc::new(RefCell::new(deep_copy_value(&elem_val))));
@@ -1396,6 +1402,12 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     _ => unreachable!(),
                 };
                 let init_val = self.eval_expr(init)?;
+                let (Type::Array(inner) | Type::FixedArray(inner, _)) = &expr.ty else {
+                    unreachable!()
+                };
+                let element_size = ast_type_layout(inner, self.structs, self.enums).unwrap().0;
+                n.checked_mul(element_size)
+                    .ok_or_else(|| self.thrown("integer overflow in multiplication"))?;
                 let (func_name, captured_slots) = match init_val {
                     Value::Function { name, captures } => (name, captures),
                     _ => unreachable!("array init must be a function"),
