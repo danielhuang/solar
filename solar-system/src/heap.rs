@@ -91,9 +91,9 @@ pub const BITMAP_TOTAL: usize = 1usize << BITS_TOP; // 32 GiB
 /// Metadata stored for a precisely traced slot.
 #[repr(C)]
 pub struct MetaEntry {
-    /// `MarkFn` reinterpreted as `usize`. Valid whenever the slot's allocated
-    /// bit is set.
-    pub mark_fn: usize,
+    /// `MarkFn` reinterpreted as `usize`, or zero until initialization ends.
+    /// Atomic because a mutator can publish it during concurrent marking.
+    pub mark_fn: std::sync::atomic::AtomicUsize,
     /// User-requested size (the slot size may be larger). Needed by `mark_fn`
     /// for arrays/slices.
     pub size: u64,
@@ -535,9 +535,16 @@ pub unsafe fn lookup_arena(p: usize) -> Option<(usize, usize, usize, MarkKind)> 
     let base = slot_addr(rbase, slot, class);
     let kind = if class >= META_MIN_CLASS {
         let m = unsafe { &*meta_entry(class, slot) };
-        MarkKind::Precise {
-            mark_fn: unsafe { std::mem::transmute::<usize, MarkFn>(m.mark_fn) },
-            size: m.size,
+        let mark_fn = m.mark_fn.load(Ordering::Acquire);
+        if mark_fn == 0 {
+            MarkKind::Conservative {
+                slot_size: m.size as usize,
+            }
+        } else {
+            MarkKind::Precise {
+                mark_fn: unsafe { std::mem::transmute::<usize, MarkFn>(mark_fn) },
+                size: m.size,
+            }
         }
     } else {
         MarkKind::Conservative {

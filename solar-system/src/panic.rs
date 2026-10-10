@@ -95,8 +95,9 @@ unsafe fn sol_payload_type_name(tag: u64) -> *const std::ffi::c_char {
 }
 
 unsafe fn copy_bytes(bytes: &[u8], align: usize) -> SolSlice {
-    let ptr =
-        unsafe { crate::mem::sol_alloc_impl(bytes.len().max(1), align, crate::process::mark_noop) };
+    let ptr = unsafe {
+        crate::mem::sol_alloc_impl(bytes.len().max(1), align, Some(crate::process::mark_noop))
+    };
     unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len()) };
     SolSlice {
         ptr,

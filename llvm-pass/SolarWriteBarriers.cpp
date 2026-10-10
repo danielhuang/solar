@@ -7,6 +7,7 @@
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Analysis/CFG.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/PostDominators.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/IR/Constants.h"
@@ -488,6 +489,196 @@ struct SolarBatchGcAlloc : PassInfoMixin<SolarBatchGcAlloc> {
   static bool isRequired() { return true; }
 };
 
+// Defer precise tracing until the generated initialization stores have run.
+// This pass runs after both O3 pipelines and batching: a setter inserted before
+// allocation elision would make an otherwise removable allocation escape.
+struct SolarPublishGcMarkFns : PassInfoMixin<SolarPublishGcMarkFns> {
+  struct Allocation {
+    CallInst *Call;
+    CallInst *Rewrite;
+    Value *Mark;
+    SmallVector<Value *, 8> Addresses;
+  };
+
+  static bool isAllocName(StringRef Name) {
+    return Name == "sol_alloc" || Name == "sol_alloc_impl" ||
+           Name.starts_with("sol_alloc_class_") ||
+           Name.starts_with("sol_alloc_batch");
+  }
+
+  static SmallVector<Value *, 8> batchAddresses(CallInst *Call) {
+    SmallVector<Value *, 8> Addresses;
+    SmallVector<Value *, 16> Pending{Call};
+    SmallPtrSet<Value *, 16> Seen;
+    while (!Pending.empty()) {
+      Value *Current = Pending.pop_back_val();
+      if (!Seen.insert(Current).second)
+        continue;
+      for (User *U : Current->users()) {
+        if (auto *Cast = dyn_cast<IntToPtrInst>(U)) {
+          Addresses.push_back(Cast);
+        } else if (auto *Load = dyn_cast<LoadInst>(U)) {
+          if (Load->getType()->isPointerTy())
+            Addresses.push_back(Load);
+        } else if (isa<ExtractValueInst>(U) || isa<GetElementPtrInst>(U) ||
+                   isa<BitCastInst>(U) || isa<AddrSpaceCastInst>(U)) {
+          Pending.push_back(cast<Value>(U));
+        }
+      }
+    }
+    return Addresses;
+  }
+
+  static Allocation describe(CallInst *Call) {
+    Function *F = Call->getCalledFunction();
+    if (F->arg_size() >= 3) {
+      Value *Mark = Call->getArgOperand(2);
+      bool Batch = F->getName().contains("_batch");
+      return {Call, Call, Mark,
+              Batch ? batchAddresses(Call)
+                    : SmallVector<Value *, 8>{Call}};
+    }
+
+    // O3 can specialize a fixed-class wrapper to zero arguments. Read the
+    // original mark function from its sole forwarding call before rewriting it.
+    CallInst *Inner = nullptr;
+    for (Instruction &I : instructions(F)) {
+      auto *Candidate = dyn_cast<CallInst>(&I);
+      Function *Target = Candidate ? Candidate->getCalledFunction() : nullptr;
+      if (!Target || !isAllocName(Target->getName()) ||
+          !Target->getName().ends_with("_impl"))
+        continue;
+      if (Inner)
+        report_fatal_error("ambiguous specialized allocator wrapper");
+      Inner = Candidate;
+    }
+    if (!Inner)
+      report_fatal_error("cannot recover specialized allocator mark function");
+    Value *Mark = Inner->getArgOperand(2);
+    if (auto *Arg = dyn_cast<Argument>(Mark))
+      Mark = Call->getArgOperand(Arg->getArgNo());
+    else if (!isa<Constant>(Mark))
+      report_fatal_error("unsupported specialized allocator mark function");
+    return {Call, Inner, Mark, {Call}};
+  }
+
+  static bool writesTo(Instruction &I, Value *Address) {
+    Value *Destination = nullptr;
+    if (auto *Store = dyn_cast<StoreInst>(&I))
+      Destination = Store->getPointerOperand();
+    else if (auto *Mem = dyn_cast<MemIntrinsic>(&I))
+      Destination = Mem->getRawDest();
+    else if (auto *RMW = dyn_cast<AtomicRMWInst>(&I))
+      Destination = RMW->getPointerOperand();
+    else if (auto *CX = dyn_cast<AtomicCmpXchgInst>(&I))
+      Destination = CX->getPointerOperand();
+    return Destination && getUnderlyingObject(Destination) == Address;
+  }
+
+  // At -O0 Clang spills each generated allocation into a local pointer slot
+  // before reloading it for the immediately following zero-initialization.
+  // Recognize that spill so a long-lived object is not left conservative until
+  // the enclosing function returns.
+  static Instruction *zeroedAfterSpill(CallInst *Call) {
+    BasicBlock *BB = Call->getParent();
+    for (Instruction *I = Call->getNextNode(); I; I = I->getNextNode()) {
+      auto *Store = dyn_cast<StoreInst>(I);
+      if (!Store || Store->getValueOperand() != Call)
+        continue;
+      auto *Slot = dyn_cast<AllocaInst>(Store->getPointerOperand());
+      if (!Slot)
+        continue;
+      bool Unique = llvm::all_of(Slot->users(), [&](User *U) {
+        auto *S = dyn_cast<StoreInst>(U);
+        return !S || S->getPointerOperand() != Slot || S == Store;
+      });
+      if (!Unique)
+        continue;
+      for (Instruction *J = Store->getNextNode(); J; J = J->getNextNode()) {
+        auto *Zero = dyn_cast<MemSetInst>(J);
+        if (!Zero || !isa<ConstantInt>(Zero->getValue()) ||
+            !cast<ConstantInt>(Zero->getValue())->isZero())
+          continue;
+        auto *Load = dyn_cast<LoadInst>(Zero->getDest());
+        if (!Load || Load->getPointerOperand() != Slot ||
+            Load->getParent() != BB)
+          continue;
+        auto *Size = dyn_cast<ConstantInt>(Call->getArgOperand(0));
+        auto *Length = dyn_cast<ConstantInt>(Zero->getLength());
+        if (Size && Length && Length->getZExtValue() >= Size->getZExtValue())
+          return Zero;
+      }
+    }
+    return nullptr;
+  }
+
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+    SmallVector<Allocation, 32> Allocations;
+    for (Function &F : M) {
+      if (F.isDeclaration() || !isGeneratedFunc(F))
+        continue;
+      for (Instruction &I : instructions(F)) {
+        auto *Call = dyn_cast<CallInst>(&I);
+        Function *Callee = Call ? Call->getCalledFunction() : nullptr;
+        if (Callee && isAllocName(Callee->getName()))
+          Allocations.push_back(describe(Call));
+      }
+    }
+    if (Allocations.empty())
+      return PreservedAnalyses::all();
+
+    LLVMContext &Ctx = M.getContext();
+    Type *Ptr = PointerType::getUnqual(Ctx);
+    auto Setter = M.getOrInsertFunction(
+        "sol_set_mark_fn",
+        FunctionType::get(Type::getVoidTy(Ctx), {Ptr, Ptr}, false));
+    auto &FAM = AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
+    for (Allocation &A : Allocations) {
+      A.Rewrite->setArgOperand(2, ConstantPointerNull::get(cast<PointerType>(Ptr)));
+      A.Rewrite->removeParamAttr(2, Attribute::NonNull);
+      A.Rewrite->removeParamAttr(2, Attribute::Dereferenceable);
+      A.Rewrite->removeParamAttr(2, Attribute::DereferenceableOrNull);
+      if (isa<ConstantPointerNull>(A.Mark))
+        continue;
+      A.Call->setTailCallKind(CallInst::TCK_None);
+      Function &F = *A.Call->getFunction();
+      auto &PDT = FAM.getResult<PostDominatorTreeAnalysis>(F);
+      auto &DT = FAM.getResult<DominatorTreeAnalysis>(F);
+      if (A.Addresses.size() == 1 && A.Addresses.front() == A.Call)
+        if (Instruction *Zero = zeroedAfterSpill(A.Call)) {
+          IRBuilder<> B(Zero->getNextNode());
+          B.SetCurrentDebugLocation(barrierDebugLoc(A.Call));
+          CallInst *Publish = B.CreateCall(Setter, {A.Call, A.Mark});
+          Publish->setDoesNotThrow();
+          continue;
+        }
+      for (Value *Address : A.Addresses) {
+        if (auto *Inst = dyn_cast<Instruction>(Address))
+          if (Inst->getParent() != A.Call->getParent())
+            report_fatal_error("batch allocation address escaped its block");
+        BasicBlock *PublishBlock = A.Call->getParent();
+        for (Instruction &I : instructions(F)) {
+          if (!writesTo(I, Address))
+            continue;
+          PublishBlock = PDT.findNearestCommonDominator(PublishBlock, I.getParent());
+          if (!PublishBlock)
+            break;
+        }
+        // A branch may leave no common post-dominating point where the
+        // allocation address is defined. It remains conservatively traced.
+        if (!PublishBlock || !DT.dominates(A.Call, PublishBlock->getTerminator()))
+          continue;
+        IRBuilder<> B(PublishBlock->getTerminator());
+        B.SetCurrentDebugLocation(barrierDebugLoc(A.Call));
+        CallInst *Publish = B.CreateCall(Setter, {Address, A.Mark});
+        Publish->setDoesNotThrow();
+      }
+    }
+    return PreservedAnalyses::none();
+  }
+  static bool isRequired() { return true; }
+};
+
 struct SolarWriteBarriers : PassInfoMixin<SolarWriteBarriers> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
     LLVMContext &Ctx = M.getContext();
@@ -780,6 +971,10 @@ llvmGetPassPluginInfo() {
                   }
                   if (Name == "solar-write-barriers") {
                     MPM.addPass(SolarWriteBarriers());
+                    return true;
+                  }
+                  if (Name == "solar-publish-gc-mark-fns") {
+                    MPM.addPass(SolarPublishGcMarkFns());
                     return true;
                   }
                   if (Name == "solar-lower-atomic-memcpy16") {

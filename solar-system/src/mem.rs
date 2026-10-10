@@ -2,8 +2,8 @@ use std::alloc::Layout;
 use std::sync::atomic::Ordering;
 
 use crate::gc::{
-    BigAllocLocal, ENABLE_ALLOC_PRINTS, SOL_CONCURRENT_MARKING, ThreadAllocState, ThreadClassState,
-    note_claimed, with_thread_slot,
+    BIG_ALLOCS, BigAllocLocal, ENABLE_ALLOC_PRINTS, SOL_CONCURRENT_MARKING, ThreadAllocState,
+    ThreadClassState, note_claimed, with_thread_slot,
 };
 use crate::heap;
 
@@ -37,10 +37,53 @@ pub extern "C" fn sol_gc_keepalive(value: *mut u8) {
     }
 }
 
-/// Allocates uninitialized GC-managed memory.
+/// Allocates uninitialized GC-managed memory. A null mark function keeps the
+/// object conservatively traced until `sol_set_mark_fn` publishes one.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sol_alloc_impl(size: usize, align: usize, mark_fn: MarkFn) -> *mut u8 {
+pub unsafe extern "C" fn sol_alloc_impl(
+    size: usize,
+    align: usize,
+    mark_fn: Option<MarkFn>,
+) -> *mut u8 {
     unsafe { alloc_in_class::<-1, 1>(size, align, mark_fn)[0] }
+}
+
+/// Publishes an allocation's precise tracer after its contents are initialized.
+/// Until this call, a null tracer makes the collector scan the allocation's
+/// words conservatively. `ptr` must be the base of a live GC allocation.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sol_set_mark_fn(ptr: *mut u8, mark_fn: MarkFn) {
+    let address = ptr as usize;
+    if let Some((class, region)) = heap::classify(address) {
+        let slot = heap::slot_index(address, region, class);
+        assert_eq!(heap::slot_addr(region, slot, class), address);
+        assert!(unsafe { heap::is_allocated(class, slot) });
+        if class >= heap::META_MIN_CLASS {
+            let metadata = unsafe { &*heap::meta_entry(class, slot) };
+            metadata.mark_fn.store(mark_fn as usize, Ordering::Release);
+        }
+        return;
+    }
+
+    let local = unsafe {
+        with_thread_slot(|slot| {
+            let state = &mut *slot.alloc.get();
+            if let Some(allocation) = state.big_allocs.iter_mut().find(|b| b.base == address) {
+                allocation.mark_fn = mark_fn as usize;
+                true
+            } else {
+                false
+            }
+        })
+    };
+    if !local {
+        BIG_ALLOCS
+            .lock()
+            .unwrap()
+            .get_mut(&address)
+            .unwrap()
+            .mark_fn = mark_fn as usize;
+    }
 }
 
 /// C-compatible carrier for an array returned by a batch allocator.
@@ -64,7 +107,7 @@ macro_rules! batch_allocator {
         pub unsafe extern "C" fn $name(
             size: usize,
             align: usize,
-            mark_fn: MarkFn,
+            mark_fn: Option<MarkFn>,
         ) -> AllocBatch<$batch> {
             AllocBatch {
                 addresses: unsafe { alloc_in_class::<$class, $batch>(size, align, mark_fn) },
@@ -102,7 +145,7 @@ macro_rules! batch_view_allocator {
         pub unsafe extern "C" fn $name(
             size: usize,
             align: usize,
-            mark_fn: MarkFn,
+            mark_fn: Option<MarkFn>,
         ) -> *const usize {
             unsafe { alloc_view_in_class::<$class, $batch>(size, align, mark_fn) }
         }
@@ -113,7 +156,7 @@ macro_rules! batch_view_allocator {
 unsafe fn alloc_view_in_class<const CLASS: isize, const BATCH: usize>(
     size: usize,
     align: usize,
-    mark_fn: MarkFn,
+    mark_fn: Option<MarkFn>,
 ) -> *const usize {
     const { assert!(CLASS >= 0 && BATCH >= 3 && BATCH <= 8) };
     debug_assert_eq!(heap::size_class(size, align), Some(CLASS as usize));
@@ -155,7 +198,7 @@ unsafe fn alloc_view_in_class<const CLASS: isize, const BATCH: usize>(
 unsafe fn allocate_cached_view<const CLASS: isize, const BATCH: usize>(
     state: &mut ThreadAllocState,
     size: usize,
-    mark_fn: MarkFn,
+    mark_fn: Option<MarkFn>,
 ) -> *const usize {
     let class = CLASS as usize;
     let cs = &mut state.classes[class];
@@ -172,7 +215,9 @@ unsafe fn allocate_cached_view<const CLASS: isize, const BATCH: usize>(
         for &address in &cs.cache[start..start + BATCH] {
             let slot = heap::slot_index(address, rbase, class);
             let metadata = unsafe { &mut *heap::meta_entry(class, slot) };
-            metadata.mark_fn = mark_fn as usize;
+            metadata
+                .mark_fn
+                .store(mark_fn.map_or(0, |f| f as usize), Ordering::Release);
             metadata.size = size as u64;
         }
     }
@@ -191,7 +236,7 @@ unsafe fn allocate_cached_view<const CLASS: isize, const BATCH: usize>(
 unsafe fn alloc_in_class<const CLASS: isize, const BATCH: usize>(
     size: usize,
     align: usize,
-    mark_fn: MarkFn,
+    mark_fn: Option<MarkFn>,
 ) -> [*mut u8; BATCH] {
     const { assert!(BATCH > 0 && BATCH <= 64) };
     debug_assert!(CLASS == -1 || heap::size_class(size, align) == Some(CLASS as usize));
@@ -228,7 +273,7 @@ macro_rules! class_allocators {
         #[unsafe(no_mangle)]
         #[inline(never)]
         pub unsafe extern "C" fn $name(
-            size: usize, align: usize, mark_fn: MarkFn,
+            size: usize, align: usize, mark_fn: Option<MarkFn>,
         ) -> *mut u8 {
             unsafe { alloc_in_class::<$class, 1>(size, align, mark_fn)[0] }
         }
@@ -282,7 +327,7 @@ unsafe fn arena_allocate<const CLASS: isize, const BATCH: usize>(
     state: &mut ThreadAllocState,
     class: usize,
     size: usize,
-    mark_fn: MarkFn,
+    mark_fn: Option<MarkFn>,
 ) -> [*mut u8; BATCH] {
     let class = if CLASS == -1 { class } else { CLASS as usize };
     let cs = &mut state.classes[class];
@@ -311,7 +356,8 @@ unsafe fn arena_allocate<const CLASS: isize, const BATCH: usize>(
         let slot = heap::slot_index(addr, rbase, class);
         if class >= heap::META_MIN_CLASS {
             let m = unsafe { &mut *heap::meta_entry(class, slot) };
-            m.mark_fn = mark_fn as usize;
+            m.mark_fn
+                .store(mark_fn.map_or(0, |f| f as usize), Ordering::Release);
             m.size = size as u64;
         }
         bits |= 1 << (slot & 63);
@@ -333,7 +379,7 @@ unsafe fn arena_allocate_one<const CLASS: isize>(
     state: &mut ThreadAllocState,
     class: usize,
     size: usize,
-    mark_fn: MarkFn,
+    mark_fn: Option<MarkFn>,
 ) -> *mut u8 {
     let class = if CLASS == -1 { class } else { CLASS as usize };
     let cs = &mut state.classes[class];
@@ -351,7 +397,8 @@ unsafe fn arena_allocate_one<const CLASS: isize>(
     // Publish metadata before the allocation bit.
     if class >= heap::META_MIN_CLASS {
         let m = unsafe { &mut *heap::meta_entry(class, slot) };
-        m.mark_fn = mark_fn as usize;
+        m.mark_fn
+            .store(mark_fn.map_or(0, |f| f as usize), Ordering::Release);
         m.size = size as u64;
     }
     unsafe { heap::set_allocated(class, slot) };
@@ -524,7 +571,7 @@ unsafe fn big_allocate(
     state: &mut ThreadAllocState,
     size: usize,
     align: usize,
-    mark_fn: MarkFn,
+    mark_fn: Option<MarkFn>,
 ) -> *mut u8 {
     // Big allocations never go through `claim_run`, so feed the claim-based GC
     // trigger directly — otherwise a big-object-only workload would never
@@ -537,7 +584,7 @@ unsafe fn big_allocate(
         base: ptr as usize,
         size,
         align,
-        mark_fn: mark_fn as usize,
+        mark_fn: mark_fn.map_or(0, |f| f as usize),
     });
     ptr
 }
@@ -667,7 +714,7 @@ mod cache_tests {
         let size = heap::slot_size(class);
         SOL_CONCURRENT_MARKING.store(true, Ordering::Relaxed);
         let mut active = ThreadAllocState::new();
-        let address = unsafe { arena_allocate_one::<3>(&mut active, class, size, mark) };
+        let address = unsafe { arena_allocate_one::<3>(&mut active, class, size, Some(mark)) };
         let slot = heap::slot_index(address as usize, heap::region_base(class), class);
         assert!(!active.classes[class].prepared);
         assert_eq!(
@@ -680,7 +727,7 @@ mod cache_tests {
         );
         SOL_CONCURRENT_MARKING.store(false, Ordering::Relaxed);
         let mut idle = ThreadAllocState::new();
-        let address = unsafe { arena_allocate_one::<3>(&mut idle, class, size, mark) };
+        let address = unsafe { arena_allocate_one::<3>(&mut idle, class, size, Some(mark)) };
         let slot = heap::slot_index(address as usize, heap::region_base(class), class);
         assert!(idle.classes[class].prepared);
         assert_eq!(unsafe { heap::alloc_word_load(class, slot >> 6) }, u64::MAX);
@@ -721,7 +768,7 @@ mod cache_tests {
                         assert!(bytes.iter().all(|&b| b == expected));
                     }
                     let first =
-                        unsafe { arena_allocate_one::<CLASS>(&mut state, class, size, mark) };
+                        unsafe { arena_allocate_one::<CLASS>(&mut state, class, size, Some(mark)) };
                     assert_eq!(first as usize, base + free[0] * size);
                     let mut consumed = 1 << free[0];
                     if !marking_at_refill {
@@ -736,15 +783,17 @@ mod cache_tests {
                         unsafe { heap::mark_word_or(class, *word, consumed) };
                         SOL_CONCURRENT_MARKING.store(true, Ordering::Relaxed);
                     }
-                    let addresses =
-                        unsafe { arena_allocate::<CLASS, BATCH>(&mut state, class, size, mark) };
+                    let addresses = unsafe {
+                        arena_allocate::<CLASS, BATCH>(&mut state, class, size, Some(mark))
+                    };
                     for (address, bit) in addresses.into_iter().zip(&free[1..]) {
                         assert_eq!(address as usize, base + bit * size);
                         consumed |= 1 << bit;
                     }
                     if BATCH >= 3 {
-                        let view =
-                            unsafe { allocate_cached_view::<CLASS, BATCH>(&mut state, size, mark) };
+                        let view = unsafe {
+                            allocate_cached_view::<CLASS, BATCH>(&mut state, size, Some(mark))
+                        };
                         for (&address, bit) in unsafe { std::slice::from_raw_parts(view, BATCH) }
                             .iter()
                             .zip(&free[1 + BATCH..])
@@ -819,15 +868,19 @@ mod cache_tests {
                 fill_cache::<CLASS>(&mut state.classes[class], base, class, !allocated);
                 let mut consumed = 0;
                 for batch in free.as_chunks::<BATCH>().0 {
-                    let view =
-                        unsafe { allocate_cached_view::<CLASS, BATCH>(&mut state, size, mark) };
+                    let view = unsafe {
+                        allocate_cached_view::<CLASS, BATCH>(&mut state, size, Some(mark))
+                    };
                     let addresses = unsafe { std::slice::from_raw_parts(view, BATCH) };
                     for (&address, &bit) in addresses.iter().zip(batch) {
                         assert_eq!(address, base + bit * size);
                         if class >= heap::META_MIN_CLASS {
                             let metadata = unsafe { &*heap::meta_entry(class, *word * 64 + bit) };
                             assert_eq!(metadata.size, size as u64);
-                            assert_eq!(metadata.mark_fn, mark as *const () as usize);
+                            assert_eq!(
+                                metadata.mark_fn.load(Ordering::Acquire),
+                                mark as *const () as usize
+                            );
                         }
                         consumed |= 1 << bit;
                     }

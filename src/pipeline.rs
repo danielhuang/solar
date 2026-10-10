@@ -279,8 +279,10 @@ fn compile_unoptimized(c_path: &Path, dir: &Path, bin_path: &Path, options: Comp
         } else {
             &wb_bc
         };
+        let published_bc = dir.join("debug_mark_fns.bc");
+        run_solar_pass("solar-publish-gc-mark-fns", final_bc, &published_bc);
         let polled_bc = dir.join("debug_safepoints.bc");
-        run_solar_pass("solar-safepoints", final_bc, &polled_bc);
+        run_solar_pass("solar-safepoints", &published_bc, &polled_bc);
 
         run_cmd_to_path(
             "clang",
@@ -497,8 +499,12 @@ fn compile_optimized(c_path: &Path, dir: &Path, bin_path: &Path, gc_san: bool) {
             optimized_bc.to_str().unwrap(),
         ],
     );
+    // Publish precise tracers only after both optimization pipelines have
+    // removed dead allocations and after batching has rewritten surviving ones.
+    let published_bc = dir.join("full_mark_fns.bc");
+    run_solar_pass("solar-publish-gc-mark-fns", &optimized_bc, &published_bc);
     let polled_bc = dir.join("full_safepoints.bc");
-    run_solar_pass("solar-safepoints", &optimized_bc, &polled_bc);
+    run_solar_pass("solar-safepoints", &published_bc, &polled_bc);
 
     // Compile the instrumented program to a native object first. The bulk
     // runtime and all its dependencies are native archive members; the final

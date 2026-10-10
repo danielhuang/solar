@@ -1472,6 +1472,18 @@ unsafe fn mark_big(ctx: &mut MarkContext, p: usize) {
         }
         (s.base, s.size, s.mark_fn)
     };
+    if mark_fn_addr == 0 {
+        let mut word = base.next_multiple_of(size_of::<usize>());
+        let end = (base + size) & !(size_of::<usize>() - 1);
+        while word < end {
+            let value = unsafe { (*(word as *const AtomicUsize)).load(Ordering::Relaxed) };
+            if plausible(value, heap::arena_base(), ctx.big_len) {
+                unsafe { (*ctx.worklist).push(value) };
+            }
+            word += size_of::<usize>();
+        }
+        return;
+    }
     let mark_fn: MarkFn = unsafe { std::mem::transmute::<usize, MarkFn>(mark_fn_addr) };
     unsafe {
         mark_fn(
