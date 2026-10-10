@@ -1,0 +1,3 @@
+// The initializer diagnostic belongs to this imported module.
+
+pub const BAD: Int32 = 1i32 + 2i32;

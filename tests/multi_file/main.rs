@@ -53,6 +53,23 @@ fn const_import() {
 }
 
 #[test]
+fn imported_const_initializer_diagnostic_points_to_defining_expression() {
+    let path = fixture("const_initializer_span/main.solar");
+    let helper = fixture("const_initializer_span/helper.solar");
+    let (errors, source_map) = match solar::pipeline::compile(&path) {
+        Ok(_) => panic!("nonliteral imported constant must be rejected"),
+        Err(error) => error,
+    };
+    assert_eq!(errors.len(), 1);
+    let error = &errors[0];
+    let (filename, _) = source_map
+        .get(error.span.file_id)
+        .expect("diagnostic source file");
+    assert_eq!(Path::new(filename), helper);
+    assert_eq!((error.span.start.line, error.span.start.col), (2, 23));
+}
+
+#[test]
 fn module_import() {
     let output = run(&fixture("module_import/main.solar"), "module_import");
     assert_eq!(output, "0\n0\n");

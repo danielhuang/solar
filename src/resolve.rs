@@ -731,11 +731,12 @@ impl Resolver {
                 }
                 TopLevelItem::Const(c) => {
                     let mut c = c.clone();
-                    // The value is a literal (no name references), but an explicit
-                    // type may reference a renamed/imported type.
+                    // Initializers must retain their defining-module provenance,
+                    // including expressions rejected by the literal-only contract.
                     if let Some(ty) = &mut c.ty {
                         *ty = rewrite_type(ty, &rename_map, &module_aliases, &[]);
                     }
+                    rewrite_expr(&mut c.value, &rewrite_ctx, &HashSet::new());
                     set_file_id_span(&mut c.span, file_id);
                     rewritten.push(TopLevelItem::Const(c));
                 }
