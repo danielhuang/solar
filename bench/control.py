@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Measure loop optimization and binary trees in three interleaved rounds.
 
-Validate every output, and retain wall time, CPU time and GNU time peak RSS.
+Validate loop output before timing, and retain wall time, CPU time and GNU time
+peak RSS. Timed loop runs write to /dev/null.
 Run from any directory; binaries must be built using guide.md.
 """
 import argparse
+from contextlib import nullcontext
 import json
 import subprocess
 import tempfile
@@ -27,10 +29,11 @@ GROUPS = {
 }
 
 
-def measure(argv):
-    """Return process timing, per-process peak RSS, and captured output."""
+def measure(argv, capture_output=True):
+    """Return process timing, peak RSS, and output when requested."""
     argv = [str(ROOT / argv[0]), *argv[1:]]
-    with tempfile.TemporaryFile() as output, tempfile.NamedTemporaryFile() as timing:
+    output_file = tempfile.TemporaryFile() if capture_output else nullcontext(subprocess.DEVNULL)
+    with output_file as output, tempfile.NamedTemporaryFile() as timing:
         start = time.perf_counter()
         subprocess.run(
             ["/usr/bin/time", "-f", "%U %S %M", "-o", timing.name, *argv],
@@ -38,8 +41,11 @@ def measure(argv):
         )
         elapsed = time.perf_counter() - start
         user, system, rss = timing.read().decode().split()
-        output.seek(0)
-        text = output.read().decode()
+        if capture_output:
+            output.seek(0)
+            text = output.read().decode()
+        else:
+            text = None
     return dict(wall=elapsed, cpu=float(user) + float(system),
                 rss_kib=int(rss)), text
 
@@ -53,12 +59,15 @@ def main():
     assert args.rounds > 0
     rows = []
     expected = None
+    if args.group == "loops":
+        loop_output = "".join(f"{i}\n" for i in range(0, 1_000_000_000, 10000))
+        for label, argv in GROUPS["loops"]:
+            actual = subprocess.check_output([str(ROOT / argv[0]), *argv[1:]], text=True)
+            assert actual == loop_output, label
     for round_index in range(1, args.rounds + 1):
         for label, argv in GROUPS[args.group]:
-            metrics, output = measure(argv)
-            if args.group == "loops":
-                assert output == "".join(f"{i}\n" for i in range(0, 1_000_000_000, 10000))
-            else:
+            metrics, output = measure(argv, capture_output=args.group != "loops")
+            if args.group != "loops":
                 lines = output.splitlines()
                 if label == "C malloc/free":
                     lines = lines[1:]

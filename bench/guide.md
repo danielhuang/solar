@@ -320,6 +320,9 @@ For checked measurements with per-round JSON output:
 python3 bench/control.py loops --json target/bench-loops.json
 ```
 
+The harness checks each program's output once before timing. Timed runs send
+stdout to `/dev/null`, so filesystem write costs do not affect loop timings.
+
 ## Run HashMap
 
 If the Solar and Rust binaries are already built, run the measurement harness
