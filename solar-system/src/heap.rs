@@ -444,6 +444,7 @@ pub unsafe fn meta_entry(class: usize, slot: usize) -> *mut MetaEntry {
 /// reset) — the caller must skip slots whose allocated bit is set.
 /// `populate` requests bounded eager backing after the caller has exhausted a
 /// previous claim, avoiding extra page work for one-off allocations.
+/// Aborts if the class's arena region has no room for another run.
 #[inline]
 pub fn claim_run(class: usize, populate: bool) -> (u64, u64) {
     let n = claim_slots(class) as u64;
@@ -454,6 +455,9 @@ pub fn claim_run(class: usize, populate: bool) -> (u64, u64) {
         return (start, start + n);
     }
     let s = NEXT_SLOT[class].fetch_add(n, Ordering::Relaxed);
+    if s > slots_per_region(class) as u64 - n {
+        std::process::abort();
+    }
     let e = s + n;
     let previous_hwm = HWM[class].fetch_max(e, Ordering::Relaxed);
     if populate && e > previous_hwm {
@@ -617,6 +621,32 @@ pub(crate) fn init_for_tests() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claim_run_aborts_before_crossing_its_region() {
+        const CHILD: &str = "SOLAR_CLAIM_RUN_EXHAUSTION_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            assert_eq!(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) }, 0);
+            let class = NUM_CLASSES - 1;
+            let n = claim_slots(class) as u64;
+            let limit = slots_per_region(class) as u64;
+            NEXT_SLOT[class].store(limit - n, Ordering::Relaxed);
+            assert_eq!(claim_run(class, false), (limit - n, limit));
+            claim_run(class, false);
+            unreachable!();
+        }
+
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "heap::tests::claim_run_aborts_before_crossing_its_region",
+            ])
+            .env(CHILD, "1")
+            .status()
+            .unwrap();
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(status.signal(), Some(libc::SIGABRT));
+    }
 
     #[test]
     fn completed_regions_give_disjoint_claims_for_every_class() {
