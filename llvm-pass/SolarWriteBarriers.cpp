@@ -13,6 +13,7 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
@@ -136,6 +137,13 @@ struct SolarSafepoints : PassInfoMixin<SolarSafepoints> {
       Page->setVisibility(GlobalValue::HiddenVisibility);
       Page->setDSOLocal(true);
     }
+    // Like the runtime's poll, test memory against zero solely to fault when
+    // the collector protects the page. A volatile LLVM load would reserve a
+    // register for its unused result; a store would contend on the shared
+    // cache line when multiple mutators poll concurrently.
+    auto *PollAsm = InlineAsm::get(
+        FunctionType::get(Type::getVoidTy(Ctx), false),
+        "testb $$0, SOL_SAFEPOINT_PAGE(%rip)", "~{cc},~{memory}", true);
     for (Function &F : M) {
       if (F.isDeclaration() || !F.getName().starts_with("solar_"))
         continue;
@@ -152,8 +160,7 @@ struct SolarSafepoints : PassInfoMixin<SolarSafepoints> {
         Points.insert(const_cast<BasicBlock *>(From)->getTerminator());
       for (Instruction *At : Points) {
         IRBuilder<> B(At);
-        auto *Poll = B.CreateLoad(Type::getInt8Ty(Ctx), Page, true);
-        Poll->setAlignment(Align(1));
+        auto *Poll = B.CreateCall(PollAsm);
         Poll->setDebugLoc(barrierDebugLoc(At));
       }
     }

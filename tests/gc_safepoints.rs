@@ -131,7 +131,7 @@ define void @_mark_value() { ret void }
     assert!(result.status.success(), "{result:?}");
     let ir = std::fs::read_to_string(output).unwrap();
     assert_eq!(
-        ir.matches("load volatile i8, ptr @SOL_SAFEPOINT_PAGE")
+        ir.matches("asm sideeffect \"testb $$0, SOL_SAFEPOINT_PAGE(%rip)\"")
             .count(),
         3,
         "{ir}"
