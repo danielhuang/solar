@@ -412,6 +412,37 @@ fn string_literal_span() {
 }
 
 #[test]
+fn carriage_return_escapes_decode_in_strings_and_chars() {
+    let ast = parse(r#"fn f() { "\r"; '\r'; }"#);
+    let TopLevelItem::Function(function) = &ast.items[0] else {
+        panic!("expected function");
+    };
+    let StatementKind::Expression(string) = &function.body[0].kind else {
+        panic!("expected string expression");
+    };
+    assert!(matches!(&string.kind, ExprKind::StringLiteral(bytes) if bytes == b"\r"));
+    let StatementKind::Expression(character) = &function.body[1].kind else {
+        panic!("expected char expression");
+    };
+    assert!(matches!(character.kind, ExprKind::CharLiteral(b'\r')));
+}
+
+#[test]
+fn public_fields_in_private_structs_return_parse_errors() {
+    assert!(solar::parser::parse("struct Hidden { pub field: Int }").is_err());
+    assert!(solar::parser::parse("struct Hidden(pub Int)").is_err());
+    assert!(solar::parser::parse("pub struct Visible { pub field: Int }").is_ok());
+}
+
+#[test]
+fn unsupported_literal_escapes_return_parse_errors() {
+    assert!(solar::parser::parse(r#"fn f() { "\u1234"; }"#).is_err());
+    assert!(solar::parser::parse(r#"fn f() { '\v'; }"#).is_err());
+    assert!(solar::parser::parse(r#"fn f() { "\\u"; }"#).is_ok());
+    assert!(solar::parser::parse("fn f() { \"").is_err());
+}
+
+#[test]
 fn tuple_literal_span() {
     let ast = parse("fn f() {\n    (1, 2)\n}");
     let func = match &ast.items[0] {

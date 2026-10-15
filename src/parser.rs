@@ -32,6 +32,8 @@ pub fn parse(source: &str) -> Result<SourceFile, Vec<ParseError>> {
 
     let mut errors = Vec::new();
     collect_errors(root, source, &mut errors);
+    collect_visibility_errors(root, source, &mut errors);
+    collect_literal_escape_errors(root, source, &mut errors);
 
     if !errors.is_empty() {
         return Err(errors);
@@ -39,6 +41,91 @@ pub fn parse(source: &str) -> Result<SourceFile, Vec<ParseError>> {
 
     let source_file = convert_source_file(root, source);
     Ok(source_file)
+}
+
+fn collect_literal_escape_errors(
+    node: tree_sitter::Node,
+    source: &str,
+    errors: &mut Vec<ParseError>,
+) {
+    if matches!(node.kind(), "string_literal" | "char_literal") {
+        let text = node_text(node, source);
+        if let Some(inner) = text.get(1..text.len().saturating_sub(1)) {
+            let start = node.start_position();
+            let mut chars = inner.char_indices();
+            while let Some((offset, ch)) = chars.next() {
+                if ch != '\\' {
+                    continue;
+                }
+                match chars.next() {
+                    Some((_, '\\' | '"' | '\'' | 'n' | 'r' | 't' | '0')) => {}
+                    Some((_, other)) => errors.push(ParseError {
+                        line: start.row,
+                        column: start.column + offset + 1,
+                        message: format!("unknown escape sequence: \\{other}"),
+                    }),
+                    None => errors.push(ParseError {
+                        line: start.row,
+                        column: start.column + offset + 1,
+                        message: "unexpected end of string escape".to_string(),
+                    }),
+                }
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_literal_escape_errors(child, source, errors);
+    }
+}
+
+fn collect_visibility_errors(node: tree_sitter::Node, source: &str, errors: &mut Vec<ParseError>) {
+    if node.kind() == "struct_def" && !has_pub_keyword(node, source) {
+        if let Some(field_list) = named_child_by_kind(node, "field_list") {
+            for field in code_children(field_list) {
+                if field.kind() == "field_def" && has_pub_keyword(field, source) {
+                    let start = field.start_position();
+                    let name = field
+                        .child_by_field_name("name")
+                        .map(|name| node_text(name, source))
+                        .unwrap_or("<unknown>");
+                    let struct_name = node
+                        .child_by_field_name("name")
+                        .map(|name| node_text(name, source))
+                        .unwrap_or("<unknown>");
+                    errors.push(ParseError {
+                        line: start.row,
+                        column: start.column,
+                        message: format!("`pub` field `{name}` in non-pub struct `{struct_name}`"),
+                    });
+                }
+            }
+        }
+        if let Some(tuple_body) = named_child_by_kind(node, "tuple_struct_body")
+            && let Some(field_list) = named_child_by_kind(tuple_body, "tuple_struct_field_list")
+        {
+            for field in code_children(field_list) {
+                if field.kind() == "tuple_struct_field" && has_pub_keyword(field, source) {
+                    let start = field.start_position();
+                    let struct_name = node
+                        .child_by_field_name("name")
+                        .map(|name| node_text(name, source))
+                        .unwrap_or("<unknown>");
+                    errors.push(ParseError {
+                        line: start.row,
+                        column: start.column,
+                        message: format!("`pub` field in non-pub struct `{struct_name}`"),
+                    });
+                }
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_visibility_errors(child, source, errors);
+    }
 }
 
 fn collect_errors(node: tree_sitter::Node, source: &str, errors: &mut Vec<ParseError>) {
@@ -229,17 +316,6 @@ fn convert_struct_def(node: tree_sitter::Node, source: &str) -> StructDef {
     if let Some(field_list) = named_child_by_kind(node, "field_list") {
         for child in code_children(field_list) {
             if child.kind() == "field_def" {
-                if !is_pub && has_pub_keyword(child, source) {
-                    let field_name = node_text(child.child_by_field_name("name").unwrap(), source);
-                    let pos = child.start_position();
-                    panic!(
-                        "{}:{}: `pub` field `{}` in non-pub struct `{}`",
-                        pos.row + 1,
-                        pos.column + 1,
-                        field_name,
-                        name
-                    );
-                }
                 fields.push(convert_field_def(child, source));
             }
         }
@@ -250,15 +326,6 @@ fn convert_struct_def(node: tree_sitter::Node, source: &str) -> StructDef {
             for (index, child) in code_children(field_list).into_iter().enumerate() {
                 debug_assert_eq!(child.kind(), "tuple_struct_field");
                 let is_field_pub = has_pub_keyword(child, source);
-                if !is_pub && is_field_pub {
-                    let pos = child.start_position();
-                    panic!(
-                        "{}:{}: `pub` field in non-pub struct `{}`",
-                        pos.row + 1,
-                        pos.column + 1,
-                        name
-                    );
-                }
                 fields.push(FieldDef {
                     name: index.to_string(),
                     ty: convert_type(child.child_by_field_name("type").unwrap(), source),
@@ -1536,6 +1603,7 @@ fn unescape_string(s: &str) -> Vec<u8> {
                 '"' => out.push(b'"'),
                 '\'' => out.push(b'\''),
                 'n' => out.push(b'\n'),
+                'r' => out.push(b'\r'),
                 't' => out.push(b'\t'),
                 '0' => out.push(0),
                 other => panic!("unknown escape sequence: \\{other}"),
