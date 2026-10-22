@@ -1,7 +1,8 @@
 // LLVM passes for Solar GC allocation lowering and write barriers.
 //
 // `solar-specialize-gc-alloc` selects fixed-class allocators for constant
-// request sizes and exposes pointer-free copies to LLVM. `solar-write-barriers`
+// request sizes and exposes pointer-free copies to LLVM. `solar-forward-gc-alloc`
+// folds temporary buffers into their copy destinations. `solar-write-barriers`
 // instruments heap pointer writes after optimization.
 
 #include "llvm/Analysis/ValueTracking.h"
@@ -496,6 +497,157 @@ struct SolarBatchGcAlloc : PassInfoMixin<SolarBatchGcAlloc> {
   static bool isRequired() { return true; }
 };
 
+// Sink a temporary buffer's writes to its sole copy into another GC allocation.
+// Keep the writes at the copy site: the destination may already have been read
+// or initialized, and moving its allocation earlier could cross side effects.
+// Run after inlining, before batching, barriers, mark publication and safepoints.
+struct SolarForwardGcAlloc : PassInfoMixin<SolarForwardGcAlloc> {
+  static ConstantInt *allocationSize(CallInst *Call) {
+    if (!Call || Call->hasOperandBundles() || Call->isMustTailCall())
+      return nullptr;
+    if (SolarAllocationUnroll::isAllocation(*Call) && Call->arg_size() == 3)
+      return dyn_cast<ConstantInt>(Call->getArgOperand(0));
+    // O3 can specialize a fixed-class wrapper and remove constant arguments.
+    auto Args = SolarBatchGcAlloc::request(Call);
+    return Args.empty() ? nullptr : dyn_cast<ConstantInt>(Args[0]);
+  }
+
+  static bool fits(int64_t Offset, uint64_t Bytes, ConstantInt *Size) {
+    return Size && Size->getValue().getActiveBits() <= 64 && Offset >= 0 &&
+           uint64_t(Offset) <= Size->getZExtValue() &&
+           Bytes <= Size->getZExtValue() - uint64_t(Offset);
+  }
+
+  static bool forward(MemTransferInst *Copy, const DataLayout &DL) {
+    auto *Length = dyn_cast<ConstantInt>(Copy->getLength());
+    if (Copy->isVolatile() || Copy->hasOperandBundles() ||
+        Copy->getRawSource()->getType() != Copy->getRawDest()->getType() ||
+        !Length || Length->isZero() ||
+        Length->getValue().getActiveBits() > 63)
+      return false;
+    uint64_t Bytes = Length->getZExtValue();
+    int64_t SrcOffset, DstOffset;
+    auto *Src = dyn_cast<CallInst>(GetPointerBaseWithConstantOffset(
+        Copy->getRawSource(), SrcOffset, DL));
+    auto *Dst = dyn_cast<CallInst>(GetPointerBaseWithConstantOffset(
+        Copy->getRawDest(), DstOffset, DL));
+    ConstantInt *SrcSize = allocationSize(Src);
+    if (!Src || !Dst || Src == Dst || Src->getParent() != Copy->getParent() ||
+        Dst->getParent() != Copy->getParent() || !Src->comesBefore(Copy) ||
+        !Dst->comesBefore(Copy) || !fits(SrcOffset, Bytes, SrcSize) ||
+        !fits(DstOffset, Bytes, allocationSize(Dst)))
+      return false;
+
+    struct Write {
+      Instruction *Inst;
+      uint64_t Offset;
+      uint64_t Size;
+    };
+    SmallVector<Write, 8> Writes;
+    SmallVector<Instruction *, 8> Pointers{Src};
+    SmallPtrSet<Instruction *, 8> Seen{Src};
+    uint64_t CopyEnd = uint64_t(SrcOffset) + Bytes;
+    for (unsigned N = 0; N != Pointers.size(); ++N) {
+      Instruction *Ptr = Pointers[N];
+      int64_t Offset;
+      if (GetPointerBaseWithConstantOffset(Ptr, Offset, DL) != Src || Offset < 0)
+        return false;
+      for (User *U : Ptr->users()) {
+        auto *I = dyn_cast<Instruction>(U);
+        if (I == Copy && Copy->getRawSource() == Ptr)
+          continue;
+        if (!I || I->getParent() != Copy->getParent() || !I->comesBefore(Copy))
+          return false;
+        if (isa<GetElementPtrInst>(I) || isa<BitCastInst>(I)) {
+          if (Seen.insert(I).second)
+            Pointers.push_back(I);
+          continue;
+        }
+        uint64_t Size;
+        if (auto *Store = dyn_cast<StoreInst>(I)) {
+          if (!Store->isSimple() || Store->getPointerOperand() != Ptr ||
+              Store->getValueOperand() == Ptr)
+            return false;
+          TypeSize StoreSize =
+              DL.getTypeStoreSize(Store->getValueOperand()->getType());
+          if (StoreSize.isScalable())
+            return false;
+          Size = StoreSize.getFixedValue();
+        } else if (auto *Set = dyn_cast<MemSetInst>(I)) {
+          auto *SetSize = dyn_cast<ConstantInt>(Set->getLength());
+          if (Set->isVolatile() || Set->hasOperandBundles() ||
+              Set->getRawDest() != Ptr || !SetSize ||
+              SetSize->getValue().getActiveBits() > 64)
+            return false;
+          Size = SetSize->getZExtValue();
+        } else {
+          // In particular, reject reads, escaping addresses, atomic operations,
+          // and additional copies, even if their result currently looks unused.
+          return false;
+        }
+        if (!fits(Offset, Size, SrcSize))
+          return false;
+        uint64_t End = uint64_t(Offset) + Size;
+        bool Disjoint =
+            End <= uint64_t(SrcOffset) || uint64_t(Offset) >= CopyEnd;
+        if (!Disjoint &&
+            (uint64_t(Offset) < uint64_t(SrcOffset) || End > CopyEnd))
+          return false;
+        Writes.push_back({I, uint64_t(Offset), Disjoint ? 0 : Size});
+      }
+    }
+
+    // User iteration order need not match the order of overlapping writes.
+    llvm::sort(Writes, [](const Write &A, const Write &B) {
+      return A.Inst->comesBefore(B.Inst);
+    });
+    IRBuilder<> B(Copy);
+    for (const Write &W : Writes) {
+      if (!W.Size) {
+        W.Inst->eraseFromParent();
+        continue;
+      }
+      uint64_t Offset = W.Offset - uint64_t(SrcOffset);
+      Value *Target = Copy->getRawDest();
+      if (Offset)
+        Target = B.CreateConstGEP1_64(B.getInt8Ty(), Target, Offset);
+      // Neither alignment nor alias metadata for the old buffer describes the
+      // new address. Values written remain SSA operands, evaluated as before.
+      W.Inst->dropUBImplyingAttrsAndUnknownMetadata();
+      if (auto *Store = dyn_cast<StoreInst>(W.Inst)) {
+        Store->setOperand(StoreInst::getPointerOperandIndex(), Target);
+        Store->setAlignment(Align(1));
+      } else {
+        auto *Set = cast<MemSetInst>(W.Inst);
+        Set->setDest(Target);
+        Set->setDestAlignment(Align(1));
+      }
+      W.Inst->moveBefore(Copy->getIterator());
+    }
+    Copy->eraseFromParent();
+    for (Instruction *Ptr : llvm::reverse(Pointers))
+      Ptr->eraseFromParent();
+    return true;
+  }
+
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
+    unsigned Forwarded = 0;
+    for (Function &F : M) {
+      if (F.isDeclaration() || !isGeneratedFunc(F))
+        continue;
+      SmallVector<MemTransferInst *, 8> Copies;
+      for (Instruction &I : instructions(F))
+        if (auto *Copy = dyn_cast<MemTransferInst>(&I))
+          Copies.push_back(Copy);
+      for (MemTransferInst *Copy : Copies)
+        Forwarded += forward(Copy, M.getDataLayout());
+    }
+    if (Forwarded)
+      errs() << "solar-forward-gc-alloc: " << Forwarded << " temporary buffers\n";
+    return Forwarded ? PreservedAnalyses::none() : PreservedAnalyses::all();
+  }
+};
+
 // Defer precise tracing until the generated initialization stores have run.
 // This pass runs after both O3 pipelines and batching: a setter inserted before
 // allocation elision would make an otherwise removable allocation escape.
@@ -974,6 +1126,10 @@ llvmGetPassPluginInfo() {
                   }
                   if (Name == "solar-batch-gc-alloc") {
                     MPM.addPass(SolarBatchGcAlloc());
+                    return true;
+                  }
+                  if (Name == "solar-forward-gc-alloc") {
+                    MPM.addPass(SolarForwardGcAlloc());
                     return true;
                   }
                   if (Name == "solar-write-barriers") {

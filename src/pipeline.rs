@@ -454,9 +454,10 @@ fn compile_optimized(c_path: &Path, dir: &Path, bin_path: &Path, gc_san: bool) {
         run_cmd("opt", &opt_args);
     }
 
+    // Forward temporary buffer writes before batching hides allocation calls.
     let full_unrolled_bc = dir.join("full_unrolled.bc");
     run_solar_pass(
-        "function(loop-simplify),solar-allocation-unroll,function(loop-unroll)",
+        "solar-forward-gc-alloc,function(loop-simplify),solar-allocation-unroll,function(loop-unroll)",
         &full_opt_bc,
         &full_unrolled_bc,
     );

@@ -62,3 +62,42 @@ fn specialized_allocators_retain_allocation_elision() {
         "expected 1 to 4 reported allocations, found {allocations}:\n{stderr}"
     );
 }
+
+#[test]
+fn println_zero_elides_to_string_buffer() {
+    test_utils::ensure_release_runtime_built();
+    let directory = tempdir::TempDir::new("solar-test").unwrap();
+    let source = directory.path().join("println_zero.solar");
+    std::fs::write(&source, "fn main() { println(0); }\n").unwrap();
+    let binary = solar::pipeline::compile(&source)
+        .unwrap()
+        .to_mangled()
+        .to_tree_ir()
+        .optimized()
+        .to_c(&source.display().to_string())
+        .to_binary(
+            directory.path().join("println_zero"),
+            CompileOptions::RELEASE,
+        );
+    let output = Command::new(binary.path)
+        .env("SOLAR_PRINT_ALLOCS", "1")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"0\n");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let allocations: Vec<_> = stderr
+        .lines()
+        .filter(|line| line.starts_with("allocating new object:"))
+        .collect();
+    // The output and file-write error message survive; the 20-byte to_string
+    // buffer and the one-byte slice copied out of it must both disappear.
+    assert_eq!(
+        allocations,
+        [
+            "allocating new object: 2 bytes (align=1)",
+            "allocating new object: 25 bytes (align=1)",
+        ],
+        "{stderr}"
+    );
+}
