@@ -1,0 +1,423 @@
+import {Option, Iterator, throw} from "lib.solar";
+import char from "char.solar";
+import {Vec} from "vec.solar";
+
+/// A text separator: a literal byte string or a Unicode scalar predicate.
+pub enum Pattern { Literal(&[Uint8]), Predicate(fn(Uint32) -> Bool) }
+
+fn pattern(value: &[Uint8]) -> Pattern { Pattern::Literal(value) }
+fn pattern(value: Uint8) -> Pattern { Pattern::Literal([value]&) }
+fn pattern(value: &Uint8) -> Pattern { Pattern::Literal([value@]&) }
+fn pattern(value: fn(Uint32) -> Bool) -> Pattern { Pattern::Predicate(value) }
+
+fn empty_pattern(value: Pattern) -> Bool {
+	match value {
+		Pattern::Literal(text) => text.len() == 0u,
+		Pattern::Predicate(f) => false,
+	}
+}
+
+fn search(
+	separator: Pattern,
+	text: &[Uint8],
+	front: Uint,
+	back: Uint,
+	reverse: Bool,
+) -> Option#[(Uint, Uint)] {
+	match separator {
+		Pattern::Literal(needle) => {
+			if needle.len() >
+				back - front { return Option#[(Uint, Uint)]::None; }
+
+			if !reverse {
+				return text@[front..back]&.find(needle).map(\at: Uint {
+					(front + at, front + at + needle.len())
+				});
+			}
+
+			let at = back - needle.len();
+
+			while true {
+				if text@[at..back]&.starts_with(needle) {
+					return Option#[(Uint, Uint)]::Some((at, at + needle.len()));
+				}
+
+				if at == front { break; }
+				at = at - 1u;
+			}
+		},
+		Pattern::Predicate(test) => {
+			let at = if reverse { back } else { front };
+
+			while (reverse && at > front) || (!reverse && at < back) {
+				let (code, width) = if reverse {
+					char::decode_last(text@[front..at]&)
+				} else { char::decode_first(text@[at..back]&) };
+				let begin = if reverse { at - width } else { at };
+
+				if test(code) {
+					return Option#[(Uint, Uint)]::Some((begin, begin + width));
+				}
+
+				at = if reverse { begin } else { at + width };
+			}
+		},
+	};
+	Option#[(Uint, Uint)]::None
+}
+
+/// A double-ended text splitter retaining leading, adjacent, and trailing empty pieces.
+pub struct TextSplit {
+	text: &[Uint8],
+	separator: Pattern,
+	front: Uint,
+	back: Uint,
+	front_edge: Bool,
+	back_edge: Bool,
+	remaining: Uint,
+	done: Bool,
+}
+
+fn make_split(text: &[Uint8], separator: Pattern, count: Uint) -> Iterator#[
+	TextSplit,
+] {
+	Iterator(
+		TextSplit {
+			text: text,
+			separator: separator,
+			front: 0u,
+			back: text.len(),
+			front_edge: true,
+			back_edge: true,
+			remaining: count,
+			done: count == 0u,
+		},
+	)
+}
+
+/// Splits on a substring. An empty separator splits at Unicode scalar boundaries.
+pub method split(self: &[Uint8], separator: &[Uint8]) -> Iterator#[TextSplit] {
+	make_split(self, pattern(separator), !0u)
+}
+
+/// Splits on one byte, retaining empty pieces.
+pub method split(self: &[Uint8], separator: Uint8) -> Iterator#[TextSplit] {
+	make_split(self, pattern(separator), !0u)
+}
+
+/// Splits wherever a Unicode scalar satisfies the predicate.
+pub method split(self: &[Uint8], predicate: fn(Uint32) -> Bool) -> Iterator#[
+	TextSplit,
+] {
+	make_split(self, pattern(predicate), !0u)
+}
+
+/// Splits from right to left, finding separators from the right.
+pub method rsplit#[P](self: &[Uint8], separator: P) {
+	self.split(separator).rev()
+}
+
+/// Splits into at most `count` pieces, leaving the unsplit remainder in the final piece.
+pub method splitn#[P](self: &[Uint8], count: Uint, separator: P) -> Iterator#[
+	TextSplit,
+] {
+	make_split(self, pattern(separator), count)
+}
+
+/// Returns the next text piece.
+pub method next(self: &Iterator#[TextSplit]) -> Option#[&[Uint8]] {
+	let s = self@.inner&;
+	if s@.done { return Option#[&[Uint8]]::None; }
+
+	if s@.remaining == 1u {
+		s@.done = true;
+		return Option#[&[Uint8]]::Some(s@.text@[s@.front..s@.back]&);
+	}
+
+	s@.remaining = s@.remaining - 1u;
+
+	if empty_pattern(s@.separator) {
+		if s@.front_edge {
+			s@.front_edge = false;
+			return Option#[&[Uint8]]::Some(s@.text@[s@.front..s@.front]&);
+		}
+
+		if s@.front < s@.back {
+			let begin = s@.front;
+			let decoded = char::decode_first(s@.text@[begin..s@.back]&);
+			s@.front = begin + decoded.1;
+			return Option#[&[Uint8]]::Some(s@.text@[begin..s@.front]&);
+		}
+
+		s@.done = true;
+
+		if s@.back_edge {
+			s@.back_edge = false;
+			return Option#[&[Uint8]]::Some(s@.text@[s@.back..s@.back]&);
+		}
+
+		return Option#[&[Uint8]]::None;
+	}
+
+	let found = search(s@.separator, s@.text, s@.front, s@.back, false);
+
+	if found.is_some() {
+		let (begin, end) = found.unwrap();
+		let piece = s@.text@[s@.front..begin]&;
+		s@.front = end;
+		Option#[&[Uint8]]::Some(piece)
+	} else {
+		s@.done = true;
+		Option#[&[Uint8]]::Some(s@.text@[s@.front..s@.back]&)
+	}
+}
+
+/// Returns the last remaining piece, searching for separators from the right.
+pub method next_back(self: &Iterator#[TextSplit]) -> Option#[&[Uint8]] {
+	let s = self@.inner&;
+	if s@.done { return Option#[&[Uint8]]::None; }
+
+	if s@.remaining == 1u {
+		s@.done = true;
+		return Option#[&[Uint8]]::Some(s@.text@[s@.front..s@.back]&);
+	}
+
+	s@.remaining = s@.remaining - 1u;
+
+	if empty_pattern(s@.separator) {
+		if s@.back_edge {
+			s@.back_edge = false;
+			return Option#[&[Uint8]]::Some(s@.text@[s@.back..s@.back]&);
+		}
+
+		if s@.front < s@.back {
+			let end = s@.back;
+			let decoded = char::decode_last(s@.text@[s@.front..end]&);
+			s@.back = end - decoded.1;
+			return Option#[&[Uint8]]::Some(s@.text@[s@.back..end]&);
+		}
+
+		s@.done = true;
+
+		if s@.front_edge {
+			s@.front_edge = false;
+			return Option#[&[Uint8]]::Some(s@.text@[s@.front..s@.front]&);
+		}
+
+		return Option#[&[Uint8]]::None;
+	}
+
+	let found = search(s@.separator, s@.text, s@.front, s@.back, true);
+
+	if found.is_some() {
+		let (begin, end) = found.unwrap();
+		let piece = s@.text@[end..s@.back]&;
+		s@.back = begin;
+		Option#[&[Uint8]]::Some(piece)
+	} else {
+		s@.done = true;
+		Option#[&[Uint8]]::Some(s@.text@[s@.front..s@.back]&)
+	}
+}
+
+/// Splits on Unicode whitespace, discarding empty pieces.
+pub method split_whitespace(self: &[Uint8]) {
+	self.split(\code: Uint32 code.is_whitespace()).filter(\piece: &[Uint8] !piece.is_empty())
+}
+
+/// Removes leading and trailing Unicode whitespace.
+pub method trim(self: &[Uint8]) -> &[Uint8] {
+	let front = 0u;
+	let back = self.len();
+
+	while front < back {
+		let (code, width) = char::decode_first(self@[front..back]&);
+		if !code.is_whitespace() { break; }
+		front = front + width;
+	}
+
+	while front < back {
+		let (code, width) = char::decode_last(self@[front..back]&);
+		if !code.is_whitespace() { break; }
+		back = back - width;
+	}
+
+	self@[front..back]&
+}
+
+/// Replaces non-overlapping matches with the replacement text.
+pub method replace#[P](self: &[Uint8], separator: P, replacement: &[Uint8]) -> &[Uint8] {
+	self.split(separator).collect_vec()&.as_slice().join(replacement)
+}
+
+/// Tests whether a string starts with a byte.
+pub method starts_with(self: &[Uint8], prefix: Uint8) -> Bool {
+	self.len() > 0u && self@[0u] == prefix
+}
+
+/// Tests whether a string ends with a byte.
+pub method ends_with(self: &[Uint8], suffix: Uint8) -> Bool {
+	self.len() > 0u && self@[self.len() - 1u] == suffix
+}
+
+/// Removes a matching initial byte.
+pub method strip_prefix(self: &[Uint8], prefix: Uint8) -> Option#[&[Uint8]] {
+	if self.starts_with(prefix) {
+		Option#[&[Uint8]]::Some(self@[1u..self.len()]&)
+	} else { Option#[&[Uint8]]::None }
+}
+
+/// Removes a matching final byte.
+pub method strip_suffix(self: &[Uint8], suffix: Uint8) -> Option#[&[Uint8]] {
+	if self.ends_with(suffix) {
+		Option#[&[Uint8]]::Some(self@[0u..self.len() - 1u]&)
+	} else { Option#[&[Uint8]]::None }
+}
+
+/// Splits once on a byte.
+pub method split_once(self: &[Uint8], separator: Uint8) -> Option#[
+	(&[Uint8], &[Uint8]),
+] { self.split_once(separator&) }
+
+/// Lines separated by LF or CRLF, excluding terminators and a final empty line.
+pub struct Lines {
+	text: &[Uint8],
+	front: Uint,
+	back: Uint,
+	back_terminated: Bool,
+	done: Bool,
+}
+
+/// Iterates over LF- or CRLF-terminated lines; an empty input yields no lines.
+pub method lines(self: &[Uint8]) -> Iterator#[Lines] {
+	let terminated = self.ends_with('\n');
+	Iterator(
+		Lines {
+			text: self,
+			front: 0u,
+			back: if terminated { self.len() - 1u } else { self.len() },
+			back_terminated: terminated,
+			done: self.is_empty(),
+		},
+	)
+}
+
+fn line_piece(text: &[Uint8], begin: Uint, end: Uint, terminated: Bool) -> &[Uint8] {
+	let end = if terminated && end > begin && text@[end - 1u] == '\r' {
+		end - 1u
+	} else { end };
+	text@[begin..end]&
+}
+
+/// Returns the next line.
+pub method next(self: &Iterator#[Lines]) -> Option#[&[Uint8]] {
+	let s = self@.inner&;
+	if s@.done { return Option#[&[Uint8]]::None; }
+	let begin = s@.front;
+	let at = begin;
+
+	while at < s@.back {
+		if s@.text@[at] == '\n' {
+			s@.front = at + 1u;
+			return Option#[&[Uint8]]::Some(line_piece(s@.text, begin, at, true));
+		}
+
+		at = at + 1u;
+	}
+
+	s@.done = true;
+	Option#[&[Uint8]]::Some(
+		line_piece(s@.text, begin, s@.back, s@.back_terminated),
+	)
+}
+
+/// Returns the last remaining line.
+pub method next_back(self: &Iterator#[Lines]) -> Option#[&[Uint8]] {
+	let s = self@.inner&;
+	if s@.done { return Option#[&[Uint8]]::None; }
+	let end = s@.back;
+	let at = end;
+
+	while at > s@.front {
+		at = at - 1u;
+
+		if s@.text@[at] == '\n' {
+			let result = line_piece(s@.text, at + 1u, end, s@.back_terminated);
+			s@.back = at;
+			s@.back_terminated = true;
+			return Option#[&[Uint8]]::Some(result);
+		}
+	}
+
+	s@.done = true;
+	Option#[&[Uint8]]::Some(
+		line_piece(s@.text, s@.front, end, s@.back_terminated),
+	)
+}
+
+/// Non-overlapping text matches with their byte offsets.
+pub struct MatchIndices {
+	text: &[Uint8],
+	separator: Pattern,
+	at: Uint,
+	done: Bool,
+}
+
+/// Iterates over non-overlapping matches and their byte offsets.
+pub method match_indices#[P](self: &[Uint8], separator: P) -> Iterator#[
+	MatchIndices,
+] {
+	Iterator(
+		MatchIndices {
+			text: self,
+			separator: pattern(separator),
+			at: 0u,
+			done: false,
+		},
+	)
+}
+
+/// Returns the next byte offset and matched text.
+pub method next(self: &Iterator#[MatchIndices]) -> Option#[(Uint, &[Uint8])] {
+	let s = self@.inner&;
+	if s@.done { return Option#[(Uint, &[Uint8])]::None; }
+
+	if empty_pattern(s@.separator) {
+		let at = s@.at;
+
+		if at == s@.text.len() { s@.done = true; } else {
+			s@.at = at + char::decode_first(s@.text@[at..s@.text.len()]&).1;
+		}
+
+		return Option#[(Uint, &[Uint8])]::Some((at, s@.text@[at..at]&));
+	}
+
+	let found = search(s@.separator, s@.text, s@.at, s@.text.len(), false);
+
+	if found.is_none() {
+		s@.done = true;
+		return Option#[(Uint, &[Uint8])]::None;
+	}
+
+	let (begin, end) = found.unwrap();
+	s@.at = end;
+	Option#[(Uint, &[Uint8])]::Some((begin, s@.text@[begin..end]&))
+}
+
+fn string_item(value: Uint32) -> &[Uint8] { value.to_utf8() }
+fn string_item(value: Uint8) -> &[Uint8] { [value]& }
+fn string_item(value: &[Uint8]) -> &[Uint8] { value }
+
+/// Collects UTF-8 scalars, bytes, or byte-string pieces into a new byte string.
+pub method collect_string#[I](self: Iterator#[I]) -> &[Uint8] {
+	let output = Vec([]#[Uint8]&);
+	let item = self&.next();
+
+	while item.is_some() {
+		let bytes = string_item(item.unwrap());
+		for byte in bytes@ { output&.push(byte@); }
+		item = self&.next();
+	}
+
+	output&.as_slice()
+}

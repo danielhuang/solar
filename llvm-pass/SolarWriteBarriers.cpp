@@ -142,9 +142,11 @@ struct SolarSafepoints : PassInfoMixin<SolarSafepoints> {
     // the collector protects the page. A volatile LLVM load would reserve a
     // register for its unused result; a store would contend on the shared
     // cache line when multiple mutators poll concurrently.
+    // LLVM X86 names EFLAGS "flags". The GCC-style "cc" spelling does not
+    // clobber EFLAGS here, allowing a branch to reuse flags overwritten by testb.
     auto *PollAsm = InlineAsm::get(
         FunctionType::get(Type::getVoidTy(Ctx), false),
-        "testb $$0, SOL_SAFEPOINT_PAGE(%rip)", "~{cc},~{memory}", true);
+        "testb $$0, SOL_SAFEPOINT_PAGE(%rip)", "~{flags},~{memory}", true);
     for (Function &F : M) {
       if (F.isDeclaration() || !F.getName().starts_with("solar_"))
         continue;

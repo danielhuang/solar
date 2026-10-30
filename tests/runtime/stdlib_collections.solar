@@ -1,0 +1,81 @@
+struct Key { first: Int, second: Int }
+enum Choice { Empty, Value(Int) }
+
+fn main() {
+	let entries = [(2, 20), (1, 10), (2, 22), (3, 30)];
+	let map = entries&.iter().copied().collect#[HashMap#[Int, Int]]();
+	assert(map&.len() == 3u);
+	assert(map&.get(2&).copied().unwrap() == 22);
+	assert(map&.keys().copied().sum() == 6);
+	assert(map&.values().copied().sum() == 62);
+	let cursor = map&.iter();
+	assert(cursor&.len() == 3u);
+	cursor&.next();
+	cursor&.next_back();
+	assert(cursor&.len() == 1u);
+	assert(cursor.count() == 1u);
+	let a = [1, 2, 2, 3]&.iter().copied().collect#[HashSet#[Int]]();
+	let b = [3, 4]&.iter().copied().collect#[HashSet#[Int]]();
+	assert(a&.len() == 3u);
+	assert(a&.contains(2&));
+	assert(a&.union(b&).copied().sum() == 10);
+	assert(a&.intersection(b&).copied().sum() == 3);
+	let union = a&.union(b&).copied().collect#[HashSet#[Int]]();
+	assert(union&.is_superset(a&));
+	assert(b&.is_subset(union&));
+	assert(!a&.is_subset(b&));
+	assert(default#[HashSet#[Int]]()&.is_empty());
+	assert(default#[HashMap#[Int, Int]]()&.is_empty());
+	let ordered = BTreeMap#[Int, Int]();
+	for i in 0..128 { ordered&.insert(i, i * 2); }
+	for i in 0..128 { assert(ordered&.get(i&).copied().unwrap() == i * 2); }
+	assert(ordered&.len() == 128u);
+	assert(ordered&.keys().copied().is_sorted());
+	assert(ordered&.keys().copied().sum() == 8128);
+	let range = ordered&.range(Option#[Int]::Some(5), Option#[Int]::Some(8));
+	assert(
+		range.map(\entry: (
+			&Int,
+			&Int,
+		) entry.0@).collect_vec()&.as_slice() == [5, 6, 7]&,
+	);
+	let range = ordered&.range(
+		Option#[Int]::Some(5),
+		Option#[Int]::Some(8),
+		include_lower = false,
+		include_upper = true,
+	);
+	assert(
+		range.rev().map(\entry: (&Int, &Int) entry.0@).collect_vec()&.as_slice() ==
+			[8, 7, 6]&,
+	);
+	assert(
+		ordered&.range(
+			Option#[Int]::Some(9),
+			Option#[Int]::Some(2),
+		).count() == 0u,
+	);
+	assert(ordered&.insert(5, 55).unwrap() == 10);
+	assert(ordered&.len() == 128u);
+	let words = [("b"&, 2), ("a"&, 1)]&.iter().copied().collect#[
+		BTreeMap#[&[Uint8], Int],
+	]();
+	assert(words&.values().copied().collect_vec()&.as_slice() == [1, 2]&);
+	assert((1, 2).cmp((1, 3)) == Ordering::Less);
+	assert(
+		(Key {
+			first: 1,
+			second: 2,
+		}).cmp(Key { first: 1, second: 3 }) == Ordering::Less,
+	);
+	assert(Choice::Empty.cmp(Choice::Value(1)) == Ordering::Less);
+	assert(Choice::Value(2).cmp(Choice::Value(1)) == Ordering::Greater);
+	let zigzag = BTreeMap#[Int, Int]();
+	for i in 0..128 { let key = (i * 71) % 128; zigzag&.insert(key, key); }
+	assert(zigzag&.keys().copied().eq(ordered&.keys().copied()));
+	for i in 0..128 { assert(zigzag&.get(i&).copied().unwrap() == i); }
+	assert(default#[BTreeMap#[Int, Int]]()&.is_empty());
+	assert(HashMap#[Int, Int]()&.iter().count() == 0u);
+	assert(HashSet#[Int]()&.union(a&).copied().collect#[HashSet#[Int]]() == a);
+	println("passed"&);
+}

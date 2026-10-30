@@ -1,4 +1,5 @@
-import {Option} from "lib.solar";
+import {Option, Ordering, throw} from "lib.solar";
+import {Vec} from "vec.solar";
 
 /// An iterator with advancement defined for its specific state type.
 pub struct Iterator#[I] {
@@ -53,4 +54,940 @@ pub method next#[I, T](self: &Iterator#[Filter#[I, T]]) -> Option#[T] {
 	}
 
 	Option#[T]::None
+}
+
+/// Copies the iterator's current cursor for a for-in loop.
+pub method iter#[I](self: &Iterator#[I]) -> Iterator#[I] { self@ }
+
+/// An iterator containing at most one value.
+pub struct Once#[T] { value: Option#[T] }
+
+/// Creates an iterator yielding one value.
+pub fn once#[T](value: T) -> Iterator#[Once#[T]] {
+	Iterator(Once#[T] { value: Option#[T]::Some(value) })
+}
+
+/// Advances a single-value iterator.
+pub method next#[T](self: &Iterator#[Once#[T]]) -> Option#[T] {
+	let value = self@.inner.value;
+	self@.inner.value = Option#[T]::None;
+	value
+}
+
+/// Advances a single-value iterator from the back.
+pub method next_back#[T](self: &Iterator#[Once#[T]]) -> Option#[T] {
+	self.next()
+}
+
+/// Returns the number of remaining values.
+pub method len#[T](self: &Iterator#[Once#[T]]) -> Uint {
+	if self@.inner.value.is_some() { 1u } else { 0u }
+}
+
+/// An iterator driven by a callback.
+pub struct FromFn#[T] { f: fn() -> Option#[T] }
+
+/// Calls `f` for each next value. A None does not permanently exhaust this iterator.
+pub fn from_fn#[T](f: fn() -> Option#[T]) -> Iterator#[FromFn#[T]] {
+	Iterator(FromFn#[T] { f: f })
+}
+
+/// Invokes the iterator's callback.
+pub method next#[T](self: &Iterator#[FromFn#[T]]) -> Option#[T] {
+	(self@.inner.f)()
+}
+
+/// An iterator copying values behind references.
+pub struct Copied#[I] { source: Iterator#[I] }
+
+/// Lazily copies referenced items using Solar's value-copy semantics.
+pub method copied#[I](self: Iterator#[I]) -> Iterator#[Copied#[I]] {
+	Iterator(Copied#[I] { source: self })
+}
+
+/// Copies the next referenced item.
+pub method next#[I](self: &Iterator#[Copied#[I]]) {
+	self@.inner.source&.next().copied()
+}
+
+/// Copies the next referenced item from the back.
+pub method next_back#[I](self: &Iterator#[Copied#[I]]) {
+	self@.inner.source&.next_back().copied()
+}
+
+/// Returns the number of remaining items when the source has an exact length.
+pub method len#[I](self: &Iterator#[Copied#[I]]) -> Uint {
+	self@.inner.source&.len()
+}
+
+/// An iterator pairing each item with its zero-based index.
+pub struct Enumerate#[I] { source: Iterator#[I], index: Uint }
+
+/// Lazily pairs each item with its index.
+pub method enumerate#[I](self: Iterator#[I]) -> Iterator#[Enumerate#[I]] {
+	Iterator(Enumerate#[I] { source: self, index: 0u })
+}
+
+/// Returns the next index and item.
+pub method next#[I](self: &Iterator#[Enumerate#[I]]) {
+	self@.inner.source&.next().map(\value {
+		let index = self@.inner.index;
+		self@.inner.index = index + 1u;
+		(index, value)
+	})
+}
+
+/// Returns the last index and item; requires an exact-size source.
+pub method next_back#[I](self: &Iterator#[Enumerate#[I]]) {
+	self@.inner.source&.next_back().map(\value {
+		(self@.inner.index + self@.inner.source&.len(), value)
+	})
+}
+
+/// Returns the remaining exact length.
+pub method len#[I](self: &Iterator#[Enumerate#[I]]) -> Uint {
+	self@.inner.source&.len()
+}
+
+/// Reverses a double-ended iterator.
+pub struct Rev#[I] { source: Iterator#[I] }
+
+/// Lazily traverses a double-ended iterator in reverse.
+pub method rev#[I](self: Iterator#[I]) -> Iterator#[Rev#[I]] {
+	Iterator(Rev#[I] { source: self })
+}
+
+/// Advances the source from the back.
+pub method next#[I](self: &Iterator#[Rev#[I]]) {
+	self@.inner.source&.next_back()
+}
+
+/// Advances the source from the front.
+pub method next_back#[I](self: &Iterator#[Rev#[I]]) {
+	self@.inner.source&.next()
+}
+
+/// Returns the remaining exact length.
+pub method len#[I](self: &Iterator#[Rev#[I]]) -> Uint {
+	self@.inner.source&.len()
+}
+
+/// Maps values from the back of a double-ended iterator.
+pub method next_back#[I, T, U](self: &Iterator#[Map#[I, T, U]]) -> Option#[U] {
+	self@.inner.inner&.next_back().map(self@.inner.f)
+}
+
+/// Returns the remaining exact length of a map iterator.
+pub method len#[I, T, U](self: &Iterator#[Map#[I, T, U]]) -> Uint {
+	self@.inner.inner&.len()
+}
+
+/// Finds the next accepted item from the back.
+pub method next_back#[I, T](self: &Iterator#[Filter#[I, T]]) -> Option#[T] {
+	let value = self@.inner.inner&.next_back();
+
+	while value.is_some() {
+		if (self@.inner.predicate)(value.unwrap()) { return value; }
+		value = self@.inner.inner&.next_back();
+	}
+
+	value
+}
+
+/// An iterator that discards unsuccessful transformations.
+pub struct FilterMap#[I, T, U] { source: Iterator#[I], f: fn(T) -> Option#[U] }
+
+/// Lazily transforms each item, retaining only Some results.
+pub method filter_map#[I, T, U](self: Iterator#[I], f: fn(T) -> Option#[U]) -> Iterator#[
+	FilterMap#[I, T, U],
+] {
+	Iterator(FilterMap#[I, T, U] { source: self, f: f })
+}
+
+/// Returns the next successful transformation.
+pub method next#[I, T, U](self: &Iterator#[FilterMap#[I, T, U]]) -> Option#[U] {
+	let item = self@.inner.source&.next();
+
+	while item.is_some() {
+		let result = (self@.inner.f)(item.unwrap());
+		if result.is_some() { return result; }
+		item = self@.inner.source&.next();
+	}
+
+	Option#[U]::None
+}
+
+/// Returns the next successful transformation from the back.
+pub method next_back#[I, T, U](self: &Iterator#[FilterMap#[I, T, U]]) -> Option#[
+	U,
+] {
+	let item = self@.inner.source&.next_back();
+
+	while item.is_some() {
+		let result = (self@.inner.f)(item.unwrap());
+		if result.is_some() { return result; }
+		item = self@.inner.source&.next_back();
+	}
+
+	Option#[U]::None
+}
+
+/// A concatenation of two iterators.
+pub struct Chain#[I, J] {
+	first: Iterator#[I],
+	second: Iterator#[J],
+	first_done: Bool,
+	second_done: Bool,
+}
+
+/// Yields all items from the first iterator, then the second.
+pub method chain#[I, J](self: Iterator#[I], other: Iterator#[J]) -> Iterator#[
+	Chain#[I, J],
+] {
+	Iterator(
+		Chain#[I, J] {
+			first: self,
+			second: other,
+			first_done: false,
+			second_done: false,
+		},
+	)
+}
+
+/// Advances a concatenated iterator.
+pub method next#[I, J](self: &Iterator#[Chain#[I, J]]) {
+	if !self@.inner.first_done {
+		let value = self@.inner.first&.next();
+		if value.is_some() { return value; }
+		self@.inner.first_done = true;
+	}
+
+	if self@.inner.second_done { return absent(\ self@.inner.second&.next()); }
+	self@.inner.second&.next()
+}
+
+/// Advances a concatenated iterator from the back.
+pub method next_back#[I, J](self: &Iterator#[Chain#[I, J]]) {
+	if !self@.inner.second_done {
+		let value = self@.inner.second&.next_back();
+		if value.is_some() { return value; }
+		self@.inner.second_done = true;
+	}
+
+	if self@.inner.first_done {
+		return absent(\ self@.inner.first&.next_back());
+	}
+
+	self@.inner.first&.next_back()
+}
+
+/// Returns the remaining exact length.
+pub method len#[I, J](self: &Iterator#[Chain#[I, J]]) -> Uint {
+	(if self@.inner.first_done { 0u } else { self@.inner.first&.len() }) +
+		(if self@.inner.second_done { 0u } else { self@.inner.second&.len() })
+}
+
+/// An iterator pairing corresponding items.
+pub struct Zip#[I, J] { first: Iterator#[I], second: Iterator#[J] }
+
+/// Pairs corresponding items, ending when either iterator ends.
+pub method zip#[I, J](self: Iterator#[I], other: Iterator#[J]) -> Iterator#[
+	Zip#[I, J],
+] {
+	Iterator(Zip#[I, J] { first: self, second: other })
+}
+
+fn zip_options#[T, U](a: Option#[T], b: Option#[U]) -> Option#[(T, U)] {
+	if a.is_none() || b.is_none() { Option#[(T, U)]::None } else {
+		Option#[(T, U)]::Some((a.unwrap(), b.unwrap()))
+	}
+}
+
+fn zip_next#[T, J](first: Option#[T], second: &Iterator#[J]) {
+	let other = if first.is_some() { second.next() } else {
+		absent(\ second.next())
+	};
+	zip_options(first, other)
+}
+
+/// Returns the next pair.
+pub method next#[I, J](self: &Iterator#[Zip#[I, J]]) {
+	zip_next(self@.inner.first&.next(), self@.inner.second&)
+}
+
+/// Returns the final pair; requires exact-size double-ended sources.
+pub method next_back#[I, J](self: &Iterator#[Zip#[I, J]]) {
+	while self@.inner.first&.len() > self@.inner.second&.len() {
+		self@.inner.first&.next_back();
+	}
+
+	while self@.inner.second&.len() > self@.inner.first&.len() {
+		self@.inner.second&.next_back();
+	}
+
+	zip_options(self@.inner.first&.next_back(), self@.inner.second&.next_back())
+}
+
+/// Returns the remaining exact length.
+pub method len#[I, J](self: &Iterator#[Zip#[I, J]]) -> Uint {
+	self@.inner.first&.len().min(self@.inner.second&.len())
+}
+
+/// An iterator limited to a prefix.
+pub struct Take#[I] { source: Iterator#[I], remaining: Uint }
+
+/// Yields at most `count` items without advancing the source beyond that limit.
+pub method take#[I](self: Iterator#[I], count: Uint) -> Iterator#[Take#[I]] {
+	Iterator(Take#[I] { source: self, remaining: count })
+}
+
+fn absent#[T](witness: fn() -> Option#[T]) -> Option#[T] { Option#[T]::None }
+
+/// Returns the next item in a limited prefix.
+pub method next#[I](self: &Iterator#[Take#[I]]) {
+	if self@.inner.remaining ==
+		0u { return absent(\ self@.inner.source&.next()); }
+
+	self@.inner.remaining = self@.inner.remaining - 1u;
+	self@.inner.source&.next()
+}
+
+/// Returns the back of the remaining prefix; requires an exact-size source.
+pub method next_back#[I](self: &Iterator#[Take#[I]]) {
+	if self@.inner.remaining ==
+		0u { return absent(\ self@.inner.source&.next()); }
+
+	while self@.inner.source&.len() > self@.inner.remaining {
+		self@.inner.source&.next_back();
+	}
+
+	self@.inner.remaining = self@.inner.remaining - 1u;
+	self@.inner.source&.next_back()
+}
+
+/// Returns the remaining exact length.
+pub method len#[I](self: &Iterator#[Take#[I]]) -> Uint {
+	self@.inner.source&.len().min(self@.inner.remaining)
+}
+
+/// An iterator omitting an initial prefix.
+pub struct Skip#[I] { source: Iterator#[I], remaining: Uint }
+
+/// Lazily discards the first `count` items.
+pub method skip#[I](self: Iterator#[I], count: Uint) -> Iterator#[Skip#[I]] {
+	Iterator(Skip#[I] { source: self, remaining: count })
+}
+
+/// Advances past the skipped prefix, then returns the next item.
+pub method next#[I](self: &Iterator#[Skip#[I]]) {
+	while self@.inner.remaining != 0u {
+		self@.inner.remaining = self@.inner.remaining - 1u;
+		let skipped = self@.inner.source&.next();
+		if skipped.is_none() { self@.inner.remaining = 0u; return skipped; }
+	}
+
+	self@.inner.source&.next()
+}
+
+/// Advances from the back without entering the skipped prefix.
+pub method next_back#[I](self: &Iterator#[Skip#[I]]) {
+	if self@.inner.source&.len() <= self@.inner.remaining {
+		return absent(\ self@.inner.source&.next());
+	}
+
+	self@.inner.source&.next_back()
+}
+
+/// Returns the remaining exact length.
+pub method len#[I](self: &Iterator#[Skip#[I]]) -> Uint {
+	self@.inner.source&.len().saturating_sub(self@.inner.remaining)
+}
+
+/// An iterator ending at the first rejected value.
+pub struct TakeWhile#[I, T] {
+	source: Iterator#[I],
+	predicate: fn(T) -> Bool,
+	done: Bool,
+}
+
+/// Yields a prefix while a predicate holds; consumes the first rejected item.
+pub method take_while#[I, T](self: Iterator#[I], predicate: fn(T) -> Bool) -> Iterator#[
+	TakeWhile#[I, T],
+] {
+	Iterator(
+		TakeWhile#[I, T] { source: self, predicate: predicate, done: false },
+	)
+}
+
+/// Returns the next accepted item, permanently ending after a rejection.
+pub method next#[I, T](self: &Iterator#[TakeWhile#[I, T]]) -> Option#[T] {
+	if self@.inner.done { return Option#[T]::None; }
+	let item = self@.inner.source&.next();
+	if item.is_none() { return item; }
+
+	if (self@.inner.predicate)(item.unwrap()) { item } else {
+		self@.inner.done = true;
+		Option#[T]::None
+	}
+}
+
+/// An iterator sampling every nth source item.
+pub struct StepBy#[I] { source: Iterator#[I], step: Uint, first: Bool }
+
+/// Yields the first item and then every `step`th item; throws for zero.
+pub method step_by#[I](self: Iterator#[I], step: Uint) -> Iterator#[StepBy#[I]] {
+	if step == 0u { throw("step_by: step must be positive"&); }
+	Iterator(StepBy#[I] { source: self, step: step, first: true })
+}
+
+/// Returns the next sampled item.
+pub method next#[I](self: &Iterator#[StepBy#[I]]) {
+	let skip = if self@.inner.first { 0u } else { self@.inner.step - 1u };
+	self@.inner.first = false;
+	self@.inner.source&.nth(skip)
+}
+
+/// Returns the next sampled item from the back of an exact-size source.
+pub method next_back#[I](self: &Iterator#[StepBy#[I]]) {
+	let length = self@.inner.source&.len();
+	if length == 0u { return absent(\ self@.inner.source&.next()); }
+	let skipped = if self@.inner.first { (length - 1u) % self@.inner.step } else {
+		length % self@.inner.step
+	};
+	for i in 0u..skipped { self@.inner.source&.next_back(); }
+	self@.inner.source&.next_back()
+}
+
+/// Returns the remaining number of samples for an exact-size source.
+pub method len#[I](self: &Iterator#[StepBy#[I]]) -> Uint {
+	let length = self@.inner.source&.len();
+	length / self@.inner.step +
+		if self@.inner.first &&
+			length % self@.inner.step != 0u { 1u } else { 0u }
+}
+
+/// An iterator restarting a copy of its original cursor on exhaustion.
+pub struct Cycle#[I] { original: Iterator#[I], current: Iterator#[I] }
+
+/// Repeats a copyable iterator. An empty source remains empty.
+pub method cycle#[I](self: Iterator#[I]) -> Iterator#[Cycle#[I]] {
+	Iterator(Cycle#[I] { original: self, current: self })
+}
+
+/// Returns the next cyclic item.
+pub method next#[I](self: &Iterator#[Cycle#[I]]) {
+	let value = self@.inner.current&.next();
+	if value.is_some() { return value; }
+	self@.inner.current = self@.inner.original;
+	self@.inner.current&.next()
+}
+
+/// Advances past `index` items and returns the next one.
+pub method nth#[I](self: &Iterator#[I], index: Uint) {
+	let n = 0u;
+
+	while n < index {
+		let item = self.next();
+		if item.is_none() { return item; }
+		n = n + 1u;
+	}
+
+	self.next()
+}
+
+/// Counts the remaining items.
+pub method count#[I](self: Iterator#[I]) -> Uint {
+	let count = 0u;
+	while self&.next().is_some() { count = count + 1u; }
+	count
+}
+
+/// Returns the last item, or None for an empty iterator.
+pub method last#[I](self: Iterator#[I]) {
+	let last = self&.next();
+	if last.is_none() { return last; }
+	let next = self&.next();
+	while next.is_some() { last = next; next = self&.next(); }
+	last
+}
+
+/// Accumulates items in traversal order, returning `initial` for an empty source.
+pub method fold#[I, T, U](self: Iterator#[I], initial: U, f: fn(U, T) -> U) -> U {
+	let result = initial;
+	let item = self&.next();
+
+	while item.is_some() {
+		result = f(result, item.unwrap());
+		item = self&.next();
+	}
+
+	result
+}
+
+/// Reduces items using the first as the accumulator; returns None when empty.
+pub method reduce#[I, T](self: Iterator#[I], f: fn(T, T) -> T) -> Option#[T] {
+	let first = self&.next();
+	if first.is_none() { return first; }
+	Option#[T]::Some(self.fold(first.unwrap(), f))
+}
+
+/// Sums remaining numeric values, returning the type's default zero when empty.
+pub method sum#[I](self: Iterator#[I]) {
+	let item = self&.next();
+	let result = item.unwrap_or_default();
+
+	if item.is_some() {
+		item = self&.next();
+
+		while item.is_some() {
+			result = result + item.unwrap();
+			item = self&.next();
+		}
+	}
+
+	result
+}
+
+fn one_like#[T](witness: Option#[T]) -> T { T(1) }
+
+/// Multiplies remaining numeric values, returning one when empty.
+pub method product#[I](self: Iterator#[I]) {
+	let item = self&.next();
+	let result = one_like(item);
+
+	while item.is_some() {
+		result = result * item.unwrap();
+		item = self&.next();
+	}
+
+	result
+}
+
+/// Returns whether every remaining item satisfies the predicate, short-circuiting.
+pub method all#[I, T](self: Iterator#[I], predicate: fn(T) -> Bool) -> Bool {
+	let item = self&.next();
+
+	while item.is_some() {
+		if !predicate(item.unwrap()) { return false; }
+		item = self&.next();
+	}
+
+	true
+}
+
+/// Returns whether any remaining item satisfies the predicate, short-circuiting.
+pub method any#[I, T](self: Iterator#[I], predicate: fn(T) -> Bool) -> Bool {
+	let item = self&.next();
+
+	while item.is_some() {
+		if predicate(item.unwrap()) { return true; }
+		item = self&.next();
+	}
+
+	false
+}
+
+/// Returns the first matching item.
+pub method find#[I, T](self: Iterator#[I], predicate: fn(T) -> Bool) -> Option#[
+	T,
+] {
+	let item = self&.next();
+
+	while item.is_some() {
+		if predicate(item.unwrap()) { return item; }
+		item = self&.next();
+	}
+
+	item
+}
+
+/// Returns the first successful transformation.
+pub method find_map#[I, T, U](self: Iterator#[I], f: fn(T) -> Option#[U]) -> Option#[
+	U,
+] {
+	self.filter_map(f)&.next()
+}
+
+/// Returns the index of the first matching item.
+pub method position#[I, T](self: Iterator#[I], predicate: fn(T) -> Bool) -> Option#[
+	Uint,
+] {
+	let index = 0u;
+	let item = self&.next();
+
+	while item.is_some() {
+		if predicate(item.unwrap()) { return Option#[Uint]::Some(index); }
+		index = index + 1u;
+		item = self&.next();
+	}
+
+	Option#[Uint]::None
+}
+
+/// Returns the smallest item, preferring the first equal item.
+pub method min#[I](self: Iterator#[I]) {
+	let result = self&.next();
+	if result.is_none() { return result; }
+	let item = self&.next();
+
+	while item.is_some() {
+		if item.unwrap().cmp(result.unwrap()) ==
+			Ordering::Less { result = item; }
+
+		item = self&.next();
+	}
+
+	result
+}
+
+/// Returns the largest item, preferring the last equal item.
+pub method max#[I](self: Iterator#[I]) {
+	let result = self&.next();
+	if result.is_none() { return result; }
+	let item = self&.next();
+
+	while item.is_some() {
+		if item.unwrap().cmp(result.unwrap()) !=
+			Ordering::Less { result = item; }
+
+		item = self&.next();
+	}
+
+	result
+}
+
+/// Returns the item with the smallest key; evaluates each key once.
+pub method min_by_key#[I, T, K](self: Iterator#[I], key: fn(T) -> K) -> Option#[
+	T,
+] {
+	let result = self&.next();
+	if result.is_none() { return result; }
+	let best = key(result.unwrap());
+	let item = self&.next();
+
+	while item.is_some() {
+		let current = key(item.unwrap());
+
+		if current.cmp(best) ==
+			Ordering::Less { result = item; best = current; }
+
+		item = self&.next();
+	}
+
+	result
+}
+
+/// Returns the item with the largest key; evaluates each key once, preferring the last tie.
+pub method max_by_key#[I, T, K](self: Iterator#[I], key: fn(T) -> K) -> Option#[
+	T,
+] {
+	let result = self&.next();
+	if result.is_none() { return result; }
+	let best = key(result.unwrap());
+	let item = self&.next();
+
+	while item.is_some() {
+		let current = key(item.unwrap());
+
+		if current.cmp(best) !=
+			Ordering::Less { result = item; best = current; }
+
+		item = self&.next();
+	}
+
+	result
+}
+
+/// Compares two iterators element by element, including their lengths.
+pub method eq#[I, J](self: Iterator#[I], other: Iterator#[J]) -> Bool {
+	let a = self&.next();
+	let b = other&.next();
+
+	while a.is_some() && b.is_some() {
+		if a.unwrap() != b.unwrap() { return false; }
+		a = self&.next();
+		b = other&.next();
+	}
+
+	a.is_none() && b.is_none()
+}
+
+/// Returns whether items are in nondecreasing order.
+pub method is_sorted#[I](self: Iterator#[I]) -> Bool {
+	let previous = self&.next();
+	if previous.is_none() { return true; }
+	let item = self&.next();
+
+	while item.is_some() {
+		if previous.unwrap().cmp(item.unwrap()) ==
+			Ordering::Greater { return false; }
+
+		previous = item;
+		item = self&.next();
+	}
+
+	true
+}
+
+/// Collects into a type implementing `Type::from_iter(iterator)`.
+/// For example: `source.collect#[vec::Vec#[Int]]()`.
+pub method collect#[I, out C](self: Iterator#[I]) -> C { C::from_iter(self) }
+
+fn collect_vec_inner#[I, T](source: Iterator#[I], first: Option#[T]) -> Vec#[T] {
+	let output = Vec([]#[T]&);
+	let item = first;
+	while item.is_some() { output&.push(item.unwrap()); item = source&.next(); }
+	output
+}
+
+/// Collects into a vector, inferring its element type from next().
+pub method collect_vec#[I](self: Iterator#[I]) {
+	let first = self&.next();
+	collect_vec_inner(self, first)
+}
+
+/// An iterator caching one lookahead result, including None.
+pub struct Peekable#[I, T] { source: Iterator#[I], cached: Option#[Option#[T]] }
+
+fn peekable_new#[I, T](source: Iterator#[I], witness: fn() -> Option#[T]) -> Iterator#[
+	Peekable#[I, T],
+] {
+	Iterator(
+		Peekable#[I, T] { source: source, cached: Option#[Option#[T]]::None },
+	)
+}
+
+/// Adds one-item lookahead without advancing the source during construction.
+pub method peekable#[I](self: Iterator#[I]) {
+	// The uncalled closure supplies the concrete item type without an eager next().
+	peekable_new(self, \ self&.next())
+}
+
+/// Returns a copy of the cached next item, advancing the source at most once.
+pub method peek#[I, T](self: &Iterator#[Peekable#[I, T]]) -> Option#[T] {
+	if self@.inner.cached.is_none() {
+		self@.inner.cached = Option#[
+			Option#[T],
+		]::Some(self@.inner.source&.next());
+	}
+
+	self@.inner.cached.unwrap()
+}
+
+/// Consumes the lookahead result or advances the source.
+pub method next#[I, T](self: &Iterator#[Peekable#[I, T]]) -> Option#[T] {
+	if self@.inner.cached.is_some() {
+		let item = self@.inner.cached.unwrap();
+		self@.inner.cached = Option#[Option#[T]]::None;
+		return item;
+	}
+
+	self@.inner.source&.next()
+}
+
+/// Consumes from the back, preserving a front-cached item until it is last.
+pub method next_back#[I, T](self: &Iterator#[Peekable#[I, T]]) -> Option#[T] {
+	if self@.inner.cached.is_some() {
+		let cached = self@.inner.cached.unwrap();
+		if cached.is_none() { return cached; }
+		let item = self@.inner.source&.next_back();
+		if item.is_some() { return item; }
+		self@.inner.cached = Option#[Option#[T]]::None;
+		return cached;
+	}
+
+	self@.inner.source&.next_back()
+}
+
+/// Returns the remaining exact length, including a cached item.
+pub method len#[I, T](self: &Iterator#[Peekable#[I, T]]) -> Uint {
+	if self@.inner.cached.is_some() {
+		if self@.inner.cached.unwrap().is_none() { return 0u; }
+		return self@.inner.source&.len() + 1u;
+	}
+
+	self@.inner.source&.len()
+}
+
+/// A lazy iterator flattening transformed inner iterators from either end.
+pub struct FlatMap#[I, T, J] {
+	source: Iterator#[I],
+	f: fn(T) -> Iterator#[J],
+	front: Option#[Iterator#[J]],
+	back: Option#[Iterator#[J]],
+	done: Bool,
+}
+
+fn flat_map_new#[I, T, J](source: Iterator#[I], f: fn(T) -> Iterator#[J]) -> Iterator#[
+	FlatMap#[I, T, J],
+] {
+	Iterator(
+		FlatMap#[I, T, J] {
+			source: source,
+			f: f,
+			front: Option#[Iterator#[J]]::None,
+			back: Option#[Iterator#[J]]::None,
+			done: false,
+		},
+	)
+}
+
+/// Maps each item to an iterable and lazily concatenates its iteration items.
+pub method flat_map#[I, T, C](self: Iterator#[I], f: fn(T) -> C) {
+	flat_map_new(self, \item: T f(item)&.iter())
+}
+
+fn flatten_new#[I, T](source: Iterator#[I], witness: fn() -> Option#[T]) {
+	source.flat_map(\item: T item)
+}
+
+/// Lazily concatenates the items of nested iterables.
+pub method flatten#[I](self: Iterator#[I]) { flatten_new(self, \ self&.next()) }
+
+/// Returns the next inner item, skipping empty iterables.
+pub method next#[I, T, J](self: &Iterator#[FlatMap#[I, T, J]]) {
+	while true {
+		if self@.inner.front.is_some() {
+			let current = self@.inner.front.unwrap();
+			let item = current&.next();
+			self@.inner.front = Option#[Iterator#[J]]::Some(current);
+			if item.is_some() { return item; }
+			self@.inner.front = Option#[Iterator#[J]]::None;
+		}
+
+		if !self@.inner.done {
+			let outer = self@.inner.source&.next();
+
+			if outer.is_some() {
+				self@.inner.front = Option#[Iterator#[J]]::Some(
+					(self@.inner.f)(outer.unwrap()),
+				);
+				continue;
+			}
+
+			self@.inner.done = true;
+		}
+
+		if self@.inner.back.is_some() {
+			let current = self@.inner.back.unwrap();
+			let item = current&.next();
+			self@.inner.back = Option#[Iterator#[J]]::Some(current);
+
+			if item.is_none() {
+				self@.inner.back = Option#[Iterator#[J]]::None;
+			}
+
+			return item;
+		}
+
+		break;
+	}
+
+	absent(\ self@.inner.front.unwrap()&.next())
+}
+
+/// Returns the next item from the back when both levels are double-ended.
+pub method next_back#[I, T, J](self: &Iterator#[FlatMap#[I, T, J]]) {
+	while true {
+		if self@.inner.back.is_some() {
+			let current = self@.inner.back.unwrap();
+			let item = current&.next_back();
+			self@.inner.back = Option#[Iterator#[J]]::Some(current);
+			if item.is_some() { return item; }
+			self@.inner.back = Option#[Iterator#[J]]::None;
+		}
+
+		if !self@.inner.done {
+			let outer = self@.inner.source&.next_back();
+
+			if outer.is_some() {
+				self@.inner.back = Option#[
+					Iterator#[J],
+				]::Some((self@.inner.f)(outer.unwrap()));
+				continue;
+			}
+
+			self@.inner.done = true;
+		}
+
+		if self@.inner.front.is_some() {
+			let current = self@.inner.front.unwrap();
+			let item = current&.next_back();
+			self@.inner.front = Option#[Iterator#[J]]::Some(current);
+
+			if item.is_none() {
+				self@.inner.front = Option#[Iterator#[J]]::None;
+			}
+
+			return item;
+		}
+
+		break;
+	}
+
+	absent(\ self@.inner.back.unwrap()&.next_back())
+}
+
+/// An iterator yielding complete groups of a runtime-selected width.
+pub struct ArrayChunks#[I, T] { source: Iterator#[I], width: Uint, done: Bool }
+
+fn chunks_new#[I, T](
+	source: Iterator#[I],
+	width: Uint,
+	witness: fn() -> Option#[T],
+) -> Iterator#[ArrayChunks#[I, T]] {
+	Iterator(ArrayChunks#[I, T] { source: source, width: width, done: false })
+}
+
+/// Yields non-overlapping complete groups as slices, discarding a short final group.
+/// Solar selects the group width at runtime; zero throws.
+pub method array_chunks#[I](self: Iterator#[I], width: Uint) {
+	if width == 0u { throw("array_chunks: width must be positive"&); }
+	chunks_new(self, width, \ self&.next())
+}
+
+/// Collects the next complete group without reading ahead into the following group.
+pub method next#[I, T](self: &Iterator#[ArrayChunks#[I, T]]) -> Option#[&[T]] {
+	if self@.inner.done { return Option#[&[T]]::None; }
+	let chunk = Vec([]#[T]&);
+
+	while chunk&.len() < self@.inner.width {
+		let item = self@.inner.source&.next();
+
+		if item.is_none() {
+			self@.inner.done = true;
+			return Option#[&[T]]::None;
+		}
+
+		chunk&.push(item.unwrap());
+	}
+
+	Option#[&[T]]::Some(chunk&.as_slice())
+}
+
+/// Returns the remaining number of complete groups for an exact-size source.
+pub method len#[I, T](self: &Iterator#[ArrayChunks#[I, T]]) -> Uint {
+	if self@.inner.done { 0u } else {
+		self@.inner.source&.len() / self@.inner.width
+	}
+}
+
+/// Returns the final complete group of an exact-size double-ended source.
+/// Discards the incomplete suffix before yielding the last complete group.
+pub method next_back#[I, T](self: &Iterator#[ArrayChunks#[I, T]]) -> Option#[
+	&[T],
+] {
+	if self@.inner.done { return Option#[&[T]]::None; }
+	let remainder = self@.inner.source&.len() % self@.inner.width;
+	for i in 0u..remainder { self@.inner.source&.next_back(); }
+
+	if self@.inner.source&.len() == 0u {
+		self@.inner.done = true;
+		return Option#[&[T]]::None;
+	}
+
+	let group: [T] = [self@.inner.width; \i: Uint self@.inner.source&.next_back().unwrap()];
+	Option#[&[T]]::Some(
+		[self@.inner.width; \i: Uint group[self@.inner.width - 1u - i]]&,
+	)
 }

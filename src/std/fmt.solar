@@ -1,0 +1,334 @@
+import {throw} from "lib.solar";
+import {Vec} from "vec.solar";
+import {decode_first} from "char.solar";
+
+struct Spec { fill: Uint32, align: Uint8, width: Uint, kind: Uint8, zero: Bool }
+
+/// A value retained for pure string formatting. Construct with format_arg.
+pub struct FormatArg { name: &[Uint8], render: fn(Spec) -> &[Uint8] }
+
+/// Retains a value for formatting, optionally under a named placeholder.
+/// Integer types support decimal, binary, octal, and hexadecimal formatting.
+/// Other values use debug_string; byte strings and booleans have display forms.
+pub fn format_arg#[T](value: T, name = ""&) -> FormatArg {
+	FormatArg { name: name, render: \spec: Spec render(value, spec) }
+}
+
+/// Returns a byte string unchanged.
+pub method to_string(self: &[Uint8]) -> &[Uint8] { self }
+
+/// Returns "true" or "false".
+pub method to_string(self: Bool) -> &[Uint8] {
+	if self { "true"& } else { "false"& }
+}
+
+/// Returns a structural debug representation of a value.
+/// Structs use field names, enums use variant names, and strings are quoted.
+/// Unit enum variants include their discriminant. Cyclic references are unsupported.
+pub fn debug_string#[T](value: T) -> &[Uint8] {
+	match.reflect T {
+		"struct" => {
+			let fields = Vec([]#[&[Uint8]]&);
+
+			for.reflect_fields (name, field) in value& {
+				fields&.push((name@ + ": " + debug_string(field@)@)&);
+			}
+
+			("{" + fields&.as_slice().join(", "&)@ + "}")&
+		},
+		"enum" => {
+			let output = ""&;
+
+			match.reflect_variant (name, _, field) in value& {
+				output = (name@ + "(" + debug_string(field)@ + ")")&;
+			}
+
+			output
+		},
+		_ => value.to_string(),
+	}
+}
+
+/// Formats the referenced value.
+pub fn debug_string#[T](value: &T) -> &[Uint8] { debug_string(value@) }
+
+/// Formats a sequence of values, surrounded by brackets.
+pub fn debug_string#[T](value: &[T]) -> &[Uint8] {
+	let fields = Vec([]#[&[Uint8]]&);
+	for item in value { fields&.push(debug_string(item@)); }
+	("[" + fields&.as_slice().join(", "&)@ + "]")&
+}
+
+/// Quotes a byte string, escaping quotes, backslashes, and ASCII control bytes.
+pub fn debug_string(value: &[Uint8]) -> &[Uint8] {
+	let output = Vec(['"']&);
+
+	for item in value {
+		let c = item@;
+
+		if c == '"' || c == '\\' { output&.push('\\'); output&.push(c); } else if c ==
+			'\n' { output&.push('\\'); output&.push('n'); } else if c == '\r' {
+			output&.push('\\');
+			output&.push('r');
+		} else if c == '\t' { output&.push('\\'); output&.push('t'); } else if c <
+			32u8 ||
+			c == 127u8 {
+			let digits = "0123456789abcdef"&;
+			output&.push('\\');
+			output&.push('x');
+			output&.push(digits@[Uint(c / 16u8)]);
+			output&.push(digits@[Uint(c % 16u8)]);
+		} else { output&.push(c); }
+	}
+
+	output&.push('"');
+	output&.as_slice()
+}
+
+fn padding(text: &[Uint8], spec: Spec, numeric: Bool) -> &[Uint8] {
+	let length = text.chars().count();
+	if length >= spec.width { return text; }
+	let count = spec.width - length;
+
+	if numeric && spec.zero {
+		let zeros = "0"&.repeat(count);
+
+		if text.starts_with(
+			'-',
+		) { return ("-" + zeros@ + text@[1u..text.len()])&; }
+
+		return (zeros@ + text@)&;
+	}
+
+	let align = if spec.align != 0u8 { spec.align } else if numeric { '>' } else {
+		'<'
+	};
+	let left = if align == '>' { count } else if align == '^' { count / 2u } else {
+		0u
+	};
+	let fill = spec.fill.to_utf8();
+	(fill.repeat(left)@ + text@ + fill.repeat(count - left)@)&
+}
+
+fn render#[T](value: T, spec: Spec) -> &[Uint8] {
+	if spec.kind != 0u8 && spec.kind != '?' {
+		throw("format: invalid specifier for value"&);
+	}
+
+	padding(debug_string(value), spec, false)
+}
+
+fn render#[T](value: &T, spec: Spec) -> &[Uint8] { render(value@, spec) }
+
+fn render(value: &[Uint8], spec: Spec) -> &[Uint8] {
+	if spec.kind != 0u8 && spec.kind != '?' {
+		throw("format: invalid specifier for text"&);
+	}
+
+	padding(
+		if spec.kind == '?' { debug_string(value) } else { value },
+		spec,
+		false,
+	)
+}
+
+fn render(value: Bool, spec: Spec) -> &[Uint8] {
+	if spec.kind != 0u8 && spec.kind != '?' {
+		throw("format: invalid specifier for boolean"&);
+	}
+
+	padding(value.to_string(), spec, false)
+}
+
+fn radix(spec: Spec) -> Uint {
+	if spec.kind == 0u8 || spec.kind == '?' || spec.kind == 'd' { return 10u; }
+	if spec.kind == 'b' { return 2u; }
+	if spec.kind == 'o' { return 8u; }
+	if spec.kind == 'x' || spec.kind == 'X' { return 16u; }
+	throw("format: invalid integer specifier"&);
+	10u
+}
+
+fn render_unsigned(value: Uint64, spec: Spec) -> &[Uint8] {
+	let text = value.to_radix(radix(spec));
+
+	if spec.kind == 'X' {
+		text = [text.len(); \i {
+			let c = text@[i];
+			if c >= 'a' && c <= 'f' { c - 32u8 } else { c }
+		}]&;
+	}
+
+	padding(text, spec, true)
+}
+
+fn render_signed(value: Int64, bits: Uint, spec: Spec) -> &[Uint8] {
+	if radix(spec) == 10u { return padding(value.to_string(), spec, true); }
+	let magnitude = if value < 0i64 {
+		18446744073709551615u64 - Uint64(0i64 - (value + 1i64))
+	} else { Uint64(value) };
+	if bits < 64u { magnitude = magnitude % (1u64 << bits); }
+	render_unsigned(magnitude, spec)
+}
+
+fn render(value: Int8, spec: Spec) -> &[Uint8] {
+	render_signed(Int64(value), 8u, spec)
+}
+
+fn render(value: Int16, spec: Spec) -> &[Uint8] {
+	render_signed(Int64(value), 16u, spec)
+}
+
+fn render(value: Int32, spec: Spec) -> &[Uint8] {
+	render_signed(Int64(value), 32u, spec)
+}
+
+fn render(value: Int64, spec: Spec) -> &[Uint8] {
+	render_signed(Int64(value), 64u, spec)
+}
+
+fn render(value: Int, spec: Spec) -> &[Uint8] {
+	render_signed(Int64(value), 64u, spec)
+}
+
+fn render(value: Uint8, spec: Spec) -> &[Uint8] {
+	render_unsigned(Uint64(value), spec)
+}
+
+fn render(value: Uint16, spec: Spec) -> &[Uint8] {
+	render_unsigned(Uint64(value), spec)
+}
+
+fn render(value: Uint32, spec: Spec) -> &[Uint8] {
+	render_unsigned(Uint64(value), spec)
+}
+
+fn render(value: Uint64, spec: Spec) -> &[Uint8] {
+	render_unsigned(Uint64(value), spec)
+}
+
+fn render(value: Uint, spec: Spec) -> &[Uint8] {
+	render_unsigned(Uint64(value), spec)
+}
+
+fn alignment(c: Uint32) -> Bool { c == 60u32 || c == 62u32 || c == 94u32 }
+
+fn parse_spec(text: &[Uint8], dynamic_width: Uint) -> Spec {
+	let spec = Spec {
+		fill: 32u32,
+		align: 0u8,
+		width: 0u,
+		kind: 0u8,
+		zero: false,
+	};
+	let at = 0u;
+
+	if text.len() > 0u {
+		let (first, size) = decode_first(text);
+
+		if alignment(first) { spec.align = Uint8(first); at = size; } else {
+			if size < text.len() {
+				let (
+					second,
+					next_size,
+				) = decode_first(text@[size..text.len()]&);
+
+				if alignment(second) {
+					spec.fill = first;
+					spec.align = Uint8(second);
+					at = size + next_size;
+				}
+			}
+		}
+	}
+
+	if at < text.len() && text@[at] == '0' { spec.zero = true; at = at + 1u; }
+
+	if text@[at..text.len()]&.starts_with("width$"&) {
+		spec.width = dynamic_width;
+		at = at + 6u;
+	} else {
+		while at < text.len() && text@[at].is_ascii_digit() {
+			spec.width = spec.width * 10u + Uint(text@[at] - '0');
+			at = at + 1u;
+		}
+	}
+
+	if at < text.len() { spec.kind = text@[at]; at = at + 1u; }
+	if at != text.len() { throw("format: invalid format specifier"&); }
+	spec
+}
+
+/// Builds a byte string without I/O. Arguments are created with format_arg.
+/// Supports {}, {0}, {name}, {:?}, {:b}, {:o}, {:x}, {:X}, field widths,
+/// zero padding, Unicode fill with < > ^ alignment, and {{ / }} escapes.
+/// The width keyword supplies a dynamic `width$` (e.g. `{:0>width$}`).
+/// Example: format("{} {:036b}"&, [format_arg("mask"&), format_arg(5u)]&).
+/// Invalid placeholders or specifiers throw. Named values must be passed explicitly.
+pub fn format(template: &[Uint8], arguments: &[FormatArg], width = 0u) -> &[Uint8] {
+	let parts = Vec([]#[&[Uint8]]&);
+	let at = 0u;
+	let next = 0u;
+
+	while at < template.len() {
+		let start = at;
+
+		while at < template.len() && template@[at] != '{' &&
+			template@[at] != '}' { at = at + 1u; }
+
+		parts&.push(template@[start..at]&);
+		if at == template.len() { break; }
+		let brace = template@[at];
+
+		if at + 1u < template.len() && template@[at + 1u] == brace {
+			parts&.push(template@[at..at + 1u]&);
+			at = at + 2u;
+		} else {
+			if brace == '}' { throw("format: unmatched closing brace"&); }
+			at = at + 1u;
+			let key_start = at;
+
+			while at < template.len() && template@[at] != '}' &&
+				template@[at] != ':' { at = at + 1u; }
+
+			let key = template@[key_start..at]&;
+			let index = next;
+
+			if key.len() == 0u { next = next + 1u; } else {
+				if key.iter().all(\c: &Uint8 c@.is_ascii_digit()) {
+					index = key.parse#[Uint]();
+				} else {
+					index = arguments.len();
+
+					for i in 0u..arguments.len() {
+						if arguments@[i].name == key { index = i; break; }
+					}
+				}
+			}
+
+			let spec_text = ""&;
+
+			if at < template.len() && template@[at] == ':' {
+				at = at + 1u;
+				let spec_start = at;
+
+				while at < template.len() &&
+					template@[at] != '}' { at = at + 1u; }
+
+				spec_text = template@[spec_start..at]&;
+			}
+
+			if at == template.len() { throw("format: unclosed placeholder"&); }
+
+			if index >=
+				arguments.len() { throw("format: argument not found"&); }
+
+			parts&.push(
+				(arguments@[index].render)(parse_spec(spec_text, width)),
+			);
+			at = at + 1u;
+		}
+	}
+
+	parts&.as_slice().join(""&)
+}

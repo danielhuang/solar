@@ -1,0 +1,100 @@
+/// The result of comparing two ordered values.
+pub enum Ordering { Less, Equal, Greater }
+
+/// A value whose comparison order is reversed.
+pub struct Reverse#[T] {
+	/// The wrapped value.
+	pub value: T,
+}
+
+/// Wraps a value with reversed ordering.
+pub fn Reverse::#[T](value: T) -> Reverse#[T] { Reverse#[T] { value: value } }
+
+/// Constructs a default value through the type's `default` associated function.
+/// User-defined types can participate by defining `Type::default()`.
+pub fn default#[out T]() -> T { T::default() }
+
+/// Compares structs and enums lexicographically, and scalars using ordering operators.
+pub method cmp#[T](self: T, other: T) -> Ordering {
+	match.reflect T {
+		"struct" => {
+			for.reflect_fields_pair (_, a, b) in (self&, other&) {
+				let order = a.cmp(b);
+				if order != Ordering::Equal { return order; }
+			}
+
+			Ordering::Equal
+		},
+		"enum" => {
+			let a_index = 0u;
+			let b_index = 0u;
+			match.reflect_variant (_, index, _) in self& { a_index = index; }
+			match.reflect_variant (_, index, _) in other& { b_index = index; }
+			if a_index != b_index { return a_index.cmp(b_index); }
+			let order = Ordering::Equal;
+
+			match.reflect_variant_pair (
+				_,
+				_,
+				a,
+				b,
+			) in (self&, other&) { order = a.cmp(b); }
+
+			order
+		},
+		_ => {
+			if self < other { Ordering::Less } else if self > other {
+				Ordering::Greater
+			} else { Ordering::Equal }
+		},
+	}
+}
+
+/// Compares referenced values by value.
+pub method cmp#[T](self: &T, other: &T) -> Ordering { self@.cmp(other@) }
+
+/// Compares wrapped values in reverse order.
+pub method cmp#[T](self: Reverse#[T], other: Reverse#[T]) -> Ordering {
+	other.value.cmp(self.value)
+}
+
+/// Reverses an ordering.
+pub method reverse(self: Ordering) -> Ordering {
+	match self {
+		Ordering::Less => Ordering::Greater,
+		Ordering::Equal => Ordering::Equal,
+		Ordering::Greater => Ordering::Less,
+	}
+}
+
+/// Returns the smaller value, preferring the first on equality.
+pub fn min#[T](a: T, b: T) -> T {
+	if a.cmp(b) == Ordering::Greater { b } else { a }
+}
+
+/// Returns the larger value, preferring the second on equality.
+pub fn max#[T](a: T, b: T) -> T {
+	if a.cmp(b) == Ordering::Greater { a } else { b }
+}
+
+/// Returns the smaller of two values.
+pub method min#[T](self: T, other: T) -> T { min(self, other) }
+
+/// Returns the larger of two values.
+pub method max#[T](self: T, other: T) -> T { max(self, other) }
+
+/// Compares booleans with false preceding true.
+pub method cmp(self: Bool, other: Bool) -> Ordering {
+	if self == other { Ordering::Equal } else if self { Ordering::Greater } else {
+		Ordering::Less
+	}
+}
+
+/// The default boolean is false.
+pub fn Bool::default() -> Bool { false }
+
+/// The default floating-point value is zero.
+pub fn Float32::default() -> Float32 { 0f32 }
+
+/// The default floating-point value is zero.
+pub fn Float64::default() -> Float64 { 0f64 }

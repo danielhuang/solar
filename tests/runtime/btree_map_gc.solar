@@ -1,0 +1,36 @@
+fn leaf_cursor() {
+	let map = BTreeMap#[Int, &[Uint8]]();
+
+	for i in 0..512 {
+		let key = (i * 137) % 512;
+		map&.insert(key, key.to_string());
+	}
+
+	map&.range(Option#[Int]::Some(30), Option#[Int]::Some(490))
+}
+
+fn main() {
+	// The cursor retains only leaf endpoints; all middle leaves and their
+	// payloads must remain reachable through next/previous links after GC.
+	let cursor = leaf_cursor();
+	gc::collect_gc();
+	let front = 30;
+	let back = 490;
+
+	while front < back {
+		let first = cursor&.next().unwrap();
+		assert(first.0@ == front);
+		assert(first.1@.parse#[Int]() == front);
+		front = front + 1;
+		back = back - 1;
+		let last = cursor&.next_back().unwrap();
+		assert(last.0@ == back);
+		assert(last.1@.parse#[Int]() == back);
+		if front % 64 == 0 { gc::collect_gc(); }
+	}
+
+	assert(cursor&.len() == 0u);
+	assert(cursor&.next().is_none());
+	assert(cursor&.next_back().is_none());
+	println("passed"&);
+}

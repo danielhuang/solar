@@ -1,0 +1,377 @@
+import {Option, Ordering, Iterator} from "lib.solar";
+import {Vec} from "vec.solar";
+
+const CAPACITY: Uint = 16u;
+
+// Entries live only in leaves. Splits retain the left leaf and splice a new
+// right leaf into both links, preserving one chain in key order.
+struct Leaf#[K, V] {
+	entries: Vec#[(K, V)],
+	next: &?Leaf#[K, V],
+	previous: &?Leaf#[K, V],
+}
+
+enum Node#[K, V] { Leaf(&Leaf#[K, V]), Branch(&Branch#[K, V]) }
+
+// keys[i] is the minimum key in children[i + 1]. Every leaf has the same
+// depth. Subtree counts support range lengths without scanning the leaves.
+struct Branch#[K, V] { keys: Vec#[K], children: Vec#[Node#[K, V]], count: Uint }
+
+/// An ordered map backed by a B+ tree, with logarithmic lookup and insertion.
+/// Entries occupy linked leaves; internal nodes contain separator keys.
+/// Ordering uses the key's cmp method. Stored keys must not change.
+/// Insertion invalidates outstanding entry references and iterators.
+/// Assignment semantics are currently unspecified.
+pub struct BTreeMap#[K, V] { root: Node#[K, V], count: Uint }
+
+/// Constructs an empty B+ tree map.
+pub fn BTreeMap::#[out K, out V]() -> BTreeMap#[K, V] {
+	let leaf = (Leaf#[K, V] {
+		entries: Vec([]#[(K, V)]&),
+		next: null#[Leaf#[K, V]],
+		previous: null#[Leaf#[K, V]],
+	})&;
+	BTreeMap#[K, V] { root: Node#[K, V]::Leaf(leaf), count: 0u }
+}
+
+/// Constructs an empty default map.
+pub fn#[K, V] BTreeMap#[K, V]::default() -> BTreeMap#[K, V] {
+	BTreeMap#[K, V]()
+}
+
+fn node_count#[K, V](node: Node#[K, V]) -> Uint {
+	match node {
+		Node#[K, V]::Leaf(leaf) => leaf@.entries&.len(),
+		Node#[K, V]::Branch(branch) => branch@.count,
+	}
+}
+
+fn count_children#[K, V](children: &[Node#[K, V]]) -> Uint {
+	let count = 0u;
+	for child in children { count = count + node_count(child@); }
+	count
+}
+
+fn leaf_bound#[K, V](leaf: &Leaf#[K, V], key: &K, after_equal: Bool) -> Uint {
+	let low = 0u;
+	let high = leaf@.entries&.len();
+
+	while low < high {
+		let mid = low + (high - low) / 2u;
+		let order = leaf@.entries&.at(mid)@.0.cmp(key@);
+
+		if order == Ordering::Less || (after_equal && order == Ordering::Equal) {
+			low = mid + 1u;
+		} else { high = mid; }
+	}
+
+	low
+}
+
+fn child_index#[K, V](branch: &Branch#[K, V], key: &K) -> Uint {
+	let low = 0u;
+	let high = branch@.keys&.len();
+
+	while low < high {
+		let mid = low + (high - low) / 2u;
+
+		if key@.cmp(branch@.keys&.at(mid)@) == Ordering::Less { high = mid; } else {
+			low = mid + 1u;
+		}
+	}
+
+	low
+}
+
+fn insert_at#[T](values: &Vec#[T], index: Uint, value: T) {
+	values.push(value);
+	let at = values.len() - 1u;
+	while at > index { values.at(at)@ = values.at(at - 1u)@; at = at - 1u; }
+	values.at(index)@ = value;
+}
+
+// A split returns the new right node and its separator for the parent. Leaf
+// separators are copied upward; branch separators are removed from the child.
+fn insert_node#[K, V](
+	node: Node#[K, V],
+	key: K,
+	value: V,
+	previous: &Option#[V],
+) -> Option#[(K, Node#[K, V])] {
+	match node {
+		Node#[K, V]::Leaf(leaf) => {
+			let at = leaf_bound(leaf, key&, false);
+
+			if at < leaf@.entries&.len() &&
+				leaf@.entries&.at(at)@.0.cmp(key) == Ordering::Equal {
+				let entry = leaf@.entries&.at(at);
+				previous@ = Option#[V]::Some(entry@.1);
+				entry@.1 = value;
+				return Option#[(K, Node#[K, V])]::None;
+			}
+
+			insert_at(leaf@.entries&, at, (key, value));
+
+			if leaf@.entries&.len() <=
+				CAPACITY { return Option#[(K, Node#[K, V])]::None; }
+
+			let entries = leaf@.entries&.as_slice();
+			let middle = entries.len() / 2u;
+			let right = (Leaf#[K, V] {
+				entries: Vec(entries@[middle..entries.len()]&),
+				next: leaf@.next,
+				previous: leaf,
+			})&;
+			leaf@.entries = Vec(entries@[0u..middle]&);
+
+			if right@.next !=
+				null#[Leaf#[K, V]] { right@.next@.previous = right; }
+
+			leaf@.next = right;
+			Option#[(K, Node#[K, V])]::Some((
+				right@.entries&.at(0u)@.0,
+				Node#[K, V]::Leaf(right),
+			))
+		},
+		Node#[K, V]::Branch(branch) => {
+			let at = child_index(branch, key&);
+			let split = insert_node(
+				branch@.children&.at(at)@,
+				key,
+				value,
+				previous,
+			);
+			if previous@.is_none() { branch@.count = branch@.count + 1u; }
+
+			if split.is_some() {
+				let (separator, right) = split.unwrap();
+				insert_at(branch@.keys&, at, separator);
+				insert_at(branch@.children&, at + 1u, right);
+			}
+
+			if branch@.children&.len() <= CAPACITY {
+				return Option#[(K, Node#[K, V])]::None;
+			}
+
+			let keys = branch@.keys&.as_slice();
+			let children = branch@.children&.as_slice();
+			let middle = children.len() / 2u;
+			let separator = keys@[middle - 1u];
+			let right_children = children@[middle..children.len()]&;
+			let right = (Branch#[K, V] {
+				keys: Vec(keys@[middle..keys.len()]&),
+				children: Vec(right_children),
+				count: count_children(right_children),
+			})&;
+			branch@.keys = Vec(keys@[0u..middle - 1u]&);
+			branch@.children = Vec(children@[0u..middle]&);
+			branch@.count = count_children(branch@.children&.as_slice());
+			Option#[(K, Node#[K, V])]::Some((
+				separator,
+				Node#[K, V]::Branch(right),
+			))
+		},
+	}
+}
+
+/// Inserts an entry, returning its previous value when the key already exists.
+/// Equal keys retain the original stored key. Splits propagate up to the root.
+pub method insert#[K, V](self: &BTreeMap#[K, V], key: K, value: V) -> Option#[V] {
+	let previous = Option#[V]::None;
+	let split = insert_node(self@.root, key, value, previous&);
+	if previous.is_none() { self@.count = self@.count + 1u; }
+
+	if split.is_some() {
+		let (separator, right) = split.unwrap();
+		self@.root = Node#[K, V]::Branch(
+			(Branch#[K, V] {
+				keys: Vec([separator]&),
+				children: Vec([self@.root, right]&),
+				count: self@.count,
+			})&,
+		);
+	}
+
+	previous
+}
+
+/// Returns the number of entries.
+pub method len#[K, V](self: &BTreeMap#[K, V]) -> Uint { self@.count }
+
+/// Returns whether the map has no entries.
+pub method is_empty#[K, V](self: &BTreeMap#[K, V]) -> Bool { self@.count == 0u }
+
+fn leaf_for#[K, V](node: Node#[K, V], key: &K) -> &Leaf#[K, V] {
+	match node {
+		Node#[K, V]::Leaf(leaf) => leaf,
+		Node#[K, V]::Branch(branch) => leaf_for(
+			branch@.children&.at(child_index(branch, key))@,
+			key,
+		),
+	}
+}
+
+/// Looks up an entry in logarithmic time.
+pub method get#[K, V](self: &BTreeMap#[K, V], key: &K) -> Option#[&V] {
+	let leaf = leaf_for(self@.root, key);
+	let at = leaf_bound(leaf, key, false);
+
+	if at < leaf@.entries&.len() &&
+		leaf@.entries&.at(at)@.0.cmp(key@) == Ordering::Equal {
+		Option#[&V]::Some(leaf@.entries&.at(at)@.1&)
+	} else { Option#[&V]::None }
+}
+
+/// Returns whether a key exists.
+pub method contains_key#[K, V](self: &BTreeMap#[K, V], key: &K) -> Bool {
+	self.get(key).is_some()
+}
+
+fn edge_leaf#[K, V](node: Node#[K, V], last: Bool) -> &Leaf#[K, V] {
+	match node {
+		Node#[K, V]::Leaf(leaf) => leaf,
+		Node#[K, V]::Branch(branch) => edge_leaf(
+			branch@.children&.at(
+				if last { branch@.children&.len() - 1u } else { 0u },
+			)@,
+			last,
+		),
+	}
+}
+
+// Return a leaf position and its rank in the entire subtree. Counts make
+// locating both range endpoints logarithmic even for an unbounded scan.
+fn seek#[K, V](node: Node#[K, V], key: &K, after_equal: Bool) -> (
+	&Leaf#[K, V],
+	Uint,
+	Uint,
+) {
+	match node {
+		Node#[K, V]::Leaf(leaf) => {
+			let at = leaf_bound(leaf, key, after_equal);
+			(leaf, at, at)
+		},
+		Node#[K, V]::Branch(branch) => {
+			let at = child_index(branch, key);
+			let (
+				leaf,
+				index,
+				rank,
+			) = seek(branch@.children&.at(at)@, key, after_equal);
+			let before = count_children(branch@.children&.as_slice()@[0u..at]&);
+			(leaf, index, before + rank)
+		},
+	}
+}
+
+/// A double-ended cursor over linked B+ tree leaves, with an exact remaining length.
+/// Do not mutate the map or its keys while using the cursor.
+pub struct Iter#[K, V] {
+	front: &Leaf#[K, V],
+	front_index: Uint,
+	back: &Leaf#[K, V],
+	back_index: Uint,
+	remaining: Uint,
+}
+
+/// Iterates between explicit optional bounds in ascending key order.
+/// None means unbounded; defaults to inclusive lower and exclusive upper bounds.
+/// Reversed bounds are empty. Construction takes O(log n), and visiting k entries
+/// takes O(k) using leaf links, without collecting an intermediate snapshot.
+pub method range#[K, V](
+	self: &BTreeMap#[K, V],
+	lower: Option#[K],
+	upper: Option#[K],
+	include_lower = true,
+	include_upper = false,
+) -> Iterator#[Iter#[K, V]] {
+	let (front, front_index, start) = match lower {
+		Option#[K]::Some(key) => seek(self@.root, key&, !include_lower),
+		Option#[K]::None => (edge_leaf(self@.root, false), 0u, 0u),
+	};
+	let (back, back_index, end) = match upper {
+		Option#[K]::Some(key) => seek(self@.root, key&, include_upper),
+		Option#[K]::None => {
+			let leaf = edge_leaf(self@.root, true);
+			(leaf, leaf@.entries&.len(), self@.count)
+		},
+	};
+	Iterator(
+		Iter#[K, V] {
+			front: front,
+			front_index: front_index,
+			back: back,
+			back_index: back_index,
+			remaining: end.saturating_sub(start),
+		},
+	)
+}
+
+/// Returns the next entry, following the next-leaf link at each boundary.
+pub method next#[K, V](self: &Iterator#[Iter#[K, V]]) -> Option#[(&K, &V)] {
+	let state = self@.inner&;
+	if state@.remaining == 0u { return Option#[(&K, &V)]::None; }
+
+	while state@.front_index == state@.front@.entries&.len() {
+		state@.front = state@.front@.next@&;
+		state@.front_index = 0u;
+	}
+
+	let entry = state@.front@.entries&.at(state@.front_index);
+	state@.front_index = state@.front_index + 1u;
+	state@.remaining = state@.remaining - 1u;
+	Option#[(&K, &V)]::Some((entry@.0&, entry@.1&))
+}
+
+/// Returns the last remaining entry, following the previous-leaf link at boundaries.
+pub method next_back#[K, V](self: &Iterator#[Iter#[K, V]]) -> Option#[(&K, &V)] {
+	let state = self@.inner&;
+	if state@.remaining == 0u { return Option#[(&K, &V)]::None; }
+
+	while state@.back_index == 0u {
+		state@.back = state@.back@.previous@&;
+		state@.back_index = state@.back@.entries&.len();
+	}
+
+	state@.back_index = state@.back_index - 1u;
+	state@.remaining = state@.remaining - 1u;
+	let entry = state@.back@.entries&.at(state@.back_index);
+	Option#[(&K, &V)]::Some((entry@.0&, entry@.1&))
+}
+
+/// Returns the exact number of remaining entries in constant time.
+pub method len#[K, V](self: &Iterator#[Iter#[K, V]]) -> Uint {
+	self@.inner.remaining
+}
+
+/// Iterates over all entries in ascending key order through the leaf chain.
+pub method iter#[K, V](self: &BTreeMap#[K, V]) -> Iterator#[Iter#[K, V]] {
+	self.range(Option#[K]::None, Option#[K]::None)
+}
+
+/// Iterates over keys in ascending order.
+pub method keys#[K, V](self: &BTreeMap#[K, V]) {
+	self.iter().map(\entry: (&K, &V) entry.0)
+}
+
+/// Iterates over values in ascending key order.
+pub method values#[K, V](self: &BTreeMap#[K, V]) {
+	self.iter().map(\entry: (&K, &V) entry.1)
+}
+
+/// Collects entries, replacing duplicate keys with the last value.
+pub fn#[K, V] BTreeMap#[K, V]::from_iter#[I](source: Iterator#[I]) -> BTreeMap#[
+	K,
+	V,
+] {
+	let output = BTreeMap#[K, V]();
+	let item: Option#[(K, V)] = source&.next();
+
+	while item.is_some() {
+		let (key, value) = item.unwrap();
+		output&.insert(key, value);
+		item = source&.next();
+	}
+
+	output
+}

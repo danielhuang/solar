@@ -1,0 +1,526 @@
+import {Option, throw} from "lib.solar";
+
+/// Raises an integer to a nonnegative exponent, throwing on overflow.
+pub method pow#[T](self: T, exponent: Uint) -> T {
+	let result = T(1);
+	let base = self;
+	let n = exponent;
+
+	while n != 0u {
+		if n % 2u != 0u { result = result * base; }
+		n = n / 2u;
+		if n != 0u { base = base * base; }
+	}
+
+	result
+}
+
+/// Returns an integer's absolute value, throwing when it cannot be represented.
+pub method abs#[T](self: T) -> T {
+	if self < T(0) { T(0) - self } else { self }
+}
+
+/// Returns negative one, zero, or one according to an integer's sign.
+pub method signum#[T](self: T) -> T {
+	if self < T(0) { T(0) - T(1) } else if self == T(0) { T(0) } else { T(1) }
+}
+
+/// Computes the nonnegative remainder; division errors are preserved.
+pub method rem_euclid#[T](self: T, divisor: T) -> T {
+	let r = self % divisor;
+
+	if r < T(0) {
+		if divisor < T(0) { r - divisor } else { r + divisor }
+	} else { r }
+}
+
+/// Returns floor(log10(self)); throws for zero or negative values.
+pub method ilog10#[T](self: T) -> Uint {
+	if self <= T(0) { throw("ilog10: argument must be positive"&); }
+	let n = self;
+	let result = 0u;
+	while n >= T(10) { n = n / T(10); result = result + 1u; }
+	result
+}
+
+/// Interprets an ASCII digit in radix 2 through 36.
+pub fn digit(byte: Uint8, radix: Uint) -> Option#[Uint] {
+	if radix < 2u || radix > 36u { throw("radix must be between 2 and 36"&); }
+	let value = if byte >= '0' && byte <= '9' { Uint(byte - '0') } else if byte >=
+		'a' &&
+		byte <= 'z' { Uint(byte - 'a') + 10u } else if byte >= 'A' &&
+		byte <= 'Z' { Uint(byte - 'A') + 10u } else { 36u };
+	if value < radix { Option#[Uint]::Some(value) } else { Option#[Uint]::None }
+}
+
+/// Formats an unsigned magnitude, optionally with a minus sign.
+pub fn format_magnitude(value: Uint64, radix: Uint, negative: Bool) -> &[Uint8] {
+	if radix < 2u || radix > 36u { throw("radix must be between 2 and 36"&); }
+	let digits = "0123456789abcdefghijklmnopqrstuvwxyz"&;
+	let buffer = [0u8; 65u];
+	let at = 65u;
+	let n = value;
+
+	while true {
+		at = at - 1u;
+		buffer[at] = digits@[Uint(n % Uint64(radix))];
+		n = n / Uint64(radix);
+		if n == 0u64 { break; }
+	}
+
+	if negative { at = at - 1u; buffer[at] = '-'; }
+	buffer[at..65u]&
+}
+
+/// Parses an integer in decimal, throwing on invalid input or overflow.
+/// The output type is selected by `parse#[Int]()` or an expected return type.
+pub method parse#[out T](self: &[Uint8]) -> T { T::from_str_radix(self, 10u) }
+
+/// Parses an integer using radix 2 through 36, throwing on invalid input.
+pub method parse_radix#[out T](self: &[Uint8], radix: Uint) -> T {
+	T::from_str_radix(self, radix)
+}
+
+/// The default Int8 is zero.
+pub fn Int8::default() -> Int8 { 0i8 }
+
+/// Subtracts, saturating at the bounds of Int8.
+pub method saturating_sub(self: Int8, rhs: Int8) -> Int8 {
+	if rhs > 0i8 &&
+		self < (0i8 - 127i8 - 1i8) + rhs { return (0i8 - 127i8 - 1i8); }
+
+	if rhs < 0i8 && self > 127i8 + rhs { return 127i8; }
+	self - rhs
+}
+
+/// Formats Int8 in radix 2 through 36.
+pub method to_radix(self: Int8, radix: Uint) -> &[Uint8] {
+	let negative = self < 0i8;
+	let magnitude = if negative { Uint64(0i8 - (self + 1i8)) + 1u64 } else {
+		Uint64(self)
+	};
+	format_magnitude(magnitude, radix, negative)
+}
+
+/// Formats Int8 in decimal.
+pub method to_string(self: Int8) -> &[Uint8] { self.to_radix(10u) }
+
+/// Parses Int8; accepts an optional sign and rejects whitespace and overflow.
+pub fn Int8::from_str_radix(text: &[Uint8], radix: Uint) -> Int8 {
+	if radix < 2u || radix > 36u { throw("radix must be between 2 and 36"&); }
+	if text.len() == 0u { throw("parse: empty integer"&); }
+	let negative = text@[0u] == '-';
+	let at = if negative || text@[0u] == '+' { 1u } else { 0u };
+	if at == text.len() { throw("parse: empty integer"&); }
+	let base = Int8(radix);
+	let result = 0i8;
+	let limit = if negative { (0i8 - 127i8 - 1i8) } else {
+		(0i8 - 126i8 - 1i8)
+	};
+
+	while at < text.len() {
+		let d = Int8(digit(text@[at], radix).expect("parse: invalid digit"&));
+		if result < limit / base { throw("parse: integer overflow"&); }
+		result = result * base;
+		if result < limit + d { throw("parse: integer overflow"&); }
+		result = result - d;
+		at = at + 1u;
+	}
+
+	if negative { result } else { (result - result) - result }
+}
+
+/// The default Int16 is zero.
+pub fn Int16::default() -> Int16 { 0i16 }
+
+/// Subtracts, saturating at the bounds of Int16.
+pub method saturating_sub(self: Int16, rhs: Int16) -> Int16 {
+	if rhs > 0i16 && self < (0i16 - 32767i16 - 1i16) + rhs {
+		return (0i16 - 32767i16 - 1i16);
+	}
+
+	if rhs < 0i16 && self > 32767i16 + rhs { return 32767i16; }
+	self - rhs
+}
+
+/// Formats Int16 in radix 2 through 36.
+pub method to_radix(self: Int16, radix: Uint) -> &[Uint8] {
+	let negative = self < 0i16;
+	let magnitude = if negative { Uint64(0i16 - (self + 1i16)) + 1u64 } else {
+		Uint64(self)
+	};
+	format_magnitude(magnitude, radix, negative)
+}
+
+/// Formats Int16 in decimal.
+pub method to_string(self: Int16) -> &[Uint8] { self.to_radix(10u) }
+
+/// Parses Int16; accepts an optional sign and rejects whitespace and overflow.
+pub fn Int16::from_str_radix(text: &[Uint8], radix: Uint) -> Int16 {
+	if radix < 2u || radix > 36u { throw("radix must be between 2 and 36"&); }
+	if text.len() == 0u { throw("parse: empty integer"&); }
+	let negative = text@[0u] == '-';
+	let at = if negative || text@[0u] == '+' { 1u } else { 0u };
+	if at == text.len() { throw("parse: empty integer"&); }
+	let base = Int16(radix);
+	let result = 0i16;
+	let limit = if negative { (0i16 - 32767i16 - 1i16) } else {
+		(0i16 - 32766i16 - 1i16)
+	};
+
+	while at < text.len() {
+		let d = Int16(digit(text@[at], radix).expect("parse: invalid digit"&));
+		if result < limit / base { throw("parse: integer overflow"&); }
+		result = result * base;
+		if result < limit + d { throw("parse: integer overflow"&); }
+		result = result - d;
+		at = at + 1u;
+	}
+
+	if negative { result } else { (result - result) - result }
+}
+
+/// The default Int32 is zero.
+pub fn Int32::default() -> Int32 { 0i32 }
+
+/// Subtracts, saturating at the bounds of Int32.
+pub method saturating_sub(self: Int32, rhs: Int32) -> Int32 {
+	if rhs > 0i32 && self < (0i32 - 2147483647i32 - 1i32) + rhs {
+		return (0i32 - 2147483647i32 - 1i32);
+	}
+
+	if rhs < 0i32 && self > 2147483647i32 + rhs { return 2147483647i32; }
+	self - rhs
+}
+
+/// Formats Int32 in radix 2 through 36.
+pub method to_radix(self: Int32, radix: Uint) -> &[Uint8] {
+	let negative = self < 0i32;
+	let magnitude = if negative { Uint64(0i32 - (self + 1i32)) + 1u64 } else {
+		Uint64(self)
+	};
+	format_magnitude(magnitude, radix, negative)
+}
+
+/// Formats Int32 in decimal.
+pub method to_string(self: Int32) -> &[Uint8] { self.to_radix(10u) }
+
+/// Parses Int32; accepts an optional sign and rejects whitespace and overflow.
+pub fn Int32::from_str_radix(text: &[Uint8], radix: Uint) -> Int32 {
+	if radix < 2u || radix > 36u { throw("radix must be between 2 and 36"&); }
+	if text.len() == 0u { throw("parse: empty integer"&); }
+	let negative = text@[0u] == '-';
+	let at = if negative || text@[0u] == '+' { 1u } else { 0u };
+	if at == text.len() { throw("parse: empty integer"&); }
+	let base = Int32(radix);
+	let result = 0i32;
+	let limit = if negative { (0i32 - 2147483647i32 - 1i32) } else {
+		(0i32 - 2147483646i32 - 1i32)
+	};
+
+	while at < text.len() {
+		let d = Int32(digit(text@[at], radix).expect("parse: invalid digit"&));
+		if result < limit / base { throw("parse: integer overflow"&); }
+		result = result * base;
+		if result < limit + d { throw("parse: integer overflow"&); }
+		result = result - d;
+		at = at + 1u;
+	}
+
+	if negative { result } else { (result - result) - result }
+}
+
+/// The default Int64 is zero.
+pub fn Int64::default() -> Int64 { 0i64 }
+
+/// Subtracts, saturating at the bounds of Int64.
+pub method saturating_sub(self: Int64, rhs: Int64) -> Int64 {
+	if rhs > 0i64 && self < (0i64 - 9223372036854775807i64 - 1i64) + rhs {
+		return (0i64 - 9223372036854775807i64 - 1i64);
+	}
+
+	if rhs < 0i64 && self > 9223372036854775807i64 + rhs {
+		return 9223372036854775807i64;
+	}
+
+	self - rhs
+}
+
+/// Formats Int64 in radix 2 through 36.
+pub method to_radix(self: Int64, radix: Uint) -> &[Uint8] {
+	let negative = self < 0i64;
+	let magnitude = if negative { Uint64(0i64 - (self + 1i64)) + 1u64 } else {
+		Uint64(self)
+	};
+	format_magnitude(magnitude, radix, negative)
+}
+
+/// Formats Int64 in decimal.
+pub method to_string(self: Int64) -> &[Uint8] { self.to_radix(10u) }
+
+/// Parses Int64; accepts an optional sign and rejects whitespace and overflow.
+pub fn Int64::from_str_radix(text: &[Uint8], radix: Uint) -> Int64 {
+	if radix < 2u || radix > 36u { throw("radix must be between 2 and 36"&); }
+	if text.len() == 0u { throw("parse: empty integer"&); }
+	let negative = text@[0u] == '-';
+	let at = if negative || text@[0u] == '+' { 1u } else { 0u };
+	if at == text.len() { throw("parse: empty integer"&); }
+	let base = Int64(radix);
+	let result = 0i64;
+	let limit = if negative { (0i64 - 9223372036854775807i64 - 1i64) } else {
+		(0i64 - 9223372036854775806i64 - 1i64)
+	};
+
+	while at < text.len() {
+		let d = Int64(digit(text@[at], radix).expect("parse: invalid digit"&));
+		if result < limit / base { throw("parse: integer overflow"&); }
+		result = result * base;
+		if result < limit + d { throw("parse: integer overflow"&); }
+		result = result - d;
+		at = at + 1u;
+	}
+
+	if negative { result } else { (result - result) - result }
+}
+
+/// The default Int is zero.
+pub fn Int::default() -> Int { 0 }
+
+/// Subtracts, saturating at the bounds of Int.
+pub method saturating_sub(self: Int, rhs: Int) -> Int {
+	if rhs > 0 && self < (0 - 9223372036854775807 - 1) + rhs {
+		return (0 - 9223372036854775807 - 1);
+	}
+
+	if rhs < 0 &&
+		self > 9223372036854775807 + rhs { return 9223372036854775807; }
+
+	self - rhs
+}
+
+/// Formats Int in radix 2 through 36.
+pub method to_radix(self: Int, radix: Uint) -> &[Uint8] {
+	let negative = self < 0;
+	let magnitude = if negative { Uint64(0 - (self + 1)) + 1u64 } else {
+		Uint64(self)
+	};
+	format_magnitude(magnitude, radix, negative)
+}
+
+/// Parses Int; accepts an optional sign and rejects whitespace and overflow.
+pub fn Int::from_str_radix(text: &[Uint8], radix: Uint) -> Int {
+	if radix < 2u || radix > 36u { throw("radix must be between 2 and 36"&); }
+	if text.len() == 0u { throw("parse: empty integer"&); }
+	let negative = text@[0u] == '-';
+	let at = if negative || text@[0u] == '+' { 1u } else { 0u };
+	if at == text.len() { throw("parse: empty integer"&); }
+	let base = Int(radix);
+	let result = 0;
+	let limit = if negative { (0 - 9223372036854775807 - 1) } else {
+		(0 - 9223372036854775806 - 1)
+	};
+
+	while at < text.len() {
+		let d = Int(digit(text@[at], radix).expect("parse: invalid digit"&));
+		if result < limit / base { throw("parse: integer overflow"&); }
+		result = result * base;
+		if result < limit + d { throw("parse: integer overflow"&); }
+		result = result - d;
+		at = at + 1u;
+	}
+
+	if negative { result } else { (result - result) - result }
+}
+
+/// The default Uint8 is zero.
+pub fn Uint8::default() -> Uint8 { 0u8 }
+
+/// Subtracts, saturating at the bounds of Uint8.
+pub method saturating_sub(self: Uint8, rhs: Uint8) -> Uint8 {
+	if self < rhs { 0u8 } else { self - rhs }
+}
+
+/// Formats Uint8 in radix 2 through 36.
+pub method to_radix(self: Uint8, radix: Uint) -> &[Uint8] {
+	format_magnitude(Uint64(self), radix, false)
+}
+
+/// Formats Uint8 in decimal.
+pub method to_string(self: Uint8) -> &[Uint8] { self.to_radix(10u) }
+
+/// Parses Uint8; accepts an optional sign and rejects whitespace and overflow.
+pub fn Uint8::from_str_radix(text: &[Uint8], radix: Uint) -> Uint8 {
+	if radix < 2u || radix > 36u { throw("radix must be between 2 and 36"&); }
+	if text.len() == 0u { throw("parse: empty integer"&); }
+	let negative = text@[0u] == '-';
+	let at = if negative || text@[0u] == '+' { 1u } else { 0u };
+	if at == text.len() { throw("parse: empty integer"&); }
+	if negative { throw("parse: negative unsigned integer"&); }
+	let base = Uint8(radix);
+	let result = 0u8;
+
+	while at < text.len() {
+		let d = Uint8(digit(text@[at], radix).expect("parse: invalid digit"&));
+		if result > (255u8 - d) / base { throw("parse: integer overflow"&); }
+		result = result * base + d;
+		at = at + 1u;
+	}
+
+	result
+}
+
+/// The default Uint16 is zero.
+pub fn Uint16::default() -> Uint16 { 0u16 }
+
+/// Subtracts, saturating at the bounds of Uint16.
+pub method saturating_sub(self: Uint16, rhs: Uint16) -> Uint16 {
+	if self < rhs { 0u16 } else { self - rhs }
+}
+
+/// Formats Uint16 in radix 2 through 36.
+pub method to_radix(self: Uint16, radix: Uint) -> &[Uint8] {
+	format_magnitude(Uint64(self), radix, false)
+}
+
+/// Formats Uint16 in decimal.
+pub method to_string(self: Uint16) -> &[Uint8] { self.to_radix(10u) }
+
+/// Parses Uint16; accepts an optional sign and rejects whitespace and overflow.
+pub fn Uint16::from_str_radix(text: &[Uint8], radix: Uint) -> Uint16 {
+	if radix < 2u || radix > 36u { throw("radix must be between 2 and 36"&); }
+	if text.len() == 0u { throw("parse: empty integer"&); }
+	let negative = text@[0u] == '-';
+	let at = if negative || text@[0u] == '+' { 1u } else { 0u };
+	if at == text.len() { throw("parse: empty integer"&); }
+	if negative { throw("parse: negative unsigned integer"&); }
+	let base = Uint16(radix);
+	let result = 0u16;
+
+	while at < text.len() {
+		let d = Uint16(digit(text@[at], radix).expect("parse: invalid digit"&));
+		if result > (65535u16 - d) / base { throw("parse: integer overflow"&); }
+		result = result * base + d;
+		at = at + 1u;
+	}
+
+	result
+}
+
+/// The default Uint32 is zero.
+pub fn Uint32::default() -> Uint32 { 0u32 }
+
+/// Subtracts, saturating at the bounds of Uint32.
+pub method saturating_sub(self: Uint32, rhs: Uint32) -> Uint32 {
+	if self < rhs { 0u32 } else { self - rhs }
+}
+
+/// Formats Uint32 in radix 2 through 36.
+pub method to_radix(self: Uint32, radix: Uint) -> &[Uint8] {
+	format_magnitude(Uint64(self), radix, false)
+}
+
+/// Formats Uint32 in decimal.
+pub method to_string(self: Uint32) -> &[Uint8] { self.to_radix(10u) }
+
+/// Parses Uint32; accepts an optional sign and rejects whitespace and overflow.
+pub fn Uint32::from_str_radix(text: &[Uint8], radix: Uint) -> Uint32 {
+	if radix < 2u || radix > 36u { throw("radix must be between 2 and 36"&); }
+	if text.len() == 0u { throw("parse: empty integer"&); }
+	let negative = text@[0u] == '-';
+	let at = if negative || text@[0u] == '+' { 1u } else { 0u };
+	if at == text.len() { throw("parse: empty integer"&); }
+	if negative { throw("parse: negative unsigned integer"&); }
+	let base = Uint32(radix);
+	let result = 0u32;
+
+	while at < text.len() {
+		let d = Uint32(digit(text@[at], radix).expect("parse: invalid digit"&));
+
+		if result >
+			(4294967295u32 - d) / base { throw("parse: integer overflow"&); }
+
+		result = result * base + d;
+		at = at + 1u;
+	}
+
+	result
+}
+
+/// The default Uint64 is zero.
+pub fn Uint64::default() -> Uint64 { 0u64 }
+
+/// Subtracts, saturating at the bounds of Uint64.
+pub method saturating_sub(self: Uint64, rhs: Uint64) -> Uint64 {
+	if self < rhs { 0u64 } else { self - rhs }
+}
+
+/// Formats Uint64 in radix 2 through 36.
+pub method to_radix(self: Uint64, radix: Uint) -> &[Uint8] {
+	format_magnitude(Uint64(self), radix, false)
+}
+
+/// Formats Uint64 in decimal.
+pub method to_string(self: Uint64) -> &[Uint8] { self.to_radix(10u) }
+
+/// Parses Uint64; accepts an optional sign and rejects whitespace and overflow.
+pub fn Uint64::from_str_radix(text: &[Uint8], radix: Uint) -> Uint64 {
+	if radix < 2u || radix > 36u { throw("radix must be between 2 and 36"&); }
+	if text.len() == 0u { throw("parse: empty integer"&); }
+	let negative = text@[0u] == '-';
+	let at = if negative || text@[0u] == '+' { 1u } else { 0u };
+	if at == text.len() { throw("parse: empty integer"&); }
+	if negative { throw("parse: negative unsigned integer"&); }
+	let base = Uint64(radix);
+	let result = 0u64;
+
+	while at < text.len() {
+		let d = Uint64(digit(text@[at], radix).expect("parse: invalid digit"&));
+
+		if result > (18446744073709551615u64 - d) / base {
+			throw("parse: integer overflow"&);
+		}
+
+		result = result * base + d;
+		at = at + 1u;
+	}
+
+	result
+}
+
+/// The default Uint is zero.
+pub fn Uint::default() -> Uint { 0u }
+
+/// Subtracts, saturating at the bounds of Uint.
+pub method saturating_sub(self: Uint, rhs: Uint) -> Uint {
+	if self < rhs { 0u } else { self - rhs }
+}
+
+/// Formats Uint in radix 2 through 36.
+pub method to_radix(self: Uint, radix: Uint) -> &[Uint8] {
+	format_magnitude(Uint64(self), radix, false)
+}
+
+/// Parses Uint; accepts an optional sign and rejects whitespace and overflow.
+pub fn Uint::from_str_radix(text: &[Uint8], radix: Uint) -> Uint {
+	if radix < 2u || radix > 36u { throw("radix must be between 2 and 36"&); }
+	if text.len() == 0u { throw("parse: empty integer"&); }
+	let negative = text@[0u] == '-';
+	let at = if negative || text@[0u] == '+' { 1u } else { 0u };
+	if at == text.len() { throw("parse: empty integer"&); }
+	if negative { throw("parse: negative unsigned integer"&); }
+	let base = Uint(radix);
+	let result = 0u;
+
+	while at < text.len() {
+		let d = Uint(digit(text@[at], radix).expect("parse: invalid digit"&));
+
+		if result > (18446744073709551615u - d) / base {
+			throw("parse: integer overflow"&);
+		}
+
+		result = result * base + d;
+		at = at + 1u;
+	}
+
+	result
+}

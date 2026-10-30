@@ -29,10 +29,11 @@ fn generate_numeric_constructors(items: &mut Vec<ast::TopLevelItem>) {
 
     for &(target, target_name) in &types {
         for &(from, from_name) in &types {
-            if target_name == from_name {
-                continue;
-            }
             let intrinsic = Intrinsic::Cast(from, target);
+            let value = ast::Expr {
+                kind: ast::ExprKind::Identifier(ast::Ident::user("x")),
+                span,
+            };
             items.push(ast::TopLevelItem::Function(ast::FunctionDef {
                 associated_type_params: Vec::new(),
                 associated_type: Some(ast::Type::Named(ast::DefId::new(0, target_name))),
@@ -50,13 +51,16 @@ fn generate_numeric_constructors(items: &mut Vec<ast::TopLevelItem>) {
                 return_type_span: None,
                 body: vec![ast::Statement {
                     kind: ast::StatementKind::Expression(ast::Expr {
-                        kind: ast::ExprKind::IntrinsicCall {
-                            intrinsic,
-                            type_args: Vec::new(),
-                            arguments: vec![ast::Expr {
-                                kind: ast::ExprKind::Identifier(ast::Ident::user("x")),
-                                span,
-                            }],
+                        kind: if target == from {
+                            // Generic numeric algorithms use T(0), T(1), and
+                            // T(value) even when the source already has type T.
+                            value.kind
+                        } else {
+                            ast::ExprKind::IntrinsicCall {
+                                intrinsic,
+                                type_args: Vec::new(),
+                                arguments: vec![value],
+                            }
                         },
                         span,
                     }),

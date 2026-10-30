@@ -1,0 +1,197 @@
+fn build(order: Int) -> BTreeMap#[Int, Int] {
+	let map = BTreeMap#[Int, Int]();
+
+	for i in 0..512 {
+		let index = if order == 0 { i } else if order == 1 { 511 - i } else {
+			(i * 137) % 512
+		};
+		let key = index * 2;
+		assert(map&.insert(key, key * 3).is_none());
+	}
+
+	map
+}
+
+fn check_range(
+	map: &BTreeMap#[Int, Int],
+	lower: Option#[Int],
+	upper: Option#[Int],
+	include_lower: Bool,
+	include_upper: Bool,
+) {
+	let expected = vec::Vec([]#[Int]&);
+
+	for i in 0..512 {
+		let key = i * 2;
+
+		if lower.is_none_or(\bound: Int key > bound ||
+			(include_lower && key == bound)) &&
+			upper.is_none_or(\bound: Int key < bound ||
+				(include_upper && key == bound)) {
+			expected&.push(key);
+		}
+	}
+
+	let cursor = map.range(
+		lower,
+		upper,
+		include_lower = include_lower,
+		include_upper = include_upper,
+	);
+	let front = 0u;
+	let back = expected&.len();
+	let turn = 0u;
+	assert(cursor&.len() == back);
+
+	while front < back {
+		let pair = if turn % 3u == 0u {
+			back = back - 1u;
+			let entry = cursor&.next_back().unwrap();
+			assert(entry.0@ == expected&.at(back)@);
+			entry
+		} else {
+			let entry = cursor&.next().unwrap();
+			assert(entry.0@ == expected&.at(front)@);
+			front = front + 1u;
+			entry
+		};
+		assert(pair.1@ == pair.0@ * 3);
+		assert(cursor&.len() == back - front);
+		turn = turn + 1u;
+	}
+
+	assert(cursor&.next().is_none());
+	assert(cursor&.next_back().is_none());
+	assert(cursor&.len() == 0u);
+}
+
+struct CountedKey { number: Int, generation: Int, comparisons: &Uint }
+
+method cmp(self: CountedKey, other: CountedKey) -> Ordering {
+	self.comparisons@ = self.comparisons@ + 1u;
+	self.number.cmp(other.number)
+}
+
+fn main() {
+	let empty = BTreeMap#[Int, Int]();
+	assert(empty&.is_empty());
+	assert(empty&.get(0&).is_none());
+	assert(empty&.iter()&.next().is_none());
+	assert(empty&.iter()&.next_back().is_none());
+	assert(empty&.iter()&.len() == 0u);
+
+	for order in 0..3 {
+		// Enough leaves to split internal nodes and grow the root repeatedly.
+		let map = build(order);
+		assert(map&.len() == 512u);
+
+		for i in 0..512 {
+			assert(map&.get((i * 2)&).copied().unwrap() == i * 6);
+			assert(!map&.contains_key((i * 2 + 1)&));
+		}
+
+		assert(map&.get((0 - 1)&).is_none());
+		assert(map&.get(1024&).is_none());
+		check_range(map&, Option#[Int]::None, Option#[Int]::None, true, false);
+		assert(
+			map&.keys().copied().rev().collect_vec()&.as_slice() ==
+				[512u; \i: Uint (511 - Int(i)) * 2]&,
+		);
+
+		for include_lower in [false, true] {
+			for include_upper in [false, true] {
+				for bounds in [
+					(16, 33),
+					(127, 260),
+					(512, 512),
+					(513, 513),
+					(1022, 1024),
+					(40, 10),
+				] {
+					check_range(
+						map&,
+						Option#[Int]::Some(bounds@.0),
+						Option#[Int]::Some(bounds@.1),
+						include_lower@,
+						include_upper@,
+					);
+				}
+			}
+		}
+
+		check_range(
+			map&,
+			Option#[Int]::None,
+			Option#[Int]::Some(0 - 1),
+			true,
+			false,
+		);
+		check_range(
+			map&,
+			Option#[Int]::Some(1024),
+			Option#[Int]::None,
+			true,
+			false,
+		);
+		check_range(
+			map&,
+			Option#[Int]::None,
+			Option#[Int]::Some(17),
+			true,
+			false,
+		);
+		check_range(
+			map&,
+			Option#[Int]::Some(1007),
+			Option#[Int]::None,
+			false,
+			false,
+		);
+		// Replacements must preserve ranks and subtree counts across every level.
+		for i in 0..512 { assert(map&.insert(i * 2, i).unwrap() == i * 6); }
+		assert(map&.len() == 512u);
+		assert(map&.iter()&.len() == 512u);
+		assert(
+			map&.range(
+				Option#[Int]::Some(127),
+				Option#[Int]::Some(260),
+			)&.len() == 66u,
+		);
+		assert(map&.values().copied().sum() == 130816);
+	}
+
+	let comparisons = 0u&;
+	let tracked = BTreeMap#[CountedKey, Int]();
+
+	for i in 0..512 {
+		tracked&.insert(
+			CountedKey { number: i, generation: 0, comparisons: comparisons },
+			i,
+		);
+	}
+
+	assert(
+		tracked&.insert(
+			CountedKey { number: 256, generation: 1, comparisons: comparisons },
+			999,
+		).unwrap() ==
+			256,
+	);
+	comparisons@ = 0u;
+	let cursor = tracked&.range(
+		Option#[CountedKey]::Some(
+			CountedKey { number: 123, generation: 0, comparisons: comparisons },
+		),
+		Option#[CountedKey]::None,
+	);
+	// Seeking is logarithmic; traversal and exact length use counts and links.
+	assert(comparisons@ < 64u);
+	comparisons@ = 0u;
+	assert(cursor&.len() == 389u);
+	assert(
+		cursor.map(\entry: (&CountedKey, &Int) entry.0@.number).sum() == 123313,
+	);
+	assert(comparisons@ == 0u);
+	assert(tracked&.keys().all(\key: &CountedKey key@.generation == 0));
+	println("passed"&);
+}

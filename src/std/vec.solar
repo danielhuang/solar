@@ -1,8 +1,9 @@
 import {transmute_ref} from "@intrinsics";
-import {throw} from "lib.solar";
+import {throw, Ordering} from "lib.solar";
 import slice from "slice.solar";
 import {Iterator} from "iter.solar";
 import {MaybeZeroed} from "mem.solar";
+import {Option} from "lib.solar";
 
 /// A growable array.
 pub struct Vec#[T] { len: Uint, inner: ^[MaybeZeroed#[T]] }
@@ -64,4 +65,31 @@ pub method at#[T](self: &Vec#[T], index: Uint) -> &T {
 /// Iterates over the vector's elements.
 pub method iter#[T](self: &Vec#[T]) -> Iterator#[slice::Iter#[T]] {
 	self.as_slice().iter()
+}
+
+/// Constructs an empty vector.
+pub fn#[T] Vec#[T]::default() -> Vec#[T] { Vec([]#[T]&) }
+
+/// Collects an iterator's values into a new vector.
+pub fn#[T] Vec#[T]::from_iter#[I](source: Iterator#[I]) -> Vec#[T] {
+	let output = Vec([]#[T]&);
+	let item: Option#[T] = source&.next();
+	while item.is_some() { output&.push(item.unwrap()); item = source&.next(); }
+	output
+}
+
+/// Returns the number of initialized vector elements.
+pub method len#[T](self: &Vec#[T]) -> Uint { self@.len }
+
+/// Returns whether the vector contains no elements.
+pub method is_empty#[T](self: &Vec#[T]) -> Bool { self@.len == 0u }
+
+/// Compares vectors lexicographically using their elements.
+pub method cmp#[T](self: &Vec#[T], other: &Vec#[T]) -> Ordering {
+	self.as_slice().cmp(other.as_slice())
+}
+
+/// Compares vector values lexicographically.
+pub method cmp#[T](self: Vec#[T], other: Vec#[T]) -> Ordering {
+	self&.cmp(other&)
 }

@@ -8,6 +8,102 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 #[test]
+fn stdlib_format() {
+    assert_eq!(
+        run(&fixture("stdlib_format.solar"), "stdlib_format"),
+        "passed\n"
+    );
+}
+
+#[test]
+fn stdlib_release() {
+    for name in [
+        "values",
+        "numbers",
+        "iterators",
+        "text",
+        "slices",
+        "collections",
+        "format",
+    ] {
+        let name = format!("stdlib_{name}");
+        assert_eq!(
+            test_utils::run_release_file(&fixture(&format!("{name}.solar")), &name),
+            "passed\n"
+        );
+    }
+}
+
+#[test]
+fn stdlib_values() {
+    assert_eq!(
+        run(&fixture("stdlib_values.solar"), "stdlib_values"),
+        "passed\n"
+    );
+}
+
+#[test]
+fn stdlib_numbers() {
+    assert_eq!(
+        run(&fixture("stdlib_numbers.solar"), "stdlib_numbers"),
+        "passed\n"
+    );
+}
+
+#[test]
+fn stdlib_iterators() {
+    assert_eq!(
+        run(&fixture("stdlib_iterators.solar"), "stdlib_iterators"),
+        "passed\n"
+    );
+}
+
+#[test]
+fn stdlib_text() {
+    assert_eq!(
+        run(&fixture("stdlib_text.solar"), "stdlib_text"),
+        "passed\n"
+    );
+}
+
+#[test]
+fn stdlib_slices() {
+    assert_eq!(
+        run(&fixture("stdlib_slices.solar"), "stdlib_slices"),
+        "passed\n"
+    );
+}
+
+#[test]
+fn btree_map() {
+    assert_eq!(run(&fixture("btree_map.solar"), "btree_map"), "passed\n");
+    assert_eq!(
+        test_utils::run_release_file(&fixture("btree_map.solar"), "btree_map"),
+        "passed\n"
+    );
+}
+
+#[test]
+fn btree_map_gc() {
+    assert_eq!(
+        test_utils::run_codegen_file(&fixture("btree_map_gc.solar"), "btree_map_gc"),
+        "passed\n"
+    );
+    assert_eq!(
+        test_utils::run_release_file(&fixture("btree_map_gc.solar"), "btree_map_gc"),
+        "passed\n"
+    );
+}
+
+#[test]
+fn stdlib_collections() {
+    assert_eq!(
+        run(&fixture("stdlib_collections.solar"), "stdlib_collections"),
+        "passed\n"
+    );
+}
+
+#[test]
 fn empty_tuple() {
     let output = run(&fixture("empty_tuple.solar"), "empty_tuple");
     assert_eq!(output, "passed\n");

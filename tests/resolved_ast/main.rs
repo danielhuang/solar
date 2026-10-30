@@ -19,5 +19,6 @@ fn numeric_constructors_are_added_once_to_resolver_output() {
             )
         })
         .count();
-    assert_eq!(constructors, 12 * 11);
+    // Include same-type constructors so generic T(value) conversions are valid.
+    assert_eq!(constructors, 12 * 12);
 }

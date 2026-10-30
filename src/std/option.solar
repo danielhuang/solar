@@ -1,0 +1,94 @@
+import {Option, throw} from "lib.solar";
+import {default} from "value.solar";
+
+/// Returns whether the option is empty.
+pub method is_none#[T](self: Option#[T]) -> Bool { !self.is_some() }
+
+/// Returns the contained value, or throws if it is absent.
+pub method unwrap#[T](self: Option#[T]) -> T {
+	self.expect("Option.unwrap: no value"&)
+}
+
+/// Returns the contained value, or throws with `message` if absent.
+pub method expect#[T](self: Option#[T], message: &[Uint8]) -> T {
+	match self {
+		Option#[T]::Some(value) => value,
+		Option#[T]::None => { throw(message); self.expect(message) },
+	}
+}
+
+/// Returns the contained value or the supplied fallback.
+pub method unwrap_or#[T](self: Option#[T], fallback: T) -> T {
+	match self {
+		Option#[T]::Some(value) => value,
+		Option#[T]::None => fallback,
+	}
+}
+
+/// Returns the contained value, calling `fallback` only when absent.
+pub method unwrap_or_else#[T](self: Option#[T], fallback: fn() -> T) -> T {
+	match self {
+		Option#[T]::Some(value) => value,
+		Option#[T]::None => fallback(),
+	}
+}
+
+/// Returns the contained value or `T::default()`.
+pub method unwrap_or_default#[T](self: Option#[T]) -> T {
+	match self {
+		Option#[T]::Some(value) => value,
+		Option#[T]::None => default#[T](),
+	}
+}
+
+/// Transforms a present value without calling `f` for an empty option.
+pub method map#[T, U](self: Option#[T], f: fn(T) -> U) -> Option#[U] {
+	match self {
+		Option#[T]::Some(value) => Option#[U]::Some(f(value)),
+		Option#[T]::None => Option#[U]::None,
+	}
+}
+
+/// Chains a computation that may also return an empty option.
+pub method and_then#[T, U](self: Option#[T], f: fn(T) -> Option#[U]) -> Option#[
+	U,
+] {
+	match self {
+		Option#[T]::Some(value) => f(value),
+		Option#[T]::None => Option#[U]::None,
+	}
+}
+
+/// Tests a present value; returns false when absent.
+pub method is_some_and#[T](self: Option#[T], predicate: fn(T) -> Bool) -> Bool {
+	match self {
+		Option#[T]::Some(value) => predicate(value),
+		Option#[T]::None => false,
+	}
+}
+
+/// Tests a present value; returns true when absent.
+pub method is_none_or#[T](self: Option#[T], predicate: fn(T) -> Bool) -> Bool {
+	match self {
+		Option#[T]::Some(value) => predicate(value),
+		Option#[T]::None => true,
+	}
+}
+
+/// Copies the value behind a present reference using Solar value-copy semantics.
+pub method copied#[T](self: Option#[&T]) -> Option#[T] {
+	match self {
+		Option#[&T]::Some(value) => Option#[T]::Some(value@),
+		Option#[&T]::None => Option#[T]::None,
+	}
+}
+
+/// Produces a value only when the boolean is true; evaluates `f` lazily.
+pub method then#[T](self: Bool, f: fn() -> T) -> Option#[T] {
+	if self { Option#[T]::Some(f()) } else { Option#[T]::None }
+}
+
+/// Wraps a value when the boolean is true.
+pub method then_some#[T](self: Bool, value: T) -> Option#[T] {
+	if self { Option#[T]::Some(value) } else { Option#[T]::None }
+}

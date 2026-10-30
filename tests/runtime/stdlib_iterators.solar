@@ -1,0 +1,154 @@
+fn main() {
+	let values = [1, 2, 3, 4, 5];
+	let source = values&.iter().copied();
+	assert(source.count() == 5u);
+	assert(source.sum() == 15);
+	assert(source.product() == 120);
+	assert(source.fold(10, \a: Int, b: Int a - b) == 0 - 5);
+	assert(source.reduce(\a: Int, b: Int a + b).unwrap() == 15);
+	assert(source.min().unwrap() == 1);
+	assert(source.max().unwrap() == 5);
+	assert(source.last().unwrap() == 5);
+	assert(source.min_by_key(\x: Int 0 - x).unwrap() == 5);
+	assert(source.max_by_key(\x: Int 0 - x).unwrap() == 1);
+	assert(source.find(\x: Int x > 3).unwrap() == 4);
+	assert(source.position(\x: Int x == 3).unwrap() == 2u);
+	assert(source.find_map(\x: Int (x > 3).then_some(x * 10)).unwrap() == 40);
+	assert(source.is_sorted());
+	assert(!source.rev().is_sorted());
+	assert(source.all(\x: Int x > 0));
+	assert(source.any(\x: Int x == 3));
+	assert(source.eq(values&.iter().copied()));
+	assert(!source.eq(source.take(4u)));
+	let collected = source.collect#[vec::Vec#[Int]]();
+	assert(collected&.as_slice() == values&);
+	assert(source.collect_vec()&.as_slice() == values&);
+	assert(
+		source.skip(1u).take(3u).rev().collect_vec()&.as_slice() == [4, 3, 2]&,
+	);
+	assert(source.step_by(2u).collect_vec()&.as_slice() == [1, 3, 5]&);
+	assert(
+		source.take_while(\x: Int x < 3).collect_vec()&.as_slice() == [1, 2]&,
+	);
+	assert(
+		source.filter_map(\x: Int (x % 2 == 0).then_some(x * 2)).collect_vec()&.as_slice() ==
+			[4, 8]&,
+	);
+	assert(
+		source.cycle().take(
+			7u,
+		).collect_vec()&.as_slice() == [1, 2, 3, 4, 5, 1, 2]&,
+	);
+	assert(
+		iter::once(
+			8,
+		).chain(iter::once(9)).rev().collect_vec()&.as_slice() == [9, 8]&,
+	);
+	let mixed = source.enumerate();
+	assert(mixed&.next().unwrap() == (0u, 1));
+	assert(mixed&.next_back().unwrap() == (4u, 5));
+	assert(mixed&.len() == 3u);
+	assert(mixed&.next_back().unwrap() == (3u, 4));
+	let zipped = source.zip(source.take(3u));
+	assert(zipped&.next_back().unwrap() == (3, 3));
+	assert(zipped&.next().unwrap() == (1, 1));
+	assert(zipped&.next_back().unwrap() == (2, 2));
+	assert(zipped&.next().is_none());
+	let calls = 0&;
+	let lazy = source.map(\x: Int { calls@ = calls@ + 1; x });
+	assert(lazy.take(0u)&.next().is_none());
+	assert(calls@ == 0);
+	assert(lazy.any(\x: Int x == 2));
+	assert(calls@ == 2);
+	let empty = []#[Int]&.iter().copied();
+	assert(empty.sum() == 0);
+	assert(empty.product() == 1);
+	assert(empty.min().is_none());
+	assert(empty.last().is_none());
+	assert(empty.is_sorted());
+	assert(empty.cycle()&.next().is_none());
+	assert(empty.all(\x: Int false));
+	assert(!empty.any(\x: Int true));
+	let n = 0&;
+	let generated = iter::from_fn(\ {
+		n@ = n@ + 1;
+		(n@ <= 3).then_some(n@)
+	});
+	assert(generated.sum() == 6);
+	let lookahead = source.peekable();
+	assert(lookahead&.peek().unwrap() == 1);
+	assert(lookahead&.peek().unwrap() == 1);
+	assert(lookahead&.len() == 5u);
+	assert(lookahead&.next_back().unwrap() == 5);
+	assert(lookahead&.next().unwrap() == 1);
+	assert(lookahead.sum() == 9);
+	let chunks = source.array_chunks(2u).collect_vec();
+	assert(chunks&.len() == 2u);
+	assert(chunks&.at(0u)@ == [1, 2]&);
+	assert(chunks&.at(1u)@ == [3, 4]&);
+	let flat = source.flat_map(\x: Int iter::once(x).chain(iter::once(x * 10)));
+	assert(
+		flat.collect_vec()&.as_slice() == [1, 10, 2, 20, 3, 30, 4, 40, 5, 50]&,
+	);
+	assert(flat&.next_back().unwrap() == 50);
+	assert(flat&.next().unwrap() == 1);
+	assert(flat&.next_back().unwrap() == 5);
+	assert(flat&.next().unwrap() == 10);
+	let nested = [iter::once(3), iter::once(4)];
+	assert(nested&.iter().copied().flatten().sum() == 7);
+	let sampled = source.step_by(2u);
+	assert(sampled&.len() == 3u);
+	assert(sampled&.next_back().unwrap() == 5);
+	assert(sampled&.next().unwrap() == 1);
+	assert(sampled&.next_back().unwrap() == 3);
+	assert(sampled&.next().is_none());
+	assert(sampled&.len() == 0u);
+	let groups = source.array_chunks(2u);
+	assert(groups&.len() == 2u);
+	assert(groups&.next_back().unwrap() == [3, 4]&);
+	assert(groups&.next().unwrap() == [1, 2]&);
+	assert(groups&.next_back().is_none());
+	let chain = source.chain(source);
+	assert(chain&.next().unwrap() == 1);
+	assert(chain&.next_back().unwrap() == 5);
+	assert(chain&.len() == 8u);
+	assert(chain.sum() == 24);
+	let count = 0&;
+	let resumable = iter::from_fn(\ {
+		count@ = count@ + 1;
+		(count@ % 2 == 0).then_some(count@)
+	}).take_while(\x: Int x < 4);
+	assert(resumable&.next().is_none());
+	assert(resumable&.next().unwrap() == 2);
+	assert(resumable&.next().is_none());
+	assert(resumable&.next().is_none());
+	assert(resumable&.next().is_none());
+	assert(count@ == 4);
+	assert(
+		source.filter(\x: Int x % 2 ==
+			1).rev().collect_vec()&.as_slice() == [5, 3, 1]&,
+	);
+	assert(
+		source.filter_map(\x: Int (x % 2 == 0).then_some(x)).rev().collect_vec()&.as_slice() ==
+			[4, 2]&,
+	);
+	assert(source.map(\x: Int x * 2).rev().sum() == 30);
+	let calls = 0&;
+	let peeker = iter::from_fn(\ {
+		calls@ = calls@ + 1;
+		(calls@ % 2 == 0).then_some(calls@)
+	}).peekable();
+	assert(peeker&.peek().is_none());
+	assert(peeker&.peek().is_none());
+	assert(calls@ == 1);
+	assert(peeker&.next().is_none());
+	assert(peeker&.peek().unwrap() == 2);
+	assert(peeker&.next().unwrap() == 2);
+	assert(calls@ == 2);
+	assert(empty.reduce(\a: Int, b: Int a + b).is_none());
+	let failures = 0;
+	try { source.step_by(0u); } catch (e) { failures = failures + 1; }
+	try { source.array_chunks(0u); } catch (e) { failures = failures + 1; }
+	assert(failures == 2);
+	println("passed"&);
+}

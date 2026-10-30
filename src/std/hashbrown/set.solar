@@ -1,0 +1,78 @@
+import {HashMap} from "map.solar";
+import {Option, Iterator} from "../lib.solar";
+
+/// A set of distinct values backed by Solar's deterministic hash map.
+/// Assignment semantics are currently unspecified.
+pub struct HashSet#[T] { map: HashMap#[T, ()] }
+
+/// Constructs an empty set.
+pub fn HashSet::#[out T]() -> HashSet#[T] {
+	HashSet#[T] { map: HashMap#[T, ()]() }
+}
+
+/// Constructs an empty default set.
+pub fn#[T] HashSet#[T]::default() -> HashSet#[T] { HashSet#[T]() }
+
+/// Collects unique items from an iterator.
+pub fn#[T] HashSet#[T]::from_iter#[I](source: Iterator#[I]) -> HashSet#[T] {
+	let output = HashSet#[T]();
+	let item: Option#[T] = source&.next();
+
+	while item.is_some() {
+		output&.insert(item.unwrap());
+		item = source&.next();
+	}
+
+	output
+}
+
+/// Returns the number of distinct values.
+pub method len#[T](self: &HashSet#[T]) -> Uint { self@.map&.len() }
+
+/// Returns whether there are no values.
+pub method is_empty#[T](self: &HashSet#[T]) -> Bool { self@.map&.is_empty() }
+
+/// Returns whether the value is present.
+pub method contains#[T](self: &HashSet#[T], value: &T) -> Bool {
+	self@.map&.contains_key(value)
+}
+
+/// Inserts a value, returning true only when it was absent.
+pub method insert#[T](self: &HashSet#[T], value: T) -> Bool {
+	self@.map&.insert(value, ()).is_none()
+}
+
+/// Removes a value, returning whether it was present.
+pub method remove#[T](self: &HashSet#[T], value: &T) -> Bool {
+	self@.map&.remove(value).is_some()
+}
+
+/// Iterates over references in unspecified order; do not mutate the set while iterating.
+pub method iter#[T](self: &HashSet#[T]) { self@.map&.keys() }
+
+/// Iterates over all distinct values present in either set without allocating.
+pub method union#[T](self: &HashSet#[T], other: &HashSet#[T]) {
+	self.iter().chain(other.iter().filter(\value: &T !self.contains(value)))
+}
+
+/// Iterates over values present in both sets without allocating.
+pub method intersection#[T](self: &HashSet#[T], other: &HashSet#[T]) {
+	self.iter().filter(\value: &T other.contains(value))
+}
+
+/// Returns whether every value is present in the other set.
+pub method is_subset#[T](self: &HashSet#[T], other: &HashSet#[T]) -> Bool {
+	self.len() <= other.len() && self.iter().all(\value: &T other.contains(
+			value,
+		))
+}
+
+/// Returns whether every value of the other set is present here.
+pub method is_superset#[T](self: &HashSet#[T], other: &HashSet#[T]) -> Bool {
+	other.is_subset(self)
+}
+
+/// Compares sets by membership regardless of iteration order.
+pub method operator_eq#[T](self: &HashSet#[T], other: &HashSet#[T]) -> Bool {
+	self.len() == other.len() && self.is_subset(other)
+}

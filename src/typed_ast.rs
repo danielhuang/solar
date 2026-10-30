@@ -3058,6 +3058,12 @@ impl<'a> Lowerer<'a> {
     /// struct whose layout should be queried later.
     fn validate_monomorphization_arg(&self, ty: &Type) -> Result<(), CompileError> {
         match ty {
+            Type::Struct(id) if id.def == DefId::synthetic(TUPLE_DEF_NAME) => {
+                for element in &id.args {
+                    self.validate_monomorphization_arg(element)?;
+                }
+                Ok(())
+            }
             Type::Struct(id) | Type::Enum(id) => {
                 let actual_arity = id.args.len();
                 let expected_arity = if self.generic_structs.contains_key(&id.def) {
@@ -8812,6 +8818,7 @@ impl<'a> Lowerer<'a> {
             | Type::UniqueUnsized(inner) => Self::type_shape(inner),
             Type::Array(_) | Type::FixedArray(_, _) => ArgShape::Sequence,
             Type::Function { .. } => ArgShape::Function,
+            Type::Struct(id) if id.def == DefId::synthetic(TUPLE_DEF_NAME) => ArgShape::Tuple,
             Type::Struct(id) | Type::Enum(id) => ArgShape::Named(id.def.clone()),
             _ => ArgShape::Unknown,
         }
@@ -9225,16 +9232,16 @@ impl<'a> Lowerer<'a> {
                     .iter()
                     .map(|p| p.ty.clone())
                     .collect();
-                // Avoid monomorphizing candidates with incompatible concrete bases.
+                // Reject incompatible shapes before resolving substituted types.
+                // Otherwise a slice.contains(slice) probe can instantiate an
+                // invalid HashSet[[T]] while considering HashSet.contains(&T),
+                // leaving unsized table entries in the lowered program.
                 let mut head_mismatch = false;
                 for (arg, pat) in lowered_args.iter().zip(param_ast_types.iter()) {
-                    let (Some(want), Some(got)) = (
-                        Self::ast_type_base_def(pat, &gdef.type_params),
-                        Self::type_base_key(&arg.ty),
-                    ) else {
-                        continue;
-                    };
-                    if !self.type_aliases.contains_key(&want) && want != got {
+                    let expanded = self.expand_type_aliases(pat, 0);
+                    let want = Self::ast_type_shape(&expanded, &gdef.type_params);
+                    let got = Self::type_shape(&arg.ty);
+                    if want != ArgShape::Unknown && got != ArgShape::Unknown && want != got {
                         head_mismatch = true;
                         break;
                     }

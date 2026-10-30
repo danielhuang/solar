@@ -1,0 +1,69 @@
+struct Point { x: Int, y: Int }
+enum Shape { Empty, Circle(Int) }
+
+fn main() {
+	assert(
+		format(
+			"{} {}"&,
+			[format_arg("answer"&), format_arg(42)]&,
+		) == "answer 42"&,
+	);
+	assert(
+		format(
+			"{1} {0} {}"&,
+			[format_arg(true), format_arg(7)]&,
+		) == "7 true true"&,
+	);
+	assert(
+		format("{{{name}}}"&, [format_arg("ok"&, name = "name"&)]&) == "{ok}"&,
+	);
+	assert(
+		format(
+			"{:036b}"&,
+			[format_arg(5u)]&,
+		) == "000000000000000000000000000000000101"&,
+	);
+	assert(
+		format("{:0>width$}"&, [format_arg("101"&)]&, width = 6u) == "000101"&,
+	);
+	assert(format("{:05}"&, [format_arg(0 - 42)]&) == "-0042"&);
+	assert(
+		format(
+			"{:b} {:o} {:x} {:X}"&,
+			[
+				format_arg(0i8 - 1i8),
+				format_arg(63u16),
+				format_arg(255u32),
+				format_arg(255u64),
+			]&,
+		) ==
+			"11111111 77 ff FF"&,
+	);
+	assert(format("{:b}"&, [format_arg(0i64 - 1i64)]&) == "1"&.repeat(64u));
+	assert(format("{:😀^5}"&, [format_arg("é"&)]&) == "😀😀é😀😀"&);
+	assert(
+		format(
+			"{:<4}:{:>4}"&,
+			[format_arg(7), format_arg("a"&)]&,
+		) == "7   :   a"&,
+	);
+	assert(format("{:?}"&, [format_arg("a\n\"\\"&)]&) == "\"a\\n\\\"\\\\\""&);
+	assert(debug_string(Point { x: 1, y: 2 }) == "{x: 1, y: 2}"&);
+	assert(debug_string([1, 2, 3]&) == "[1, 2, 3]"&);
+	assert(debug_string(Shape::Circle(4)) == "Circle(4)"&);
+	assert(debug_string(Shape::Empty) == "Empty(0)"&);
+	assert(format("hello"&, []#[FormatArg]&) == "hello"&);
+	let errors = 0;
+
+	for bad in ["{"&, "}"&, "{}"&, "{:z}"&, "{missing}"&] {
+		try {
+			format(
+				bad@,
+				if bad@ == "{}"& { []#[FormatArg]& } else { [format_arg(1)]& },
+			);
+		} catch (e) { errors = errors + 1; }
+	}
+
+	assert(errors == 5);
+	println("passed"&);
+}

@@ -54,8 +54,41 @@ pub import {Finalizer} from "gc.solar";
 /// Hash maps.
 pub import hashbrown from "hashbrown/map.solar";
 
+/// Hash maps and hash sets.
+pub import {HashMap} from "hashbrown/map.solar";
+
+/// A collection of distinct hashable values.
+pub import {HashSet} from "hashbrown/set.solar";
+
+/// Ordered maps with explicit lower and upper query bounds.
+pub import {BTreeMap} from "btree.solar";
+
 /// A value that may be absent.
 pub enum Option#[T] { Some(T), None }
+
+/// The default option has no value.
+pub fn#[T] Option#[T]::default() -> Option#[T] { Option#[T]::None }
+
+/// Optional-value and boolean combinators.
+pub import option from "option.solar";
+
+/// Ordering and default construction.
+pub import value from "value.solar";
+
+/// Common ordering and default-construction utilities.
+pub import {Ordering, Reverse, default, min, max} from "value.solar";
+
+/// Integer arithmetic, parsing, and radix formatting.
+pub import num from "num.solar";
+
+/// Unicode scalar classification and UTF-8 iteration.
+pub import char from "char.solar";
+
+/// Pure byte-string and UTF-8 text operations.
+pub import text from "text.solar";
+
+/// Pure string interpolation and structural debug formatting.
+pub import {FormatArg, format_arg, format, debug_string} from "fmt.solar";
 
 /// Returns the byte size of a statically sized type.
 pub fn size_of#[out T]() -> Uint {

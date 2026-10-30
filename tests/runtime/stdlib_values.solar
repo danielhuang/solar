@@ -1,0 +1,39 @@
+fn main() {
+	let none = Option#[Int]::None;
+	assert(none.is_none());
+	assert(none.unwrap_or_default() == 0);
+	assert(none.unwrap_or(7) == 7);
+	let calls = 0&;
+	assert(none.map(\x: Int { calls@ = calls@ + 1; x }).is_none());
+	assert(none.is_none_or(\x: Int false));
+	assert(!none.is_some_and(\x: Int true));
+	assert(
+		Option#[Int]::Some(4).unwrap_or_else(\ { calls@ = calls@ + 1; 9 }) == 4,
+	);
+	assert(calls@ == 0);
+	assert(none.unwrap_or_else(\ { calls@ = calls@ + 1; 9 }) == 9);
+	assert(calls@ == 1);
+	assert(Option#[Int]::Some(4).map(\x: Int x + 1).unwrap() == 5);
+	assert(
+		Option#[
+			Int,
+		]::Some(4).and_then(\x: Int (x > 3).then_some(x + 2)).unwrap() == 6,
+	);
+	assert(false.then(\ { calls@ = calls@ + 1; 3 }).is_none());
+	assert(calls@ == 1);
+	let data = 7;
+	assert(Option#[&Int]::Some(data&).copied().unwrap() == 7);
+	assert(Option#[&Int]::None.copied().is_none());
+	assert(3.cmp(4) == Ordering::Less);
+	assert(Reverse(3).cmp(Reverse(4)) == Ordering::Greater);
+	assert(min(3, 4) == 3);
+	assert(3.max(4) == 4);
+	assert(!default#[Bool]());
+	assert(default#[Option#[Int]]().is_none());
+
+	try { none.unwrap(); } catch (e) {
+		assert(e.message == "Option.unwrap: no value"&);
+	}
+
+	println("passed"&);
+}

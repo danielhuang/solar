@@ -10,7 +10,7 @@
 //   references (pointers for interior mutability): &T
 //     note that references are always mutable unlike rust
 //   unique references (deep-copy on copy): ^T
-//     unlike &T which aliases on copy, ^T deep-clones the pointee
+//     unlike &T which aliases on copy, ^T deep-copies the pointee
 
 // built-in io (via stdlib wrappers):
 //   write_stdout(s: &[Uint8])

@@ -96,3 +96,17 @@ pub fn run(file_path: &Path, test_name: &str) -> String {
     );
     ast_out
 }
+
+/// Compiles and runs a file through optimized release codegen.
+pub fn run_release_file(file_path: &Path, test_name: &str) -> String {
+    ensure_release_runtime_built();
+    let directory = tempdir::TempDir::new("solar-test").unwrap();
+    solar::pipeline::compile(file_path)
+        .unwrap()
+        .to_mangled()
+        .to_tree_ir()
+        .optimized()
+        .to_c(&file_path.display().to_string())
+        .to_binary(directory.path().join(test_name), CompileOptions::RELEASE)
+        .run(test_name)
+}

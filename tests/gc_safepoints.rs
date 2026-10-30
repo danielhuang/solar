@@ -136,6 +136,10 @@ define void @_mark_value() { ret void }
         3,
         "{ir}"
     );
+    assert!(
+        ir.contains("~{flags},~{memory}"),
+        "polls must clobber EFLAGS: {ir}"
+    );
     for name in ["runtime_helper", "_mark_value"] {
         let body = ir
             .split(&format!("@{name}("))

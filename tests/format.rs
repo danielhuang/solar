@@ -64,3 +64,14 @@ fn all_solar_sources_are_formatted() {
         failures.join("\n  ")
     );
 }
+
+#[test]
+fn unicode_and_control_characters_use_solar_escapes() {
+    let source =
+        "fn main() { let text = \"\u{a0} a\u{3000}\\0\\n\\t\\\"\\\\\"; let quote = '\"'; }";
+    let formatted = solar::fmt::format_source(source).unwrap();
+    assert!(formatted.contains("\u{a0} a\u{3000}\\0\\n\\t\\\"\\\\"));
+    assert!(!formatted.contains("\\u{"));
+    assert!(formatted.contains("'\"'"));
+    assert_eq!(solar::fmt::format_source(&formatted).unwrap(), formatted);
+}

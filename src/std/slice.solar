@@ -1,12 +1,16 @@
 import intrinsics from "@intrinsics";
-import {Option} from "lib.solar";
+import {Option, Ordering, throw} from "lib.solar";
 import {Iterator} from "iter.solar";
+import {Vec} from "vec.solar";
 
 /// An iterator over borrowed slice elements.
 pub struct Iter#[T] { remaining: &[T] }
 
 /// An iterator over subslices separated by an element.
-pub struct Split#[T] { remaining: &[T], separator: &T, finished: Bool }
+pub struct SplitState#[T] { remaining: &[T], separator: &T, finished: Bool }
+
+/// A composable iterator over subslices separated by an element.
+pub type Split#[T] = Iterator#[SplitState#[T]];
 
 /// Number of elements in a slice.
 pub method len#[T](self: &[T]) -> Uint {
@@ -108,28 +112,53 @@ pub method contains#[T](self: &[T], value: &[T]) -> Bool {
 
 /// Returns an iterator over subslices separated by `separator`.
 pub method split#[T](self: &[T], separator: &T) -> Split#[T] {
-	Split#[T] { remaining: self, separator: separator, finished: false }
+	Iterator(
+		SplitState#[T] {
+			remaining: self,
+			separator: separator,
+			finished: false,
+		},
+	)
 }
 
 /// Advances the split iterator and returns the next subslice.
 pub method next#[T](self: &Split#[T]) -> Option#[&[T]] {
-	if self@.finished {
+	if self@.inner.finished {
 		return Option#[&[T]]::None;
 	}
 
-	let remaining = self@.remaining;
+	let remaining = self@.inner.remaining;
 
-	match remaining.find(self@.separator) {
+	match remaining.find(self@.inner.separator) {
 		Option#[Uint]::Some(index) => {
 			let item = remaining@[0u..index]&;
-			self@.remaining = remaining@[index + 1u..remaining.len()]&;
+			self@.inner.remaining = remaining@[index + 1u..remaining.len()]&;
 			Option#[&[T]]::Some(item)
 		},
 		Option#[Uint]::None => {
-			self@.finished = true;
+			self@.inner.finished = true;
 			Option#[&[T]]::Some(remaining)
 		},
 	}
+}
+
+/// Splits from the back, preserving empty leading and trailing pieces.
+pub method next_back#[T](self: &Split#[T]) -> Option#[&[T]] {
+	if self@.inner.finished { return Option#[&[T]]::None; }
+	let remaining = self@.inner.remaining;
+	let at = remaining.len();
+
+	while at > 0u {
+		at = at - 1u;
+
+		if remaining@[at] == self@.inner.separator@ {
+			self@.inner.remaining = remaining@[0u..at]&;
+			return Option#[&[T]]::Some(remaining@[at + 1u..remaining.len()]&);
+		}
+	}
+
+	self@.inner.finished = true;
+	Option#[&[T]]::Some(remaining)
 }
 
 /// Returns an iterator over the slice's elements.
@@ -146,6 +175,20 @@ pub method next#[T](self: &Iterator#[Iter#[T]]) -> Option#[&T] {
 	let item = self@.inner.remaining@[0u]&;
 	self@.inner.remaining = self@.inner.remaining@[1u..self@.inner.remaining.len()]&;
 	Option#[&T]::Some(item)
+}
+
+/// Advances a slice iterator from the back without revisiting front-consumed items.
+pub method next_back#[T](self: &Iterator#[Iter#[T]]) -> Option#[&T] {
+	let remaining = self@.inner.remaining;
+	if remaining.len() == 0u { return Option#[&T]::None; }
+	let index = remaining.len() - 1u;
+	self@.inner.remaining = remaining@[0u..index]&;
+	Option#[&T]::Some(remaining@[index]&)
+}
+
+/// Returns the exact number of remaining slice elements.
+pub method len#[T](self: &Iterator#[Iter#[T]]) -> Uint {
+	self@.inner.remaining.len()
 }
 
 /// Compares slices element by element.
@@ -167,4 +210,160 @@ pub method operator_eq#[T](self: &[T], other: &[T]) -> Bool {
 	}
 
 	true
+}
+
+/// Iterates through a borrowed slice reference, as used by nested iterables.
+pub method iter#[T](self: &&[T]) -> Iterator#[Iter#[T]] { self@.iter() }
+
+/// Returns whether the slice is empty.
+pub method is_empty#[T](self: &[T]) -> Bool { self.len() == 0u }
+
+/// Returns an element reference, or None when the index is out of bounds.
+pub method get#[T](self: &[T], index: Uint) -> Option#[&T] {
+	if index < self.len() { Option#[&T]::Some(self@[index]&) } else {
+		Option#[&T]::None
+	}
+}
+
+/// Returns the first element, if present.
+pub method first#[T](self: &[T]) -> Option#[&T] { self.get(0u) }
+
+/// Returns the last element, if present.
+pub method last#[T](self: &[T]) -> Option#[&T] {
+	if self.is_empty() { Option#[&T]::None } else { self.get(self.len() - 1u) }
+}
+
+/// Compares slices lexicographically, using element cmp methods.
+pub method cmp#[T](self: &[T], other: &[T]) -> Ordering {
+	let n = self.len().min(other.len());
+
+	for i in 0u..n {
+		let order = self@[i].cmp(other@[i]);
+		if order != Ordering::Equal { return order; }
+	}
+
+	self.len().cmp(other.len())
+}
+
+/// Returns whether adjacent elements are in nondecreasing order.
+pub method is_sorted#[T](self: &[T]) -> Bool { self.iter().is_sorted() }
+
+/// Searches a sorted slice in logarithmic time, returning a matching index or None.
+/// Use lower_bound when the insertion position is needed.
+pub method binary_search#[T](self: &[T], value: &T) -> Option#[Uint] {
+	let at = self.lower_bound(value);
+
+	if at < self.len() && self@[at].cmp(value@) == Ordering::Equal {
+		Option#[Uint]::Some(at)
+	} else { Option#[Uint]::None }
+}
+
+/// Returns the first position whose value is not less than the target.
+pub method lower_bound#[T](self: &[T], value: &T) -> Uint {
+	let low = 0u;
+	let high = self.len();
+
+	while low < high {
+		let mid = low + (high - low) / 2u;
+
+		if self@[mid].cmp(value@) == Ordering::Less { low = mid + 1u; } else {
+			high = mid;
+		}
+	}
+
+	low
+}
+
+/// Returns whether the slice begins with the supplied sequence.
+pub method starts_with#[T](self: &[T], prefix: &[T]) -> Bool {
+	prefix.len() <= self.len() && self@[0u..prefix.len()]& == prefix
+}
+
+/// Returns whether the slice ends with the supplied sequence.
+pub method ends_with#[T](self: &[T], suffix: &[T]) -> Bool {
+	suffix.len() <= self.len() &&
+		self@[self.len() - suffix.len()..self.len()]& == suffix
+}
+
+/// Removes a matching prefix, or returns None.
+pub method strip_prefix#[T](self: &[T], prefix: &[T]) -> Option#[&[T]] {
+	if self.starts_with(prefix) {
+		Option#[&[T]]::Some(self@[prefix.len()..self.len()]&)
+	} else { Option#[&[T]]::None }
+}
+
+/// Removes a matching suffix, or returns None.
+pub method strip_suffix#[T](self: &[T], suffix: &[T]) -> Option#[&[T]] {
+	if self.ends_with(suffix) {
+		Option#[&[T]]::Some(self@[0u..self.len() - suffix.len()]&)
+	} else { Option#[&[T]]::None }
+}
+
+/// Returns the pieces before and after the first matching subsequence.
+pub method split_once#[T](self: &[T], separator: &[T]) -> Option#[(&[T], &[T])] {
+	self.find(separator).map(\at: Uint {
+		(self@[0u..at]&, self@[at + separator.len()..self.len()]&)
+	})
+}
+
+/// Returns the pieces before and after the first matching element.
+pub method split_once#[T](self: &[T], separator: &T) -> Option#[(&[T], &[T])] {
+	self.find(separator).map(\at: Uint {
+		(self@[0u..at]&, self@[at + 1u..self.len()]&)
+	})
+}
+
+/// Overlapping windows of a slice, with independent front and back cursors.
+pub struct Windows#[T] { source: &[T], width: Uint, front: Uint, back: Uint }
+
+/// Returns overlapping windows. Zero width throws; oversized windows yield no items.
+pub method windows#[T](self: &[T], width: Uint) -> Iterator#[Windows#[T]] {
+	if width == 0u { throw("windows: width must be positive"&); }
+	let count = if width > self.len() { 0u } else { self.len() - width + 1u };
+	Iterator(Windows#[T] { source: self, width: width, front: 0u, back: count })
+}
+
+/// Returns overlapping array windows with a runtime-selected width.
+/// Each result is a slice that may be destructured with a checked array pattern.
+pub method array_windows#[T](self: &[T], width: Uint) -> Iterator#[Windows#[T]] {
+	self.windows(width)
+}
+
+/// Returns the next overlapping window.
+pub method next#[T](self: &Iterator#[Windows#[T]]) -> Option#[&[T]] {
+	if self@.inner.front == self@.inner.back { return Option#[&[T]]::None; }
+	let at = self@.inner.front;
+	self@.inner.front = at + 1u;
+	Option#[&[T]]::Some(self@.inner.source@[at..at + self@.inner.width]&)
+}
+
+/// Returns the last remaining overlapping window.
+pub method next_back#[T](self: &Iterator#[Windows#[T]]) -> Option#[&[T]] {
+	if self@.inner.front == self@.inner.back { return Option#[&[T]]::None; }
+	self@.inner.back = self@.inner.back - 1u;
+	let at = self@.inner.back;
+	Option#[&[T]]::Some(self@.inner.source@[at..at + self@.inner.width]&)
+}
+
+/// Returns the exact number of remaining windows.
+pub method len#[T](self: &Iterator#[Windows#[T]]) -> Uint {
+	self@.inner.back - self@.inner.front
+}
+
+/// Copies this sequence `count` times into a new slice.
+pub method repeat#[T](self: &[T], count: Uint) -> &[T] {
+	let length = self.len() * count;
+	[length; \i: Uint self@[i % self.len()]]&
+}
+
+/// Joins slices with the separator between consecutive entries.
+pub method join#[T](self: &[&[T]], separator: &[T]) -> &[T] {
+	let output = Vec([]#[T]&);
+
+	for i in 0u..self.len() {
+		if i > 0u { for item in separator@ { output&.push(item@); } }
+		for item in self@[i]@ { output&.push(item@); }
+	}
+
+	output&.as_slice()
 }

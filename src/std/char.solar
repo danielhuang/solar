@@ -1,0 +1,150 @@
+import {Option, Iterator, throw} from "lib.solar";
+import data from "unicode_data.solar";
+import num from "num.solar";
+
+/// Decodes the first UTF-8 scalar and its byte width; malformed input throws.
+pub fn decode_first(text: &[Uint8]) -> (Uint32, Uint) {
+	if text.len() == 0u { throw("UTF-8: unexpected end of input"&); }
+	let first = text@[0u];
+	if first < 128u8 { return (Uint32(first), 1u); }
+	let width = if first >= 194u8 && first <= 223u8 { 2u } else if first >=
+		224u8 &&
+		first <= 239u8 { 3u } else if first >= 240u8 && first <= 244u8 { 4u } else {
+		0u
+	};
+	if width == 0u || text.len() < width { throw("UTF-8: invalid encoding"&); }
+	let code = Uint32(first & (127u8 >> Uint8(width)));
+
+	for i in 1u..width {
+		let byte = text@[i];
+		if byte < 128u8 || byte >= 192u8 { throw("UTF-8: invalid encoding"&); }
+		code = (code << 6u32) | Uint32(byte & 63u8);
+	}
+
+	let minimum = if width == 2u { 128u32 } else if width == 3u { 2048u32 } else {
+		65536u32
+	};
+
+	if code < minimum || code > 1114111u32 ||
+		(code >= 55296u32 && code <= 57343u32) {
+		throw("UTF-8: invalid encoding"&);
+	}
+
+	(code, width)
+}
+
+/// Decodes the final UTF-8 scalar and its byte width; malformed input throws.
+pub fn decode_last(text: &[Uint8]) -> (Uint32, Uint) {
+	if text.len() == 0u { throw("UTF-8: unexpected end of input"&); }
+	let at = text.len() - 1u;
+
+	while at > 0u && text@[at] >= 128u8 && text@[at] < 192u8 &&
+		text.len() - at < 4u { at = at - 1u; }
+
+	let decoded = decode_first(text@[at..text.len()]&);
+	if at + decoded.1 != text.len() { throw("UTF-8: invalid encoding"&); }
+	decoded
+}
+
+/// A double-ended UTF-8 scalar iterator. Items are Unicode code points (Uint32).
+pub struct Chars { remaining: &[Uint8] }
+
+/// Iterates over Unicode scalar values rather than bytes; invalid UTF-8 throws.
+pub method chars(self: &[Uint8]) -> Iterator#[Chars] {
+	Iterator(Chars { remaining: self })
+}
+
+/// Decodes the next Unicode scalar.
+pub method next(self: &Iterator#[Chars]) -> Option#[Uint32] {
+	let text = self@.inner.remaining;
+	if text.len() == 0u { return Option#[Uint32]::None; }
+	let (code, width) = decode_first(text);
+	self@.inner.remaining = text@[width..text.len()]&;
+	Option#[Uint32]::Some(code)
+}
+
+/// Decodes the last remaining Unicode scalar.
+pub method next_back(self: &Iterator#[Chars]) -> Option#[Uint32] {
+	let text = self@.inner.remaining;
+	if text.len() == 0u { return Option#[Uint32]::None; }
+	let (code, width) = decode_last(text);
+	self@.inner.remaining = text@[0u..text.len() - width]&;
+	Option#[Uint32]::Some(code)
+}
+
+/// Encodes a Unicode scalar as UTF-8; invalid scalar values throw.
+pub method to_utf8(self: Uint32) -> &[Uint8] {
+	if self <= 127u32 { return [Uint8(self)]&; }
+
+	if self <= 2047u32 {
+		return [Uint8(192u32 | (self >> 6u32)), Uint8(128u32 | (self & 63u32))]&;
+	}
+
+	if self >= 55296u32 && self <= 57343u32 {
+		throw("UTF-8: invalid scalar value"&);
+	}
+
+	if self <= 65535u32 {
+		return [
+			Uint8(224u32 | (self >> 12u32)),
+			Uint8(128u32 | ((self >> 6u32) & 63u32)),
+			Uint8(128u32 | (self & 63u32)),
+		]&;
+	}
+
+	if self > 1114111u32 { throw("UTF-8: invalid scalar value"&); }
+	[
+		Uint8(240u32 | (self >> 18u32)),
+		Uint8(128u32 | ((self >> 12u32) & 63u32)),
+		Uint8(128u32 | ((self >> 6u32) & 63u32)),
+		Uint8(128u32 | (self & 63u32)),
+	]&
+}
+
+/// Returns whether a code point has Unicode's Alphabetic property.
+pub method is_alphabetic(self: Uint32) -> Bool { data::is_alphabetic(self) }
+
+/// Returns whether a code point has a Unicode numeric general category.
+pub method is_numeric(self: Uint32) -> Bool { data::is_numeric(self) }
+
+/// Returns whether a code point is Unicode alphabetic or numeric.
+pub method is_alphanumeric(self: Uint32) -> Bool {
+	self.is_alphabetic() || self.is_numeric()
+}
+
+/// Returns whether a code point has Unicode's White_Space property.
+pub method is_whitespace(self: Uint32) -> Bool { data::is_whitespace(self) }
+
+/// Returns whether a code point has Unicode's Uppercase property.
+pub method is_uppercase(self: Uint32) -> Bool { data::is_uppercase(self) }
+
+/// Returns whether a code point is an ASCII decimal digit.
+pub method is_ascii_digit(self: Uint32) -> Bool {
+	self >= 48u32 && self <= 57u32
+}
+
+/// Returns whether a code point is an ASCII lowercase letter.
+pub method is_ascii_lowercase(self: Uint32) -> Bool {
+	self >= 97u32 && self <= 122u32
+}
+
+/// Converts an ASCII digit to its value in radix 2 through 36.
+pub method to_digit(self: Uint32, radix: Uint) -> Option#[Uint] {
+	if radix < 2u || radix > 36u { throw("radix must be between 2 and 36"&); }
+
+	if self >
+		127u32 { Option#[Uint]::None } else { num::digit(Uint8(self), radix) }
+}
+
+/// Returns whether a byte is an ASCII decimal digit.
+pub method is_ascii_digit(self: Uint8) -> Bool { self >= '0' && self <= '9' }
+
+/// Returns whether a byte is an ASCII lowercase letter.
+pub method is_ascii_lowercase(self: Uint8) -> Bool {
+	self >= 'a' && self <= 'z'
+}
+
+/// Converts an ASCII digit to its numeric value.
+pub method to_digit(self: Uint8, radix: Uint) -> Option#[Uint] {
+	num::digit(self, radix)
+}

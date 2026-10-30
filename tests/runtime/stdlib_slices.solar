@@ -1,0 +1,51 @@
+fn main() {
+	// Slice and set membership must coexist without instantiating unsized set keys.
+	assert("abcdef"&.contains("cd"&));
+	assert(!"abcdef"&.contains("xy"&));
+	let values = [1, 2, 2, 5];
+	assert(values&.first().copied().unwrap() == 1);
+	assert(values&.last().copied().unwrap() == 5);
+	assert(values&.get(4u).is_none());
+	assert([]#[Int]&.first().is_none());
+	assert([]#[Int]&.last().is_none());
+	assert(values&.cmp([1, 2, 3]&) == Ordering::Less);
+	assert([1, 2]&.cmp([1]&) == Ordering::Greater);
+	assert(values&.is_sorted());
+	assert(![3, 2]&.is_sorted());
+	assert(values&.binary_search(2&).unwrap() == 1u);
+	assert(values&.binary_search(4&).is_none());
+	assert(values&.lower_bound(4&) == 3u);
+	assert(values&.lower_bound(9&) == 4u);
+	assert([]#[Int]&.binary_search(1&).is_none());
+	let windows = values&.windows(2u);
+	assert(windows&.len() == 3u);
+	assert(windows&.next().unwrap() == [1, 2]&);
+	assert(windows&.next_back().unwrap() == [2, 5]&);
+	assert(windows&.next_back().unwrap() == [2, 2]&);
+	assert(windows&.next().is_none());
+	assert(values&.array_windows(4u)&.next().unwrap() == values&);
+	assert(values&.windows(5u).count() == 0u);
+	assert([]#[Int]&.repeat(10u).len() == 0u);
+	assert(values&.repeat(0u).len() == 0u);
+	assert([1, 2]&.repeat(2u) == [1, 2, 1, 2]&);
+	assert(
+		[1, 0, 2, 0]&.split(0&).rev().collect_vec()&.as_slice() ==
+			[[]#[Int]&, [2]&, [1]&]&,
+	);
+	let nested = [[1, 2]&, []#[Int]&, [3]&];
+	assert(
+		nested&.iter().copied().flatten().copied().collect_vec()&.as_slice() ==
+			[1, 2, 3]&,
+	);
+
+	try { values&.windows(0u); assert(false); } catch (e) {
+		assert(e.message == "windows: width must be positive"&);
+	}
+
+	let a = vec::Vec([1, 9]&);
+	let b = vec::Vec([2]&);
+	assert(a&.cmp(b&) == Ordering::Less);
+	assert(a.cmp(b) == Ordering::Less);
+	assert([a, b]&.iter().copied().min().unwrap()&.as_slice() == [1, 9]&);
+	println("passed"&);
+}

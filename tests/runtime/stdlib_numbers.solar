@@ -1,0 +1,83 @@
+fn signed#[T](low: T, high: T) {
+	for radix in 2u..37u {
+		assert(T::from_str_radix(low.to_radix(radix), radix) == low);
+		assert(T::from_str_radix(high.to_radix(radix), radix) == high);
+	}
+
+	assert(low.saturating_sub(T(1)) == low);
+	assert(high.saturating_sub(T(0) - T(1)) == high);
+	assert(T(0).pow(0u) == T(1));
+	assert(T(2).pow(6u) == T(64));
+	assert((T(0) - T(7)).rem_euclid(T(4)) == T(1));
+	assert((T(0) - T(7)).signum() == T(0) - T(1));
+	assert((T(0) - T(7)).abs() == T(7));
+	assert(T(100).ilog10() == 2u);
+	assert(default#[T]() == T(0));
+	assert(T::from_str_radix(high.to_string(), 10u) == high);
+}
+
+fn unsigned#[T](high: T) {
+	for radix in 2u..37u {
+		assert(T::from_str_radix(high.to_radix(radix), radix) == high);
+	}
+
+	assert(T(0).saturating_sub(T(1)) == T(0));
+	assert(T(2).pow(6u) == T(64));
+	assert(default#[T]() == T(0));
+	assert(T::from_str_radix(high.to_string(), 10u) == high);
+}
+
+fn main() {
+	signed(0i8 - 127i8 - 1i8, 127i8);
+	signed(0i16 - 32767i16 - 1i16, 32767i16);
+	signed(0i32 - 2147483647i32 - 1i32, 2147483647i32);
+	signed(0i64 - 9223372036854775807i64 - 1i64, 9223372036854775807i64);
+	signed(0 - 9223372036854775807 - 1, 9223372036854775807);
+	unsigned(255u8);
+	unsigned(65535u16);
+	unsigned(4294967295u32);
+	unsigned(18446744073709551615u64);
+	unsigned(18446744073709551615u);
+	assert(2.pow(10u) == 1024);
+	assert(0.pow(0u) == 1);
+	assert((0 - 7).abs() == 7);
+	assert((0 - 7).signum() == 0 - 1);
+	assert(0.signum() == 0);
+	assert((0 - 7).rem_euclid(4) == 1);
+	assert((0 - 7).rem_euclid(0 - 4) == 1);
+	assert(999.ilog10() == 2u);
+	assert(1000u.ilog10() == 3u);
+	assert(0u.saturating_sub(1u) == 0u);
+	assert(127i8.saturating_sub(0i8 - 1i8) == 127i8);
+	assert((0i8 - 127i8 - 1i8).saturating_sub(1i8) == 0i8 - 127i8 - 1i8);
+	assert("-128"&.parse#[Int8]() == 0i8 - 127i8 - 1i8);
+	assert("255"&.parse#[Uint8]() == 255u8);
+	assert("-9223372036854775808"&.parse#[Int]() == 0 - 9223372036854775807 - 1);
+	assert("18446744073709551615"&.parse#[Uint64]() == 18446744073709551615u64);
+	assert(Int::from_str_radix("+7f"&, 16u) == 127);
+	assert(255.to_radix(16u) == "ff"&);
+	assert(
+		(0 - 9223372036854775807 - 1).to_radix(10u) == "-9223372036854775808"&,
+	);
+	assert(18446744073709551615u64.to_radix(16u) == "ffffffffffffffff"&);
+	assert(default#[Int8]() == 0i8);
+	assert(Uint(4u) == 4u);
+
+	try { "256"&.parse#[Uint8](); assert(false); } catch (e) {
+		assert(e.message == "parse: integer overflow"&);
+	}
+
+	try { "-129"&.parse#[Int8](); assert(false); } catch (e) {
+		assert(e.message == "parse: integer overflow"&);
+	}
+
+	try { ""&.parse#[Int](); assert(false); } catch (e) {
+		assert(e.message == "parse: empty integer"&);
+	}
+
+	try { "12x"&.parse#[Int](); assert(false); } catch (e) {
+		assert(e.message == "parse: invalid digit"&);
+	}
+
+	println("passed"&);
+}

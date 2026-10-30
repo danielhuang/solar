@@ -1,8 +1,10 @@
 import {Option} from "../lib.solar";
 import raw from "raw.solar";
 import tag from "tag.solar";
+import {Iterator} from "../iter.solar";
 
 /// A hash map using deterministic foldhash.
+/// Assignment semantics are currently unspecified.
 pub struct HashMap#[K, V] { table: raw::RawTable#[K, V] }
 
 /// Creates an empty hash map.
@@ -118,4 +120,106 @@ pub method for_each#[K, V](self: &HashMap#[K, V], f: fn(&K, &V)) {
 			i = i + 1u;
 		}
 	}
+}
+
+/// A double-ended iterator borrowing a hash table's occupied entries.
+/// Do not mutate the map while using this live iterator.
+pub struct Iter#[K, V] {
+	slots: &[raw::Entry#[K, V]],
+	ctrl: &[Uint8],
+	front: Uint,
+	back: Uint,
+	remaining: Uint,
+}
+
+/// Iterates over key/value references in unspecified order without allocating.
+pub method iter#[K, V](self: &HashMap#[K, V]) -> Iterator#[Iter#[K, V]] {
+	let table = self@.table&;
+	let buckets = if table@.bucket_mask == 0u { 0u } else {
+		table@.bucket_mask + 1u
+	};
+	Iterator(
+		Iter#[K, V] {
+			slots: table@.slots,
+			ctrl: table@.ctrl,
+			front: 0u,
+			back: buckets,
+			remaining: table@.items,
+		},
+	)
+}
+
+/// Returns the next occupied entry.
+pub method next#[K, V](self: &Iterator#[Iter#[K, V]]) -> Option#[(&K, &V)] {
+	let state = self@.inner&;
+
+	while state@.front < state@.back {
+		let at = state@.front;
+		state@.front = at + 1u;
+
+		if tag::is_full(state@.ctrl@[at]) {
+			state@.remaining = state@.remaining - 1u;
+			return Option#[(&K, &V)]::Some((
+				state@.slots@[at].key&,
+				state@.slots@[at].val&,
+			));
+		}
+	}
+
+	Option#[(&K, &V)]::None
+}
+
+/// Returns the last remaining occupied entry.
+pub method next_back#[K, V](self: &Iterator#[Iter#[K, V]]) -> Option#[(&K, &V)] {
+	let state = self@.inner&;
+
+	while state@.front < state@.back {
+		state@.back = state@.back - 1u;
+		let at = state@.back;
+
+		if tag::is_full(state@.ctrl@[at]) {
+			state@.remaining = state@.remaining - 1u;
+			return Option#[(&K, &V)]::Some((
+				state@.slots@[at].key&,
+				state@.slots@[at].val&,
+			));
+		}
+	}
+
+	Option#[(&K, &V)]::None
+}
+
+/// Returns the exact number of remaining entries.
+pub method len#[K, V](self: &Iterator#[Iter#[K, V]]) -> Uint {
+	self@.inner.remaining
+}
+
+/// Iterates over key references.
+pub method keys#[K, V](self: &HashMap#[K, V]) {
+	self.iter().map(\entry: (&K, &V) entry.0)
+}
+
+/// Iterates over value references.
+pub method values#[K, V](self: &HashMap#[K, V]) {
+	self.iter().map(\entry: (&K, &V) entry.1)
+}
+
+/// Constructs an empty map.
+pub fn#[K, V] HashMap#[K, V]::default() -> HashMap#[K, V] { HashMap#[K, V]() }
+
+/// Collects key/value pairs; the last value for a duplicate key wins.
+pub fn#[K, V] HashMap#[K, V]::from_iter#[I](source: Iterator#[I]) -> HashMap#[
+	K,
+	V,
+] {
+	let output = HashMap#[K, V]();
+	let item: Option#[(K, V)] = source&.next();
+
+	while item.is_some() {
+		let (key, value) = item.unwrap();
+		output&.insert(key, value);
+		item = source&.next();
+	}
+
+	output
 }

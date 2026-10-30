@@ -1,0 +1,97 @@
+fn main() {
+	assert(""&.lines().count() == 0u);
+	assert("\n"&.lines().collect_vec()&.as_slice() == [""&]&);
+	assert(
+		"a\r\nb\nc\r"&.lines().collect_vec()&.as_slice() == [
+				"a"&,
+				"b"&,
+				"c\r"&,
+			]&,
+	);
+	assert("a\r\nb\n"&.lines().rev().collect_vec()&.as_slice() == ["b"&, "a"&]&);
+	let lines = "a\nb\nc\n"&.lines();
+	assert(lines&.next_back().unwrap() == "c"&);
+	assert(lines&.next().unwrap() == "a"&);
+	assert(lines&.next_back().unwrap() == "b"&);
+	assert(lines&.next().is_none());
+	assert(
+		"a::b::::"&.split(
+			"::"&,
+		).collect_vec()&.as_slice() == ["a"&, "b"&, ""&, ""&]&,
+	);
+	assert(
+		"a:b:c"&.splitn(2u, ':').collect_vec()&.as_slice() == ["a"&, "b:c"&]&,
+	);
+	assert("a:b"&.splitn(0u, ':').count() == 0u);
+	assert("a:b"&.splitn(1u, ':')&.next().unwrap() == "a:b"&);
+	assert("aaa"&.rsplit("aa"&).collect_vec()&.as_slice() == [""&, "a"&]&);
+	assert(
+		"ab"&.split(""&).collect_vec()&.as_slice() == [""&, "a"&, "b"&, ""&]&,
+	);
+	assert(
+		"é😀"&.split(
+			""&,
+		).rev().collect_vec()&.as_slice() == [""&, "😀"&, "é"&, ""&]&,
+	);
+	assert(""&.split(""&).count() == 2u);
+	assert("é😀"&.splitn(2u, ""&).collect_vec()&.as_slice() == [""&, "é😀"&]&);
+	assert(
+		"one\t two\nthree"&.split_whitespace().collect_vec()&.as_slice() ==
+			["one"&, "two"&, "three"&]&,
+	);
+	assert("   café　"&.trim() == "café"&);
+	assert("　\n\t"&.trim().is_empty());
+	assert(
+		"a1b22"&.split(\c: Uint32 c.is_numeric()).collect_vec()&.as_slice() ==
+			["a"&, "b"&, ""&, ""&]&,
+	);
+	assert("é😀"&.chars().count() == 2u);
+	assert("é😀"&.chars().rev().collect_string() == "😀é"&);
+	let chars = "Aé😀Z"&.chars();
+	assert(chars&.next().unwrap() == 65u32);
+	assert(chars&.next_back().unwrap() == 90u32);
+	assert(chars&.next_back().unwrap().to_utf8() == "😀"&);
+	assert(chars&.next().unwrap().to_utf8() == "é"&);
+	assert(chars&.next().is_none());
+	assert("Ω"&.chars()&.next().unwrap().is_uppercase());
+	assert("é"&.chars()&.next().unwrap().is_alphabetic());
+	assert("½"&.chars()&.next().unwrap().is_numeric());
+	assert("٢"&.chars()&.next().unwrap().is_alphanumeric());
+	assert("٢"&.chars()&.next().unwrap().to_digit(10u).is_none());
+	assert('f'.to_digit(16u).unwrap() == 15u);
+	assert('9'.is_ascii_digit());
+	assert('z'.is_ascii_lowercase());
+	assert("abc"&.starts_with('a'));
+	assert("abc"&.ends_with("bc"&));
+	assert("abc"&.strip_prefix("ab"&).unwrap() == "c"&);
+	assert("abc"&.strip_suffix('c').unwrap() == "ab"&);
+	assert("a:b:c"&.split_once(':').unwrap() == ("a"&, "b:c"&));
+	assert("a::b"&.split_once("::"&).unwrap() == ("a"&, "b"&));
+	assert("abc"&.split_once("!"&).is_none());
+	assert("a::b::c"&.replace("::"&, "/"&) == "a/b/c"&);
+	assert("é"&.replace(""&, "."&) == ".é."&);
+	assert("a1b2"&.replace(\c: Uint32 c.is_numeric(), "_"&) == "a_b_"&);
+	assert("ab"&.repeat(3u) == "ababab"&);
+	assert(["a"&, ""&, "b"&]&.join("-"&) == "a--b"&);
+	let matches = "é-é"&.match_indices("é"&).collect_vec();
+	assert(matches&.as_slice() == [(0u, "é"&), (3u, "é"&)]&);
+	assert(
+		"é"&.match_indices(
+			""&,
+		).collect_vec()&.as_slice() == [(0u, ""&), (2u, ""&)]&,
+	);
+
+	try { [192u8, 128u8]&.chars()&.next(); assert(false); } catch (e) {
+		assert(e.message == "UTF-8: invalid encoding"&);
+	}
+
+	try { [237u8, 160u8, 128u8]&.chars()&.next(); assert(false); } catch (e) {
+		assert(e.message == "UTF-8: invalid encoding"&);
+	}
+
+	try { [244u8, 144u8, 128u8, 128u8]&.chars()&.next(); assert(false); } catch (e) {
+		assert(e.message == "UTF-8: invalid encoding"&);
+	}
+
+	println("passed"&);
+}

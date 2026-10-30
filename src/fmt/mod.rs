@@ -539,7 +539,7 @@ fn import_doc(definition: &ImportDef) -> Doc {
         Doc::text("import "),
         names,
         Doc::text(" from "),
-        Doc::text(format!("{:?}", definition.path)),
+        Doc::text(quoted_literal(&definition.path, '"')),
         Doc::text(";"),
     ])
 }
@@ -881,10 +881,10 @@ fn expr_doc(expression: &Expr, context: &SourceContext<'_>) -> Doc {
         }),
         ExprKind::BooleanLiteral(value) => Doc::text(value.to_string()),
         ExprKind::StringLiteral(value) => literal_doc(expression, context, || {
-            format!("{:?}", String::from_utf8_lossy(value))
+            quoted_literal(&String::from_utf8_lossy(value), '"')
         }),
         ExprKind::CharLiteral(value) => literal_doc(expression, context, || {
-            format!("{:?}", *value as char).replace('"', "'")
+            quoted_literal(&char::from(*value).to_string(), '\'')
         }),
         ExprKind::FieldAccess { object, field } => {
             Doc::concat([expr_doc(object, context), Doc::text("."), Doc::text(field)])
@@ -1379,6 +1379,28 @@ fn wrap_parentheses(expression: &Expr, mut doc: Doc, context: &SourceContext<'_>
         doc = Doc::concat([Doc::text("("), doc, Doc::text(")")]);
     }
     doc
+}
+
+// Rust's Debug escapes Unicode whitespace with \u{...}, which Solar does not
+// accept. Emit only Solar's supported escapes and retain other UTF-8 scalars.
+fn quoted_literal(value: &str, quote: char) -> String {
+    let mut output = String::from(quote);
+    for ch in value.chars() {
+        match ch {
+            '\\' => output.push_str("\\\\"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            '\0' => output.push_str("\\0"),
+            ch if ch == quote => {
+                output.push('\\');
+                output.push(ch);
+            }
+            ch => output.push(ch),
+        }
+    }
+    output.push(quote);
+    output
 }
 
 fn literal_doc(
