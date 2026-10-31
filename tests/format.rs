@@ -36,6 +36,15 @@ fn empty_tuple_preserves_explicit_syntax_and_semicolons() {
 }
 
 #[test]
+fn generator_and_yield_formatting() {
+    let source = "fn main(){let g=generator(input:Int){let x=yield input+1;yield (yield x)+2;};let empty=generator{};}";
+    let formatted = solar::fmt::format_source(source).unwrap();
+    assert!(formatted.contains("generator (input: Int)"));
+    assert!(formatted.contains("yield (yield x) + 2"));
+    assert_eq!(solar::fmt::format_source(&formatted).unwrap(), formatted);
+}
+
+#[test]
 fn all_solar_sources_are_formatted() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();

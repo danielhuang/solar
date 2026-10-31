@@ -635,6 +635,13 @@ pub enum ExprKind {
         return_type: Option<Type>,
         body: Vec<Statement>,
     },
+    /// A suspended computation, optionally accepting a value on each resume.
+    Generator {
+        parameter: Option<Box<Parameter>>,
+        body: Vec<Statement>,
+    },
+    /// Suspend the nearest generator and produce its next resume argument.
+    Yield(Box<Expr>),
     EnumVariant {
         module_path: Vec<String>,
         enum_name: DefId,

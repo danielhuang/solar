@@ -1449,7 +1449,7 @@ fn completion_scope_probe_sources(source: &str, cursor_byte: usize) -> Vec<Strin
             };
             if matches!(
                 parent.kind(),
-                "function_def" | "method_def" | "closure_expr"
+                "function_def" | "method_def" | "closure_expr" | "generator_expression"
             ) {
                 return sources;
             }
@@ -1736,6 +1736,7 @@ fn binding_scope(mut node: Node<'_>) -> Option<Node<'_>> {
                     .then(|| closure.child_by_field_name("body"))
                     .flatten();
             }
+            "generator_parameter" => return parent.parent()?.child_by_field_name("body"),
             "for_statement"
             | "reflect_fields_statement"
             | "reflect_fields_pair_statement"
@@ -2083,6 +2084,9 @@ fn collect_expression_types(
                 collect_expression_type(value, target, out);
             }
         }
+        StatementKind::GeneratorTry { .. } => {
+            unreachable!("generator lowering removes exception regions")
+        }
         StatementKind::Continue => {}
     }
 }
@@ -2112,6 +2116,7 @@ fn collect_expression_type(
         | ExprKind::Deref(object)
         | ExprKind::Reference(object)
         | ExprKind::Unique(object)
+        | ExprKind::Yield(object)
         | ExprKind::Not(object)
         | ExprKind::ArraySizeCoerce { expr: object, .. } => {
             collect_expression_type(object, target, out)
@@ -3303,6 +3308,14 @@ fn local_definition<'a>(node: Node<'a>, name: &str, source: &str) -> Option<Node
                     }
                 }
             }
+            "generator_expression" => {
+                if let Some(parameter) = parent.child_by_field_name("parameter")
+                    && let Some(binding) = parameter.child_by_field_name("name")
+                    && &source[binding.byte_range()] == name
+                {
+                    return Some(binding);
+                }
+            }
             "closure_expr" => {
                 let mut cursor = parent.walk();
                 for parameter in parent
@@ -3558,7 +3571,9 @@ fn is_binding_identifier(node: Node<'_>) -> bool {
             "parameter" | "let_statement" => {
                 return parent.child_by_field_name("pattern").is_some_and(contains);
             }
-            "closure_param" => return parent.child_by_field_name("name") == Some(node),
+            "closure_param" | "generator_parameter" => {
+                return parent.child_by_field_name("name") == Some(node);
+            }
             "for_statement"
             | "reflect_fields_statement"
             | "reflect_fields_pair_statement"
@@ -3743,6 +3758,9 @@ impl DefFinder<'_> {
                     self.walk_expr(value);
                 }
             }
+            StatementKind::GeneratorTry { .. } => {
+                unreachable!("generator lowering removes exception regions")
+            }
             StatementKind::Continue => {}
         }
     }
@@ -3789,6 +3807,7 @@ impl DefFinder<'_> {
             ExprKind::Deref(object)
             | ExprKind::Reference(object)
             | ExprKind::Unique(object)
+            | ExprKind::Yield(object)
             | ExprKind::Not(object)
             | ExprKind::ArraySizeCoerce { expr: object, .. } => self.walk_expr(object),
             ExprKind::Index { object, index } => {
@@ -5057,6 +5076,9 @@ impl BindingSignatureCollector<'_> {
                     self.walk_expr(value);
                 }
             }
+            StatementKind::GeneratorTry { .. } => {
+                unreachable!("generator lowering removes exception regions")
+            }
             StatementKind::Continue => {}
         }
     }
@@ -5079,6 +5101,7 @@ impl BindingSignatureCollector<'_> {
             | ExprKind::Deref(object)
             | ExprKind::Reference(object)
             | ExprKind::Unique(object)
+            | ExprKind::Yield(object)
             | ExprKind::Not(object)
             | ExprKind::ArraySizeCoerce { expr: object, .. } => self.walk_expr(object),
             ExprKind::Index { object, index } => {
@@ -5253,6 +5276,9 @@ fn collect_statement_overlays(
                 collect_expr_overlays(value, file_id, overlays);
             }
         }
+        StatementKind::GeneratorTry { .. } => {
+            unreachable!("generator lowering removes exception regions")
+        }
         StatementKind::Continue => {}
     }
 }
@@ -5303,6 +5329,7 @@ fn collect_expr_overlays(
         | ExprKind::Deref(object)
         | ExprKind::Reference(object)
         | ExprKind::Unique(object)
+        | ExprKind::Yield(object)
         | ExprKind::Not(object)
         | ExprKind::ArraySizeCoerce { expr: object, .. } => {
             collect_expr_overlays(object, file_id, overlays)

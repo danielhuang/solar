@@ -445,6 +445,9 @@ fn collect_closure_captures_expr(
             captures,
         } => {
             map.insert(synthetic_fn.clone(), captures.clone());
+            for capture in captures {
+                collect_closure_captures_expr(&capture.place, map);
+            }
         }
         mangled_ast::ExprKind::FieldAccess { object, .. } => {
             collect_closure_captures_expr(object, map);
@@ -1583,12 +1586,7 @@ impl<'a> FunctionLowerer<'a> {
                 let capture_nodes: Vec<NodeId> = captures
                     .iter()
                     .map(|cap| {
-                        let var = self.lookup(&cap.name);
-                        let local = self.push(Node {
-                            ty: cap.ty.clone(),
-                            kind: NodeKind::Local(var),
-                            span: expr.span,
-                        });
+                        let local = self.lower_expr(&cap.place);
                         // A reference to an unsized capture (e.g. a `[Uint8]`) is a
                         // fat pointer, so its node type must be `RefUnsized`, not
                         // `Ref` — else the env slot is sized as a thin pointer and

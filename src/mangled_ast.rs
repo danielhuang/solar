@@ -243,6 +243,8 @@ pub struct CapturedVar {
     pub name: String,
     /// Captured type.
     pub ty: Type,
+    /// The place whose storage is shared with the closure.
+    pub place: Box<Expr>,
 }
 
 /// An enum definition.
@@ -530,6 +532,17 @@ impl Renderer<'_> {
         CapturedVar {
             name: self.ident_name(&c.name),
             ty: self.conv_type(&c.ty),
+            place: c
+                .place
+                .as_deref()
+                .map(|p| self.conv_boxed(p))
+                .unwrap_or_else(|| {
+                    Box::new(Expr {
+                        ty: self.conv_type(&c.ty),
+                        kind: ExprKind::Identifier(self.ident_name(&c.name)),
+                        span: ast::SourceSpan::default(),
+                    })
+                }),
         }
     }
 
@@ -543,6 +556,7 @@ impl Renderer<'_> {
     fn conv_stmt_kind(&self, k: &ta::StatementKind) -> StatementKind {
         use ta::StatementKind as K;
         match k {
+            K::GeneratorTry { .. } => unreachable!("generator lowering removes exception regions"),
             K::Let { name, ty, value } => StatementKind::Let {
                 name: self.ident_name(name),
                 ty: self.conv_type(ty),
@@ -587,6 +601,7 @@ impl Renderer<'_> {
     fn conv_expr_kind(&self, k: &ta::ExprKind) -> ExprKind {
         use ta::ExprKind as K;
         match k {
+            K::Yield(_) => unreachable!("generator lowering removes suspension markers"),
             K::Identifier(name) => ExprKind::Identifier(self.ident_name(name)),
             K::FloatLiteral(v) => ExprKind::FloatLiteral(*v),
             K::Global(def) => ExprKind::Global(self.base_name(def)),

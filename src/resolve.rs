@@ -1392,6 +1392,15 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<Ident>) {
             let mut locals_copy = locals.clone();
             rewrite_statements(stmts, ctx, &mut locals_copy);
         }
+        ExprKind::Generator { parameter, body } => {
+            let mut generator_locals = locals.clone();
+            if let Some(p) = parameter {
+                collect_pattern_names(&p.pattern, &mut generator_locals);
+                p.ty = rewrite_type(&p.ty, ctx.rename_map, ctx.module_aliases, ctx.type_params);
+            }
+            rewrite_statements(body, ctx, &mut generator_locals);
+        }
+        ExprKind::Yield(value) => rewrite_expr(value, ctx, locals),
         ExprKind::Closure {
             parameters,
             return_type,

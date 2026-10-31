@@ -329,6 +329,14 @@ impl Desugarer {
                 self.statements(&mut body);
                 ast::ExprKind::UnsafeBlock(body)
             }
+            ast::ExprKind::Generator {
+                parameter,
+                mut body,
+            } => {
+                self.statements(&mut body);
+                ast::ExprKind::Generator { parameter, body }
+            }
+            ast::ExprKind::Yield(value) => ast::ExprKind::Yield(Box::new(self.expr(*value))),
             ast::ExprKind::Closure {
                 mut parameters,
                 return_type,

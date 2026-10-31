@@ -1816,10 +1816,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let captured_slots: Vec<(String, Slot)> = captures
                     .iter()
                     .map(|cap| {
-                        let slot = self.lookup_var(&cap.name);
-                        (cap.name.clone(), slot)
+                        let slot = self.eval_place(&cap.place)?;
+                        Ok((cap.name.clone(), slot))
                     })
-                    .collect();
+                    .collect::<Eval<_>>()?;
                 Value::Function {
                     name: synthetic_fn.clone(),
                     captures: captured_slots,

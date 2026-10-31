@@ -679,6 +679,7 @@ fn statement_has_block(statement: &Statement) -> bool {
             kind: ExprKind::Block(_)
                 | ExprKind::If { .. }
                 | ExprKind::Loop(_)
+                | ExprKind::Generator { .. }
                 | ExprKind::Closure { .. },
             ..
         })
@@ -993,6 +994,21 @@ fn expr_doc(expression: &Expr, context: &SourceContext<'_>) -> Doc {
             Doc::text("unsafe "),
             block_doc(body, expression.span, context),
         ]),
+        ExprKind::Generator { parameter, body } => Doc::concat([
+            Doc::text("generator"),
+            parameter.as_ref().map_or(Doc::Nil, |p| {
+                Doc::concat([
+                    Doc::text(" ("),
+                    destructure_doc(&p.pattern),
+                    Doc::text(": "),
+                    type_doc(&p.ty),
+                    Doc::text(")"),
+                ])
+            }),
+            Doc::text(" "),
+            block_doc(body, expression.span, context),
+        ]),
+        ExprKind::Yield(value) => Doc::concat([Doc::text("yield "), expr_doc(value, context)]),
         ExprKind::Closure {
             parameters,
             return_type,
@@ -1133,6 +1149,7 @@ fn expression_is_huggable_block(expression: &Expr) -> bool {
     match &expression.kind {
         ExprKind::Block(_)
         | ExprKind::UnsafeBlock(_)
+        | ExprKind::Generator { .. }
         | ExprKind::Closure { .. }
         | ExprKind::ArrayLiteral(..)
         | ExprKind::TupleLiteral(_) => true,

@@ -8,6 +8,35 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 #[test]
+fn generators() {
+    assert_eq!(run(&fixture("generators.solar"), "generators"), "passed\n");
+}
+
+#[test]
+fn generators_release() {
+    assert_eq!(
+        test_utils::run_release_file(&fixture("generators.solar"), "generators"),
+        "passed\n"
+    );
+}
+
+#[test]
+fn generator_control() {
+    assert_eq!(
+        run(&fixture("generator_control.solar"), "generator_control"),
+        "passed\n"
+    );
+}
+
+#[test]
+fn generator_control_release() {
+    assert_eq!(
+        test_utils::run_release_file(&fixture("generator_control.solar"), "generator_control"),
+        "passed\n"
+    );
+}
+
+#[test]
 fn stdlib_format() {
     assert_eq!(
         run(&fixture("stdlib_format.solar"), "stdlib_format"),

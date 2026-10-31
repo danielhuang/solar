@@ -1338,6 +1338,17 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Result<Expr, ParseErro
             let body_node = required_field(node, "body")?;
             ExprKind::Loop(convert_block(body_node, source)?)
         }
+        "generator_expression" => ExprKind::Generator {
+            parameter: node
+                .child_by_field_name("parameter")
+                .map(|p| convert_closure_parameter(p, source).map(Box::new))
+                .transpose()?,
+            body: convert_block(required_field(node, "body")?, source)?,
+        },
+        "yield_expression" => ExprKind::Yield(Box::new(convert_expr(
+            required_field(node, "value")?,
+            source,
+        )?)),
         "closure_expr" => {
             let mut parameters = Vec::new();
             if let Some(param_list) = named_child_by_kind(node, "closure_param_list") {
