@@ -443,6 +443,95 @@ fn unsupported_literal_escapes_return_parse_errors() {
 }
 
 #[test]
+fn non_byte_characters_return_located_errors_from_nested_converters() {
+    for source in [
+        "fn f() {\n    let x = 'é';\n}",
+        "const X = 'é';",
+        "static X = 'é';",
+        "fn f(x = 'é') {}",
+        "fn f() { fn nested() { 'é' } }",
+        "fn f() { [1; 'é'] }",
+        "fn f() { call(named = 'é'); }",
+        "fn f() { \\x: Int { 'é' } }",
+        "fn f() { match 1 { 1 => 'é' } }",
+        "fn f() { if true { 0 } else { 'é' } }",
+        "fn f() { try { 0; } catch (e) { 'é'; } }",
+    ] {
+        let errors = solar::parser::parse(source).unwrap_err();
+        assert_eq!(errors.len(), 1, "{source}: {errors:?}");
+        let error = &errors[0];
+        assert_eq!(
+            error.message, "character literal must be a single byte",
+            "{source}"
+        );
+        let prefix = &source[..source.find("'é'").unwrap()];
+        assert_eq!(
+            error.line,
+            prefix.bytes().filter(|&b| b == b'\n').count(),
+            "{source}"
+        );
+        assert_eq!(
+            error.column,
+            prefix.len() - prefix.rfind('\n').map_or(0, |at| at + 1),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn literal_errors_use_byte_columns_and_handle_multiline_strings() {
+    for source in [
+        "fn f() {\n    \"é\\q\";\n}",
+        "fn f() {\n    \"line one\n😀\\q\";\n}",
+        "import x from \"bad\\q\";",
+        "fn f() { match.reflect Int { \"bad\\q\" => 0 } }",
+    ] {
+        let errors = solar::parser::parse(source).unwrap_err();
+        assert_eq!(errors.len(), 1, "{source}: {errors:?}");
+        assert_eq!(errors[0].message, "unknown escape sequence: \\q");
+        let prefix = &source[..source.find("\\q").unwrap()];
+        assert_eq!(
+            errors[0].line,
+            prefix.bytes().filter(|&b| b == b'\n').count(),
+            "{source}"
+        );
+        assert_eq!(
+            errors[0].column,
+            prefix.len() - prefix.rfind('\n').map_or(0, |at| at + 1),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn null_and_array_annotations_require_one_type_argument() {
+    for source in ["fn f() { null#[Int, Bool] }", "fn f() { []#[Int, Bool] }"] {
+        let errors = solar::parser::parse(source).unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].message, "expected exactly one type argument");
+        assert_eq!(
+            (errors[0].line, errors[0].column),
+            (0, source.find("#[").unwrap())
+        );
+    }
+    assert!(solar::parser::parse("fn f() { null#[Int]; []#[Int]; }").is_ok());
+}
+
+#[test]
+fn incomplete_source_returns_results_without_panicking() {
+    for source in [
+        "pub struct Pair#[T] { pub value: T }",
+        "fn f(x = \"é\\n\") { try { g(x); } catch (e) { 'é'; } }",
+        "fn f() { [null#[Int], null#[Int]]; match x { E::V(y) => y, _ => 0 } }",
+        "fn f() { for i in 0..10 { let (a, b) = (i, i); } \\x: Int -> Int { x } }",
+    ] {
+        for (end, _) in source.char_indices() {
+            let _ = solar::parser::parse(&source[..end]);
+        }
+    }
+}
+
+#[test]
 fn tuple_literal_span() {
     let ast = parse("fn f() {\n    (1, 2)\n}");
     let func = match &ast.items[0] {

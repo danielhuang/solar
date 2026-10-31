@@ -147,6 +147,35 @@ fn compilation_errors_are_reported_by_each_command() {
 }
 
 #[test]
+fn ast_conversion_errors_are_reported_by_each_command() {
+    let directory = tempdir::TempDir::new("solar-cli-test").unwrap();
+    let source = directory.path().join("invalid.solar");
+    let original = "fn main() {\n    'é';\n}\n";
+    std::fs::write(&source, original).unwrap();
+    for command in ["check", "compile", "run", "dump", "fmt"] {
+        let mut cli = solar();
+        cli.arg(command).arg(&source);
+        if command == "compile" {
+            cli.arg(directory.path().join("program"));
+        } else if command == "dump" {
+            cli.args(["--stage", "ast"]);
+        }
+        let output = cli.output().unwrap();
+        assert_eq!(output.status.code(), Some(1), "{command}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("invalid.solar"), "{command}: {stderr}");
+        assert!(
+            stderr.contains("character literal must be a single byte"),
+            "{command}: {stderr}"
+        );
+        assert!(!stderr.contains("panicked"), "{command}: {stderr}");
+        assert!(output.stdout.is_empty(), "{command}: {output:?}");
+    }
+    assert_eq!(std::fs::read_to_string(&source).unwrap(), original);
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+}
+
+#[test]
 fn fmt_handles_multiple_files_and_validates_before_writing() {
     let directory = tempdir::TempDir::new("solar-cli-test").unwrap();
     let first = directory.path().join("first.solar");

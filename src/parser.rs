@@ -12,72 +12,68 @@ pub struct ParseError {
     pub message: String,
 }
 
+impl ParseError {
+    fn at(node: tree_sitter::Node, message: impl Into<String>) -> Self {
+        let start = node.start_position();
+        Self {
+            line: start.row,
+            column: start.column,
+            message: message.into(),
+        }
+    }
+
+    fn in_literal(
+        node: tree_sitter::Node,
+        source: &str,
+        offset: usize,
+        message: impl Into<String>,
+    ) -> Self {
+        let prefix = &source[..node.start_byte() + offset];
+        Self {
+            line: prefix.bytes().filter(|&byte| byte == b'\n').count(),
+            column: prefix.len() - prefix.rfind('\n').map_or(0, |newline| newline + 1),
+            message: message.into(),
+        }
+    }
+}
+
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}: {}", self.line + 1, self.column + 1, self.message)
     }
 }
 
-/// Parses a Solar source file.
+/// Parses a Solar source file, returning located syntax and AST-conversion errors.
 pub fn parse(source: &str) -> Result<SourceFile, Vec<ParseError>> {
     let mut parser = tree_sitter::Parser::new();
     parser
         .set_language(&tree_sitter_solar::LANGUAGE.into())
-        .expect("failed to set tree-sitter language");
+        .map_err(|error| {
+            vec![ParseError {
+                line: 0,
+                column: 0,
+                message: format!("failed to set tree-sitter language: {error}"),
+            }]
+        })?;
 
-    let tree = parser
-        .parse(source, None)
-        .expect("tree-sitter parse failed");
+    let tree = parser.parse(source, None).ok_or_else(|| {
+        vec![ParseError {
+            line: 0,
+            column: 0,
+            message: "tree-sitter parse failed".to_string(),
+        }]
+    })?;
     let root = tree.root_node();
 
     let mut errors = Vec::new();
     collect_errors(root, source, &mut errors);
     collect_visibility_errors(root, source, &mut errors);
-    collect_literal_escape_errors(root, source, &mut errors);
 
     if !errors.is_empty() {
         return Err(errors);
     }
 
-    let source_file = convert_source_file(root, source);
-    Ok(source_file)
-}
-
-fn collect_literal_escape_errors(
-    node: tree_sitter::Node,
-    source: &str,
-    errors: &mut Vec<ParseError>,
-) {
-    if matches!(node.kind(), "string_literal" | "char_literal") {
-        let text = node_text(node, source);
-        if let Some(inner) = text.get(1..text.len().saturating_sub(1)) {
-            let start = node.start_position();
-            let mut chars = inner.char_indices();
-            while let Some((offset, ch)) = chars.next() {
-                if ch != '\\' {
-                    continue;
-                }
-                match chars.next() {
-                    Some((_, '\\' | '"' | '\'' | 'n' | 'r' | 't' | '0')) => {}
-                    Some((_, other)) => errors.push(ParseError {
-                        line: start.row,
-                        column: start.column + offset + 1,
-                        message: format!("unknown escape sequence: \\{other}"),
-                    }),
-                    None => errors.push(ParseError {
-                        line: start.row,
-                        column: start.column + offset + 1,
-                        message: "unexpected end of string escape".to_string(),
-                    }),
-                }
-            }
-        }
-    }
-
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_literal_escape_errors(child, source, errors);
-    }
+    convert_source_file(root, source).map_err(|error| vec![error])
 }
 
 fn collect_visibility_errors(node: tree_sitter::Node, source: &str, errors: &mut Vec<ParseError>) {
@@ -152,8 +148,8 @@ fn collect_errors(node: tree_sitter::Node, source: &str, errors: &mut Vec<ParseE
 }
 
 fn has_pub_keyword(node: tree_sitter::Node, source: &str) -> bool {
-    for i in 0..node.child_count() {
-        let child = node.child(i).unwrap();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
         if !child.is_named() && node_text(child, source) == "pub" {
             return true;
         }
@@ -163,6 +159,35 @@ fn has_pub_keyword(node: tree_sitter::Node, source: &str) -> bool {
 
 fn node_text<'a>(node: tree_sitter::Node, source: &'a str) -> &'a str {
     &source[node.byte_range()]
+}
+
+fn required_field<'a>(
+    node: tree_sitter::Node<'a>,
+    name: &str,
+) -> Result<tree_sitter::Node<'a>, ParseError> {
+    node.child_by_field_name(name)
+        .ok_or_else(|| ParseError::at(node, format!("missing {name} in {}", node.kind())))
+}
+
+fn required_named_child<'a>(
+    node: tree_sitter::Node<'a>,
+    kind: &str,
+) -> Result<tree_sitter::Node<'a>, ParseError> {
+    named_child_by_kind(node, kind)
+        .ok_or_else(|| ParseError::at(node, format!("missing {kind} in {}", node.kind())))
+}
+
+fn first_code_child(node: tree_sitter::Node) -> Result<tree_sitter::Node, ParseError> {
+    code_children(node)
+        .into_iter()
+        .next()
+        .ok_or_else(|| ParseError::at(node, format!("expected a child in {}", node.kind())))
+}
+
+fn literal_contents<'a>(node: tree_sitter::Node, source: &'a str) -> Result<&'a str, ParseError> {
+    let text = node_text(node, source);
+    text.get(1..text.len().saturating_sub(1))
+        .ok_or_else(|| ParseError::at(node, "expected a quoted literal"))
 }
 
 /// Gather the `///` doc comment attached to `node`: the run of consecutive
@@ -206,38 +231,41 @@ fn source_span(node: tree_sitter::Node) -> SourceSpan {
     }
 }
 
-fn convert_source_file(node: tree_sitter::Node, source: &str) -> SourceFile {
+fn convert_source_file(node: tree_sitter::Node, source: &str) -> Result<SourceFile, ParseError> {
     let mut items = Vec::new();
     for child in code_children(node) {
         match child.kind() {
-            "struct_def" => items.push(TopLevelItem::Struct(convert_struct_def(child, source))),
+            "struct_def" => items.push(TopLevelItem::Struct(convert_struct_def(child, source)?)),
             "function_def" => {
-                items.push(TopLevelItem::Function(convert_function_def(child, source)))
+                items.push(TopLevelItem::Function(convert_function_def(child, source)?))
             }
-            "enum_def" => items.push(TopLevelItem::Enum(convert_enum_def(child, source))),
-            "method_def" => items.push(TopLevelItem::Method(convert_function_def(child, source))),
+            "enum_def" => items.push(TopLevelItem::Enum(convert_enum_def(child, source)?)),
+            "method_def" => items.push(TopLevelItem::Method(convert_function_def(child, source)?)),
             "import_statement" => items.push(TopLevelItem::Import(convert_import_statement(
                 child, source,
-            ))),
+            )?)),
             "type_alias_def" => items.push(TopLevelItem::TypeAlias(convert_type_alias_def(
                 child, source,
-            ))),
-            "const_def" => items.push(TopLevelItem::Const(convert_const_def(child, source))),
-            "static_def" => items.push(TopLevelItem::Static(convert_static_def(child, source))),
+            )?)),
+            "const_def" => items.push(TopLevelItem::Const(convert_const_def(child, source)?)),
+            "static_def" => items.push(TopLevelItem::Static(convert_static_def(child, source)?)),
             _ => {}
         }
     }
-    SourceFile { items }
+    Ok(SourceFile { items })
 }
 
-fn convert_import_statement(node: tree_sitter::Node, source: &str) -> ImportDef {
+fn convert_import_statement(
+    node: tree_sitter::Node,
+    source: &str,
+) -> Result<ImportDef, ParseError> {
     let is_pub = has_pub_keyword(node, source);
     let span = source_span(node);
 
     // Find the string literal for the path
-    let string_node = named_child_by_kind(node, "string_literal").unwrap();
-    let path_text = node_text(string_node, source);
-    let path = path_text[1..path_text.len() - 1].to_string(); // strip quotes
+    let string_node = required_named_child(node, "string_literal")?;
+    unescape_string(string_node, source)?;
+    let path = literal_contents(string_node, source)?.to_string();
 
     // Determine import kind
     let kind = if let Some(module_name) = node.child_by_field_name("module_name") {
@@ -262,12 +290,12 @@ fn convert_import_statement(node: tree_sitter::Node, source: &str) -> ImportDef 
         ImportKind::Wildcard
     };
 
-    ImportDef {
+    Ok(ImportDef {
         kind,
         path,
         is_pub,
         span,
-    }
+    })
 }
 
 fn convert_type_params(node: tree_sitter::Node, source: &str) -> Vec<String> {
@@ -283,30 +311,40 @@ fn convert_type_params(node: tree_sitter::Node, source: &str) -> Vec<String> {
 fn convert_function_type_params(
     node: tree_sitter::Node,
     source: &str,
-) -> (Vec<String>, Vec<String>) {
+) -> Result<(Vec<String>, Vec<String>), ParseError> {
     let mut inferred = Vec::new();
     let mut output = Vec::new();
     for child in code_children(node) {
         match child.kind() {
             "identifier" => inferred.push(node_text(child, source).to_string()),
-            "out_type_param" => output
-                .push(node_text(child.child_by_field_name("name").unwrap(), source).to_string()),
+            "out_type_param" => {
+                output.push(node_text(required_field(child, "name")?, source).to_string())
+            }
             _ => {}
         }
     }
-    (inferred, output)
+    Ok((inferred, output))
 }
 
-fn convert_type_args(node: tree_sitter::Node, source: &str) -> Vec<Type> {
+fn convert_type_args(node: tree_sitter::Node, source: &str) -> Result<Vec<Type>, ParseError> {
     let mut args = Vec::new();
     for child in code_children(node) {
-        args.push(convert_type(child, source));
+        args.push(convert_type(child, source)?);
     }
-    args
+    Ok(args)
 }
 
-fn convert_struct_def(node: tree_sitter::Node, source: &str) -> StructDef {
-    let name = node_text(node.child_by_field_name("name").unwrap(), source).to_string();
+fn convert_single_type_arg(node: tree_sitter::Node, source: &str) -> Result<Type, ParseError> {
+    let mut args = convert_type_args(node, source)?;
+    if args.len() != 1 {
+        return Err(ParseError::at(node, "expected exactly one type argument"));
+    }
+    args.pop()
+        .ok_or_else(|| ParseError::at(node, "expected a type argument"))
+}
+
+fn convert_struct_def(node: tree_sitter::Node, source: &str) -> Result<StructDef, ParseError> {
+    let name = node_text(required_field(node, "name")?, source).to_string();
     let is_pub = has_pub_keyword(node, source);
     let type_params = node
         .child_by_field_name("type_params")
@@ -316,7 +354,7 @@ fn convert_struct_def(node: tree_sitter::Node, source: &str) -> StructDef {
     if let Some(field_list) = named_child_by_kind(node, "field_list") {
         for child in code_children(field_list) {
             if child.kind() == "field_def" {
-                fields.push(convert_field_def(child, source));
+                fields.push(convert_field_def(child, source)?);
             }
         }
     } else if let Some(tuple_body) = named_child_by_kind(node, "tuple_struct_body")
@@ -324,18 +362,20 @@ fn convert_struct_def(node: tree_sitter::Node, source: &str) -> StructDef {
     {
         {
             for (index, child) in code_children(field_list).into_iter().enumerate() {
-                debug_assert_eq!(child.kind(), "tuple_struct_field");
+                if child.kind() != "tuple_struct_field" {
+                    return Err(ParseError::at(child, "expected a tuple struct field"));
+                }
                 let is_field_pub = has_pub_keyword(child, source);
                 fields.push(FieldDef {
                     name: index.to_string(),
-                    ty: convert_type(child.child_by_field_name("type").unwrap(), source),
+                    ty: convert_type(required_field(child, "type")?, source)?,
                     is_pub: is_field_pub,
                     span: source_span(child),
                 });
             }
         }
     }
-    StructDef {
+    Ok(StructDef {
         def_id: DefId::new(0, name.clone()),
         name,
         type_params,
@@ -350,40 +390,36 @@ fn convert_struct_def(node: tree_sitter::Node, source: &str) -> StructDef {
         is_pub,
         doc: leading_doc(node, source),
         span: source_span(node),
-    }
+    })
 }
 
-fn convert_const_def(node: tree_sitter::Node, source: &str) -> ConstDef {
-    let name = node_text(node.child_by_field_name("name").unwrap(), source).to_string();
+fn convert_const_def(node: tree_sitter::Node, source: &str) -> Result<ConstDef, ParseError> {
+    let name = node_text(required_field(node, "name")?, source).to_string();
     let is_pub = has_pub_keyword(node, source);
     let ty = node
         .child_by_field_name("type")
-        .map(|n| convert_type(n, source));
-    let value = Box::new(convert_expr(
-        node.child_by_field_name("value").unwrap(),
-        source,
-    ));
-    ConstDef {
+        .map(|n| convert_type(n, source))
+        .transpose()?;
+    let value = Box::new(convert_expr(required_field(node, "value")?, source)?);
+    Ok(ConstDef {
         name,
         ty,
         value,
         is_pub,
         doc: leading_doc(node, source),
         span: source_span(node),
-    }
+    })
 }
 
-fn convert_static_def(node: tree_sitter::Node, source: &str) -> StaticDef {
-    let name = node_text(node.child_by_field_name("name").unwrap(), source).to_string();
+fn convert_static_def(node: tree_sitter::Node, source: &str) -> Result<StaticDef, ParseError> {
+    let name = node_text(required_field(node, "name")?, source).to_string();
     let is_pub = has_pub_keyword(node, source);
     let ty = node
         .child_by_field_name("type")
-        .map(|n| convert_type(n, source));
-    let value = Box::new(convert_expr(
-        node.child_by_field_name("value").unwrap(),
-        source,
-    ));
-    StaticDef {
+        .map(|n| convert_type(n, source))
+        .transpose()?;
+    let value = Box::new(convert_expr(required_field(node, "value")?, source)?);
+    Ok(StaticDef {
         name,
         ty,
         value,
@@ -391,29 +427,32 @@ fn convert_static_def(node: tree_sitter::Node, source: &str) -> StaticDef {
         is_pub,
         doc: leading_doc(node, source),
         span: source_span(node),
-    }
+    })
 }
 
-fn convert_type_alias_def(node: tree_sitter::Node, source: &str) -> TypeAliasDef {
-    let name = node_text(node.child_by_field_name("name").unwrap(), source).to_string();
+fn convert_type_alias_def(
+    node: tree_sitter::Node,
+    source: &str,
+) -> Result<TypeAliasDef, ParseError> {
+    let name = node_text(required_field(node, "name")?, source).to_string();
     let is_pub = has_pub_keyword(node, source);
     let type_params = node
         .child_by_field_name("type_params")
         .map(|n| convert_type_params(n, source))
         .unwrap_or_default();
-    let target_type = convert_type(node.child_by_field_name("target_type").unwrap(), source);
-    TypeAliasDef {
+    let target_type = convert_type(required_field(node, "target_type")?, source)?;
+    Ok(TypeAliasDef {
         name,
         type_params,
         target_type,
         is_pub,
         doc: leading_doc(node, source),
         span: source_span(node),
-    }
+    })
 }
 
-fn convert_enum_def(node: tree_sitter::Node, source: &str) -> EnumDef {
-    let name = node_text(node.child_by_field_name("name").unwrap(), source).to_string();
+fn convert_enum_def(node: tree_sitter::Node, source: &str) -> Result<EnumDef, ParseError> {
+    let name = node_text(required_field(node, "name")?, source).to_string();
     let is_pub = has_pub_keyword(node, source);
     let type_params = node
         .child_by_field_name("type_params")
@@ -423,11 +462,11 @@ fn convert_enum_def(node: tree_sitter::Node, source: &str) -> EnumDef {
     if let Some(variant_list) = named_child_by_kind(node, "variant_list") {
         for child in code_children(variant_list) {
             if child.kind() == "variant_def" {
-                let vname =
-                    node_text(child.child_by_field_name("name").unwrap(), source).to_string();
+                let vname = node_text(required_field(child, "name")?, source).to_string();
                 let inner_type = child
                     .child_by_field_name("inner_type")
-                    .map(|n| convert_type(n, source));
+                    .map(|n| convert_type(n, source))
+                    .transpose()?;
                 variants.push(VariantDef {
                     name: vname,
                     inner_type,
@@ -436,7 +475,7 @@ fn convert_enum_def(node: tree_sitter::Node, source: &str) -> EnumDef {
             }
         }
     }
-    EnumDef {
+    Ok(EnumDef {
         def_id: DefId::new(0, name.clone()),
         name,
         type_params,
@@ -444,29 +483,30 @@ fn convert_enum_def(node: tree_sitter::Node, source: &str) -> EnumDef {
         is_pub,
         doc: leading_doc(node, source),
         span: source_span(node),
-    }
+    })
 }
 
-fn convert_field_def(node: tree_sitter::Node, source: &str) -> FieldDef {
-    let name = node_text(node.child_by_field_name("name").unwrap(), source).to_string();
-    let ty = convert_type(node.child_by_field_name("type").unwrap(), source);
+fn convert_field_def(node: tree_sitter::Node, source: &str) -> Result<FieldDef, ParseError> {
+    let name = node_text(required_field(node, "name")?, source).to_string();
+    let ty = convert_type(required_field(node, "type")?, source)?;
     let is_pub = has_pub_keyword(node, source);
-    FieldDef {
+    Ok(FieldDef {
         name,
         ty,
         is_pub,
         span: source_span(node),
-    }
+    })
 }
 
-fn convert_function_def(node: tree_sitter::Node, source: &str) -> FunctionDef {
+fn convert_function_def(node: tree_sitter::Node, source: &str) -> Result<FunctionDef, ParseError> {
     let name = node
         .child_by_field_name("name")
         .map(|name| node_text(name, source).to_string())
         .unwrap_or_default();
     let associated_type = node
         .child_by_field_name("associated_type")
-        .map(|owner| convert_type(owner, source));
+        .map(|owner| convert_type(owner, source))
+        .transpose()?;
     let associated_type_params = node
         .child_by_field_name("associated_type_params")
         .map(|params| convert_type_params(params, source))
@@ -476,28 +516,31 @@ fn convert_function_def(node: tree_sitter::Node, source: &str) -> FunctionDef {
     let (type_params, out_type_params) = node
         .child_by_field_name("type_params")
         .map(|n| convert_function_type_params(n, source))
+        .transpose()?
         .unwrap_or_default();
 
     let mut parameters = Vec::new();
     if let Some(param_list) = named_child_by_kind(node, "parameter_list") {
         for child in code_children(param_list) {
             if child.kind() == "parameter" {
-                parameters.push(convert_parameter(child, source));
+                parameters.push(convert_parameter(child, source)?);
             }
         }
     }
 
     let return_type_node = node.child_by_field_name("return_type");
-    let return_type = return_type_node.map(|n| convert_type(n, source));
+    let return_type = return_type_node
+        .map(|n| convert_type(n, source))
+        .transpose()?;
     let return_type_span = return_type_node.map(source_span);
 
-    let body_node = node.child_by_field_name("body").unwrap();
-    let body = convert_block(body_node, source);
+    let body_node = required_field(node, "body")?;
+    let body = convert_block(body_node, source)?;
 
     // `fn(inline)` / `method(inline)`
     let inline_hint = node.child_by_field_name("attr").is_some();
 
-    FunctionDef {
+    Ok(FunctionDef {
         associated_type_params,
         associated_type,
         display_name: name.clone(),
@@ -513,42 +556,41 @@ fn convert_function_def(node: tree_sitter::Node, source: &str) -> FunctionDef {
         inline_hint,
         doc: leading_doc(node, source),
         span: source_span(node),
-    }
+    })
 }
 
-fn convert_parameter(node: tree_sitter::Node, source: &str) -> Parameter {
-    let pattern_node = node.child_by_field_name("pattern").unwrap();
-    let pattern = convert_destructure_pattern(pattern_node, source);
+fn convert_parameter(node: tree_sitter::Node, source: &str) -> Result<Parameter, ParseError> {
+    let pattern_node = required_field(node, "pattern")?;
+    let pattern = convert_destructure_pattern(pattern_node, source)?;
     // An explicit type is present unless this is the inferred-type keyword form
     // (`name = default`).
     let ty = match node.child_by_field_name("type") {
-        Some(type_node) => convert_type(type_node, source),
+        Some(type_node) => convert_type(type_node, source)?,
         None => Type::Infer,
     };
     let default = node
         .child_by_field_name("default")
-        .map(|n| Box::new(convert_expr(n, source)));
-    Parameter {
+        .map(|n| convert_expr(n, source).map(Box::new))
+        .transpose()?;
+    Ok(Parameter {
         pattern,
         ty,
         default,
         span: source_span(node),
-    }
+    })
 }
 
-fn convert_try_statement(node: tree_sitter::Node, source: &str) -> Statement {
+fn convert_try_statement(node: tree_sitter::Node, source: &str) -> Result<Statement, ParseError> {
     let span = source_span(node);
-    let body = convert_block(node.child_by_field_name("body").unwrap(), source);
-    let handler = convert_block(node.child_by_field_name("handler").unwrap(), source);
-    let binding = Ident::user(node_text(
-        node.child_by_field_name("binding").unwrap(),
-        source,
-    ));
+    let body = convert_block(required_field(node, "body")?, source)?;
+    let handler = convert_block(required_field(node, "handler")?, source)?;
+    let binding = Ident::user(node_text(required_field(node, "binding")?, source));
     let binding_type = node
         .child_by_field_name("binding_type")
-        .map(|ty| convert_type(ty, source));
+        .map(|ty| convert_type(ty, source))
+        .transpose()?;
 
-    Statement {
+    Ok(Statement {
         kind: StatementKind::Try {
             body,
             binding,
@@ -556,26 +598,31 @@ fn convert_try_statement(node: tree_sitter::Node, source: &str) -> Statement {
             handler,
         },
         span,
-    }
+    })
 }
 
-fn convert_closure_parameter(node: tree_sitter::Node, source: &str) -> Parameter {
-    let name = node_text(node.child_by_field_name("name").unwrap(), source).to_string();
+fn convert_closure_parameter(
+    node: tree_sitter::Node,
+    source: &str,
+) -> Result<Parameter, ParseError> {
+    let name = node_text(required_field(node, "name")?, source).to_string();
     let ty = match node.child_by_field_name("type") {
-        Some(type_node) => convert_type(type_node, source),
+        Some(type_node) => convert_type(type_node, source)?,
         None => Type::Infer,
     };
-    Parameter {
+    Ok(Parameter {
         pattern: DestructurePattern::Name(Ident::user(name)),
         ty,
         default: None,
         span: source_span(node),
-    }
+    })
 }
+
+type Arguments = (Vec<Expr>, Vec<(String, Expr)>);
 
 /// Convert an `argument_list` node into positional arguments and keyword
 /// arguments (`name = value`).
-fn convert_arguments(node: tree_sitter::Node, source: &str) -> (Vec<Expr>, Vec<(String, Expr)>) {
+fn convert_arguments(node: tree_sitter::Node, source: &str) -> Result<Arguments, ParseError> {
     let mut positional = Vec::new();
     let mut kwargs = Vec::new();
     if let Some(arg_list) = named_child_by_kind(node, "argument_list") {
@@ -583,7 +630,7 @@ fn convert_arguments(node: tree_sitter::Node, source: &str) -> (Vec<Expr>, Vec<(
             if arg.kind() != "argument" {
                 continue;
             }
-            let value = convert_expr(arg.child_by_field_name("value").unwrap(), source);
+            let value = convert_expr(required_field(arg, "value")?, source)?;
             match arg.child_by_field_name("name") {
                 Some(name_node) => {
                     kwargs.push((node_text(name_node, source).to_string(), value));
@@ -592,16 +639,19 @@ fn convert_arguments(node: tree_sitter::Node, source: &str) -> (Vec<Expr>, Vec<(
             }
         }
     }
-    (positional, kwargs)
+    Ok((positional, kwargs))
 }
 
-fn convert_destructure_pattern(node: tree_sitter::Node, source: &str) -> DestructurePattern {
-    match node.kind() {
+fn convert_destructure_pattern(
+    node: tree_sitter::Node,
+    source: &str,
+) -> Result<DestructurePattern, ParseError> {
+    Ok(match node.kind() {
         "identifier" => DestructurePattern::Name(Ident::user(node_text(node, source))),
         "tuple_pattern" => {
             let mut elements = Vec::new();
             for child in code_children(node) {
-                elements.push(convert_destructure_pattern(child, source));
+                elements.push(convert_destructure_pattern(child, source)?);
             }
             DestructurePattern::Tuple(elements)
         }
@@ -609,11 +659,11 @@ fn convert_destructure_pattern(node: tree_sitter::Node, source: &str) -> Destruc
             let module = node
                 .child_by_field_name("module")
                 .map(|n| node_text(n, source).to_string());
-            let name = node_text(node.child_by_field_name("name").unwrap(), source).to_string();
+            let name = node_text(required_field(node, "name")?, source).to_string();
             let mut fields = Vec::new();
             for child in code_children(node) {
                 if child.kind() == "struct_pattern_field" {
-                    fields.push(convert_struct_pattern_field(child, source));
+                    fields.push(convert_struct_pattern_field(child, source)?);
                 }
             }
             DestructurePattern::Struct {
@@ -625,63 +675,72 @@ fn convert_destructure_pattern(node: tree_sitter::Node, source: &str) -> Destruc
         "array_pattern" => {
             let mut elements = Vec::new();
             for child in code_children(node) {
-                elements.push(convert_destructure_pattern(child, source));
+                elements.push(convert_destructure_pattern(child, source)?);
             }
             DestructurePattern::Array(elements)
         }
-        other => panic!("unexpected destructure pattern node kind: {other}"),
-    }
+        other => {
+            return Err(ParseError::at(
+                node,
+                format!("unexpected destructure pattern node kind: {other}"),
+            ));
+        }
+    })
 }
 
-fn convert_struct_pattern_field(node: tree_sitter::Node, source: &str) -> DestructureField {
-    let field_name = node_text(node.child_by_field_name("field_name").unwrap(), source).to_string();
+fn convert_struct_pattern_field(
+    node: tree_sitter::Node,
+    source: &str,
+) -> Result<DestructureField, ParseError> {
+    let field_name = node_text(required_field(node, "field_name")?, source).to_string();
     let pattern = if let Some(pat_node) = node.child_by_field_name("pattern") {
-        convert_destructure_pattern(pat_node, source)
+        convert_destructure_pattern(pat_node, source)?
     } else {
         // Shorthand: `field_name` binds to same name
         DestructurePattern::Name(Ident::user(field_name.clone()))
     };
-    DestructureField {
+    Ok(DestructureField {
         field_name,
         pattern,
-    }
+    })
 }
 
-fn convert_block(node: tree_sitter::Node, source: &str) -> Vec<Statement> {
+fn convert_block(node: tree_sitter::Node, source: &str) -> Result<Vec<Statement>, ParseError> {
     let mut stmts = Vec::new();
     for child in code_children(node) {
         match child.kind() {
-            "let_statement" => stmts.push(convert_let_statement(child, source)),
-            "assignment_statement" => stmts.push(convert_assignment_statement(child, source)),
-            "expression_statement" => stmts.push(convert_expression_statement(child, source)),
+            "let_statement" => stmts.push(convert_let_statement(child, source)?),
+            "assignment_statement" => stmts.push(convert_assignment_statement(child, source)?),
+            "expression_statement" => stmts.push(convert_expression_statement(child, source)?),
             "unsafe_block_statement" => {
-                let unsafe_block = named_child_by_kind(child, "unsafe_block").unwrap();
+                let unsafe_block = required_named_child(child, "unsafe_block")?;
                 stmts.push(Statement {
-                    kind: StatementKind::Expression(convert_expr(unsafe_block, source)),
+                    kind: StatementKind::Expression(convert_expr(unsafe_block, source)?),
                     span: source_span(child),
                 });
             }
-            "if_statement" => stmts.push(convert_if_statement(child, source)),
-            "while_statement" => stmts.push(convert_while_statement(child, source)),
-            "for_statement" => stmts.push(convert_for_statement(child, source)),
+            "if_statement" => stmts.push(convert_if_statement(child, source)?),
+            "while_statement" => stmts.push(convert_while_statement(child, source)?),
+            "for_statement" => stmts.push(convert_for_statement(child, source)?),
             "reflect_fields_statement" => {
-                stmts.push(convert_reflect_fields_statement(child, source, false))
+                stmts.push(convert_reflect_fields_statement(child, source, false)?)
             }
             "reflect_fields_pair_statement" => {
-                stmts.push(convert_reflect_fields_statement(child, source, true))
+                stmts.push(convert_reflect_fields_statement(child, source, true)?)
             }
             "reflect_variant_statement" => {
-                stmts.push(convert_reflect_variant_statement(child, source, false))
+                stmts.push(convert_reflect_variant_statement(child, source, false)?)
             }
             "reflect_variant_pair_statement" => {
-                stmts.push(convert_reflect_variant_statement(child, source, true))
+                stmts.push(convert_reflect_variant_statement(child, source, true)?)
             }
-            "return_statement" => stmts.push(convert_return_statement(child, source)),
+            "return_statement" => stmts.push(convert_return_statement(child, source)?),
             "break_statement" => stmts.push(Statement {
                 kind: StatementKind::Break(
                     child
                         .child_by_field_name("value")
-                        .map(|n| convert_expr(n, source)),
+                        .map(|n| convert_expr(n, source))
+                        .transpose()?,
                 ),
                 span: source_span(child),
             }),
@@ -689,18 +748,18 @@ fn convert_block(node: tree_sitter::Node, source: &str) -> Vec<Statement> {
                 kind: StatementKind::Continue,
                 span: source_span(child),
             }),
-            "try_statement" => stmts.push(convert_try_statement(child, source)),
+            "try_statement" => stmts.push(convert_try_statement(child, source)?),
             "function_def" => {
                 let span = source_span(child);
                 stmts.push(Statement {
-                    kind: StatementKind::NestedFunction(convert_function_def(child, source)),
+                    kind: StatementKind::NestedFunction(convert_function_def(child, source)?),
                     span,
                 });
             }
             "const_def" => {
                 let span = source_span(child);
                 stmts.push(Statement {
-                    kind: StatementKind::Const(convert_const_def(child, source)),
+                    kind: StatementKind::Const(convert_const_def(child, source)?),
                     span,
                 });
             }
@@ -711,7 +770,7 @@ fn convert_block(node: tree_sitter::Node, source: &str) -> Vec<Statement> {
     if let Some(tail) = node.child_by_field_name("tail") {
         let span = source_span(tail);
         stmts.push(Statement {
-            kind: StatementKind::Expression(convert_expr(tail, source)),
+            kind: StatementKind::Expression(convert_expr(tail, source)?),
             span,
         });
     } else {
@@ -727,115 +786,122 @@ fn convert_block(node: tree_sitter::Node, source: &str) -> Vec<Statement> {
             span,
         });
     }
-    stmts
+    Ok(stmts)
 }
 
-fn convert_let_statement(node: tree_sitter::Node, source: &str) -> Statement {
+fn convert_let_statement(node: tree_sitter::Node, source: &str) -> Result<Statement, ParseError> {
     let span = source_span(node);
-    let pattern_node = node.child_by_field_name("pattern").unwrap();
-    let pattern = convert_destructure_pattern(pattern_node, source);
+    let pattern_node = required_field(node, "pattern")?;
+    let pattern = convert_destructure_pattern(pattern_node, source)?;
     let ty = node
         .child_by_field_name("type")
-        .map(|n| convert_type(n, source));
-    let value = convert_expr(node.child_by_field_name("value").unwrap(), source);
-    Statement {
+        .map(|n| convert_type(n, source))
+        .transpose()?;
+    let value = convert_expr(required_field(node, "value")?, source)?;
+    Ok(Statement {
         kind: StatementKind::Let { pattern, ty, value },
         span,
-    }
+    })
 }
 
-fn convert_assignment_statement(node: tree_sitter::Node, source: &str) -> Statement {
+fn convert_assignment_statement(
+    node: tree_sitter::Node,
+    source: &str,
+) -> Result<Statement, ParseError> {
     let span = source_span(node);
-    let target = convert_expr(node.child_by_field_name("target").unwrap(), source);
-    let value = convert_expr(node.child_by_field_name("value").unwrap(), source);
-    Statement {
+    let target = convert_expr(required_field(node, "target")?, source)?;
+    let value = convert_expr(required_field(node, "value")?, source)?;
+    Ok(Statement {
         kind: StatementKind::Assignment { target, value },
         span,
-    }
+    })
 }
 
-fn convert_if_statement(node: tree_sitter::Node, source: &str) -> Statement {
+fn convert_if_statement(node: tree_sitter::Node, source: &str) -> Result<Statement, ParseError> {
     let span = source_span(node);
-    let condition = convert_expr(node.child_by_field_name("condition").unwrap(), source);
-    let body_node = node.child_by_field_name("body").unwrap();
-    let body = convert_block(body_node, source);
+    let condition = convert_expr(required_field(node, "condition")?, source)?;
+    let body_node = required_field(node, "body")?;
+    let body = convert_block(body_node, source)?;
     let else_body = if let Some(else_node) = node.child_by_field_name("else_body") {
         match else_node.kind() {
-            "block" => convert_block(else_node, source),
-            "if_statement" => vec![convert_if_statement(else_node, source)],
-            _ => panic!("unexpected else_body kind: {}", else_node.kind()),
+            "block" => convert_block(else_node, source)?,
+            "if_statement" => vec![convert_if_statement(else_node, source)?],
+            _ => {
+                return Err(ParseError::at(
+                    node,
+                    format!("unexpected else_body kind: {}", else_node.kind()),
+                ));
+            }
         }
     } else {
         Vec::new()
     };
-    Statement {
+    Ok(Statement {
         kind: StatementKind::If {
             condition,
             body,
             else_body,
         },
         span,
-    }
+    })
 }
 
-fn convert_while_statement(node: tree_sitter::Node, source: &str) -> Statement {
+fn convert_while_statement(node: tree_sitter::Node, source: &str) -> Result<Statement, ParseError> {
     let span = source_span(node);
-    let condition = convert_expr(node.child_by_field_name("condition").unwrap(), source);
-    let body_node = node.child_by_field_name("body").unwrap();
-    let body = convert_block(body_node, source);
-    Statement {
+    let condition = convert_expr(required_field(node, "condition")?, source)?;
+    let body_node = required_field(node, "body")?;
+    let body = convert_block(body_node, source)?;
+    Ok(Statement {
         kind: StatementKind::While { condition, body },
         span,
-    }
+    })
 }
 
-fn convert_for_statement(node: tree_sitter::Node, source: &str) -> Statement {
+fn convert_for_statement(node: tree_sitter::Node, source: &str) -> Result<Statement, ParseError> {
     let span = source_span(node);
-    let variable = Ident::user(node_text(
-        node.child_by_field_name("variable").unwrap(),
-        source,
-    ));
-    let body_node = node.child_by_field_name("body").unwrap();
-    let body = convert_block(body_node, source);
+    let variable = Ident::user(node_text(required_field(node, "variable")?, source));
+    let body_node = required_field(node, "body")?;
+    let body = convert_block(body_node, source)?;
 
-    if let Some(start_node) = node.child_by_field_name("start") {
-        // Range form: for i in start..end { ... }
-        let start = convert_expr(start_node, source);
-        let end = convert_expr(node.child_by_field_name("end").unwrap(), source);
-        Statement {
-            kind: StatementKind::ForRange {
-                variable,
-                start,
-                end,
-                body,
-            },
-            span,
-        }
-    } else {
-        // Iterable form: for x in list { ... }
-        let iterable = convert_expr(node.child_by_field_name("iterable").unwrap(), source);
-        Statement {
-            kind: StatementKind::ForIn {
-                variable,
-                iterable,
-                body,
-            },
-            span,
-        }
-    }
+    Ok(
+        if let Some(start_node) = node.child_by_field_name("start") {
+            // Range form: for i in start..end { ... }
+            let start = convert_expr(start_node, source)?;
+            let end = convert_expr(required_field(node, "end")?, source)?;
+            Statement {
+                kind: StatementKind::ForRange {
+                    variable,
+                    start,
+                    end,
+                    body,
+                },
+                span,
+            }
+        } else {
+            // Iterable form: for x in list { ... }
+            let iterable = convert_expr(required_field(node, "iterable")?, source)?;
+            Statement {
+                kind: StatementKind::ForIn {
+                    variable,
+                    iterable,
+                    body,
+                },
+                span,
+            }
+        },
+    )
 }
 
 fn convert_reflect_fields_statement(
     node: tree_sitter::Node,
     source: &str,
     paired: bool,
-) -> Statement {
+) -> Result<Statement, ParseError> {
     let span = source_span(node);
-    let pattern =
-        convert_destructure_pattern(node.child_by_field_name("variable").unwrap(), source);
-    let object = convert_expr(node.child_by_field_name("object").unwrap(), source);
-    let body = convert_block(node.child_by_field_name("body").unwrap(), source);
-    Statement {
+    let pattern = convert_destructure_pattern(required_field(node, "variable")?, source)?;
+    let object = convert_expr(required_field(node, "object")?, source)?;
+    let body = convert_block(required_field(node, "body")?, source)?;
+    Ok(Statement {
         kind: StatementKind::ForReflectFields {
             pattern,
             object,
@@ -843,19 +909,19 @@ fn convert_reflect_fields_statement(
             paired,
         },
         span,
-    }
+    })
 }
 
 fn convert_reflect_variant_statement(
     node: tree_sitter::Node,
     source: &str,
     paired: bool,
-) -> Statement {
+) -> Result<Statement, ParseError> {
     let span = source_span(node);
-    let pattern = convert_destructure_pattern(node.child_by_field_name("pattern").unwrap(), source);
-    let object = convert_expr(node.child_by_field_name("object").unwrap(), source);
-    let body = convert_block(node.child_by_field_name("body").unwrap(), source);
-    Statement {
+    let pattern = convert_destructure_pattern(required_field(node, "pattern")?, source)?;
+    let object = convert_expr(required_field(node, "object")?, source)?;
+    let body = convert_block(required_field(node, "body")?, source)?;
+    Ok(Statement {
         kind: StatementKind::MatchReflectVariant {
             pattern,
             object,
@@ -863,63 +929,74 @@ fn convert_reflect_variant_statement(
             paired,
         },
         span,
-    }
+    })
 }
 
-fn convert_expression_statement(node: tree_sitter::Node, source: &str) -> Statement {
+fn convert_expression_statement(
+    node: tree_sitter::Node,
+    source: &str,
+) -> Result<Statement, ParseError> {
     let span = source_span(node);
-    let expr_node = code_children(node).into_iter().next().unwrap();
-    Statement {
-        kind: StatementKind::Expression(convert_expr(expr_node, source)),
+    let expr_node = first_code_child(node)?;
+    Ok(Statement {
+        kind: StatementKind::Expression(convert_expr(expr_node, source)?),
         span,
-    }
+    })
 }
 
-fn convert_return_statement(node: tree_sitter::Node, source: &str) -> Statement {
+fn convert_return_statement(
+    node: tree_sitter::Node,
+    source: &str,
+) -> Result<Statement, ParseError> {
     let span = source_span(node);
     let value = node.child_by_field_name("value").map_or_else(
         || {
             let mut value_span = span;
             value_span.start = value_span.end;
-            Expr {
+            Ok(Expr {
                 kind: ExprKind::TupleLiteral(Vec::new()),
                 span: value_span,
-            }
+            })
         },
         |value| convert_expr(value, source),
-    );
+    )?;
     let kind = StatementKind::Return(value);
-    Statement { kind, span }
+    Ok(Statement { kind, span })
 }
 
-fn convert_if_expression(node: tree_sitter::Node, source: &str) -> Expr {
+fn convert_if_expression(node: tree_sitter::Node, source: &str) -> Result<Expr, ParseError> {
     let span = source_span(node);
-    let condition = convert_expr(node.child_by_field_name("condition").unwrap(), source);
-    let then_body_node = node.child_by_field_name("then_body").unwrap();
-    let then_body = convert_block(then_body_node, source);
-    let else_node = node.child_by_field_name("else_body").unwrap();
+    let condition = convert_expr(required_field(node, "condition")?, source)?;
+    let then_body_node = required_field(node, "then_body")?;
+    let then_body = convert_block(then_body_node, source)?;
+    let else_node = required_field(node, "else_body")?;
     let else_body = match else_node.kind() {
-        "block" => convert_block(else_node, source),
+        "block" => convert_block(else_node, source)?,
         "if_expression" => {
             let else_span = source_span(else_node);
             vec![Statement {
-                kind: StatementKind::Expression(convert_if_expression(else_node, source)),
+                kind: StatementKind::Expression(convert_if_expression(else_node, source)?),
                 span: else_span,
             }]
         }
-        _ => panic!("unexpected else_body kind: {}", else_node.kind()),
+        _ => {
+            return Err(ParseError::at(
+                node,
+                format!("unexpected else_body kind: {}", else_node.kind()),
+            ));
+        }
     };
-    Expr {
+    Ok(Expr {
         kind: ExprKind::If {
             condition: Box::new(condition),
             then_body,
             else_body,
         },
         span,
-    }
+    })
 }
 
-fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
+fn convert_expr(node: tree_sitter::Node, source: &str) -> Result<Expr, ParseError> {
     let span = source_span(node);
     let kind = match node.kind() {
         "identifier" => ExprKind::Identifier(Ident::user(node_text(node, source))),
@@ -938,40 +1015,38 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                 (n, FloatType::Float32)
             } else if let Some(n) = text.strip_suffix("f64") {
                 (n, FloatType::Float64)
+            } else if let Some(n) = text.strip_suffix('f') {
+                (n, FloatType::Float64)
             } else {
-                (text.strip_suffix('f').unwrap(), FloatType::Float64)
+                return Err(ParseError::at(node, "expected a floating-point suffix"));
             };
             // Parse f32 literals in f32 precision (then widen exactly) so the
             // value is correctly rounded once, not double-rounded through f64.
             let value = match float_ty {
-                FloatType::Float32 => num_str.parse::<f32>().unwrap() as f64,
-                FloatType::Float64 => num_str.parse::<f64>().unwrap(),
-            };
+                FloatType::Float32 => num_str.parse::<f32>().map(f64::from),
+                FloatType::Float64 => num_str.parse::<f64>(),
+            }
+            .map_err(|error| ParseError::at(node, format!("invalid float literal: {error}")))?;
             ExprKind::FloatLiteral(value, float_ty)
         }
         "boolean_literal" => {
             let text = node_text(node, source);
             ExprKind::BooleanLiteral(text == "true")
         }
-        "string_literal" => {
-            let text = node_text(node, source);
-            let inner = &text[1..text.len() - 1]; // strip quotes
-            let bytes = unescape_string(inner);
-            ExprKind::StringLiteral(bytes)
-        }
+        "string_literal" => ExprKind::StringLiteral(unescape_string(node, source)?),
         "char_literal" => {
-            let text = node_text(node, source);
-            let inner = &text[1..text.len() - 1]; // strip single quotes
-            let bytes = unescape_string(inner);
-            assert!(
-                bytes.len() == 1,
-                "character literal must be a single byte, got {inner:?}"
-            );
-            ExprKind::CharLiteral(bytes[0])
+            let bytes = unescape_string(node, source)?;
+            let [byte] = bytes.as_slice() else {
+                return Err(ParseError::at(
+                    node,
+                    "character literal must be a single byte",
+                ));
+            };
+            ExprKind::CharLiteral(*byte)
         }
         "field_access" => {
-            let object = convert_expr(node.child_by_field_name("object").unwrap(), source);
-            let field_node = node.child_by_field_name("field").unwrap();
+            let object = convert_expr(required_field(node, "object")?, source)?;
+            let field_node = required_field(node, "field")?;
             let field = node_text(field_node, source).to_string();
             ExprKind::FieldAccess {
                 object: Box::new(object),
@@ -979,25 +1054,24 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             }
         }
         "deref_expr" => {
-            let operand = convert_expr(node.child_by_field_name("operand").unwrap(), source);
+            let operand = convert_expr(required_field(node, "operand")?, source)?;
             ExprKind::Deref(Box::new(operand))
         }
         "reference_expr" => {
-            let operand = convert_expr(node.child_by_field_name("operand").unwrap(), source);
+            let operand = convert_expr(required_field(node, "operand")?, source)?;
             ExprKind::Reference(Box::new(operand))
         }
         "unique_expr" => {
-            let operand = convert_expr(node.child_by_field_name("operand").unwrap(), source);
+            let operand = convert_expr(required_field(node, "operand")?, source)?;
             ExprKind::Unique(Box::new(operand))
         }
-        "null_expr" => {
-            let type_args =
-                convert_type_args(node.child_by_field_name("type_args").unwrap(), source);
-            ExprKind::NullLiteral(type_args.into_iter().next().unwrap())
-        }
+        "null_expr" => ExprKind::NullLiteral(convert_single_type_arg(
+            required_field(node, "type_args")?,
+            source,
+        )?),
         "call_expr" => {
-            let func_node = node.child_by_field_name("function").unwrap();
-            let (arguments, kwargs) = convert_arguments(node, source);
+            let func_node = required_field(node, "function")?;
+            let (arguments, kwargs) = convert_arguments(node, source)?;
             // a.b(c) parses as call_expr(field_access(a, b), [c])
             // Convert to MethodCall when the callee is a field_access with an identifier field
             // (not a numeric field like .0 from tuple access)
@@ -1013,7 +1087,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                 // A direct call through a referenced function is parenthesized
                 // (`(f&)(x)`), so this unparenthesized CST shape is the binary
                 // expression the source spelling denotes.
-                let left = convert_expr(func_node.child_by_field_name("operand").unwrap(), source);
+                let left = convert_expr(required_field(func_node, "operand")?, source)?;
                 ExprKind::BinaryOp {
                     op: if func_node.kind() == "reference_expr" {
                         BinOp::BitAnd
@@ -1021,15 +1095,18 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                         BinOp::BitXor
                     },
                     left: Box::new(left),
-                    right: Box::new(arguments.into_iter().next().unwrap()),
+                    right: Box::new(
+                        arguments
+                            .into_iter()
+                            .next()
+                            .ok_or_else(|| ParseError::at(node, "expected a binary operand"))?,
+                    ),
                 }
             } else if func_node.kind() == "field_access"
-                && func_node.child_by_field_name("field").unwrap().kind() == "identifier"
+                && required_field(func_node, "field")?.kind() == "identifier"
             {
-                let receiver =
-                    convert_expr(func_node.child_by_field_name("object").unwrap(), source);
-                let method =
-                    node_text(func_node.child_by_field_name("field").unwrap(), source).to_string();
+                let receiver = convert_expr(required_field(func_node, "object")?, source)?;
+                let method = node_text(required_field(func_node, "field")?, source).to_string();
                 ExprKind::MethodCall {
                     receiver: Box::new(receiver),
                     method,
@@ -1042,17 +1119,21 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                 let mut segments: Vec<(String, Vec<Type>)> = Vec::new();
                 for child in code_children(func_node) {
                     if child.kind() == "path_segment" {
-                        let name = node_text(child.child_by_field_name("name").unwrap(), source)
-                            .to_string();
+                        let name = node_text(required_field(child, "name")?, source).to_string();
                         let ta = child
                             .child_by_field_name("type_args")
                             .map(|n| convert_type_args(n, source))
+                            .transpose()?
                             .unwrap_or_default();
                         segments.push((name, ta));
                     }
                 }
-                let (last_name, last_type_args) = segments.pop().unwrap();
-                let (enum_name, enum_type_args) = segments.pop().unwrap();
+                let (last_name, last_type_args) = segments.pop().ok_or_else(|| {
+                    ParseError::at(node, "expected a qualified path with at least two segments")
+                })?;
+                let (enum_name, enum_type_args) = segments.pop().ok_or_else(|| {
+                    ParseError::at(node, "expected a qualified path with at least two segments")
+                })?;
                 let module_path: Vec<String> = segments.into_iter().map(|(n, _)| n).collect();
                 let function = Expr {
                     kind: ExprKind::EnumVariant {
@@ -1070,7 +1151,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                     kwargs,
                 }
             } else {
-                let function = convert_expr(func_node, source);
+                let function = convert_expr(func_node, source)?;
                 ExprKind::Call {
                     function: Box::new(function),
                     type_args: Vec::new(),
@@ -1080,13 +1161,14 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             }
         }
         "generic_call_expr" => {
-            let function_node = node.child_by_field_name("function").unwrap();
+            let function_node = required_field(node, "function")?;
             let name = node_text(function_node, source).to_string();
             let type_args = node
                 .child_by_field_name("type_args")
                 .map(|n| convert_type_args(n, source))
+                .transpose()?
                 .unwrap_or_default();
-            let (arguments, kwargs) = convert_arguments(node, source);
+            let (arguments, kwargs) = convert_arguments(node, source)?;
             ExprKind::Call {
                 function: Box::new(Expr {
                     kind: ExprKind::Identifier(Ident::user(name)),
@@ -1101,19 +1183,18 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             let module = node
                 .child_by_field_name("module")
                 .map(|n| node_text(n, source).to_string());
-            let name = node_text(node.child_by_field_name("name").unwrap(), source).to_string();
+            let name = node_text(required_field(node, "name")?, source).to_string();
             let type_args = node
                 .child_by_field_name("type_args")
                 .map(|n| convert_type_args(n, source))
+                .transpose()?
                 .unwrap_or_default();
             let mut fields = Vec::new();
             if let Some(init_list) = named_child_by_kind(node, "field_init_list") {
                 for child in code_children(init_list) {
                     if child.kind() == "field_init" {
-                        let fname = node_text(child.child_by_field_name("name").unwrap(), source)
-                            .to_string();
-                        let value =
-                            convert_expr(child.child_by_field_name("value").unwrap(), source);
+                        let fname = node_text(required_field(child, "name")?, source).to_string();
+                        let value = convert_expr(required_field(child, "value")?, source)?;
                         fields.push(FieldInit { name: fname, value });
                     }
                 }
@@ -1126,17 +1207,17 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             }
         }
         "index_expr" => {
-            let object = convert_expr(node.child_by_field_name("object").unwrap(), source);
-            let index = convert_expr(node.child_by_field_name("index").unwrap(), source);
+            let object = convert_expr(required_field(node, "object")?, source)?;
+            let index = convert_expr(required_field(node, "index")?, source)?;
             ExprKind::Index {
                 object: Box::new(object),
                 index: Box::new(index),
             }
         }
         "slice_expr" => {
-            let object = convert_expr(node.child_by_field_name("object").unwrap(), source);
-            let start = convert_expr(node.child_by_field_name("start").unwrap(), source);
-            let end = convert_expr(node.child_by_field_name("end").unwrap(), source);
+            let object = convert_expr(required_field(node, "object")?, source)?;
+            let start = convert_expr(required_field(node, "start")?, source)?;
+            let end = convert_expr(required_field(node, "end")?, source)?;
             ExprKind::Slice {
                 object: Box::new(object),
                 start: Box::new(start),
@@ -1147,30 +1228,31 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             let mut elements = Vec::new();
             if let Some(elem_list) = named_child_by_kind(node, "element_list") {
                 for child in code_children(elem_list) {
-                    elements.push(convert_expr(child, source));
+                    elements.push(convert_expr(child, source)?);
                 }
             }
             let elem_ty = node
                 .child_by_field_name("type_args")
-                .map(|ta| convert_type_args(ta, source).into_iter().next().unwrap());
+                .map(|ta| convert_single_type_arg(ta, source))
+                .transpose()?;
             ExprKind::ArrayLiteral(elements, elem_ty)
         }
         "array_repeat" => {
-            let element = convert_expr(node.child_by_field_name("element").unwrap(), source);
-            let count = convert_expr(node.child_by_field_name("count").unwrap(), source);
+            let element = convert_expr(required_field(node, "element")?, source)?;
+            let count = convert_expr(required_field(node, "count")?, source)?;
             ExprKind::ArrayRepeat {
                 element: Box::new(element),
                 count: Box::new(count),
             }
         }
         "parenthesized_expression" => {
-            let inner = code_children(node).into_iter().next().unwrap();
+            let inner = first_code_child(node)?;
             return convert_expr(inner, source);
         }
         "tuple_literal" => {
             let mut elements = Vec::new();
             for child in code_children(node) {
-                elements.push(convert_expr(child, source));
+                elements.push(convert_expr(child, source)?);
             }
             ExprKind::TupleLiteral(elements)
         }
@@ -1180,18 +1262,22 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             let mut segments: Vec<(String, Vec<Type>)> = Vec::new();
             for child in code_children(node) {
                 if child.kind() == "path_segment" {
-                    let name =
-                        node_text(child.child_by_field_name("name").unwrap(), source).to_string();
+                    let name = node_text(required_field(child, "name")?, source).to_string();
                     let type_args = child
                         .child_by_field_name("type_args")
                         .map(|n| convert_type_args(n, source))
+                        .transpose()?
                         .unwrap_or_default();
                     segments.push((name, type_args));
                 }
             }
             // Last segment = variant_name, second-to-last = enum_name, rest = module path
-            let (variant_name, _) = segments.pop().unwrap();
-            let (enum_name, type_args) = segments.pop().unwrap();
+            let (variant_name, _) = segments.pop().ok_or_else(|| {
+                ParseError::at(node, "expected a qualified path with at least two segments")
+            })?;
+            let (enum_name, type_args) = segments.pop().ok_or_else(|| {
+                ParseError::at(node, "expected a qualified path with at least two segments")
+            })?;
             let module_path: Vec<String> = segments.into_iter().map(|(n, _)| n).collect();
             ExprKind::EnumVariant {
                 module_path,
@@ -1201,12 +1287,12 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             }
         }
         "match_expression" => {
-            let scrutinee = convert_expr(node.child_by_field_name("scrutinee").unwrap(), source);
+            let scrutinee = convert_expr(required_field(node, "scrutinee")?, source)?;
             let mut arms = Vec::new();
             if let Some(arm_list) = named_child_by_kind(node, "match_arm_list") {
                 for child in code_children(arm_list) {
                     if child.kind() == "match_arm" {
-                        arms.push(convert_match_arm(child, source));
+                        arms.push(convert_match_arm(child, source)?);
                     }
                 }
             }
@@ -1216,25 +1302,26 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             }
         }
         "reflect_match_expression" => {
-            let ty = convert_type(node.child_by_field_name("type").unwrap(), source);
+            let ty = convert_type(required_field(node, "type")?, source)?;
             let mut arms = Vec::new();
             if let Some(arm_list) = named_child_by_kind(node, "reflect_match_arm_list") {
                 for child in code_children(arm_list) {
                     if child.kind() == "reflect_match_arm" {
-                        arms.push(convert_reflect_arm(child, source));
+                        arms.push(convert_reflect_arm(child, source)?);
                     }
                 }
             }
             ExprKind::MatchReflect { ty, arms }
         }
         "generic_method_call" => {
-            let receiver = convert_expr(node.child_by_field_name("receiver").unwrap(), source);
-            let method = node_text(node.child_by_field_name("method").unwrap(), source).to_string();
+            let receiver = convert_expr(required_field(node, "receiver")?, source)?;
+            let method = node_text(required_field(node, "method")?, source).to_string();
             let type_args = node
                 .child_by_field_name("type_args")
                 .map(|n| convert_type_args(n, source))
+                .transpose()?
                 .unwrap_or_default();
-            let (arguments, kwargs) = convert_arguments(node, source);
+            let (arguments, kwargs) = convert_arguments(node, source)?;
             ExprKind::MethodCall {
                 receiver: Box::new(receiver),
                 method,
@@ -1243,28 +1330,28 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                 kwargs,
             }
         }
-        "block" => ExprKind::Block(convert_block(node, source)),
-        "unsafe_block" => ExprKind::UnsafeBlock(convert_block(
-            node.child_by_field_name("body").unwrap(),
-            source,
-        )),
+        "block" => ExprKind::Block(convert_block(node, source)?),
+        "unsafe_block" => {
+            ExprKind::UnsafeBlock(convert_block(required_field(node, "body")?, source)?)
+        }
         "loop_expression" => {
-            let body_node = node.child_by_field_name("body").unwrap();
-            ExprKind::Loop(convert_block(body_node, source))
+            let body_node = required_field(node, "body")?;
+            ExprKind::Loop(convert_block(body_node, source)?)
         }
         "closure_expr" => {
             let mut parameters = Vec::new();
             if let Some(param_list) = named_child_by_kind(node, "closure_param_list") {
                 for child in code_children(param_list) {
                     if child.kind() == "closure_param" {
-                        parameters.push(convert_closure_parameter(child, source));
+                        parameters.push(convert_closure_parameter(child, source)?);
                     }
                 }
             }
             let return_type = node
                 .child_by_field_name("return_type")
-                .map(|n| convert_type(n, source));
-            let body_node = node.child_by_field_name("body").unwrap();
+                .map(|n| convert_type(n, source))
+                .transpose()?;
+            let body_node = required_field(node, "body")?;
             // `\ f(x)` has two valid CST interpretations: a zero-parameter
             // closure whose body calls `f`, or a one-parameter closure named
             // `f` whose body is the parenthesized expression `x`. Tree-sitter's
@@ -1280,14 +1367,16 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                     "parenthesized_expression" | "tuple_literal"
                 );
             let body = if ambiguous_call {
-                let parameter = parameters.pop().unwrap();
+                let parameter = parameters
+                    .pop()
+                    .ok_or_else(|| ParseError::at(node, "expected a closure parameter"))?;
                 let DestructurePattern::Name(function) = parameter.pattern else {
-                    unreachable!("closure parameters are names");
+                    return Err(ParseError::at(node, "expected a named closure parameter"));
                 };
                 let arguments = code_children(body_node)
                     .into_iter()
                     .map(|argument| convert_expr(argument, source))
-                    .collect();
+                    .collect::<Result<_, _>>()?;
                 vec![Statement {
                     kind: StatementKind::Expression(Expr {
                         kind: ExprKind::Call {
@@ -1304,11 +1393,11 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                     span: source_span(body_node),
                 }]
             } else if body_node.kind() == "block" {
-                convert_block(body_node, source)
+                convert_block(body_node, source)?
             } else {
                 let body_span = source_span(body_node);
                 vec![Statement {
-                    kind: StatementKind::Expression(convert_expr(body_node, source)),
+                    kind: StatementKind::Expression(convert_expr(body_node, source)?),
                     span: body_span,
                 }]
             };
@@ -1319,9 +1408,9 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             }
         }
         "binary_expression" => {
-            let left = convert_expr(node.child_by_field_name("left").unwrap(), source);
-            let right = convert_expr(node.child_by_field_name("right").unwrap(), source);
-            let op_node = node.child_by_field_name("operator").unwrap();
+            let left = convert_expr(required_field(node, "left")?, source)?;
+            let right = convert_expr(required_field(node, "right")?, source)?;
+            let op_node = required_field(node, "operator")?;
             let op = match node_text(op_node, source) {
                 "+" => BinOp::Add,
                 "-" => BinOp::Sub,
@@ -1344,7 +1433,12 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
                 "++" => BinOp::WrapAdd,
                 "--" => BinOp::WrapSub,
                 "**" => BinOp::WrapMul,
-                other => panic!("unexpected operator: {other}"),
+                other => {
+                    return Err(ParseError::at(
+                        node,
+                        format!("unexpected operator: {other}"),
+                    ));
+                }
             };
             ExprKind::BinaryOp {
                 op,
@@ -1353,62 +1447,68 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Expr {
             }
         }
         "not_expression" => {
-            let operand = convert_expr(node.child_by_field_name("operand").unwrap(), source);
+            let operand = convert_expr(required_field(node, "operand")?, source)?;
             ExprKind::Not(Box::new(operand))
         }
-        other => panic!("unexpected expression node kind: {other}"),
+        other => {
+            return Err(ParseError::at(
+                node,
+                format!("unexpected expression node kind: {other}"),
+            ));
+        }
     };
-    Expr { kind, span }
+    Ok(Expr { kind, span })
 }
 
-fn convert_match_arm(node: tree_sitter::Node, source: &str) -> MatchArm {
-    let pattern = convert_pattern(node.child_by_field_name("pattern").unwrap(), source);
-    let body = convert_expr(node.child_by_field_name("body").unwrap(), source);
-    MatchArm { pattern, body }
+fn convert_match_arm(node: tree_sitter::Node, source: &str) -> Result<MatchArm, ParseError> {
+    let pattern = convert_pattern(required_field(node, "pattern")?, source)?;
+    let body = convert_expr(required_field(node, "body")?, source)?;
+    Ok(MatchArm { pattern, body })
 }
 
-fn convert_reflect_arm(node: tree_sitter::Node, source: &str) -> ReflectArm {
-    let pattern_node = node.child_by_field_name("pattern").unwrap();
+fn convert_reflect_arm(node: tree_sitter::Node, source: &str) -> Result<ReflectArm, ParseError> {
+    let pattern_node = required_field(node, "pattern")?;
     // String literal patterns are special-cased: they stay strings instead of
     // desugaring to byte array literals like string literal expressions do.
     let pattern = if pattern_node.kind() == "string_literal" {
-        let text = node_text(pattern_node, source);
-        ReflectPattern::Kind(text[1..text.len() - 1].to_string())
+        unescape_string(pattern_node, source)?;
+        ReflectPattern::Kind(literal_contents(pattern_node, source)?.to_string())
     } else {
         ReflectPattern::Wildcard
     };
-    let body = convert_expr(node.child_by_field_name("body").unwrap(), source);
-    ReflectArm { pattern, body }
+    let body = convert_expr(required_field(node, "body")?, source)?;
+    Ok(ReflectArm { pattern, body })
 }
 
-fn convert_pattern(node: tree_sitter::Node, source: &str) -> Pattern {
-    match node.kind() {
+fn convert_pattern(node: tree_sitter::Node, source: &str) -> Result<Pattern, ParseError> {
+    Ok(match node.kind() {
         "match_pattern" => {
             // Wrapper node — unwrap to the actual pattern child
-            let child = code_children(node).into_iter().next().unwrap();
-            convert_pattern(child, source)
+            let child = first_code_child(node)?;
+            convert_pattern(child, source)?
         }
         "variant_pattern" => {
             // Collect all path_segment children
             let mut segments: Vec<(String, Vec<Type>)> = Vec::new();
             for child in code_children(node) {
                 if child.kind() == "path_segment" {
-                    let name =
-                        node_text(child.child_by_field_name("name").unwrap(), source).to_string();
+                    let name = node_text(required_field(child, "name")?, source).to_string();
                     let type_args = child
                         .child_by_field_name("type_args")
                         .map(|n| convert_type_args(n, source))
+                        .transpose()?
                         .unwrap_or_default();
                     segments.push((name, type_args));
                 }
             }
-            let (variant_name, _) = segments.pop().unwrap();
-            let (enum_name, type_args) = segments.pop().unwrap();
+            let (variant_name, _) = segments.pop().ok_or_else(|| {
+                ParseError::at(node, "expected a qualified path with at least two segments")
+            })?;
+            let (enum_name, type_args) = segments.pop().ok_or_else(|| {
+                ParseError::at(node, "expected a qualified path with at least two segments")
+            })?;
             let module_path: Vec<String> = segments.into_iter().map(|(n, _)| n).collect();
-            let binding = Ident::user(node_text(
-                node.child_by_field_name("binding").unwrap(),
-                source,
-            ));
+            let binding = Ident::user(node_text(required_field(node, "binding")?, source));
             Pattern::Variant {
                 module_path,
                 enum_name: DefId::new(0, enum_name),
@@ -1421,17 +1521,21 @@ fn convert_pattern(node: tree_sitter::Node, source: &str) -> Pattern {
             let mut segments: Vec<(String, Vec<Type>)> = Vec::new();
             for child in code_children(node) {
                 if child.kind() == "path_segment" {
-                    let name =
-                        node_text(child.child_by_field_name("name").unwrap(), source).to_string();
+                    let name = node_text(required_field(child, "name")?, source).to_string();
                     let type_args = child
                         .child_by_field_name("type_args")
                         .map(|n| convert_type_args(n, source))
+                        .transpose()?
                         .unwrap_or_default();
                     segments.push((name, type_args));
                 }
             }
-            let (variant_name, _) = segments.pop().unwrap();
-            let (enum_name, type_args) = segments.pop().unwrap();
+            let (variant_name, _) = segments.pop().ok_or_else(|| {
+                ParseError::at(node, "expected a qualified path with at least two segments")
+            })?;
+            let (enum_name, type_args) = segments.pop().ok_or_else(|| {
+                ParseError::at(node, "expected a qualified path with at least two segments")
+            })?;
             let module_path: Vec<String> = segments.into_iter().map(|(n, _)| n).collect();
             Pattern::Variant {
                 module_path,
@@ -1442,7 +1546,7 @@ fn convert_pattern(node: tree_sitter::Node, source: &str) -> Pattern {
             }
         }
         "wildcard_pattern" => {
-            let name = node_text(node.child_by_field_name("name").unwrap(), source);
+            let name = node_text(required_field(node, "name")?, source);
             Pattern::Wildcard(Ident::user(name))
         }
         "integer_literal" => {
@@ -1450,17 +1554,22 @@ fn convert_pattern(node: tree_sitter::Node, source: &str) -> Pattern {
             let (num_str, int_ty) = parse_integer_suffix(text);
             Pattern::IntegerLiteral(parse_integer_value(num_str), int_ty)
         }
-        other => panic!("unexpected pattern node kind: {other}"),
-    }
+        other => {
+            return Err(ParseError::at(
+                node,
+                format!("unexpected pattern node kind: {other}"),
+            ));
+        }
+    })
 }
 
-fn convert_type(node: tree_sitter::Node, source: &str) -> Type {
-    match node.kind() {
+fn convert_type(node: tree_sitter::Node, source: &str) -> Result<Type, ParseError> {
+    Ok(match node.kind() {
         "named_type" => {
-            let ident = code_children(node).into_iter().next().unwrap();
+            let ident = first_code_child(node)?;
             let name = node_text(ident, source).to_string();
             if let Some(ta_node) = node.child_by_field_name("type_args") {
-                let type_args = convert_type_args(ta_node, source);
+                let type_args = convert_type_args(ta_node, source)?;
                 Type::Generic {
                     name: DefId::new(0, name),
                     type_args,
@@ -1470,11 +1579,11 @@ fn convert_type(node: tree_sitter::Node, source: &str) -> Type {
             }
         }
         "qualified_type" => {
-            let module = node_text(node.child_by_field_name("module").unwrap(), source);
-            let name = node_text(node.child_by_field_name("name").unwrap(), source);
+            let module = node_text(required_field(node, "module")?, source);
+            let name = node_text(required_field(node, "name")?, source);
             // Encode qualified type as "module::Name" — resolve stage will rewrite
             if let Some(ta_node) = node.child_by_field_name("type_args") {
-                let type_args = convert_type_args(ta_node, source);
+                let type_args = convert_type_args(ta_node, source)?;
                 Type::Generic {
                     name: DefId::new(0, format!("{module}::{name}")),
                     type_args,
@@ -1484,24 +1593,24 @@ fn convert_type(node: tree_sitter::Node, source: &str) -> Type {
             }
         }
         "reference_type" => {
-            let inner = convert_type(node.child_by_field_name("inner").unwrap(), source);
+            let inner = convert_type(required_field(node, "inner")?, source)?;
             Type::Reference(Box::new(inner))
         }
         "nullable_reference_type" => {
-            let inner = convert_type(node.child_by_field_name("inner").unwrap(), source);
+            let inner = convert_type(required_field(node, "inner")?, source)?;
             Type::NullableReference(Box::new(inner))
         }
         "unique_type" => {
-            let inner = convert_type(node.child_by_field_name("inner").unwrap(), source);
+            let inner = convert_type(required_field(node, "inner")?, source)?;
             Type::Unique(Box::new(inner))
         }
         "slice_type" => {
-            let element = convert_type(node.child_by_field_name("element").unwrap(), source);
+            let element = convert_type(required_field(node, "element")?, source)?;
             Type::Slice(Box::new(element))
         }
         "fixed_array_type" => {
-            let element = convert_type(node.child_by_field_name("element").unwrap(), source);
-            let size_text = node_text(node.child_by_field_name("size").unwrap(), source);
+            let element = convert_type(required_field(node, "element")?, source)?;
+            let size_text = node_text(required_field(node, "size")?, source);
             // The array size literal may carry a suffix and a radix prefix.
             let (num_str, _) = parse_integer_suffix(size_text);
             let size = parse_integer_value(num_str) as u64;
@@ -1510,7 +1619,7 @@ fn convert_type(node: tree_sitter::Node, source: &str) -> Type {
         "tuple_type" => {
             let mut types = Vec::new();
             for child in code_children(node) {
-                types.push(convert_type(child, source));
+                types.push(convert_type(child, source)?);
             }
             Type::Tuple(types)
         }
@@ -1522,21 +1631,27 @@ fn convert_type(node: tree_sitter::Node, source: &str) -> Type {
                         let name = child
                             .child_by_field_name("name")
                             .map(|n| node_text(n, source).to_string());
-                        let ty = convert_type(child.child_by_field_name("type").unwrap(), source);
+                        let ty = convert_type(required_field(child, "type")?, source)?;
                         params.push((name, ty));
                     }
                 }
             }
             let return_type = node
                 .child_by_field_name("return_type")
-                .map(|n| Box::new(convert_type(n, source)));
+                .map(|n| convert_type(n, source).map(Box::new))
+                .transpose()?;
             Type::Function {
                 params,
                 return_type,
             }
         }
-        other => panic!("unexpected type node kind: {other}"),
-    }
+        other => {
+            return Err(ParseError::at(
+                node,
+                format!("unexpected type node kind: {other}"),
+            ));
+        }
+    })
 }
 
 /// Parse an integer literal body (suffix already stripped), honoring a `0b`
@@ -1593,12 +1708,16 @@ fn named_child_by_kind<'a>(
     node.named_children(&mut cursor).find(|c| c.kind() == kind)
 }
 
-fn unescape_string(s: &str) -> Vec<u8> {
+fn unescape_string(node: tree_sitter::Node, source: &str) -> Result<Vec<u8>, ParseError> {
+    let s = literal_contents(node, source)?;
     let mut out = Vec::new();
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
+    let mut chars = s.char_indices();
+    while let Some((offset, c)) = chars.next() {
         if c == '\\' {
-            match chars.next().expect("unexpected end of string escape") {
+            let (_, escaped) = chars.next().ok_or_else(|| {
+                ParseError::in_literal(node, source, offset + 1, "unexpected end of string escape")
+            })?;
+            match escaped {
                 '\\' => out.push(b'\\'),
                 '"' => out.push(b'"'),
                 '\'' => out.push(b'\''),
@@ -1606,7 +1725,14 @@ fn unescape_string(s: &str) -> Vec<u8> {
                 'r' => out.push(b'\r'),
                 't' => out.push(b'\t'),
                 '0' => out.push(0),
-                other => panic!("unknown escape sequence: \\{other}"),
+                other => {
+                    return Err(ParseError::in_literal(
+                        node,
+                        source,
+                        offset + 1,
+                        format!("unknown escape sequence: \\{other}"),
+                    ));
+                }
             }
         } else {
             let mut buf = [0u8; 4];
@@ -1614,5 +1740,5 @@ fn unescape_string(s: &str) -> Vec<u8> {
             out.extend_from_slice(encoded.as_bytes());
         }
     }
-    out
+    Ok(out)
 }
