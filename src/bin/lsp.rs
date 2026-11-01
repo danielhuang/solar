@@ -4271,6 +4271,9 @@ fn compute_with_diagnostics(uri: &str, source: &str) -> (Document, HashMap<Strin
             let ast::TopLevelItem::Method(def) = item else {
                 return None;
             };
+            if !ast.method_is_visible(def, source_map.root_file_id()?) {
+                return None;
+            }
             Some(CompletionMethod {
                 def: def.clone(),
                 detail: signatures.get(&span_key(def.span)).cloned(),
@@ -4701,6 +4704,9 @@ fn collect_definition_catalog(
                 }
             }
             TopLevelItem::Method(def) => {
+                if root_file.is_some_and(|file| !ast.method_is_visible(def, file)) {
+                    continue;
+                }
                 out.method_defs
                     .entry(def.display_name.clone())
                     .or_default()
@@ -6092,6 +6098,25 @@ fn main() {
         assert!(labels.contains("visible_fn"));
         assert!(labels.contains("reexported_fn"));
         assert!(!labels.contains("hidden_fn"));
+    }
+
+    #[test]
+    fn completion_respects_extension_method_imports() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/multi_file/extension_methods/main.solar");
+        for (import, visible) in [
+            ("import left from \"left.solar\";", false),
+            ("import {stamp} from \"left.solar\";", true),
+            ("import * from \"left.solar\";", true),
+        ] {
+            let source = format!("{import}\nfn main() {{ let value = 1; value.st }}");
+            let items = completion_items_for_path(&path, &source, "value.st");
+            assert_eq!(
+                items.iter().any(|item| item["label"] == "stamp"),
+                visible,
+                "{import}: {items:?}"
+            );
+        }
     }
 
     #[test]

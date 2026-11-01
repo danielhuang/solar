@@ -1,0 +1,2 @@
+pub struct Foreign { pub value: Int }
+pub method value(self: Foreign) -> Int { self.value }

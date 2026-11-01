@@ -150,6 +150,9 @@ module.exports = grammar({
     // Optional inline hint: `fn(inline) name(...)` / `method(inline) name(...)`.
     inline_attr: ($) => seq("(", "inline", ")"),
 
+    // Extension methods may also request inlining.
+    method_attr: ($) => seq("(", choice("inline", "ext"), repeat(seq(",", choice("inline", "ext"))), optional(","), ")"),
+
     function_def: ($) =>
       seq(
         optional("pub"),
@@ -178,7 +181,7 @@ module.exports = grammar({
         optional("pub"),
         optional(field("unsafe", "unsafe")),
         "method",
-        optional(field("attr", $.inline_attr)),
+        optional(field("attr", $.method_attr)),
         field("name", $.identifier),
         optional(field("type_params", $.function_type_params)),
         "(",

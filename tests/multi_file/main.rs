@@ -311,6 +311,161 @@ fn user_primitive_method_is_not_allowed() {
 }
 
 #[test]
+fn extension_methods() {
+    assert_eq!(
+        run(
+            &fixture("extension_methods/main.solar"),
+            "extension_methods"
+        ),
+        "passed\n"
+    );
+}
+
+#[test]
+fn extension_methods_release() {
+    assert_eq!(
+        test_utils::run_release_file(
+            &fixture("extension_methods/main.solar"),
+            "extension_methods"
+        ),
+        "passed\n"
+    );
+}
+
+#[test]
+fn extension_method_errors() {
+    let directory = tempdir::TempDir::new("solar-extension-errors").unwrap();
+    let root = directory.path().join("main.solar");
+    let left = directory.path().join("left.solar");
+    let right = directory.path().join("right.solar");
+    let cases = [
+        (
+            "module imports do not expose extensions",
+            "pub method(ext) extra(self: Int) -> Int { self }",
+            "",
+            "import left from \"left.solar\"; fn main() { 1.extra(); }",
+            "no matching overload",
+        ),
+        (
+            "unrelated imports do not expose extensions",
+            "pub method(ext) extra(self: Int) -> Int { self } pub fn helper() {}",
+            "",
+            "import {helper} from \"left.solar\"; fn main() { 1.extra(); }",
+            "no matching overload",
+        ),
+        (
+            "transitive private imports do not expose extensions",
+            "pub method(ext) extra(self: Int) -> Int { self }",
+            "import * from \"left.solar\"; pub fn helper() {}",
+            "import * from \"right.solar\"; fn main() { 1.extra(); }",
+            "no matching overload",
+        ),
+        (
+            "private extensions cannot be imported",
+            "method(ext) extra(self: Int) -> Int { self }",
+            "",
+            "import {extra} from \"left.solar\"; fn main() {}",
+            "not exported",
+        ),
+        (
+            "concrete extensions conflict in scope even without calls",
+            "pub method(ext) extra(self: Int) -> Int { self }",
+            "pub method(ext) extra(self: Int) -> Int { self + 1 }",
+            "import {extra} from \"left.solar\"; import {extra} from \"right.solar\"; fn main() {}",
+            "conflicting extension method",
+        ),
+        (
+            "importing a public overload does not expose private overloads",
+            "pub method(ext) extra(self: Int) -> Int { self } method(ext) extra(self: Bool) -> Bool { self }",
+            "",
+            "import {extra} from \"left.solar\"; fn main() { true.extra(); }",
+            "type mismatch",
+        ),
+        (
+            "generic extensions conflict in scope",
+            "pub method(ext) extra#[T](self: T) -> T { self }",
+            "pub method(ext) extra#[U](self: U) -> U { self }",
+            "import * from \"left.solar\"; import * from \"right.solar\"; fn main() {}",
+            "conflicting extension method",
+        ),
+        (
+            "normal methods conflict with extensions",
+            "pub struct Local { pub n: Int } pub method extra(self: Local) -> Int { self.n }",
+            "import {Local} from \"left.solar\"; pub method(ext) extra(self: Local) -> Int { self.n }",
+            "import right from \"right.solar\"; fn main() {}",
+            "conflicting extension method",
+        ),
+        (
+            "specific extensions do not override generic extensions",
+            "pub method(ext) extra#[T](self: T) -> Int { 1 }",
+            "pub method(ext) extra(self: Int) -> Int { 2 }",
+            "import * from \"left.solar\"; import * from \"right.solar\"; fn main() { 1.extra(); }",
+            "conflicting extension method",
+        ),
+        (
+            "generic extensions do not override normal methods",
+            "pub struct Local { pub n: Int } pub method extra(self: Local) -> Int { self.n }",
+            "",
+            "import {Local} from \"left.solar\"; method(ext) extra#[T](self: T) -> Int { 2 } fn main() { (Local { n: 1 }).extra(); }",
+            "conflicting extension method",
+        ),
+        (
+            "closure overloads cannot hide conflicts",
+            "pub method(ext) extra#[T](self: T, f: fn(Int) -> Int) -> Int { f(1) }",
+            "pub method(ext) extra(self: Int, f: fn(Int) -> Int) -> Int { f(self) }",
+            "import * from \"left.solar\"; import * from \"right.solar\"; fn main() { 1.extra(\\n n); }",
+            "conflicting extension method",
+        ),
+        (
+            "output-generic overloads cannot hide conflicts",
+            "pub method(ext) extra#[T, out U](self: T, other: U) -> U { other }",
+            "pub method(ext) extra#[out U](self: Int, other: U) -> U { other }",
+            "import * from \"left.solar\"; import * from \"right.solar\"; fn main() { 1.extra#[Bool](true); }",
+            "conflicting extension method",
+        ),
+        (
+            "generic bodies use definition scope",
+            "pub fn invoke#[T](self: T) -> Int { self.extra() }",
+            "",
+            "import {invoke} from \"left.solar\"; method(ext) extra(self: Int) -> Int { self } fn main() { invoke(1); }",
+            "no matching overload",
+        ),
+        (
+            "unsafe extensions still participate in conflicts",
+            "pub unsafe method(ext) extra#[T, out U](self: T, other: U) -> U { other }",
+            "pub method(ext) extra#[out U](self: Int, other: U) -> U { other }",
+            "import * from \"left.solar\"; import * from \"right.solar\"; fn main() { 1.extra#[Bool](true); }",
+            "conflicting extension method",
+        ),
+        (
+            "selected unsafe extensions require an unsafe block",
+            "pub unsafe method(ext) extra#[out U](self: Int, other: U) -> U { other }",
+            "pub method(ext) extra#[out U](self: Bool, other: U) -> U { other }",
+            "import * from \"left.solar\"; import * from \"right.solar\"; fn main() { 1.extra#[Bool](true); }",
+            "requires an unsafe block",
+        ),
+        (
+            "generated methods also conflict with extensions",
+            "",
+            "",
+            "method(ext) next#[T](self: T) -> Int { 1 } fn main() { let g = generator { yield 1; }; g&.next(); }",
+            "conflicting extension method",
+        ),
+    ];
+    for (label, left_source, right_source, root_source, expected) in cases {
+        std::fs::write(&left, left_source).unwrap();
+        std::fs::write(&right, right_source).unwrap();
+        std::fs::write(&root, root_source).unwrap();
+        let (errors, _) = match solar::pipeline::compile(&root) {
+            Ok(_) => panic!("{label} should fail"),
+            Err(error) => error,
+        };
+        let actual = format!("{errors:?}");
+        assert!(actual.contains(expected), "{label}: {actual}");
+    }
+}
+
+#[test]
 fn method_with_local_anchor() {
     let output = run(
         &fixture("method_local_anchor/main.solar"),

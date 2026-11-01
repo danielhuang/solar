@@ -146,6 +146,7 @@ impl Lowerer<'_> {
             args,
             overload: None,
             method: true,
+            extension: false,
         }
     }
 
@@ -209,6 +210,7 @@ impl Lowerer<'_> {
             is_pub: true,
             is_unsafe: false,
             inline_hint: false,
+            is_extension: false,
             doc: Some(
                 "Advances the generator to its next yield, or returns None after completion."
                     .into(),
@@ -527,7 +529,7 @@ impl Lowerer<'_> {
         let info = self.generator_types.get(id)?.clone();
         let id = id.clone();
         let params: Vec<Type> = info.resume.iter().cloned().collect();
-        Some((|| {
+        let result = (|| {
             if !type_args.is_empty() || !kwargs.is_empty() {
                 return Err(CompileError::new(
                     "generator methods do not accept type or keyword arguments".into(),
@@ -596,7 +598,52 @@ impl Lowerer<'_> {
                 },
                 span,
             ))
-        })())
+        })();
+        Some(result.and_then(|result| {
+            // Generator iter/next have a dedicated lowering path, but an
+            // applicable extension must still conflict with these methods.
+            let extensions: Vec<_> = self
+                .method_defs
+                .get(method)
+                .into_iter()
+                .flatten()
+                .filter(|entry| {
+                    entry.ast_def.is_extension
+                        && self.source.method_is_visible(&entry.ast_def, span.file_id)
+                })
+                .cloned()
+                .collect();
+            for extension in extensions {
+                let mut trial = self.clone();
+                trial.push_scope();
+                let name = ast::Ident::synthetic("$extension_receiver");
+                trial.define_var(name.clone(), receiver.ty.clone());
+                let mut args = vec![ast::Expr {
+                    kind: ast::ExprKind::Identifier(name),
+                    span,
+                }];
+                args.extend_from_slice(arguments);
+                if trial
+                    .resolve_overloaded_call(
+                        super::CandidateSource::MethodEntries(vec![extension.clone()]),
+                        method,
+                        &args,
+                        kwargs,
+                        type_args,
+                        span,
+                    )
+                    .is_ok()
+                {
+                    return Err(CompileError::new(
+                        format!("conflicting extension method `{method}`"),
+                        span,
+                    )
+                    .with_label("extension method defined here", extension.ast_def.span)
+                    .with_label("generator method defined here", info.span));
+                }
+            }
+            Ok(result)
+        }))
     }
 }
 

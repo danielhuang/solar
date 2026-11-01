@@ -1,0 +1,4 @@
+pub method(ext) stamp(self: Int) -> Int { self + 200 }
+pub method(ext) weight#[T](self: T) -> Int { 222 }
+
+pub fn call#[T](value: T) -> Int { value.stamp() + value.weight() }

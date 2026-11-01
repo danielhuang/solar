@@ -41,6 +41,25 @@ struct Test {
 
 This is memory-safe, since a reference to a variant can be obtained only if that variant is currently used (and the variant's memory space is initialized), and changing the variant by assignment will change the discriminant and write to the new variant's memory space. The old variant's memory space is kept as-is, so references remain valid.
 
+## Extension methods
+
+`method(ext)` declares a method without requiring any parameter type to be
+defined in the same file:
+
+```rs
+pub method(ext) doubled(self: Int) -> Int { self * 2 }
+```
+
+An extension is available in its defining file and in files that import its
+name, directly or through a wildcard or public re-export. Importing only its
+module does not bring the extension into scope. Generic bodies use the scope
+where they were defined. Normal methods retain their existing global lookup.
+
+Applicable extensions must not conflict with each other or with a normal
+method; a more specific signature does not override another applicable method.
+Identical signatures in disjoint extension scopes are allowed and use distinct,
+module-qualified symbols. `method(ext, inline)` also requests inlining.
+
 ## Copies and moves
 
 A copy constructor takes a reference to its original value and returns a new value:

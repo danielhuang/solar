@@ -479,10 +479,11 @@ fn function_doc(definition: &FunctionDef, keyword: &str, context: &SourceContext
             Doc::Nil
         },
         Doc::text(keyword),
-        if definition.inline_hint {
-            Doc::text("(inline)")
-        } else {
-            Doc::Nil
+        match (definition.is_extension, definition.inline_hint) {
+            (true, true) => Doc::text("(ext, inline)"),
+            (true, false) => Doc::text("(ext)"),
+            (false, true) => Doc::text("(inline)"),
+            (false, false) => Doc::Nil,
         },
         type_parameters(&definition.associated_type_params),
         Doc::text(" "),

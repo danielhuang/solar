@@ -364,6 +364,8 @@ pub struct FunctionDef {
     pub is_unsafe: bool,
     /// Whether the declaration requests inlining.
     pub inline_hint: bool,
+    /// Whether this is an extension method, requiring lexical visibility.
+    pub is_extension: bool,
     /// Attached documentation.
     pub doc: Option<String>,
     /// Declaration span.

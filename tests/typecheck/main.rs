@@ -27,6 +27,7 @@ fn compile(file_path: &Path) {
     let desugared = solar::desugared_ast::lower(&ast);
     let resolved = solar::resolved_ast::SourceFile {
         items: desugared.items,
+        extension_scopes: Default::default(),
     };
     match solar::typed_ast::lower(&resolved) {
         Ok(_) => {}
@@ -49,6 +50,7 @@ fn old_unit_name_is_not_a_builtin() {
     let desugared = solar::desugared_ast::lower(&ast);
     let resolved = solar::resolved_ast::SourceFile {
         items: desugared.items,
+        extension_scopes: Default::default(),
     };
     assert!(solar::typed_ast::lower(&resolved).is_err());
 }

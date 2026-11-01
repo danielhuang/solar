@@ -20,7 +20,7 @@ struct ParsedFile {
 }
 
 fn is_method_export(export: &Export) -> bool {
-    matches!(export.kind, ExportKind::Method)
+    matches!(export.kind, ExportKind::Method { .. })
 }
 
 #[derive(Debug, Clone)]
@@ -28,7 +28,7 @@ enum ExportKind {
     Struct,
     Enum,
     Function,
-    Method,
+    Method { extension: bool },
     TypeAlias,
     Const,
     Static,
@@ -235,7 +235,9 @@ impl Resolver {
                 }
                 TopLevelItem::Method(m) if m.is_pub => {
                     exports.entry(m.name.clone()).or_default().push(Export {
-                        kind: ExportKind::Method,
+                        kind: ExportKind::Method {
+                            extension: m.is_extension,
+                        },
                         def: DefId::new(file_id, &m.name),
                     });
                 }
@@ -362,11 +364,20 @@ impl Resolver {
         file_id: FileId,
         std_file_count: usize,
         all_module_aliases: &AllModuleAliases,
-    ) -> Result<Vec<TopLevelItem>, Vec<CompileError>> {
+    ) -> Result<(Vec<TopLevelItem>, HashSet<DefId>), Vec<CompileError>> {
         let file = &self.files[file_id as usize];
 
         let mut rename_map: HashMap<String, DefId> = HashMap::new();
         let mut module_aliases: ModuleAliasMap = HashMap::new();
+        let mut extension_scope = HashSet::new();
+        let mut import_extensions = |exports: &[Export]| {
+            extension_scope.extend(
+                exports
+                    .iter()
+                    .filter(|export| matches!(export.kind, ExportKind::Method { extension: true }))
+                    .map(|export| export.def.clone()),
+            );
+        };
 
         let local_types: HashMap<&str, SourceSpan> = file
             .ast
@@ -524,7 +535,10 @@ impl Resolver {
                                             imp.span,
                                         )]);
                                     }
-                                    if rename_map.contains_key(&local) {
+                                    import_extensions(&final_exports[&local]);
+                                    if rename_map.contains_key(&local)
+                                        && !final_exports[&local].iter().all(is_method_export)
+                                    {
                                         return Err(vec![CompileError::new(
                                             format!(
                                                 "import `{local}` conflicts with an existing import or definition"
@@ -556,6 +570,7 @@ impl Resolver {
                                     && exports
                                         .get(&local)
                                         .is_some_and(|ks| ks.iter().any(is_method_export));
+                                import_extensions(&exports[&local]);
                                 if local_defs.contains(&local)
                                     && !rename_map.contains_key(&local)
                                     && !method_overload
@@ -578,6 +593,7 @@ impl Resolver {
                     }
                     ImportKind::Wildcard => {
                         for (name, kinds) in &exports {
+                            import_extensions(kinds);
                             // Methods with the same name form one overload set.
                             if local_method_defs.contains(name)
                                 && kinds.iter().any(is_method_export)
@@ -705,14 +721,16 @@ impl Resolver {
                     let is_std = (file_id as usize) < std_file_count;
                     let mut method_type_params = m.type_params.clone();
                     method_type_params.extend(m.out_type_params.iter().cloned());
-                    if !m.parameters.iter().any(|parameter| {
-                        method_type_has_local_anchor(
-                            &parameter.ty,
-                            file_id,
-                            &method_type_params,
-                            is_std,
-                        )
-                    }) {
+                    if !m.is_extension
+                        && !m.parameters.iter().any(|parameter| {
+                            method_type_has_local_anchor(
+                                &parameter.ty,
+                                file_id,
+                                &method_type_params,
+                                is_std,
+                            )
+                        })
+                    {
                         rewrite_errors.borrow_mut().push(CompileError::new(
                             format!(
                                 "method `{}` must use a type defined in the same file in at least one parameter",
@@ -773,7 +791,7 @@ impl Resolver {
 
         let rewrite_errors = rewrite_errors.into_inner();
         if rewrite_errors.is_empty() {
-            Ok(rewritten)
+            Ok((rewritten, extension_scope))
         } else {
             Err(rewrite_errors)
         }
@@ -1584,7 +1602,7 @@ fn resolve_with_root_source(
     let result = resolve_impl(&mut resolver, file_path, root_source);
     let source_map = resolver.source_map;
     match result {
-        Ok(all_items) => Ok((resolved_ast::from_items(all_items), source_map)),
+        Ok(source) => Ok((source, source_map)),
         Err(errors) => Err((errors, source_map)),
     }
 }
@@ -1593,7 +1611,7 @@ fn resolve_impl(
     resolver: &mut Resolver,
     file_path: &Path,
     root_source: Option<String>,
-) -> Result<Vec<TopLevelItem>, Vec<CompileError>> {
+) -> Result<resolved_ast::SourceFile, Vec<CompileError>> {
     let std_lib = Path::new(STDLIB_DIR).join("lib.solar");
     let std_root_id = resolver.parse_file(&std_lib)?;
     assert_eq!(std_root_id, STDLIB_FILE);
@@ -1636,6 +1654,7 @@ fn resolve_impl(
         .collect();
 
     let mut all_items = Vec::new();
+    let mut extension_scopes = HashMap::new();
 
     let mut processed: HashSet<FileId> = HashSet::new();
 
@@ -1645,11 +1664,14 @@ fn resolve_impl(
             continue;
         }
         processed.insert(fid);
-        let items = resolver.resolve_file(fid, std_file_count, &all_module_aliases)?;
+        let (items, scope) = resolver.resolve_file(fid, std_file_count, &all_module_aliases)?;
         all_items.extend(items);
+        extension_scopes.insert(fid, scope);
     }
 
-    Ok(all_items)
+    let mut source = resolved_ast::from_items(all_items);
+    source.extension_scopes = extension_scopes;
+    Ok(source)
 }
 
 /// Check for circular pub import re-export chains.

@@ -537,8 +537,14 @@ fn convert_function_def(node: tree_sitter::Node, source: &str) -> Result<Functio
     let body_node = required_field(node, "body")?;
     let body = convert_block(body_node, source)?;
 
-    // `fn(inline)` / `method(inline)`
-    let inline_hint = node.child_by_field_name("attr").is_some();
+    let has_attribute = |name| {
+        node.child_by_field_name("attr").is_some_and(|attr| {
+            attr.children(&mut attr.walk())
+                .any(|child| child.kind() == name)
+        })
+    };
+    let inline_hint = has_attribute("inline");
+    let is_extension = has_attribute("ext");
 
     Ok(FunctionDef {
         associated_type_params,
@@ -554,6 +560,7 @@ fn convert_function_def(node: tree_sitter::Node, source: &str) -> Result<Functio
         is_pub,
         is_unsafe,
         inline_hint,
+        is_extension,
         doc: leading_doc(node, source),
         span: source_span(node),
     })

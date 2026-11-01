@@ -1,0 +1,13 @@
+import {Foreign} from "foreign.solar";
+
+pub method(ext, inline) raised(self: &Foreign, amount: Int = 3) -> Int {
+	self@.value + amount
+}
+
+pub method(ext) raised(self: Int, amount: Int = 3) -> Int { self + amount }
+pub method(ext) echo#[T](self: T) -> T { self }
+pub method(ext) wrap#[T, out U](self: T, other: U) -> (T, U) { (self, other) }
+pub method(ext) apply#[T, U](self: T, f: fn(T) -> U) -> U { f(self) }
+pub method(ext) apply_number(self: &Int, f: fn(Int) -> Int) -> Int { f(self@) }
+pub method(ext) output#[out T](self: &Int, f: fn(Int) -> T) -> T { f(self@) }
+pub method(ext) output#[out T](self: Bool, f: fn(Bool) -> T) -> T { f(self) }

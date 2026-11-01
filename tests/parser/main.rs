@@ -791,3 +791,21 @@ fn opaque_struct_attributes_round_trip() {
     assert!(formatted.contains("struct(opaque) Storage"));
     assert!(formatted.contains("struct(repr(C), opaque) Handle"));
 }
+
+#[test]
+fn extension_method_attributes_round_trip() {
+    let source = "pub method(ext) doubled(self: Int) -> Int { self * 2 }\nmethod(inline, ext) identity(self: Int) -> Int { self }\nmethod(inline) ordinary(self: Int) -> Int { self }\n";
+    let formatted = solar::fmt::format_source(source).unwrap();
+    assert!(formatted.contains("method(ext) doubled"));
+    assert!(formatted.contains("method(ext, inline) identity"));
+    for text in [source, &formatted] {
+        for (index, item) in parse(text).items.iter().enumerate() {
+            let TopLevelItem::Method(definition) = item else {
+                panic!("expected method")
+            };
+            assert_eq!(definition.is_extension, index < 2);
+            assert_eq!(definition.inline_hint, index != 0);
+        }
+    }
+    assert!(solar::parser::parse("fn(ext) invalid() {}").is_err());
+}

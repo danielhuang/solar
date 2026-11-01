@@ -1,0 +1,27 @@
+import left from "left.solar";
+import right from "right.solar";
+import wildcard from "wildcard.solar";
+import {Foreign} from "foreign.solar";
+import {raised, echo, wrap, apply, apply_number, output} from "reexport.solar";
+// Re-importing the same definition must not create a competing candidate.
+import {echo} from "extensions.solar";
+import {extensions::raised} from "reexport.solar";
+
+fn main() {
+	assert(left::call(1) == 212);
+	assert(right::call(1) == 423);
+	assert(wildcard::call() == 10);
+	let value = Foreign { value: 7 };
+	assert(value.value() == 7);
+	assert(value.raised() == 10);
+	assert(value&.raised(amount = 5) == 12);
+	assert(2.raised(amount = 5) == 7);
+	assert(true.echo());
+	let pair = 7.wrap#[Bool](true);
+	assert(pair.0 == 7 && pair.1);
+	assert(2.apply(\n n + 3) == 5);
+	assert(2.apply_number(\n n + 4) == 6);
+	assert(2.output#[Bool](\n n == 2));
+	assert(true.output#[Int](\n { if n { 3 } else { 4 } }) == 3);
+	println("passed"&);
+}

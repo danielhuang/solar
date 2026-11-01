@@ -1,0 +1,3 @@
+import * from "reexport.solar";
+
+pub fn call() -> Int { 7.raised() }

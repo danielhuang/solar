@@ -406,9 +406,9 @@ impl Renderer<'_> {
 
     /// The final C symbol of a function/method instance.
     fn func_symbol(&self, fid: &ta::FuncId) -> String {
-        // Methods render their bare base name (`__method_`-prefixed); free
-        // functions get the module prefix.
-        let base = if fid.method {
+        // Extension methods include provenance so disjoint scopes can define
+        // the same signature without sharing a symbol.
+        let base = if fid.method && !fid.extension {
             fid.def.name.to_string()
         } else {
             self.base_name(&fid.def)

@@ -1,0 +1,5 @@
+pub method(ext) stamp(self: Int) -> Int { self + 100 }
+pub method(ext) weight#[T](self: T) -> Int { 111 }
+
+// Generic bodies resolve extensions in their definition's scope.
+pub fn call#[T](value: T) -> Int { value.stamp() + value.weight() }
