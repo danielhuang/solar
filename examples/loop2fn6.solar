@@ -1,0 +1,27 @@
+fn apply#[T](f: fn(T), x: [T; 1]) {
+	f(x[0u]);
+}
+
+fn add(x: Int) -> fn(Int) -> Int {
+	\y: Int x + y
+}
+
+fn looper(i: &Int) {
+	generator {
+		while i@ < 1000000000 {
+			if i@ % 10000 == 0 {
+				yield i@;
+			}
+
+			apply(\x: &Int { x@ = add(x@)(1); }, [i]);
+		}
+	}
+}
+
+fn main() {
+	let i = 0;
+
+	for i in looper(i&) {
+		println(i);
+	}
+}
