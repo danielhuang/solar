@@ -127,7 +127,7 @@ fn mark_ref_base_deref(
 }
 
 /// Gather the per-function structural facts in a single pass over `nodes`.
-fn collect_fn_facts(nodes: &[Node]) -> FnFacts {
+fn collect_fn_facts(nodes: &[Node], custom_copies: &HashSet<Type>) -> FnFacts {
     let mut f = FnFacts {
         deref_operand: HashSet::new(),
         ref_base_deref: HashMap::new(),
@@ -189,6 +189,55 @@ fn collect_fn_facts(nodes: &[Node]) -> FnFacts {
                 f.bad.extend(s);
             }
             _ => {}
+        }
+    }
+    // An implicit constructor receives the source's address just like an
+    // explicit reference argument. Until proven otherwise it may retain it.
+    let mut place_only = HashSet::new();
+    for node in nodes {
+        match &node.kind {
+            NodeKind::Move(n) | NodeKind::Ref(n) | NodeKind::Deref(n) => {
+                place_only.insert(n.0);
+            }
+            NodeKind::FieldAccess { object, .. }
+            | NodeKind::Index { object, .. }
+            | NodeKind::Slice { object, .. } => {
+                place_only.insert(object.0);
+            }
+            NodeKind::Assign { target, .. } => {
+                place_only.insert(target.0);
+            }
+            NodeKind::Match { scrutinee, .. } => {
+                place_only.insert(scrutinee.0);
+            }
+            _ => {}
+        }
+    }
+    for (index, node) in nodes.iter().enumerate() {
+        if !place_only.contains(&index)
+            && custom_copies.contains(&node.ty)
+            && matches!(
+                node.kind,
+                NodeKind::Local(_)
+                    | NodeKind::Global(_)
+                    | NodeKind::FieldAccess { .. }
+                    | NodeKind::Deref(_)
+                    | NodeKind::Index { .. }
+                    | NodeKind::Slice { .. }
+            )
+        {
+            let id = NodeId(index);
+            let mut roots = HashSet::new();
+            collect_place_roots(nodes, id, &mut roots);
+            f.addr_taken.extend(&roots);
+            f.bad.extend(roots);
+            mark_ref_base_deref(
+                nodes,
+                id,
+                None,
+                &mut f.ref_base_deref,
+                &mut f.escaping_ref_base_deref,
+            );
         }
     }
     // Match bindings alias the scrutinee and may expose its storage.
@@ -340,8 +389,15 @@ fn reference_param_noescape(
 pub fn analyze_param_escapes(module: &mut Module) -> bool {
     let snapshot = param_noescape_snapshot(module);
     let mut changed = false;
+    let custom_copies: HashSet<_> = module
+        .functions
+        .iter()
+        .flat_map(|f| &f.nodes)
+        .filter(|n| crate::tree_ir::type_contains_copy_constructor(&n.ty, module))
+        .map(|n| n.ty.clone())
+        .collect();
     for func in &mut module.functions {
-        let facts = collect_fn_facts(&func.nodes);
+        let facts = collect_fn_facts(&func.nodes, &custom_copies);
         let good_use = good_call_args(&func.nodes, &snapshot);
         let contained = compute_contained(&facts, &good_use);
         let results: Vec<bool> = func
@@ -374,8 +430,15 @@ pub fn analyze_param_escapes(module: &mut Module) -> bool {
 fn analyze_let_noescape(module: &mut Module) -> bool {
     let noescape_params = param_noescape_snapshot(module);
     let mut changed = false;
+    let custom_copies: HashSet<_> = module
+        .functions
+        .iter()
+        .flat_map(|f| &f.nodes)
+        .filter(|n| crate::tree_ir::type_contains_copy_constructor(&n.ty, module))
+        .map(|n| n.ty.clone())
+        .collect();
     for func in &mut module.functions {
-        let facts = collect_fn_facts(&func.nodes);
+        let facts = collect_fn_facts(&func.nodes, &custom_copies);
         let good_use = good_call_args(&func.nodes, &noescape_params);
         let contained = compute_contained(&facts, &good_use);
         let to_mark: Vec<usize> = facts
@@ -467,7 +530,8 @@ fn collect_locals(nodes: &[Node], id: NodeId, out: &mut HashSet<VarId>) {
         // rooted at it involves no local variable.
         NodeKind::Global(_) => {}
         NodeKind::FieldAccess { object, .. } => collect_locals(nodes, *object, out),
-        NodeKind::Deref(n)
+        NodeKind::Move(n)
+        | NodeKind::Deref(n)
         | NodeKind::Ref(n)
         | NodeKind::Unique(n)
         | NodeKind::Not(n)

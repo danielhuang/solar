@@ -348,18 +348,54 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         self.mem.alloc(s, a)
     }
 
-    fn copy_value(&mut self, dst: usize, src: usize, ty: &Type, meta: Option<usize>) {
+    fn copy_value(&mut self, dst: usize, src: usize, ty: &Type, meta: Option<usize>) -> Eval<()> {
+        self.copy_value_ctx(dst, src, ty, meta, false)
+    }
+
+    fn move_value(&mut self, dst: usize, src: usize, ty: &Type, meta: Option<usize>) -> Eval<()> {
+        self.copy_value_ctx(dst, src, ty, meta, true)
+    }
+
+    fn copy_value_ctx(
+        &mut self,
+        dst: usize,
+        src: usize,
+        ty: &Type,
+        meta: Option<usize>,
+        moving: bool,
+    ) -> Eval<()> {
+        if moving && matches!(ty, Type::Unique(_) | Type::UniqueUnsized(_)) {
+            self.mem
+                .memcpy(dst, src, type_size(ty, &self.module.datatypes));
+            return Ok(());
+        }
+        if !moving && let Some(function) = self.module.copy_constructors.get(ty) {
+            let func = *self.functions.get(function.as_str()).unwrap();
+            let arg = self.mem.alloc(8, 8);
+            self.mem.store(arg, src as u64, 8);
+            let saved_vars = std::mem::take(&mut self.vars);
+            let saved_meta = std::mem::take(&mut self.var_meta);
+            self.vars.insert(func.params[0].var, arg);
+            // Finish construction before overwriting a possibly aliased source.
+            let result = self.alloc_ty(ty);
+            let status = self.exec_function_body(func, result);
+            self.vars = saved_vars;
+            self.var_meta = saved_meta;
+            status?;
+            self.move_value(dst, result, ty, meta)?;
+            return Ok(());
+        }
         match ty {
             Type::Unique(inner) => {
                 let src_ptr = self.mem.load(src, 8) as usize;
                 if src_ptr == 0 {
                     self.mem.store(dst, 0, 8);
-                    return;
+                    return Ok(());
                 }
                 let inner_size = type_size(inner, &self.module.datatypes);
                 let inner_align = type_align(inner, &self.module.datatypes);
                 let new_ptr = self.mem.alloc(inner_size, inner_align);
-                self.copy_value(new_ptr, src_ptr, inner, None);
+                self.copy_value_ctx(new_ptr, src_ptr, inner, None, moving)?;
                 self.mem.store(dst, new_ptr as u64, 8);
             }
             Type::UniqueUnsized(inner) => {
@@ -367,12 +403,12 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let src_meta = self.mem.load(src + 8, 8) as usize;
                 if src_ptr == 0 {
                     self.mem.memcpy(dst, src, 16);
-                    return;
+                    return Ok(());
                 }
                 let inner_size = full_size(inner, &self.module.datatypes, src_meta);
                 let inner_align = type_align(inner, &self.module.datatypes);
                 let new_ptr = self.mem.alloc(inner_size, inner_align);
-                self.copy_value(new_ptr, src_ptr, inner, Some(src_meta));
+                self.copy_value_ctx(new_ptr, src_ptr, inner, Some(src_meta), moving)?;
                 self.mem.store(dst, new_ptr as u64, 8);
                 self.mem.store(dst + 8, src_meta as u64, 8);
             }
@@ -387,45 +423,44 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     let field = dt.fields.iter().find(|f| f.name == *field_name).unwrap();
                     let offset = field.offset;
                     let field_ty = field.ty.clone();
-                    self.copy_value(dst + offset, src + offset, &field_ty, None);
+                    self.copy_value_ctx(dst + offset, src + offset, &field_ty, None, moving)?;
                 }
                 // Payload-free variants: nothing beyond the discriminant
             }
             Type::Struct(name)
                 if type_contains_unique(ty, &self.module.datatypes)
-                    || type_contains_enum(ty, &self.module.datatypes) =>
+                    || type_contains_enum(ty, &self.module.datatypes)
+                    || crate::tree_ir::type_contains_copy_constructor(ty, self.module) =>
             {
                 let fields: Vec<_> = self.module.datatypes[name.as_str()]
-                    .fields
-                    .iter()
+                    .fields_in_copy_order()
                     .map(|f| (f.offset, f.ty.clone(), f.size))
                     .collect();
                 for (offset, field_ty, _) in &fields {
-                    let field_meta = match field_ty {
-                        Type::Array(_) | Type::FixedArray(_, _) => {
-                            // For unsized array fields in structs this is the tail;
-                            // meta from the outer value tells us the count
-                            meta
-                        }
-                        _ => None,
+                    let field_meta = if is_sized(field_ty, &self.module.datatypes) {
+                        None
+                    } else {
+                        meta
                     };
-                    self.copy_value(dst + offset, src + offset, field_ty, field_meta);
+                    self.copy_value_ctx(dst + offset, src + offset, field_ty, field_meta, moving)?;
                 }
             }
             Type::FixedArray(inner, count)
                 if type_contains_unique(inner, &self.module.datatypes)
-                    || type_contains_enum(inner, &self.module.datatypes) =>
+                    || type_contains_enum(inner, &self.module.datatypes)
+                    || crate::tree_ir::type_contains_copy_constructor(inner, self.module) =>
             {
                 let es = type_size(inner, &self.module.datatypes);
-                self.copy_elements(dst, src, *count as usize, es, inner);
+                self.copy_elements(dst, src, *count as usize, es, inner, moving)?;
             }
             Type::Array(inner)
                 if type_contains_unique(inner, &self.module.datatypes)
-                    || type_contains_enum(inner, &self.module.datatypes) =>
+                    || type_contains_enum(inner, &self.module.datatypes)
+                    || crate::tree_ir::type_contains_copy_constructor(inner, self.module) =>
             {
                 let count = meta.unwrap();
                 let es = type_size(inner, &self.module.datatypes);
-                self.copy_elements(dst, src, count, es, inner);
+                self.copy_elements(dst, src, count, es, inner, moving)?;
             }
             _ => {
                 let size = match meta {
@@ -438,19 +473,33 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 self.mem.memcpy(dst, src, size);
             }
         }
+        Ok(())
     }
 
-    /// Per-element copy with memmove direction handling: forward when
-    /// `dst <= src`, backward when `dst > src`, so partially overlapping
+    /// Copy in index order, reversing only when the destination starts inside
+    /// the source range, so partially overlapping
     /// same-array slice assignments (`s[1..4] = s[0..3]` and the reverse)
     /// match the other backends' memmove semantics. Overlapping slices of one
     /// array are element-aligned, so each element pair is identical or
     /// disjoint — `copy_value` on an element never sees a shifted overlap.
-    fn copy_elements(&mut self, dst: usize, src: usize, count: usize, es: usize, inner: &Type) {
+    fn copy_elements(
+        &mut self,
+        dst: usize,
+        src: usize,
+        count: usize,
+        es: usize,
+        inner: &Type,
+        moving: bool,
+    ) -> Eval<()> {
         for k in 0..count {
-            let i = if dst > src { count - 1 - k } else { k };
-            self.copy_value(dst + i * es, src + i * es, inner, None);
+            let i = if dst > src && dst - src < count * es {
+                count - 1 - k
+            } else {
+                k
+            };
+            self.copy_value_ctx(dst + i * es, src + i * es, inner, None, moving)?;
         }
+        Ok(())
     }
 
     /// Load a scalar value from memory with proper sign/zero extension.
@@ -701,6 +750,20 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let es = type_size(elem_ty, &self.module.datatypes);
                 (base + s * es, Some(e - s))
             }
+            NodeKind::IfExpr { .. } | NodeKind::Match { .. } => {
+                self.eval_conditional_place(nodes, id, false)?
+            }
+            _ => unreachable!("eval_place on non-place node: {:?}", nodes[id.0].kind),
+        })
+    }
+
+    fn eval_conditional_place(
+        &mut self,
+        nodes: &[Node],
+        id: NodeId,
+        by_value: bool,
+    ) -> Eval<(usize, Option<usize>)> {
+        Ok(match &nodes[id.0].kind {
             NodeKind::IfExpr {
                 condition,
                 then_body,
@@ -711,7 +774,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let else_body = else_body.clone();
                 let cond = self.eval_load(nodes, condition)?;
                 let branch = if cond != 0 { &then_body } else { &else_body };
-                self.exec_branch_place(nodes, branch)?
+                self.exec_branch_place(nodes, branch, by_value)?
             }
             NodeKind::Match { scrutinee, arms } => {
                 let scrutinee = *scrutinee;
@@ -758,12 +821,12 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                             }
                             _ => {}
                         }
-                        return self.exec_branch_place(nodes, &arm.body);
+                        return self.exec_branch_place(nodes, &arm.body, by_value);
                     }
                 }
                 unreachable!("no matching arm in match expression");
             }
-            _ => unreachable!("eval_place on non-place node: {:?}", nodes[id.0].kind),
+            _ => unreachable!(),
         })
     }
 
@@ -771,13 +834,16 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         &mut self,
         nodes: &[Node],
         body: &[NodeId],
+        by_value: bool,
     ) -> Eval<(usize, Option<usize>)> {
         let (init, tail) = body.split_at(body.len() - 1);
         for &id in init {
             self.exec_stmt(nodes, id)?;
         }
         match &nodes[tail[0].0].kind {
-            NodeKind::Expr(inner) if is_place(nodes, *inner) => self.eval_place(nodes, *inner),
+            NodeKind::Expr(inner) if !by_value && is_place(nodes, *inner) => {
+                self.eval_place(nodes, *inner)
+            }
             NodeKind::Expr(inner) => {
                 let inner = *inner;
                 let (addr, meta) = self.eval_array_value(nodes, inner)?;
@@ -839,6 +905,22 @@ impl<'a, 'io> Interpreter<'a, 'io> {
     fn eval_array_value(&mut self, nodes: &[Node], id: NodeId) -> Eval<(usize, usize)> {
         let ty = nodes[id.0].ty.clone();
         match &nodes[id.0].kind {
+            NodeKind::IfExpr { .. } | NodeKind::Match { .. } => {
+                let (addr, meta) = self.eval_conditional_place(nodes, id, true)?;
+                return Ok((addr, meta.unwrap()));
+            }
+
+            NodeKind::Move(value) => {
+                let (addr, meta) = self.eval_place(nodes, *value)?;
+                return Ok((
+                    addr,
+                    meta.unwrap_or_else(|| match ty {
+                        Type::FixedArray(_, n) => n as usize,
+                        _ => unreachable!(),
+                    }),
+                ));
+            }
+
             NodeKind::Loop { body } => {
                 self.loop_dst.push(LoopDestination::Dynamic(None));
                 let result = loop {
@@ -864,8 +946,13 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     .checked_mul(size)
                     .ok_or_else(|| self.thrown("integer overflow in multiplication"))?;
                 let addr = self.alloc_unsized(&ty, count);
+                let escapes = crate::tree_ir::type_copy_may_escape(element_ty, self.module);
                 for index in 0..count {
-                    self.copy_value(addr + index * size, saved, element_ty, None);
+                    if index + 1 == count && !escapes {
+                        self.mem.memcpy(addr + index * size, saved, size);
+                    } else {
+                        self.copy_value(addr + index * size, saved, element_ty, None)?;
+                    }
                 }
                 return Ok((addr, count));
             }
@@ -907,7 +994,14 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 }
                 let addr = self.alloc_unsized(&ty, metadata);
                 for (offset, src, field_ty, meta) in prepared {
-                    self.copy_value(addr + offset, src, &field_ty, meta);
+                    self.mem.memcpy(
+                        addr + offset,
+                        src,
+                        meta.map_or_else(
+                            || type_size(&field_ty, &self.module.datatypes),
+                            |m| full_size(&field_ty, &self.module.datatypes, m),
+                        ),
+                    );
                 }
                 return Ok((addr, metadata));
             }
@@ -959,7 +1053,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 Type::FixedArray(_, n) => Some(*n as usize),
                 _ => None,
             });
-            return Ok((addr, meta.unwrap()));
+            let meta = meta.unwrap();
+            let saved = self.alloc_unsized(&ty, meta);
+            self.copy_value(saved, addr, &ty, Some(meta))?;
+            return Ok((saved, meta));
         } else {
             self.compute_meta(nodes, id)?
                 .ok_or_else(|| self.thrown("internal error: cannot determine array length"))?
@@ -1026,7 +1123,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     if val == 0 { 1 } else { 0 }
                 }
             }
-            NodeKind::Ref(_)
+            NodeKind::Move(_)
+            | NodeKind::Ref(_)
             | NodeKind::Unique(_)
             | NodeKind::FunctionRef(_)
             | NodeKind::MakeClosure { .. } => {
@@ -1247,6 +1345,10 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             return Ok(());
         }
         match &nodes[id.0].kind {
+            NodeKind::Move(value) => {
+                let (src, meta) = self.eval_place(nodes, *value)?;
+                self.move_value(dst, src, &nodes[id.0].ty, meta)?;
+            }
             NodeKind::Local(_)
             | NodeKind::Global(_)
             | NodeKind::FieldAccess { .. }
@@ -1255,7 +1357,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             | NodeKind::Slice { .. } => {
                 let ty = nodes[id.0].ty.clone();
                 let (src, meta) = self.eval_place(nodes, id)?;
-                self.copy_value(dst, src, &ty, meta);
+                self.copy_value(dst, src, &ty, meta)?;
             }
             NodeKind::IntegerLiteral(n) => {
                 let ty = nodes[id.0].ty.clone();
@@ -1313,7 +1415,11 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 } else {
                     let (source, meta) = self.eval_array_value(nodes, inner)?;
                     let ptr = self.alloc_unsized(&inner_ty, meta);
-                    self.copy_value(ptr, source, &inner_ty, Some(meta));
+                    self.mem.memcpy(
+                        ptr,
+                        source,
+                        full_size(&inner_ty, &self.module.datatypes, meta),
+                    );
                     self.mem.store(dst, ptr as u64, 8);
                     self.mem.store(dst + 8, meta as u64, 8);
                 }
@@ -1351,12 +1457,14 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 };
                 let n = self.eval_load(nodes, count)? as usize;
                 let es = type_size(&elem_ty, &self.module.datatypes);
-                if n > 0 {
-                    // Evaluate element into first slot
-                    self.eval_into(nodes, element, dst)?;
-                    // Copy first slot to remaining slots
-                    for i in 1..n {
-                        self.mem.memcpy(dst + i * es, dst, es);
+                let seed = self.alloc_ty(&elem_ty);
+                self.eval_into(nodes, element, seed)?;
+                let escapes = crate::tree_ir::type_copy_may_escape(&elem_ty, self.module);
+                for i in 0..n {
+                    if i + 1 == n && !escapes {
+                        self.mem.memcpy(dst + i * es, seed, es);
+                    } else {
+                        self.copy_value(dst + i * es, seed, &elem_ty, None)?;
                     }
                 }
             }
@@ -1376,7 +1484,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                         "array length mismatch: expected {size} elements, got {actual_meta}"
                     )));
                 }
-                self.copy_value(dst, src, &nodes[value.0].ty, Some(actual_meta));
+                self.move_value(dst, src, &nodes[value.0].ty, Some(actual_meta))?;
             }
             NodeKind::BinaryOp { op, left, right } => {
                 let op = *op;
@@ -2109,7 +2217,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     // which place to copy and how large that place is.
                     let (src, meta) = self.eval_array_value(nodes, value)?;
                     let addr = self.alloc_unsized(&ty, meta);
-                    self.copy_value(addr, src, &ty, Some(meta));
+                    self.mem
+                        .memcpy(addr, src, full_size(&ty, &self.module.datatypes, meta));
                     (addr, Some(meta))
                 } else {
                     let meta = self.compute_meta(nodes, value)?;
@@ -2130,6 +2239,31 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             NodeKind::Assign { target, value } => {
                 let target = *target;
                 let value = *value;
+                let ty = &nodes[value.0].ty;
+                if crate::tree_ir::type_contains_copy_constructor(ty, self.module) {
+                    let (saved, meta) = if is_sized(ty, &self.module.datatypes) {
+                        let saved = self.alloc_ty(ty);
+                        self.eval_into(nodes, value, saved)?;
+                        let meta = match ty {
+                            Type::FixedArray(_, n) => Some(*n as usize),
+                            _ => None,
+                        };
+                        (saved, meta)
+                    } else {
+                        let (saved, meta) = self.eval_array_value(nodes, value)?;
+                        (saved, Some(meta))
+                    };
+                    let (place, target_meta) = self.eval_place(nodes, target)?;
+                    if let (Some(target_len), Some(value_len)) = (target_meta, meta)
+                        && target_len != value_len
+                    {
+                        return Err(self.thrown(&format!(
+                            "unsized assignment: length mismatch ({target_len} vs {value_len})"
+                        )));
+                    }
+                    self.move_value(place, saved, ty, meta)?;
+                    return Ok(());
+                }
                 let (place, target_meta) = self.eval_place(nodes, target)?;
                 if let Some(target_len) = target_meta {
                     let (src, value_len) = self.eval_array_value(nodes, value)?;
@@ -2138,7 +2272,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                             "unsized assignment: length mismatch ({target_len} vs {value_len})"
                         )));
                     }
-                    self.copy_value(place, src, &nodes[value.0].ty, Some(value_len));
+                    self.move_value(place, src, &nodes[value.0].ty, Some(value_len))?;
                 } else {
                     self.eval_into(nodes, value, place)?;
                 }
@@ -2483,6 +2617,8 @@ mod tests {
         use super::*;
 
         let module = Module {
+            copy_constructors: HashMap::new(),
+            copy_noescape: Default::default(),
             datatypes: HashMap::new(),
             functions: Vec::new(),
             statics: Vec::new(),

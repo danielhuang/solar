@@ -21,7 +21,8 @@ struct Branch#[K, V] { keys: Vec#[K], children: Vec#[Node#[K, V]], count: Uint }
 /// Entries occupy linked leaves; internal nodes contain separator keys.
 /// Ordering uses the key's cmp method. Stored keys must not change.
 /// Insertion invalidates outstanding entry references and iterators.
-/// Assignment semantics are currently unspecified.
+/// Copies have independent nodes and leaf links; keys and values use their
+/// normal copy semantics. Moving a map preserves its existing nodes.
 pub struct BTreeMap#[K, V] { root: Node#[K, V], count: Uint }
 
 /// Constructs an empty B+ tree map.
@@ -32,6 +33,48 @@ pub fn BTreeMap::#[out K, out V]() -> BTreeMap#[K, V] {
 		previous: null#[Leaf#[K, V]],
 	})&;
 	BTreeMap#[K, V] { root: Node#[K, V]::Leaf(leaf), count: 0u }
+}
+
+/// Copies a map in O(n), rebuilding both directions of its leaf chain.
+/// Copies only initialized entries and preserves the tree's shape and counts.
+pub fn BTreeMap::#[K, V](original: &BTreeMap#[K, V]) -> BTreeMap#[K, V] {
+	let previous: &?Leaf#[K, V] = null#[Leaf#[K, V]];
+	BTreeMap#[K, V] {
+		root: copy_node(original@.root, previous&),
+		count: original@.count,
+	}
+}
+
+// Visit children in key order so each copied leaf can link to the preceding
+// copy. Original sibling links must never enter the new tree.
+fn copy_node#[K, V](node: Node#[K, V], previous: &&?Leaf#[K, V]) -> Node#[K, V] {
+	match node {
+		Node#[K, V]::Leaf(leaf) => {
+			let copied = (Leaf#[K, V] {
+				entries: Vec(leaf@.entries&.as_slice()),
+				next: null#[Leaf#[K, V]],
+				previous: previous@,
+			})&;
+			if previous@ != null#[Leaf#[K, V]] { previous@@.next = copied; }
+			previous@ = copied;
+			Node#[K, V]::Leaf(copied)
+		},
+		Node#[K, V]::Branch(branch) => {
+			let children = Vec([]#[Node#[K, V]]&);
+
+			for child in branch@.children&.as_slice() {
+				children&.push(copy_node(child@, previous));
+			}
+
+			Node#[K, V]::Branch(
+				(Branch#[K, V] {
+					keys: Vec(branch@.keys&.as_slice()),
+					children: children,
+					count: branch@.count,
+				})&,
+			)
+		},
+	}
 }
 
 /// Constructs an empty default map.

@@ -10,15 +10,10 @@ pub struct Vec#[T] { len: Uint, inner: ^[MaybeZeroed#[T]] }
 
 /// Creates a vector containing a copy of `src`.
 pub fn Vec::#[T](src: &[T]) -> Vec#[T] {
-	let inner: ^[MaybeZeroed#[T]] = [MaybeZeroed#[T](); src.len()]^;
-	let i = 0u;
-
-	while i < src.len() {
-		inner@[i]&.write(src@[i]);
-		i = i + 1u;
+	Vec#[T] {
+		len: src.len(),
+		inner: [src.len(); \i: Uint MaybeZeroed(src@[i])]^,
 	}
-
-	Vec#[T] { len: src.len(), inner: inner }
 }
 
 /// Borrows the initialized elements.
@@ -38,15 +33,13 @@ pub method push#[T](self: &Vec#[T], value: T) {
 		} else {
 			1u << (64u - self@.len.count_leading_zeros())
 		};
-		let inner: ^[MaybeZeroed#[T]] = [MaybeZeroed#[T](); new_cap]^;
-		let i = 0u;
-
-		while i < self@.len {
-			inner@[i]&.write(unsafe { self@.inner@[i]&.assume_valid()@ });
-			i = i + 1u;
-		}
-
-		self@.inner = inner;
+		// Construct spare slots directly: copying zeroed storage could invoke
+		// T's copy constructor on an uninitialized value.
+		self@.inner = [new_cap; \i: Uint {
+			if i < self@.len {
+				MaybeZeroed(unsafe { self@.inner@[i]&.assume_valid()@ })
+			} else { MaybeZeroed#[T]() }
+		}]^;
 	}
 
 	self@.inner@[self@.len]&.write(value);

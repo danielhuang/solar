@@ -681,7 +681,12 @@ impl Resolver {
                         let tuple_owner = file.ast.items.iter().any(|item| {
                             matches!(item, TopLevelItem::Struct(def) if owner_id.name == def.name && def.is_tuple)
                         });
-                        if f.name.is_empty() && tuple_owner {
+                        if f.name.is_empty()
+                            && tuple_owner
+                            && !(f.parameters.len() == 1
+                                && matches!(&f.parameters[0].ty, Type::Reference(inner) if Some(inner.as_ref()) == f.associated_type.as_ref())
+                                && f.return_type == f.associated_type)
+                        {
                             rewrite_errors.borrow_mut().push(CompileError::new(
                                 format!(
                                     "tuple struct `{}` cannot have an empty-name associated function",

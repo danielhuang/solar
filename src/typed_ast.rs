@@ -943,6 +943,8 @@ pub struct SourceFile {
     pub enums: HashMap<TypeId, EnumDef>,
     /// Function instances keyed by identity.
     pub functions: HashMap<FuncId, FunctionDef>,
+    /// Copy constructors selected for concrete value types.
+    pub copy_constructors: HashMap<Type, FuncId>,
     /// Mutable globals in source order.
     pub statics: Vec<StaticItem>,
 }
@@ -2013,6 +2015,9 @@ impl<'a> Lowerer<'a> {
                         && declared_types
                             .get(&(owner.file, owner.name.to_string()))
                             .is_some_and(|(_, is_tuple)| *is_tuple)
+                        && !(f.parameters.len() == 1
+                            && matches!(&f.parameters[0].ty, ast::Type::Reference(inner) if Some(inner.as_ref()) == f.associated_type.as_ref())
+                            && f.return_type == f.associated_type)
                     {
                         return Err(CompileError::new(
                             format!(
@@ -4130,6 +4135,104 @@ impl<'a> Lowerer<'a> {
             functions.insert(fid.clone(), lowered);
         }
 
+        // Copy constructors are reachable implicitly, including constructors of
+        // generic fields with no explicit constructor call in the program.
+        let mut copy_constructors = HashMap::new();
+        let mut checked = HashSet::new();
+        loop {
+            let types: Vec<Type> = self
+                .lowered_structs
+                .keys()
+                .cloned()
+                .map(Type::Struct)
+                .chain(self.lowered_enums.keys().cloned().map(Type::Enum))
+                .filter(|ty| !checked.contains(ty))
+                .collect();
+            if types.is_empty() {
+                break;
+            }
+            for ty in types {
+                checked.insert(ty.clone());
+                if !ty.is_sized(&self.lowered_structs) {
+                    continue;
+                }
+                let owner = self.concrete_type_to_ast_type(&ty);
+                let file_id = match &ty {
+                    Type::Struct(id) | Type::Enum(id) => id.def.file,
+                    _ => unreachable!(),
+                };
+                let span = ast::SourceSpan {
+                    file_id,
+                    ..Default::default()
+                };
+                let mut entries = self.associated_call_entries(&owner, "", span)?;
+                if entries.is_empty()
+                    && let ast::Type::Generic { name, .. } = &owner
+                {
+                    entries =
+                        self.associated_call_entries(&ast::Type::Named(name.clone()), "", span)?;
+                }
+                let num_generic_overloads = entries
+                    .iter()
+                    .filter(|entry| !entry.type_params.is_empty())
+                    .count();
+                let expected = Type::Ref(Box::new(ty.clone()));
+                for entry in entries {
+                    if entry.ast_def.parameters.len() != 1 || entry.out_type_param_count != 0 {
+                        continue;
+                    }
+                    let mut subst = HashMap::new();
+                    if !self.try_unify_type(
+                        &entry.ast_def.parameters[0].ty,
+                        &expected,
+                        &entry.type_params,
+                        &mut subst,
+                    ) || entry.type_params.iter().any(|p| !subst.contains_key(p))
+                    {
+                        continue;
+                    }
+                    let parameter =
+                        apply_subst_to_ast_type(&entry.ast_def.parameters[0].ty, &subst);
+                    if self.resolve_ast_type(&parameter)? != expected {
+                        continue;
+                    }
+                    let Some(ret) = &entry.ast_def.return_type else {
+                        continue;
+                    };
+                    if self.expand_type_aliases(&apply_subst_to_ast_type(ret, &subst), 0)
+                        != self.expand_type_aliases(&owner, 0)
+                    {
+                        continue;
+                    }
+                    if entry.ast_def.is_unsafe {
+                        return Err(CompileError::new(
+                            "copy constructors cannot be unsafe".to_string(),
+                            entry.ast_def.span,
+                        ));
+                    }
+                    let fid = if entry.type_params.is_empty() {
+                        let fid = FuncId::free(
+                            def_id_of_function(&entry.ast_def),
+                            vec![ty.clone(), expected.clone()],
+                        );
+                        self.ensure_concrete_lowered(&fid, &entry.ast_def)?;
+                        fid
+                    } else {
+                        let type_args: Vec<_> =
+                            entry.type_params.iter().map(|p| subst[p].clone()).collect();
+                        self.ensure_function_monomorphized_with_def(
+                            "copy constructor",
+                            &entry,
+                            &type_args,
+                            num_generic_overloads,
+                            false,
+                        )?
+                    };
+                    copy_constructors.insert(ty.clone(), fid);
+                }
+            }
+        }
+
         // Add synthetic closure functions
         for closure_fn in std::mem::take(&mut self.pending_closures) {
             functions.insert(closure_fn.id.clone(), closure_fn);
@@ -4187,6 +4290,7 @@ impl<'a> Lowerer<'a> {
             enums,
             functions,
             statics: statics_out,
+            copy_constructors,
         })
     }
 
@@ -6196,6 +6300,25 @@ impl<'a> Lowerer<'a> {
                         }
                         let id = self.resolve_struct_name(&def, &struct_type_args)?;
                         let struct_def = self.lowered_structs.get(&id).unwrap().clone();
+                        if arguments.len() == 1 {
+                            let ty = Type::Struct(id.clone());
+                            let expected = Type::Ref(Box::new(ty.clone()));
+                            if self.lower_expr(&arguments[0])?.ty == expected {
+                                let owner = self.concrete_type_to_ast_type(&ty);
+                                let entries =
+                                    self.associated_call_entries(&owner, "", expr.span)?;
+                                if !entries.is_empty() {
+                                    return self.resolve_overloaded_call(
+                                        CandidateSource::Entries(entries),
+                                        "copy constructor",
+                                        arguments,
+                                        kwargs,
+                                        &[],
+                                        expr.span,
+                                    );
+                                }
+                            }
+                        }
                         if arguments.len() != struct_def.fields.len() {
                             return Err(CompileError::new(
                                 format!(

@@ -20,7 +20,7 @@ struct ArrayRegion {
     len: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Value {
     Int(i64),
     Struct {
@@ -190,14 +190,15 @@ fn slice_to_bytes(val: &Value) -> Vec<u8> {
     }
 }
 
-fn deep_copy_value(val: &Value) -> Value {
+/// Transfer aggregate storage without copying owned pointees or calling constructors.
+fn transfer_value(val: &Value) -> Value {
     match val {
         Value::Int(n) => Value::Int(*n),
         Value::Struct { name, fields } => {
             let new_fields = fields
                 .iter()
                 .map(|(k, slot)| {
-                    let copied = deep_copy_value(&slot.borrow());
+                    let copied = transfer_value(&slot.borrow());
                     (k.clone(), Rc::new(RefCell::new(copied)))
                 })
                 .collect();
@@ -210,7 +211,7 @@ fn deep_copy_value(val: &Value) -> Value {
             let new_elements = elements
                 .iter()
                 .map(|slot| {
-                    let copied = deep_copy_value(&slot.borrow());
+                    let copied = transfer_value(&slot.borrow());
                     Rc::new(RefCell::new(copied))
                 })
                 .collect();
@@ -226,7 +227,7 @@ fn deep_copy_value(val: &Value) -> Value {
             variant_name: variant_name.clone(),
             variant_index: *variant_index,
             value: value.as_ref().map(|slot| {
-                let copied = deep_copy_value(&slot.borrow());
+                let copied = transfer_value(&slot.borrow());
                 Rc::new(RefCell::new(copied))
             }),
         },
@@ -235,9 +236,7 @@ fn deep_copy_value(val: &Value) -> Value {
             target: Rc::clone(target),
             ty: ty.clone(),
         },
-        Value::Unique(target) => {
-            Value::Unique(Rc::new(RefCell::new(deep_copy_value(&target.borrow()))))
-        }
+        Value::Unique(target) => Value::Unique(Rc::clone(target)),
         Value::Function { name, captures } => Value::Function {
             name: name.clone(),
             captures: captures
@@ -314,12 +313,7 @@ fn assign_value_in_place(dst: &Slot, src: Value) -> Result<(), (usize, usize)> {
             (Value::Struct { fields: old_f, .. }, Value::Struct { fields: new_f, .. }) => Some(
                 old_f
                     .iter()
-                    .map(|(name, slot)| {
-                        (
-                            Rc::clone(slot),
-                            deep_copy_value(&new_f[name.as_str()].borrow()),
-                        )
-                    })
+                    .map(|(name, slot)| (Rc::clone(slot), new_f[name.as_str()].borrow().clone()))
                     .collect(),
             ),
             (Value::Array(old_e), Value::Array(new_e)) => {
@@ -330,7 +324,7 @@ fn assign_value_in_place(dst: &Slot, src: Value) -> Result<(), (usize, usize)> {
                     old_e
                         .iter()
                         .zip(new_e.iter())
-                        .map(|(o, n)| (Rc::clone(o), deep_copy_value(&n.borrow())))
+                        .map(|(o, n)| (Rc::clone(o), n.borrow().clone()))
                         .collect(),
                 )
             }
@@ -345,10 +339,9 @@ fn assign_value_in_place(dst: &Slot, src: Value) -> Result<(), (usize, usize)> {
                     value: Some(new_inner),
                     ..
                 },
-            ) if old_idx == new_idx => Some(vec![(
-                Rc::clone(old_inner),
-                deep_copy_value(&new_inner.borrow()),
-            )]),
+            ) if old_idx == new_idx => {
+                Some(vec![(Rc::clone(old_inner), new_inner.borrow().clone())])
+            }
             _ => None,
         }
     };
@@ -543,6 +536,8 @@ type Eval<T> = Result<T, Unwind>;
 
 struct Interpreter<'a, 'io> {
     functions: HashMap<String, &'a FunctionDef>,
+    copy_constructors: &'a HashMap<Type, String>,
+    copy_noescape: &'a std::collections::HashSet<Type>,
     structs: &'a HashMap<String, StructDef>,
     enums: &'a HashMap<String, EnumDef>,
     scopes: ScopeStack<Slot>,
@@ -578,6 +573,8 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             .collect();
         Interpreter {
             functions,
+            copy_constructors: &source.copy_constructors,
+            copy_noescape: &source.copy_noescape,
             structs: &source.structs,
             enums: &source.enums,
             scopes: ScopeStack::default(),
@@ -892,7 +889,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             }
             Type::Function { .. } => {
                 let id = self.transmute_id();
-                self.transmute_values.insert(id, deep_copy_value(value));
+                self.transmute_values.insert(id, transfer_value(value));
                 bytes[..8].copy_from_slice(&id.to_le_bytes());
             }
             Type::Unit => {}
@@ -1100,7 +1097,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             }
             Type::Function { .. } => {
                 let id = read_transmute_u64(bytes);
-                deep_copy_value(
+                transfer_value(
                     self.transmute_values
                         .get(&id)
                         .unwrap_or_else(|| panic!("transmute produced an invalid function value")),
@@ -1294,6 +1291,103 @@ impl<'a, 'io> Interpreter<'a, 'io> {
         }
     }
 
+    fn copy_may_escape(&self, ty: &Type, seen: &mut std::collections::HashSet<Type>) -> bool {
+        if !seen.insert(ty.clone()) {
+            return false;
+        }
+        if self.copy_constructors.contains_key(ty) {
+            return !self.copy_noescape.contains(ty);
+        }
+        match ty {
+            Type::Struct(name) => self.structs[name]
+                .fields
+                .iter()
+                .any(|f| self.copy_may_escape(&f.ty, seen)),
+            Type::Enum(name) => self.enums[name]
+                .variants
+                .iter()
+                .filter_map(|v| v.inner_type.as_ref())
+                .any(|ty| self.copy_may_escape(ty, seen)),
+            Type::Unique(t) | Type::UniqueUnsized(t) | Type::Array(t) | Type::FixedArray(t, _) => {
+                self.copy_may_escape(t, seen)
+            }
+            _ => false,
+        }
+    }
+
+    /// Copy from the original slot so user constructors can observe and retain
+    /// the same reference an explicit `T(original&)` call would receive.
+    fn copy_slot(&mut self, slot: &Slot, ty: &Type) -> Eval<Value> {
+        if let Some(function) = self.copy_constructors.get(ty) {
+            return self.call_function_value(
+                Value::Function {
+                    name: function.clone(),
+                    captures: Vec::new(),
+                },
+                vec![Value::Ref(slot.clone())],
+            );
+        }
+        let value = slot.borrow().clone();
+        Ok(match value {
+            Value::Struct { name, fields } => {
+                let mut copied = HashMap::new();
+                for field in &self.structs[&name].fields {
+                    copied.insert(
+                        field.name.clone(),
+                        Rc::new(RefCell::new(
+                            self.copy_slot(&fields[&field.name], &field.ty)?,
+                        )),
+                    );
+                }
+                Value::Struct {
+                    name,
+                    fields: copied,
+                }
+            }
+            Value::Array(elements) => {
+                let inner = match ty {
+                    Type::Array(t) | Type::FixedArray(t, _) => t,
+                    _ => unreachable!(),
+                };
+                let mut copied = Vec::new();
+                for element in elements {
+                    copied.push(Rc::new(RefCell::new(self.copy_slot(&element, inner)?)));
+                }
+                Value::Array(copied)
+            }
+            Value::Unique(target) => {
+                let inner = match ty {
+                    Type::Unique(t) | Type::UniqueUnsized(t) => t,
+                    _ => unreachable!(),
+                };
+                Value::Unique(Rc::new(RefCell::new(self.copy_slot(&target, inner)?)))
+            }
+            Value::Enum {
+                enum_name,
+                variant_name,
+                variant_index,
+                value,
+            } => {
+                let value = if let Some(slot) = value {
+                    let ty = self.enums[&enum_name].variants[variant_index]
+                        .inner_type
+                        .clone()
+                        .unwrap();
+                    Some(Rc::new(RefCell::new(self.copy_slot(&slot, &ty)?)))
+                } else {
+                    None
+                };
+                Value::Enum {
+                    enum_name,
+                    variant_name,
+                    variant_index,
+                    value,
+                }
+            }
+            other => other,
+        })
+    }
+
     fn eval_expr(&mut self, expr: &Expr) -> Eval<Value> {
         if expr.ty == Type::Unit
             && matches!(
@@ -1304,6 +1398,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             return Ok(Value::Unit);
         }
         Ok(match &expr.kind {
+            ExprKind::Move(inner) => transfer_value(&self.eval_place(inner)?.borrow()),
             ExprKind::Identifier(_)
             | ExprKind::Global(_)
             | ExprKind::FieldAccess { .. }
@@ -1311,8 +1406,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
             | ExprKind::Index { .. }
             | ExprKind::Slice { .. } => {
                 let slot = self.eval_place(expr)?;
-                let val = slot.borrow();
-                deep_copy_value(&val)
+                self.copy_slot(&slot, &expr.ty)?
             }
             ExprKind::IntegerLiteral(n) => Value::Int(*n),
             // Floats are raw bit patterns in `Value::Int`; the expression type
@@ -1391,8 +1485,15 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 n.checked_mul(element_size)
                     .ok_or_else(|| self.thrown("integer overflow in multiplication"))?;
                 let mut slots = Vec::with_capacity(n);
-                for _ in 0..n {
-                    slots.push(Rc::new(RefCell::new(deep_copy_value(&elem_val))));
+                let seed = Rc::new(RefCell::new(elem_val));
+                let escapes = self.copy_may_escape(inner, &mut Default::default());
+                for i in 0..n {
+                    let value = if i + 1 == n && !escapes {
+                        transfer_value(&seed.borrow())
+                    } else {
+                        self.copy_slot(&seed, inner)?
+                    };
+                    slots.push(Rc::new(RefCell::new(value)));
                 }
                 Value::Array(slots)
             }
@@ -1645,7 +1746,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                                 BinOp::Add => {
                                     let mut combined = Vec::new();
                                     for e in a_elems.iter().chain(b_elems.iter()) {
-                                        combined.push(Rc::new(RefCell::new(deep_copy_value(
+                                        combined.push(Rc::new(RefCell::new(transfer_value(
                                             &e.borrow(),
                                         ))));
                                     }
@@ -2060,8 +2161,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 self.decode_transmute_value(&bytes, result_ty)
             }
             Intrinsic::ArrayLen => {
-                let arr = self.eval_expr(&arguments[0])?;
-                match arr {
+                // Reading metadata must not copy elements or invoke their constructors.
+                let arr = self.eval_place(&arguments[0])?;
+                match &*arr.borrow() {
                     Value::Array(elements) => Value::Int(elements.len() as i64),
                     _ => unreachable!(),
                 }
@@ -2161,7 +2263,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 // In single-threaded interpreter, atomic load is just a deref
                 let val = self.eval_expr(&arguments[0])?;
                 match val {
-                    Value::Ref(slot) => deep_copy_value(&slot.borrow()),
+                    Value::Ref(slot) => transfer_value(&slot.borrow()),
                     _ => unreachable!("atomic_load: expected ref"),
                 }
             }
@@ -2183,7 +2285,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let new_val = self.eval_expr(&arguments[1])?;
                 match ptr_val {
                     Value::Ref(slot) => {
-                        let old = deep_copy_value(&slot.borrow());
+                        let old = transfer_value(&slot.borrow());
                         *slot.borrow_mut() = new_val;
                         old
                     }
@@ -2197,7 +2299,7 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                 let new_val = self.eval_expr(&arguments[2])?;
                 match ptr_val {
                     Value::Ref(slot) => {
-                        let old = deep_copy_value(&slot.borrow());
+                        let old = transfer_value(&slot.borrow());
                         if atomic_value_eq(&old, &expected) {
                             *slot.borrow_mut() = new_val;
                         }

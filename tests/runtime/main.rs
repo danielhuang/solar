@@ -129,6 +129,22 @@ fn btree_map() {
 }
 
 #[test]
+fn btree_map_copy() {
+    assert_eq!(
+        run(&fixture("btree_map_copy.solar"), "btree_map_copy"),
+        "passed\n"
+    );
+}
+
+#[test]
+fn btree_map_copy_release() {
+    assert_eq!(
+        test_utils::run_release_file(&fixture("btree_map_copy.solar"), "btree_map_copy"),
+        "passed\n"
+    );
+}
+
+#[test]
 fn btree_map_gc() {
     assert_eq!(
         test_utils::run_codegen_file(&fixture("btree_map_gc.solar"), "btree_map_gc"),
@@ -1500,4 +1516,20 @@ fn maybe_zeroed_gc() {
 #[test]
 fn exception() {
     assert_eq!(run(&fixture("exception.solar"), "exception"), "passed\n");
+}
+
+#[test]
+fn copy_constructors() {
+    assert_eq!(
+        run(&fixture("copy_constructors.solar"), "copy_constructors"),
+        "passed\n"
+    );
+}
+
+#[test]
+fn copy_constructors_release() {
+    assert_eq!(
+        test_utils::run_release_file(&fixture("copy_constructors.solar"), "copy_constructors"),
+        "passed\n"
+    );
 }

@@ -6,11 +6,13 @@ fn leaf_cursor() {
 		map&.insert(key, key.to_string());
 	}
 
-	map&.range(Option#[Int]::Some(30), Option#[Int]::Some(490))
+	let copied = BTreeMap(map&);
+	for key in 0..512 { map&.insert(key, "original"&); }
+	copied&.range(Option#[Int]::Some(30), Option#[Int]::Some(490))
 }
 
 fn main() {
-	// The cursor retains only leaf endpoints; all middle leaves and their
+	// The cursor retains only copied leaf endpoints; all middle leaves and their
 	// payloads must remain reachable through next/previous links after GC.
 	let cursor = leaf_cursor();
 	gc::collect_gc();

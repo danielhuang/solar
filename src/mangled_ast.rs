@@ -16,6 +16,10 @@ pub struct SourceFile {
     pub enums: HashMap<String, EnumDef>,
     /// Function definitions keyed by symbol.
     pub functions: HashMap<String, FunctionDef>,
+    /// Copy constructors selected for concrete value types.
+    pub copy_constructors: HashMap<Type, String>,
+    /// Types whose copy constructors cannot retain the source reference.
+    pub copy_noescape: std::collections::HashSet<Type>,
     /// Mutable globals in source order.
     pub statics: Vec<StaticItem>,
 }
@@ -139,6 +143,8 @@ pub struct Expr {
 #[derive(Debug, Clone)]
 pub enum ExprKind {
     Identifier(String),
+    /// Transfer a proven last use without invoking value-copy behavior.
+    Move(Box<Expr>),
     /// A float literal; the expression's `ty` selects Float32/Float64.
     FloatLiteral(f64),
     /// A reference to a top-level `static` (a global mutable place).
@@ -303,7 +309,13 @@ pub fn lower(source: &ta::SourceFile, source_map: &SourceMap) -> SourceFile {
         sm: source_map,
         prefixes: RefCell::new(HashMap::new()),
     };
-    SourceFile {
+    let mut result = SourceFile {
+        copy_noescape: Default::default(),
+        copy_constructors: source
+            .copy_constructors
+            .iter()
+            .map(|(ty, f)| (r.conv_type(ty), r.func_symbol(f)))
+            .collect(),
         structs: source
             .structs
             .iter()
@@ -320,7 +332,9 @@ pub fn lower(source: &ta::SourceFile, source_map: &SourceMap) -> SourceFile {
             .map(|(k, v)| (r.func_symbol(k), r.conv_function(v)))
             .collect(),
         statics: source.statics.iter().map(|s| r.conv_static(s)).collect(),
-    }
+    };
+    crate::value_usage::insert_moves(&mut result);
+    result
 }
 
 /// Self-delimiting identifier encoding (`<byte-len>_<s>`).

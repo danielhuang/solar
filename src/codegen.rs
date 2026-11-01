@@ -21,6 +21,7 @@ struct PreparedValue {
 
 enum PreparedContents {
     Copy(String),
+    Move(String),
     Elements(Vec<PreparedValue>),
     Repeat(Box<PreparedValue>),
     Init(String),
@@ -1099,7 +1100,7 @@ impl<'a> Codegen<'a> {
             }
             let dst_str = format!("_v{var_id}");
             let src_str = format!("(uint8_t*)&_p{i}");
-            self.emit_copy(&dst_str, &src_str, &ty, &s.to_string());
+            self.emit_move_contents(&dst_str, &src_str, &ty, &s.to_string());
         }
 
         let nodes = &func.nodes;
@@ -1197,17 +1198,18 @@ impl<'a> Codegen<'a> {
         if self.is_sized(&ty) {
             let size = self.type_size(&ty).max(1);
             let align = self.type_align(&ty);
-            let saved = if size <= STACK_ALLOC_MAX {
-                self.prepared_slot(|name| {
-                    format!("uint8_t {name}[{size}] __attribute__((aligned({align}))) = {{0}};")
-                })
-            } else {
-                let saved = self.prepared_slot(|name| format!("uint8_t* {name} = NULL;"));
-                let temporary = self.fresh_tmp();
-                self.emit_alloc(&temporary, size, align, self.mark_fn_expr(&ty));
-                self.linef(format!("{saved} = {temporary};"));
-                saved
-            };
+            let saved =
+                if size <= STACK_ALLOC_MAX && !type_contains_copy_constructor(&ty, self.module) {
+                    self.prepared_slot(|name| {
+                        format!("uint8_t {name}[{size}] __attribute__((aligned({align}))) = {{0}};")
+                    })
+                } else {
+                    let saved = self.prepared_slot(|name| format!("uint8_t* {name} = NULL;"));
+                    let temporary = self.fresh_tmp();
+                    self.emit_alloc(&temporary, size, align, self.mark_fn_expr(&ty));
+                    self.linef(format!("{saved} = {temporary};"));
+                    saved
+                };
             self.emit_into(nodes, id, &saved);
             let meta = if let Type::FixedArray(_, n) = ty {
                 Some(n.to_string())
@@ -1217,7 +1219,7 @@ impl<'a> Codegen<'a> {
             return PreparedValue {
                 ty,
                 meta,
-                value: PreparedContents::Copy(saved),
+                value: PreparedContents::Move(saved),
             };
         }
         let (meta, value) = match &nodes[id.0].kind {
@@ -1328,7 +1330,7 @@ impl<'a> Codegen<'a> {
                     return PreparedValue {
                         ty,
                         meta: value.meta,
-                        value: PreparedContents::Copy(saved),
+                        value: PreparedContents::Move(saved),
                     };
                 }
                 return value;
@@ -1372,12 +1374,16 @@ impl<'a> Codegen<'a> {
             }
 
             _ => {
+                let (place, moving) = match nodes[id.0].kind {
+                    NodeKind::Move(value) => (value, true),
+                    _ => (id, false),
+                };
                 assert!(
-                    is_place(nodes, id),
+                    is_place(nodes, place),
                     "unsupported unsized expression {:?}",
                     nodes[id.0].kind
                 );
-                let (ptr, meta) = self.emit_place(nodes, id);
+                let (ptr, meta) = self.emit_place(nodes, place);
                 let saved = self.prepared_slot(|name| format!("uint8_t* {name} = NULL;"));
                 let length = self.prepared_slot(|name| format!("uint64_t {name} = 0;"));
                 self.linef(format!("{length} = {};", meta.unwrap()));
@@ -1385,12 +1391,23 @@ impl<'a> Codegen<'a> {
                     let tmp = self.fresh_tmp();
                     let size = self.emit_full_size_expr(&ty, &length);
                     self.emit_alloc(&tmp, &size, self.type_align(&ty), self.mark_fn_expr(&ty));
-                    self.emit_copy_contents(&tmp, &ptr, &ty, &size);
+                    if moving {
+                        self.emit_move_contents(&tmp, &ptr, &ty, &size);
+                    } else {
+                        self.emit_copy_contents(&tmp, &ptr, &ty, &size);
+                    }
                     self.linef(format!("{saved} = {tmp};"));
                 } else {
                     self.linef(format!("{saved} = {ptr};"));
                 }
-                (Some(length), PreparedContents::Copy(saved))
+                (
+                    Some(length),
+                    if snapshot || moving {
+                        PreparedContents::Move(saved)
+                    } else {
+                        PreparedContents::Copy(saved)
+                    },
+                )
             }
         };
         PreparedValue { ty, meta, value }
@@ -1411,6 +1428,11 @@ impl<'a> Codegen<'a> {
 
     fn fill_prepared(&mut self, value: &PreparedValue, dst: &str) {
         match &value.value {
+            PreparedContents::Move(ptr) => {
+                let size =
+                    self.emit_full_size_expr(&value.ty, value.meta.as_deref().unwrap_or("0"));
+                self.emit_move_contents(dst, ptr, &value.ty, &size);
+            }
             PreparedContents::Copy(ptr) => {
                 let size =
                     self.emit_full_size_expr(&value.ty, value.meta.as_deref().unwrap_or("0"));
@@ -1424,15 +1446,10 @@ impl<'a> Codegen<'a> {
             }
             PreparedContents::Repeat(element) => {
                 let count = value.meta.as_ref().unwrap();
-                let index = self.fresh_tmp();
-                self.linef(format!(
-                    "for (uint64_t {index} = 0; {index} < {count}; {index}++) {{"
-                ));
-                self.indent += 1;
-                let size = self.type_size(&element.ty);
-                self.fill_prepared(element, &format!("({dst} + {index} * {size})"));
-                self.indent -= 1;
-                self.line("}");
+                let PreparedContents::Move(seed) = &element.value else {
+                    unreachable!()
+                };
+                self.emit_repeat_copies(dst, seed, &element.ty, count);
             }
             PreparedContents::Init(callee) => {
                 let (Type::Array(element) | Type::FixedArray(element, _)) = &value.ty else {
@@ -1452,7 +1469,7 @@ impl<'a> Codegen<'a> {
                 self.linef(format!("{idx_ty} {argument};"));
                 self.linef(format!("*(uint64_t*)&{argument} = {index};"));
                 self.linef(format!("{ret} {result} = (({ret}(*)(void*, {idx_ty}))(*(void(**)()){callee}))(*(void**)({callee} + 8), {argument});"));
-                self.emit_copy(
+                self.emit_move_contents(
                     &format!("({dst} + {index} * {size})"),
                     &format!("(uint8_t*)&{result}"),
                     element,
@@ -1873,7 +1890,7 @@ impl<'a> Codegen<'a> {
                     format!("!(uint8_t){val}")
                 }
             }
-            NodeKind::IfExpr { .. } | NodeKind::Match { .. } => {
+            NodeKind::Move(_) | NodeKind::IfExpr { .. } | NodeKind::Match { .. } => {
                 let ty = nodes[id.0].ty.clone();
                 let s = self.type_size(&ty);
                 let a = self.type_align(&ty);
@@ -2254,15 +2271,47 @@ impl<'a> Codegen<'a> {
         copy_gap(self, off, size);
     }
 
+    fn emit_repeat_copies(&mut self, dst: &str, seed: &str, ty: &Type, count: &str) {
+        let index = self.fresh_tmp();
+        let size = self.type_size(ty);
+        let escapes = type_copy_may_escape(ty, self.module);
+        self.linef(format!(
+            "for (uint64_t {index} = 0; {index} < {count}; {index}++) {{"
+        ));
+        self.indent += 1;
+        let element = format!("({dst} + {index} * {size})");
+        if !escapes {
+            self.linef(format!("if ({index} + 1 == {count}) {{"));
+            self.indent += 1;
+            self.emit_move_contents(&element, seed, ty, &size.to_string());
+            self.indent -= 1;
+            self.line("} else {");
+            self.indent += 1;
+        }
+        self.emit_copy(&element, seed, ty, &size.to_string());
+        if !escapes {
+            self.indent -= 1;
+            self.line("}");
+        }
+        self.indent -= 1;
+        self.line("}");
+    }
+
+    /// Transfer materialized contents, retaining GC barriers, wide-pointer
+    /// atomicity, and enum payload publication without invoking constructors.
+    fn emit_move_contents(&mut self, dst: &str, src: &str, ty: &Type, size: &str) {
+        self.emit_copy_ctx(dst, src, ty, size, true, true);
+    }
+
     /// Emit a type-aware copy from `src` to `dst`. If the type contains unique
     /// pointers, recursively deep-copies the pointees. Otherwise copies the
     /// value with pointer-typed member stores (see `emit_plain_copy`).
     fn emit_copy(&mut self, dst: &str, src: &str, ty: &Type, size_expr: &str) {
-        self.emit_copy_ctx(dst, src, ty, size_expr, false)
+        self.emit_copy_ctx(dst, src, ty, size_expr, false, false)
     }
 
-    /// Emit a direction-aware per-element copy loop: forward when `dst <= src`,
-    /// backward when `dst > src`, so a partially overlapping same-array slice
+    /// Emit element copies in index order, reversing only for overlapping
+    /// ranges with `dst > src`, so a partially overlapping same-array slice
     /// assignment (`s[1..4] = s[0..3]` and the reverse) behaves like memmove —
     /// Solar copies may alias freely. Overlapping slices of one array are always
     /// element-aligned, so each element pair is either identical or disjoint;
@@ -2281,7 +2330,7 @@ impl<'a> Codegen<'a> {
         self.linef(format!("size_t {n_tmp} = {count_expr};"));
         let back_tmp = self.fresh_tmp();
         self.linef(format!(
-            "int {back_tmp} = (uintptr_t)({dst}) > (uintptr_t)({src});"
+            "int {back_tmp} = (uintptr_t)({dst}) > (uintptr_t)({src}) && (uintptr_t)({dst}) - (uintptr_t)({src}) < {n_tmp} * {elem_size};"
         ));
         let k = self.fresh_tmp();
         self.linef(format!("for (size_t {k} = 0; {k} < {n_tmp}; {k}++) {{"));
@@ -2300,18 +2349,44 @@ impl<'a> Codegen<'a> {
     /// Copy the *pointee data* of an unsized `ty` (element data for `[T]`,
     /// not its 16-byte fat-pointer value). `size_expr` is the total byte size.
     fn emit_copy_contents(&mut self, dst: &str, src: &str, ty: &Type, size_expr: &str) {
-        self.emit_copy_ctx(dst, src, ty, size_expr, true)
+        self.emit_copy_ctx(dst, src, ty, size_expr, true, false)
     }
 
     /// `contents == true` means `dst`/`src` point at the *pointee data* of an
     /// unsized `ty` (from a `^T`-of-unsized deep copy) rather than at a value
     /// of `ty` — for `[T]` that's the element data, not the 16-byte fat pointer.
-    fn emit_copy_ctx(&mut self, dst: &str, src: &str, ty: &Type, size_expr: &str, contents: bool) {
+    fn emit_copy_ctx(
+        &mut self,
+        dst: &str,
+        src: &str,
+        ty: &Type,
+        size_expr: &str,
+        contents: bool,
+        moving: bool,
+    ) {
+        if !moving && let Some(function) = self.module.copy_constructors.get(ty) {
+            let cname = self.func_name(function);
+            let param_ty = Type::Ref(Box::new(ty.clone()));
+            let pvt = self.val_type(&param_ty);
+            let vt = self.val_type(ty);
+            let arg = self.fresh_tmp();
+            let result = self.fresh_tmp();
+            self.linef(format!("{pvt} {arg};"));
+            self.linef(format!("*(uint8_t**)&{arg} = {src};"));
+            self.linef(format!("{vt} {result} = {cname}(NULL, {arg});"));
+            self.emit_move_contents(dst, &format!("(uint8_t*)&{result}"), ty, size_expr);
+            return;
+        }
+        if moving && matches!(ty, Type::Unique(_)) {
+            self.emit_plain_copy(dst, src, ty, size_expr);
+            return;
+        }
         // UniqueUnsized needs deep-copy, so it goes through the match below
         if matches!(
             ty,
             Type::Function { .. } | Type::RefUnsized(_) | Type::NullableRefUnsized(_) | Type::Any
-        ) {
+        ) || (moving && matches!(ty, Type::UniqueUnsized(_)))
+        {
             self.linef(format!("sol_copy_128_unordered({dst}, {src});"));
             return;
         }
@@ -2324,15 +2399,21 @@ impl<'a> Codegen<'a> {
             && !self.module.datatypes[name.as_str()].is_sized
         {
             let fields: Vec<_> = self.module.datatypes[name.as_str()]
-                .fields
-                .iter()
+                .fields_in_copy_order()
                 .map(|f| (f.offset, f.ty.clone(), f.size))
                 .collect();
             let (prefix, tail) = fields.split_at(fields.len() - 1);
             for (offset, field_ty, field_size) in prefix {
                 let fdst = format!("(({dst}) + {offset})");
                 let fsrc = format!("(({src}) + {offset})");
-                self.emit_copy(&fdst, &fsrc, field_ty, &field_size.to_string());
+                self.emit_copy_ctx(
+                    &fdst,
+                    &fsrc,
+                    field_ty,
+                    &field_size.to_string(),
+                    false,
+                    moving,
+                );
             }
             let (tail_off, tail_ty, _) = &tail[0];
             let tdst = format!("(({dst}) + {tail_off})");
@@ -2341,10 +2422,13 @@ impl<'a> Codegen<'a> {
             // whole-value memcpy this replaces; both allocations are
             // `full_size` so the extra bytes are in bounds.
             let tail_size = format!("(({size_expr}) - {tail_off})");
-            self.emit_copy_ctx(&tdst, &tsrc, tail_ty, &tail_size, true);
+            self.emit_copy_ctx(&tdst, &tsrc, tail_ty, &tail_size, true, moving);
             return;
         }
-        if !self.type_contains_unique(ty) && !self.type_contains_enum(ty) {
+        if !self.type_contains_unique(ty)
+            && !self.type_contains_enum(ty)
+            && !crate::tree_ir::type_contains_copy_constructor(ty, self.module)
+        {
             if contents && let Type::Array(inner) = ty {
                 // Unsized array contents: copy per element so pointer-carrying
                 // elements still get typed pointer stores.
@@ -2410,7 +2494,7 @@ impl<'a> Codegen<'a> {
                 let new_ptr = self.fresh_tmp();
                 self.emit_alloc(&new_ptr, &inner_size, align, &mf);
                 // `inner` is unsized: new_ptr/src_ptr are its pointee data.
-                self.emit_copy_ctx(&new_ptr, &src_ptr, inner, &inner_size, true);
+                self.emit_copy_ctx(&new_ptr, &src_ptr, inner, &inner_size, true, false);
                 let wide_tmp = self.fresh_tmp();
                 self.linef(format!(
                     "uint8_t {wide_tmp}[16] __attribute__((aligned(16)));"
@@ -2439,7 +2523,14 @@ impl<'a> Codegen<'a> {
                         self.indent += 1;
                         let fdst = format!("({dst} + {offset})");
                         let fsrc = format!("({src} + {offset})");
-                        self.emit_copy(&fdst, &fsrc, &field_ty, &field_size.to_string());
+                        self.emit_copy_ctx(
+                            &fdst,
+                            &fsrc,
+                            &field_ty,
+                            &field_size.to_string(),
+                            false,
+                            moving,
+                        );
                         self.indent -= 1;
                         self.line("}");
                     }
@@ -2457,8 +2548,7 @@ impl<'a> Codegen<'a> {
             }
             Type::Struct(name) => {
                 let fields: Vec<_> = self.module.datatypes[name.as_str()]
-                    .fields
-                    .iter()
+                    .fields_in_copy_order()
                     .map(|f| (f.offset, f.ty.clone(), f.size))
                     .collect();
                 for (offset, field_ty, field_size) in &fields {
@@ -2472,7 +2562,14 @@ impl<'a> Codegen<'a> {
                     } else {
                         format!("({src} + {offset})")
                     };
-                    self.emit_copy(&fdst, &fsrc, field_ty, &field_size.to_string());
+                    self.emit_copy_ctx(
+                        &fdst,
+                        &fsrc,
+                        field_ty,
+                        &field_size.to_string(),
+                        false,
+                        moving,
+                    );
                 }
             }
             Type::FixedArray(inner, count) => {
@@ -2480,7 +2577,7 @@ impl<'a> Codegen<'a> {
                 let inner = (**inner).clone();
                 let count = *count as usize;
                 self.emit_elem_copy_loop(dst, src, &count.to_string(), es, |this, edst, esrc| {
-                    this.emit_copy(edst, esrc, &inner, &es.to_string());
+                    this.emit_copy_ctx(edst, esrc, &inner, &es.to_string(), false, moving);
                 });
             }
             Type::Array(inner) => {
@@ -2489,7 +2586,7 @@ impl<'a> Codegen<'a> {
                 let inner = (**inner).clone();
                 let count_expr = format!("({size_expr}) / {es}");
                 self.emit_elem_copy_loop(dst, src, &count_expr, es, |this, edst, esrc| {
-                    this.emit_copy(edst, esrc, &inner, &es.to_string());
+                    this.emit_copy_ctx(edst, esrc, &inner, &es.to_string(), false, moving);
                 });
             }
             _ => {
@@ -2517,6 +2614,12 @@ impl<'a> Codegen<'a> {
             return;
         }
         match &nodes[id.0].kind {
+            NodeKind::Move(value) => {
+                let ty = nodes[id.0].ty.clone();
+                let (src, meta) = self.emit_place(nodes, *value);
+                let size = self.emit_full_size_expr(&ty, meta.as_deref().unwrap_or("0"));
+                self.emit_move_contents(dst, &src, &ty, &size);
+            }
             NodeKind::Local(_)
             | NodeKind::Global(_)
             | NodeKind::FieldAccess { .. }
@@ -2662,31 +2765,14 @@ impl<'a> Codegen<'a> {
                 }
             }
             NodeKind::ArrayRepeat { element, count } => {
-                let element = *element;
-                let count = *count;
-                let elem_ty = match &nodes[id.0].ty {
-                    Type::Array(inner) | Type::FixedArray(inner, _) => (**inner).clone(),
-                    _ => unreachable!(),
+                let element = self.prepare_value(nodes, *element);
+                let count_expr = self.emit_load(nodes, *count);
+                let count = self.fresh_tmp();
+                self.linef(format!("uint64_t {count} = (uint64_t){count_expr};"));
+                let PreparedContents::Move(seed) = &element.value else {
+                    unreachable!()
                 };
-                let es = self.type_size(&elem_ty);
-                let cnt_expr = self.emit_load(nodes, count);
-                let cnt_tmp = self.fresh_tmp();
-                self.linef(format!("uint64_t {cnt_tmp} = (uint64_t){cnt_expr};"));
-                // Evaluate element into first slot
-                self.linef(format!("if ({cnt_tmp} > 0) {{"));
-                self.indent += 1;
-                self.emit_into(nodes, element, dst);
-                let idx = self.fresh_tmp();
-                self.linef(format!(
-                    "for (uint64_t {idx} = 1; {idx} < {cnt_tmp}; {idx}++) {{"
-                ));
-                self.indent += 1;
-                let edst = format!("{dst} + {idx} * {es}");
-                self.emit_copy(&edst, dst, &elem_ty, &es.to_string());
-                self.indent -= 1;
-                self.line("}");
-                self.indent -= 1;
-                self.line("}");
+                self.emit_repeat_copies(dst, seed, &element.ty, &count);
             }
             NodeKind::ArraySizeCoerce { value, size } => {
                 let value = *value;
@@ -2886,7 +2972,7 @@ impl<'a> Codegen<'a> {
                     let tmp = self.fresh_tmp();
                     self.linef(format!("{vt} {tmp} = {call_expr};"));
                     let src_expr = format!("(uint8_t*)&{tmp}");
-                    self.emit_copy(dst, &src_expr, &result_ty, &s.to_string());
+                    self.emit_move_contents(dst, &src_expr, &result_ty, &s.to_string());
                 }
             }
             NodeKind::ArrayInit { count, init } => {
@@ -2934,7 +3020,7 @@ impl<'a> Codegen<'a> {
                 ));
                 let edst = format!("({dst} + {idx} * {es})");
                 let esrc = format!("(uint8_t*)&{result_tmp}");
-                self.emit_copy(&edst, &esrc, &elem_ty, &es.to_string());
+                self.emit_move_contents(&edst, &esrc, &elem_ty, &es.to_string());
                 self.indent -= 1;
                 self.line("}");
             }
@@ -2994,7 +3080,7 @@ impl<'a> Codegen<'a> {
                     let tmp = self.fresh_tmp();
                     self.linef(format!("{vt} {tmp} = (({fp_type}){fp_var})({args_str});"));
                     let src_expr = format!("(uint8_t*)&{tmp}");
-                    self.emit_copy(dst, &src_expr, &return_type, &s.to_string());
+                    self.emit_move_contents(dst, &src_expr, &return_type, &s.to_string());
                 }
             }
             _ => unreachable!("emit_into on statement node: {:?}", nodes[id.0].kind),
@@ -3668,8 +3754,25 @@ impl<'a> Codegen<'a> {
             NodeKind::Assign { target, value } => {
                 let target = *target;
                 let value = *value;
+                // User constructors may throw or inspect the destination through
+                // another alias. Finish the entire RHS before replacing it.
+                let constructed = type_contains_copy_constructor(&nodes[value.0].ty, self.module)
+                    .then(|| {
+                        let mut prepared = self.prepare_value(nodes, value);
+                        if !matches!(prepared.value, PreparedContents::Move(_)) {
+                            let saved = self.allocate_prepared(&prepared);
+                            prepared.value = PreparedContents::Move(saved);
+                        }
+                        prepared
+                    });
                 let (place, target_meta) = self.emit_place(nodes, target);
-                if let Some(ref tmeta) = target_meta {
+                if let Some(prepared) = constructed {
+                    if let Some(tmeta) = target_meta {
+                        let vmeta = prepared.meta.as_ref().unwrap();
+                        self.linef(format!("if ((uint64_t){tmeta} != (uint64_t){vmeta}) {{ sol_assert_unsized_assignment_len_slow((uint64_t){tmeta}, (uint64_t){vmeta}); }}"));
+                    }
+                    self.fill_prepared(&prepared, &place);
+                } else if let Some(ref tmeta) = target_meta {
                     let prepared = self.prepare_value(nodes, value);
                     let vmeta = prepared.meta.as_ref().unwrap();
                     self.linef(format!(

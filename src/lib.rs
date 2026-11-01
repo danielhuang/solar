@@ -38,3 +38,5 @@ pub mod tree_ir_opt;
 pub mod typed_ast;
 /// Types shared by compiler stages.
 pub mod types;
+
+mod value_usage;

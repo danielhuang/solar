@@ -1,0 +1,360 @@
+static copies: Int = 0;
+
+struct Value { n: Int }
+
+fn Value::(original: &Value) -> Value {
+	copies = copies + 1;
+	Value { n: original@.n + 100 }
+}
+
+struct Outer { value: Value, pointer: ^Int }
+
+fn identity(value: Value) -> Value { value }
+
+fn main() {
+	let old = Value { n: 1 };
+	let first = old;
+	let last = old;
+	assert(copies == 1);
+	assert(first.n == 101);
+	assert(last.n == 1);
+
+	let explicit = Value(first&);
+	assert(copies == 2);
+	assert(explicit.n == 201);
+
+	let outer = Outer { value: Value { n: 2 }, pointer: 3^ };
+	let outer_copy = outer;
+	let outer_move = outer;
+	assert(copies == 3);
+	assert(outer_copy.value.n == 102);
+	assert(outer_move.value.n == 2);
+	outer_copy.pointer@ = 4;
+	assert(outer_move.pointer@ == 3);
+
+	let returned = identity(Value { n: 5 });
+	assert(returned.n == 5);
+	assert(copies == 3);
+
+	let aliased = Value { n: 6 };
+	let reference = aliased&;
+	let copied = aliased;
+	assert(copies == 4);
+	copied.n = 7;
+	assert(reference@.n == 6);
+	control_flow();
+	aggregates();
+	escaping_references();
+	edge_cases();
+	assert(retained@.n == 31);
+	moved_enum_payloads();
+	failed_field_copy();
+	array_copy_order();
+	field_copy_order();
+	println("passed"&);
+}
+
+fn choose(old: Value, condition: Bool) -> Value {
+	if condition { old } else { return old; }
+}
+
+fn observe(original: &Value) -> Int { original@.n }
+
+fn control_flow() {
+	copies = 0;
+	let selected = choose(Value { n: 8 }, true);
+	assert(selected.n == 8);
+	assert(copies == 0);
+	let selected2 = choose(Value { n: 9 }, false);
+	assert(selected2.n == 9);
+	assert(copies == 0);
+
+	let old = Value { n: 10 };
+	let i = 0;
+
+	while i < 3 {
+		let copied = old;
+		assert(copied.n == 110);
+		let local = Value { n: i };
+		let moved = local;
+		assert(moved.n == i);
+		i = i + 1;
+	}
+
+	let last = old;
+	assert(last.n == 10);
+	assert(copies == 3);
+
+	let borrowed = Value { n: 11 };
+	assert(observe(borrowed&) == 11);
+	let moved = borrowed;
+	assert(moved.n == 11);
+	assert(copies == 3);
+
+	let captured = Value { n: 12 };
+	let get = \ { captured };
+	let first = get();
+	let second = get();
+	assert(first.n == 112);
+	assert(second.n == 112);
+	assert(copies == 5);
+
+	let exiting = Value { n: 13 };
+	let result = loop { break exiting; };
+	assert(result.n == 13);
+	assert(copies == 5);
+}
+
+struct Generic#[T] { value: T }
+
+fn#[T] Generic#[T]::(original: &Generic#[T]) -> Generic#[T] {
+	copies = copies + 1;
+	Generic#[T] { value: original@.value }
+}
+
+struct Tuple(Int);
+
+fn Tuple::(original: &Tuple) -> Tuple {
+	copies = copies + 1;
+	Tuple(original@.0 + 100)
+}
+
+enum Wrapped { Some(Value), Empty }
+
+fn aggregates() {
+	copies = 0;
+	let generic = Generic#[Int] { value: 14 };
+	let first = generic;
+	let last = generic;
+	assert(first.value == 14 && last.value == 14);
+	assert(copies == 1);
+
+	let tuple = Tuple(15);
+	let first_tuple = tuple;
+	let last_tuple = tuple;
+	assert(first_tuple.0 == 115 && last_tuple.0 == 15);
+	let explicit_tuple = Tuple(last_tuple&);
+	assert(explicit_tuple.0 == 115);
+	assert(copies == 3);
+
+	let unique = (Value { n: 16 })^;
+	let first_unique = unique;
+	let last_unique = unique;
+	assert(first_unique@.n == 116 && last_unique@.n == 16);
+	assert(copies == 4);
+
+	let array: [Value; 2] = [Value { n: 17 }, Value { n: 18 }];
+	assert(copies == 4);
+	let first_array = array;
+	let last_array = array;
+	assert(first_array[0u].n == 117 && last_array[0u].n == 17);
+	assert(first_array[1u].n == 118 && last_array[1u].n == 18);
+	assert(copies == 6);
+
+	let repeated: [Value; 3] = [Value { n: 19 }; 3u];
+	assert(repeated[0u].n == 119 && repeated[2u].n == 19);
+	assert(copies == 8);
+
+	let dynamic = [Value { n: 20 }, Value { n: 21 }]^;
+	assert(copies == 8);
+	let first_dynamic = dynamic;
+	let last_dynamic = dynamic;
+	assert(first_dynamic@[0u].n == 120 && last_dynamic@[0u].n == 20);
+	assert(copies == 10);
+
+	let wrapped = Wrapped::Some(Value { n: 22 });
+	let first_wrapped = wrapped;
+	let last_wrapped = wrapped;
+	assert(copies == 11);
+	assert(
+		match first_wrapped {
+			Wrapped::Some(value) => value.n == 122,
+			Wrapped::Empty => false,
+		},
+	);
+	assert(
+		match last_wrapped {
+			Wrapped::Some(value) => value.n == 22,
+			Wrapped::Empty => false,
+		},
+	);
+}
+
+static escaped: &?Value = null#[Value];
+fn retain(value: &Value) { escaped = value; }
+
+struct Retaining { n: Int }
+static retained: &?Retaining = null#[Retaining];
+
+fn Retaining::(original: &Retaining) -> Retaining {
+	retained = original;
+	copies = copies + 1;
+	Retaining { n: original@.n + 100 }
+}
+
+fn escaping_references() {
+	copies = 0;
+	let old = Value { n: 23 };
+	retain(old&);
+	let new = old;
+	new.n = 0;
+	assert(escaped@.n == 23);
+	assert(copies == 1);
+
+	let unique = (Value { n: 24 })^;
+	retain(unique@&);
+	let new_unique = unique;
+	new_unique@.n = 0;
+	assert(escaped@.n == 24);
+	assert(copies == 2);
+
+	let retaining = Retaining { n: 25 };
+	let first = retaining;
+	let second = retaining;
+	assert(first.n == 125 && second.n == 125);
+	second.n = 0;
+	assert(retained@.n == 25);
+	assert(copies == 4);
+}
+
+struct GenericFunction#[T] { value: T }
+
+fn GenericFunction::#[T](original: &GenericFunction#[T]) -> GenericFunction#[T] {
+	copies = copies + 1;
+	GenericFunction#[T] { value: original@.value }
+}
+
+fn fresh_outer() -> Outer {
+	Outer { value: Value { n: 26 }, pointer: 0^ }
+}
+
+struct Fallible { n: Int }
+
+fn Fallible::(original: &Fallible) -> Fallible {
+	throw("copy failed"&);
+	Fallible { n: original@.n }
+}
+
+fn edge_cases() {
+	copies = 0;
+	let original = Retaining { n: 27 };
+	let moved = original;
+	assert(moved.n == 27 && copies == 0);
+
+	let fresh = fresh_outer().value;
+	assert(fresh.n == 26 && copies == 0);
+
+	let replaced = Value { n: 28 };
+	let previous = replaced;
+	replaced = Value { n: 29 };
+	assert(previous.n == 28 && replaced.n == 29 && copies == 0);
+
+	let generic = GenericFunction#[Int] { value: 30 };
+	let copy = generic;
+	let moved_generic = generic;
+	assert(copy.value == 30 && moved_generic.value == 30 && copies == 1);
+
+	let repeated: [Retaining; 2] = [Retaining { n: 31 }; 2u];
+	assert(repeated[0u].n == 131 && repeated[1u].n == 131);
+	assert(retained@.n == 31 && copies == 3);
+
+	let selected = if true { [Value { n: 33 }] } else { [Value { n: 34 }] };
+	assert(selected[0u].n == 33 && copies == 3);
+	let selected_match = match 1 {
+		1 => [Value { n: 35 }],
+		_ => [Value { n: 36 }],
+	};
+	assert(selected_match[0u].n == 35 && copies == 3);
+
+	let fallible = Fallible { n: 32 };
+	let caught = false;
+
+	try {
+		let copied = fallible;
+		assert(copied.n == 32);
+	} catch (error) {
+		caught = error.message == "copy failed"&;
+	}
+
+	assert(caught && fallible.n == 32);
+}
+
+enum OwnedVariant { A(^Int), B(^Int) }
+
+fn moved_enum_payloads() {
+	let target = OwnedVariant::A(37^);
+	let previous = match target {
+		OwnedVariant::A(value) => value&,
+		OwnedVariant::B(value) => value&,
+	};
+	let next = OwnedVariant::B(38^);
+	target = next;
+	assert(previous@@ == 37);
+
+	let target_same = OwnedVariant::A(40^);
+	let previous_same = match target_same {
+		OwnedVariant::A(value) => value&,
+		OwnedVariant::B(value) => value&,
+	};
+	let next_same = OwnedVariant::A(39^);
+	target_same = next_same;
+	assert(previous_same@@ == 39);
+}
+
+struct FallibleFields { value: Value, fail: Fallible }
+
+fn failed_field_copy() {
+	let target = FallibleFields {
+		value: Value { n: 41 },
+		fail: Fallible { n: 42 },
+	};
+	let source = FallibleFields {
+		value: Value { n: 43 },
+		fail: Fallible { n: 44 },
+	};
+	let caught = false;
+
+	try { target = source; } catch (error) {
+		caught = error.message == "copy failed"&;
+	}
+
+	assert(caught);
+	assert(target.value.n == 41 && target.fail.n == 42);
+}
+
+struct Sequence { n: Int }
+static sequence: Int = 0;
+
+fn Sequence::(original: &Sequence) -> Sequence {
+	sequence = sequence + 1;
+	Sequence { n: original@.n + sequence }
+}
+
+fn array_copy_order() {
+	let source = [Sequence { n: 0 }, Sequence { n: 0 }]^;
+	let copied = source;
+	let moved = source;
+	assert(copied@[0u].n == 1 && copied@[1u].n == 2);
+	assert(moved@[0u].n == 0 && moved@[1u].n == 0);
+}
+
+struct Small { n: Uint8 }
+
+fn Small::(original: &Small) -> Small {
+	sequence = sequence + 1;
+	Small { n: original@.n + Uint8(sequence) }
+}
+
+struct Reordered { small: Small, large: Sequence }
+
+fn field_copy_order() {
+	sequence = 0;
+	let source = Reordered {
+		small: Small { n: 0u8 },
+		large: Sequence { n: 0 },
+	};
+	let copied = source;
+	let moved = source;
+	assert(copied.small.n == 1u8 && copied.large.n == 2);
+	assert(moved.small.n == 0u8 && moved.large.n == 0);
+}

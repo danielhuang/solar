@@ -185,3 +185,63 @@ fn gc_runs_without_lto_gc_san_or_optimization() {
         "expected collection to be enabled in unoptimized build: {stderr}"
     );
 }
+
+#[test]
+fn copy_constructor_sources_survive_escaping_references() {
+    test_utils::ensure_runtime_built();
+    test_utils::ensure_release_runtime_built();
+    let directory = tempdir::TempDir::new("solar-copy-gc").unwrap();
+    let source = directory.path().join("copy_gc.solar");
+    std::fs::write(
+        &source,
+        r#"
+struct Payload { value: ^Int }
+static retained: &?Payload = null#[Payload];
+static copies: Int = 0;
+fn Payload::(original: &Payload) -> Payload {
+    retained = original;
+    copies = copies + 1;
+    Payload { value: original@.value }
+}
+fn produce() -> Payload {
+    let original = Payload { value: 42^ };
+    let first = original;
+    let last = original;
+    last.value@ = 43;
+    assert(first.value@ == 42);
+    last
+}
+fn main() {
+    let result = produce();
+    gc::collect_gc();
+    assert(copies == 2);
+    assert(retained@.value@ == 42);
+    assert(result.value@ == 43);
+    println("passed"&);
+}
+"#,
+    )
+    .unwrap();
+    let c_source = solar::pipeline::compile(&source)
+        .unwrap()
+        .to_mangled()
+        .to_tree_ir()
+        .optimized()
+        .to_c(&source.display().to_string());
+    for optimize in [false, true] {
+        let options = CompileOptions {
+            enable_gc: true,
+            gc_san: true,
+            optimize,
+        };
+        let binary = solar::pipeline::CSource {
+            c_source: c_source.c_source.clone(),
+            source_map: c_source.source_map.clone(),
+        }
+        .to_binary(
+            directory.path().join(format!("copy_gc_{optimize}")),
+            options,
+        );
+        assert_eq!(binary.run("copy_gc"), "passed\n");
+    }
+}

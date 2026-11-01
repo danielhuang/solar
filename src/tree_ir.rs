@@ -21,8 +21,16 @@ pub struct DataType {
     pub is_sized: bool,
     /// Fields in layout order.
     pub fields: Vec<FieldLayout>,
+    /// Field indices in declaration order, for observable value-copy behavior.
+    pub copy_order: Vec<usize>,
     /// Enum payload field names by discriminant.
     pub variant_map: Option<Vec<Option<String>>>,
+}
+
+impl DataType {
+    pub(crate) fn fields_in_copy_order(&self) -> impl Iterator<Item = &FieldLayout> {
+        self.copy_order.iter().map(|&index| &self.fields[index])
+    }
 }
 
 /// Memory layout of one field.
@@ -49,6 +57,10 @@ pub struct NodeId(pub usize);
 /// A lowered Solar program.
 #[derive(Debug)]
 pub struct Module {
+    /// Copy constructors selected for concrete value types.
+    pub copy_constructors: HashMap<Type, String>,
+    /// Types whose copy constructors cannot retain the source reference.
+    pub copy_noescape: std::collections::HashSet<Type>,
     /// Type layouts keyed by symbol.
     pub datatypes: HashMap<String, DataType>,
     /// Lowered functions.
@@ -142,6 +154,8 @@ pub enum NodeKind {
     /// as an 8-byte or 16-byte zero.
     Null,
     Local(VarId),
+    /// Transfer a last use without invoking value-copy behavior.
+    Move(NodeId),
     /// A top-level `static` slot (index into `Module::statics`) — a global
     /// mutable place.
     Global(usize),
@@ -390,6 +404,8 @@ pub fn lower(source: &mangled_ast::SourceFile) -> Module {
         ));
     }
     Module {
+        copy_constructors: source.copy_constructors.clone(),
+        copy_noescape: source.copy_noescape.clone(),
         datatypes,
         functions,
         statics,
@@ -452,7 +468,8 @@ fn collect_closure_captures_expr(
         mangled_ast::ExprKind::FieldAccess { object, .. } => {
             collect_closure_captures_expr(object, map);
         }
-        mangled_ast::ExprKind::Deref(inner)
+        mangled_ast::ExprKind::Move(inner)
+        | mangled_ast::ExprKind::Deref(inner)
         | mangled_ast::ExprKind::Reference(inner)
         | mangled_ast::ExprKind::Unique(inner)
         | mangled_ast::ExprKind::Not(inner) => {
@@ -636,6 +653,52 @@ pub fn type_contains_unique(ty: &Type, dt: &HashMap<String, DataType>) -> bool {
         Type::Array(inner) | Type::FixedArray(inner, _) => type_contains_unique(inner, dt),
         _ => false,
     }
+}
+
+/// Whether copying a value invokes a constructor, including owned fields.
+pub(crate) fn type_contains_copy_constructor(ty: &Type, module: &Module) -> bool {
+    fn visit(ty: &Type, module: &Module, seen: &mut std::collections::HashSet<Type>) -> bool {
+        if !seen.insert(ty.clone()) {
+            return false;
+        }
+        if module.copy_constructors.contains_key(ty) {
+            return true;
+        }
+        match ty {
+            Type::Struct(name) | Type::Enum(name) => module.datatypes[name]
+                .fields
+                .iter()
+                .any(|f| visit(&f.ty, module, seen)),
+            Type::Unique(t) | Type::UniqueUnsized(t) | Type::Array(t) | Type::FixedArray(t, _) => {
+                visit(t, module, seen)
+            }
+            _ => false,
+        }
+    }
+    visit(ty, module, &mut std::collections::HashSet::new())
+}
+
+/// Whether an implicit copy may retain a reference into its source storage.
+pub(crate) fn type_copy_may_escape(ty: &Type, module: &Module) -> bool {
+    fn visit(ty: &Type, module: &Module, seen: &mut std::collections::HashSet<Type>) -> bool {
+        if !seen.insert(ty.clone()) {
+            return false;
+        }
+        if module.copy_constructors.contains_key(ty) {
+            return !module.copy_noescape.contains(ty);
+        }
+        match ty {
+            Type::Struct(name) | Type::Enum(name) => module.datatypes[name]
+                .fields
+                .iter()
+                .any(|f| visit(&f.ty, module, seen)),
+            Type::Unique(t) | Type::UniqueUnsized(t) | Type::Array(t) | Type::FixedArray(t, _) => {
+                visit(t, module, seen)
+            }
+            _ => false,
+        }
+    }
+    visit(ty, module, &mut std::collections::HashSet::new())
 }
 
 /// Returns whether a type contains a traced pointer.
@@ -838,6 +901,8 @@ fn layout_struct(s: &mangled_ast::StructDef, resolved: &HashMap<String, DataType
     }
 
     fields.sort_by_key(|(source_index, field)| (field.offset, *source_index));
+    let mut copy_order: Vec<_> = (0..fields.len()).collect();
+    copy_order.sort_by_key(|&index| fields[index].0);
 
     DataType {
         name: s.name.clone(),
@@ -845,6 +910,7 @@ fn layout_struct(s: &mangled_ast::StructDef, resolved: &HashMap<String, DataType
         align: max_align,
         is_sized: unsized_tail.is_none(),
         fields: fields.into_iter().map(|(_, field)| field).collect(),
+        copy_order,
         variant_map: None,
     }
 }
@@ -907,6 +973,7 @@ fn layout_enum(e: &mangled_ast::EnumDef, resolved: &HashMap<String, DataType>) -
         size: align_up(extent, max_align),
         align: max_align,
         is_sized: true,
+        copy_order: (0..fields.len()).collect(),
         fields,
         variant_map: Some(variant_map),
     }
@@ -1004,6 +1071,7 @@ impl<'a> FunctionLowerer<'a> {
                         kind: NodeKind::Local(var),
                         span,
                     });
+                    *previous = self.move_temp(*previous);
                 }
             }
             pending.extend(setup);
@@ -1011,6 +1079,15 @@ impl<'a> FunctionLowerer<'a> {
         }
         self.pending_stmts.extend(pending);
         values
+    }
+
+    fn move_temp(&mut self, value: NodeId) -> NodeId {
+        let node = &self.nodes[value.0];
+        self.push(Node {
+            ty: node.ty.clone(),
+            span: node.span,
+            kind: NodeKind::Move(value),
+        })
     }
 
     fn push_scope(&mut self) {
@@ -1056,6 +1133,14 @@ impl<'a> FunctionLowerer<'a> {
 
     fn lower_expr(&mut self, expr: &mangled_ast::Expr) -> NodeId {
         match &expr.kind {
+            mangled_ast::ExprKind::Move(inner) => {
+                let value = self.lower_expr(inner);
+                self.push(Node {
+                    ty: expr.ty.clone(),
+                    kind: NodeKind::Move(value),
+                    span: expr.span,
+                })
+            }
             mangled_ast::ExprKind::Identifier(name) => {
                 let var = self.lookup(name);
                 self.push(Node {
@@ -1195,11 +1280,12 @@ impl<'a> FunctionLowerer<'a> {
                         span: expr.span,
                     });
                     self.pending_stmts.push(let_node);
-                    self.push(Node {
+                    let local = self.push(Node {
                         ty: inner_ty,
                         kind: NodeKind::Local(var),
                         span: expr.span,
-                    })
+                    });
+                    self.move_temp(local)
                 };
                 let unique_node = self.push(Node {
                     ty: expr.ty.clone(),
@@ -1218,17 +1304,18 @@ impl<'a> FunctionLowerer<'a> {
                     span: expr.span,
                 });
                 self.pending_stmts.push(unique_let);
-                self.push(Node {
+                let local = self.push(Node {
                     ty: unique_ty,
                     kind: NodeKind::Local(unique_var),
                     span: expr.span,
-                })
+                });
+                self.move_temp(local)
             }
             mangled_ast::ExprKind::Call {
                 function,
                 arguments,
             } => {
-                let args: Vec<NodeId> = arguments.iter().map(|a| self.lower_expr(a)).collect();
+                let args = self.lower_ordered_values(arguments);
                 self.push(Node {
                     ty: expr.ty.clone(),
                     kind: NodeKind::Call {
@@ -1243,7 +1330,7 @@ impl<'a> FunctionLowerer<'a> {
                 type_args,
                 arguments,
             } => {
-                let args: Vec<NodeId> = arguments.iter().map(|a| self.lower_expr(a)).collect();
+                let args = self.lower_ordered_values(arguments);
                 self.push(Node {
                     ty: expr.ty.clone(),
                     kind: NodeKind::IntrinsicCall {
@@ -1261,7 +1348,7 @@ impl<'a> FunctionLowerer<'a> {
             }),
             mangled_ast::ExprKind::CallIndirect { callee, arguments } => {
                 let callee_id = self.lower_expr(callee);
-                let args: Vec<NodeId> = arguments.iter().map(|a| self.lower_expr(a)).collect();
+                let args = self.lower_ordered_values(arguments);
                 self.push(Node {
                     ty: expr.ty.clone(),
                     kind: NodeKind::CallIndirect {

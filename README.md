@@ -41,6 +41,37 @@ struct Test {
 
 This is memory-safe, since a reference to a variant can be obtained only if that variant is currently used (and the variant's memory space is initialized), and changing the variant by assignment will change the discriminant and write to the new variant's memory space. The old variant's memory space is kept as-is, so references remain valid.
 
+## Copies and moves
+
+A copy constructor takes a reference to its original value and returns a new value:
+
+```rs
+struct Value { number: Int }
+
+fn Value::(original: &Value) -> Value {
+  Value { number: original@.number }
+}
+```
+
+Call it explicitly with `Value(old&)`. By-value uses call it implicitly when the
+original value is still needed:
+
+```rs
+let old = Value { number: 1 };
+let copied = old; // Calls Value(old&), since old is used again.
+let moved = old;  // Transfers the final use without calling the constructor.
+```
+
+The compiler moves a value only when it can prove that no later use or surviving
+alias needs the original. References that may escape, including references kept
+by a copy constructor, prevent such a move. This applies to arguments, returns,
+and aggregate fields as well as variable assignments.
+
+Without a custom constructor, copying a struct, enum, or array recursively copies
+its fields or elements. Their copy constructors run when present. Shared `&T`
+references keep sharing their target; owned `^T` values copy their pointees only
+when a copy is required. A last-use move transfers the owned pointer instead.
+
 ## Memory management
 
 Solar is memory safe, even with values implemented with wide pointers (currently, references to unsized values and functions are 16 bytes). [Reading from these values cannot tear](https://www.ralfj.de/blog/2025/07/24/memory-safety.html), since assignment uses 128-bit atomics.

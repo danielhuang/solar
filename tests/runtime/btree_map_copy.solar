@@ -1,0 +1,138 @@
+fn build(count: Int) -> BTreeMap#[Int, Int] {
+	let map = BTreeMap#[Int, Int]();
+
+	for i in 0..count {
+		let key = (i * 137) % count;
+		map&.insert(key, key * 10);
+	}
+
+	map
+}
+
+fn check(map: &BTreeMap#[Int, Int], first: Int, end: Int, increment: Int) {
+	assert(map.len() == Uint(end - first));
+
+	for key in first..end {
+		assert(map.get(key&).unwrap()@ == key * 10 + increment);
+	}
+
+	let cursor = map.iter();
+	let front = first;
+	let back = end;
+
+	while front < back {
+		if front % 3 == 0 {
+			back = back - 1;
+			let entry = cursor&.next_back().unwrap();
+			assert(entry.0@ == back && entry.1@ == back * 10 + increment);
+		} else {
+			let entry = cursor&.next().unwrap();
+			assert(entry.0@ == front && entry.1@ == front * 10 + increment);
+			front = front + 1;
+		}
+
+		assert(cursor&.len() == Uint(back - front));
+	}
+
+	assert(cursor&.next().is_none() && cursor&.next_back().is_none());
+
+	if end - first > 16 {
+		let bounded = map.range(
+			Option#[Int]::Some(first + 3),
+			Option#[Int]::Some(end - 2),
+			include_lower = false,
+			include_upper = true,
+		);
+		assert(bounded&.len() == Uint(end - first - 5));
+		let key = end - 2;
+
+		while key > first + 3 {
+			let entry = bounded&.next_back().unwrap();
+			assert(entry.0@ == key && entry.1@ == key * 10 + increment);
+			key = key - 1;
+		}
+
+		assert(bounded&.next().is_none());
+	}
+}
+
+fn independent_trees(count: Int) {
+	let original = build(count);
+	let assigned = original;
+	let explicit = BTreeMap(original&);
+	let reassigned = BTreeMap#[Int, Int]();
+	reassigned = original;
+	check(original&, 0, count, 0);
+	check(assigned&, 0, count, 0);
+	check(explicit&, 0, count, 0);
+	check(reassigned&, 0, count, 0);
+
+	for key in 0..count {
+		assigned&.insert(key, key * 10 + 1);
+		explicit&.insert(key, key * 10 + 2);
+		reassigned&.insert(key, key * 10 + 3);
+	}
+
+	check(original&, 0, count, 0);
+	check(assigned&, 0, count, 1);
+	check(explicit&, 0, count, 2);
+	check(reassigned&, 0, count, 3);
+
+	// Split the first and last copied leaves, then split original leaves.
+	// Neither tree's next/previous links may enter the other tree.
+	for key in (0 - 20)..0 { assigned&.insert(key, key * 10 + 1); }
+	for key in count..(count + 20) { assigned&.insert(key, key * 10 + 1); }
+	for key in (0 - 40)..0 { original&.insert(key, key * 10); }
+	for key in count..(count + 40) { original&.insert(key, key * 10); }
+	check(original&, 0 - 40, count + 40, 0);
+	check(assigned&, 0 - 20, count + 20, 1);
+	check(explicit&, 0, count, 2);
+	check(reassigned&, 0, count, 3);
+}
+
+static value_copies: Int = 0;
+struct Value { number: Int, owned: ^Int }
+
+fn Value::(original: &Value) -> Value {
+	// Spare Vec capacity is zeroed storage, not an initialized entry to copy.
+	assert(original@.number > 0);
+	value_copies = value_copies + 1;
+	Value { number: original@.number, owned: original@.owned }
+}
+
+fn value_semantics() {
+	let original = BTreeMap#[Int, Value]();
+
+	for key in 1..20 {
+		original&.insert(key, Value { number: key, owned: key^ });
+	}
+
+	value_copies = 0;
+	let copied = BTreeMap(original&);
+	assert(value_copies == 19);
+	copied&.get(10&).unwrap()@.owned@ = 100;
+	assert(original&.get(10&).unwrap()@.owned@ == 10);
+	let iterator = copied&.iter();
+
+	for key in 1..20 {
+		let entry = iterator&.next().unwrap();
+		assert(entry.0@ == key && entry.1@.number == key);
+	}
+
+	let shared = 7&;
+	let references = BTreeMap#[Int, &Int]();
+	references&.insert(0, shared);
+	let copied_references = BTreeMap(references&);
+	shared@ = 8;
+	assert(references&.get(0&).unwrap()@@ == 8);
+	assert(copied_references&.get(0&).unwrap()@@ == 8);
+	copied_references&.insert(0, 9&);
+	assert(references&.get(0&).unwrap()@@ == 8);
+}
+
+fn main() {
+	// Empty and single-leaf trees, a leaf split, and multiple branch levels.
+	for count in [0, 1, 16, 17, 257] { independent_trees(count@); }
+	value_semantics();
+	println("passed"&);
+}
