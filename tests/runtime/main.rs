@@ -21,6 +21,22 @@ fn generators_release() {
 }
 
 #[test]
+fn generator_for_loop() {
+    assert_eq!(
+        run(&fixture("generator_for_loop.solar"), "generator_for_loop"),
+        "passed\n"
+    );
+}
+
+#[test]
+fn generator_for_loop_release() {
+    assert_eq!(
+        test_utils::run_release_file(&fixture("generator_for_loop.solar"), "generator_for_loop"),
+        "passed\n"
+    );
+}
+
+#[test]
 fn generator_control() {
     assert_eq!(
         run(&fixture("generator_control.solar"), "generator_control"),

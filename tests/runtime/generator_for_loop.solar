@@ -1,0 +1,59 @@
+fn apply#[T](f: fn(T), x: [T; 1]) { f(x[0u]); }
+
+fn add(x: Int) -> fn(Int) -> Int { \y: Int x + y }
+
+fn looper(i: &Int, end: Int) {
+	generator {
+		while i@ < end {
+			if i@ % 3 == 0 { yield i@; }
+			apply(\x: &Int { x@ = add(x@)(1); }, [i]);
+		}
+	}
+}
+
+fn main() {
+	let i = 0;
+	let count = 0;
+
+	for value in looper(i&, 10) {
+		assert(value == count * 3);
+		assert(i == value);
+		count = count + 1;
+	}
+
+	assert(count == 4);
+	assert(i == 10);
+
+	i = 0;
+	let g = looper(i&, 10);
+	count = 0;
+
+	for value in g {
+		count = count + 1;
+		if value == 0 { continue; }
+		assert(value == 3);
+		break;
+	}
+
+	assert(count == 2);
+	assert(i == 3);
+	assert(g.next().unwrap() == 6);
+	count = 0;
+
+	for value in g& {
+		assert(value == 9);
+		count = count + 1;
+	}
+
+	assert(count == 1);
+	assert(i == 10);
+	assert(g.next().is_none());
+
+	let sum = 0;
+	for value in generator { yield 41; yield 42; } { sum = sum + value; }
+	assert(sum == 83);
+	let visited = false;
+	for value in generator {} { visited = true; }
+	assert(!visited);
+	println("passed"&);
+}
