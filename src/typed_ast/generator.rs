@@ -5,6 +5,8 @@
 
 use super::*;
 
+mod optimize;
+
 #[derive(Clone)]
 pub(super) struct Context {
     id: TypeId,
@@ -608,6 +610,9 @@ fn unit(span: ast::SourceSpan) -> Expr {
     expr(Type::Unit, ExprKind::Block(Vec::new()), span)
 }
 fn deref(value: Expr) -> Expr {
+    if let ExprKind::Reference(place) = value.kind {
+        return *place;
+    }
     let ty = match &value.ty {
         Type::Ref(t)
         | Type::RefUnsized(t)
@@ -807,6 +812,13 @@ impl<'a, 'b> Machine<'a, 'b> {
     fn state(&self) -> Expr {
         self.field("state", Type::Int)
     }
+    fn program_counter(&self) -> Expr {
+        expr(
+            Type::Int,
+            ExprKind::Identifier(ast::Ident::synthetic("generator_pc")),
+            self.span,
+        )
+    }
     fn set_state(&mut self, state: i64) {
         self.assign(
             self.state(),
@@ -820,14 +832,17 @@ impl<'a, 'b> Machine<'a, 'b> {
         id
     }
     fn jump(&mut self, block: usize) {
-        self.set_state(block as i64);
+        self.assign(
+            self.program_counter(),
+            expr(Type::Int, ExprKind::IntegerLiteral(block as i64), self.span),
+        );
         self.emit(StatementKind::Continue);
     }
     fn jump_body(&self, block: usize) -> Vec<Statement> {
         vec![
             statement(
                 StatementKind::Assignment {
-                    target: self.state(),
+                    target: self.program_counter(),
                     value: expr(Type::Int, ExprKind::IntegerLiteral(block as i64), self.span),
                 },
                 self.span,
@@ -1329,6 +1344,7 @@ impl<'a, 'b> Machine<'a, 'b> {
             .unwrap_or_else(|| unit(self.span))
     }
     fn finish(mut self) -> (StructDef, Expr, Vec<Statement>, Vec<FunctionDef>) {
+        optimize::localize_temporaries(&mut self);
         let handler_field = if self.handlers.is_empty() {
             None
         } else {
@@ -1339,13 +1355,7 @@ impl<'a, 'b> Machine<'a, 'b> {
         };
         let mut arms = Vec::new();
         for (index, block) in self.blocks.iter().enumerate() {
-            let mut body = vec![statement(
-                StatementKind::Assignment {
-                    target: self.state(),
-                    value: expr(Type::Int, ExprKind::IntegerLiteral(-1), self.span),
-                },
-                self.span,
-            )];
+            let mut body = Vec::new();
             if let Some(field) = &handler_field {
                 body.push(statement(
                     StatementKind::Assignment {
@@ -1380,22 +1390,42 @@ impl<'a, 'b> Machine<'a, 'b> {
         let dispatch = expr(
             Type::Never,
             ExprKind::Match {
-                scrutinee: Box::new(self.state()),
+                scrutinee: Box::new(self.program_counter()),
                 arms,
             },
             self.span,
         );
-        let mut body = vec![statement(
-            StatementKind::Expression(expr(
-                Type::Never,
-                ExprKind::Loop(vec![statement(
-                    StatementKind::Expression(dispatch),
-                    self.span,
-                )]),
+        // Internal control flow belongs to this invocation. Only suspension
+        // writes a continuation into the persistent state; poison it once so
+        // exceptions and reentrant calls still observe a completed generator.
+        let mut body = vec![
+            statement(
+                StatementKind::Let {
+                    name: ast::Ident::synthetic("generator_pc"),
+                    ty: Type::Int,
+                    value: self.state(),
+                },
                 self.span,
-            )),
-            self.span,
-        )];
+            ),
+            statement(
+                StatementKind::Assignment {
+                    target: self.state(),
+                    value: expr(Type::Int, ExprKind::IntegerLiteral(-1), self.span),
+                },
+                self.span,
+            ),
+            statement(
+                StatementKind::Expression(expr(
+                    Type::Never,
+                    ExprKind::Loop(vec![statement(
+                        StatementKind::Expression(dispatch),
+                        self.span,
+                    )]),
+                    self.span,
+                )),
+                self.span,
+            ),
+        ];
         let mut helpers = Vec::new();
         if let Some(handler) = handler_field {
             let (wrapped, functions) = self.wrap_exceptions(body, handler);

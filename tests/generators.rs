@@ -3,6 +3,32 @@
 use solar::typed_ast::{Type, TypeId};
 
 #[test]
+fn generator_loop_keeps_short_lived_temporaries_out_of_the_frame() {
+    let directory = tempdir::TempDir::new("solar-generator-local-temps").unwrap();
+    let path = directory.path().join("main.solar");
+    std::fs::write(
+        &path,
+        "fn looper(i: &Int) { generator { while i@ < 1000 { if i@ % 10 == 0 { yield i@; } i@ = i@ + 1; } } } fn main() { let i = 0; looper(i&).next(); }",
+    )
+    .unwrap();
+    let typed = solar::pipeline::compile(&path).unwrap();
+    let generator = typed
+        .typed
+        .structs
+        .values()
+        .find(|s| s.id.def.name.starts_with("Generator_"))
+        .unwrap();
+    // Neither loop arithmetic nor the assignment address lives across a yield.
+    // The only persistent data is the resume state and the captured binding.
+    assert_eq!(generator.fields.len(), 2, "{:?}", generator.fields);
+    assert_eq!(generator.fields[0].ty, Type::Int);
+    assert_eq!(
+        generator.fields[1].ty,
+        Type::Ref(Box::new(Type::Ref(Box::new(Type::Int))))
+    );
+}
+
+#[test]
 fn generator_owns_storage_and_has_a_concrete_next_method() {
     let directory = tempdir::TempDir::new("solar-generator-layout").unwrap();
     let path = directory.path().join("main.solar");

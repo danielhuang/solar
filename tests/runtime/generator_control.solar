@@ -78,6 +78,35 @@ fn control_flow() {
 	assert(g.next().is_none());
 }
 
+fn local_dispatch() {
+	let i = 0;
+	let g = generator {
+		while i < 30 {
+			if i % 10 == 0 { yield i; }
+			i = i + 1;
+		}
+	};
+	assert(g.next().unwrap() == 0);
+	i = 19;
+	assert(g.next().unwrap() == 20);
+	i = 29;
+	assert(g.next().is_none());
+	assert(i == 30);
+	assert(g.next().is_none());
+
+	let callback = \ {};
+	let reentrant = generator {
+		callback();
+		yield 1;
+		callback();
+		yield 2;
+	};
+	callback = \ { assert(reentrant.next().is_none()); };
+	assert(reentrant.next().unwrap() == 1);
+	assert(reentrant.next().unwrap() == 2);
+	assert(reentrant.next().is_none());
+}
+
 fn captures() {
 	let outer = 10;
 	let make = \ { generator { yield outer; outer = outer + 1; yield outer; } };
@@ -224,6 +253,7 @@ fn failures() {
 fn main() {
 	expressions();
 	control_flow();
+	local_dispatch();
 	captures();
 	places();
 	failures();
