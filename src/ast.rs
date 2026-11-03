@@ -208,6 +208,8 @@ pub struct StaticDef {
 /// An import declaration.
 #[derive(Debug, Clone)]
 pub struct ImportDef {
+    /// Whether the import reads declarations from a C header.
+    pub is_c: bool,
     /// Imported names or module.
     pub kind: ImportKind,
     /// Imported file path.

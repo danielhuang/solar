@@ -1,0 +1,74 @@
+import(C) {stat} from "sys/stat.h";
+import(C) {size_t} from "string.h";
+import(C) {SOCK_STREAM} from "sys/socket.h";
+import(C) {
+	ANSWER,
+	HIGH_BIT,
+	ALL_BITS,
+	NEGATIVE,
+	FRACTION,
+	SINGLE,
+	TEXT,
+	NIL,
+	CONST_NIL,
+	NUMBERS,
+	Count,
+	Node,
+	Pair,
+	MacroFirst,
+	MacroSecond,
+	Outer,
+	CHOICE,
+} from "./tests/c_import/types.h";
+import(C) c from "./tests/c_import/simple.h";
+import(C) * from "./tests/c_import/simple.h";
+import exported from "reexport.solar";
+
+fn main() {
+	assert(SOCK_STREAM == 1i32);
+	let count: size_t = 5u;
+	let other: Count = count;
+	assert(other == 5u);
+	assert(ANSWER == 42i32);
+	assert(exported::ANSWER == ANSWER);
+	assert(HIGH_BIT == 2147483648u32);
+	assert(ALL_BITS == 18446744073709551615u64);
+	assert(NEGATIVE == 0i64 - 19i64);
+	assert(FRACTION == 0.375f64);
+	assert(SINGLE == 1.5f32);
+	assert(TEXT[0u] == 104i8);
+	assert(TEXT[2u] == 10i8);
+	assert(TEXT[3u] == 0i8);
+	assert(NUMBERS[1u] == 0i16 - 4i16);
+	assert(NIL == null#[()]);
+	assert(CONST_NIL == NIL);
+	assert(size_of#[stat]() == size_of#[linux::stat]());
+	assert(CHOICE == 17i32);
+	let node = Node {
+		tag: 7u8,
+		value: 99,
+		next: null#[Node],
+		samples: [3i16, 5i16],
+		matrix: null#[[Int32; 3]],
+	};
+	let next = Node {
+		tag: 8u8,
+		value: 100,
+		next: node&,
+		samples: [8i16, 9i16],
+		matrix: null#[[Int32; 3]],
+	};
+	assert(next.next@.value == 99);
+	assert(exported::node_value(node) == 99);
+	assert(size_of#[Node]() == 40u);
+	let first = MacroFirst { first: 1i32 };
+	let second = MacroSecond { second: 2i32 };
+	assert(first.first + second.second == 3i32);
+	let pair = Pair { x: 7i32, y: 2f64 };
+	let outer = Outer { pair: pair, nodes: [node, next] };
+	assert(outer.pair.x == 7i32);
+	assert(outer.nodes[1u].value == 100);
+	let item = c::Item { value: c::NUMBER };
+	assert(item.value == NUMBER);
+	println("passed"&);
+}

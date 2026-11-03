@@ -46,6 +46,8 @@ struct Resolver {
     source_map: SourceMap,
     /// FileId of the stdlib root (lib.solar), if parsed.
     std_root_id: Option<FileId>,
+    c_headers: HashMap<String, FileId>,
+    c_records: HashMap<String, FileId>,
 }
 
 impl Resolver {
@@ -55,6 +57,8 @@ impl Resolver {
             path_to_id: HashMap::new(),
             source_map: SourceMap::new(),
             std_root_id: None,
+            c_headers: HashMap::new(),
+            c_records: HashMap::new(),
         }
     }
 
@@ -126,12 +130,34 @@ impl Resolver {
 
     /// Recursively parses imported files.
     fn parse_imports(&mut self, file_id: FileId) -> Result<(), Vec<CompileError>> {
+        let c_imports: Vec<_> = self.files[file_id as usize]
+            .ast
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| match item {
+                TopLevelItem::Import(import) if import.is_c => Some((index, import.clone())),
+                _ => None,
+            })
+            .collect();
+        for (index, mut import) in c_imports {
+            set_file_id_span(&mut import.span, file_id);
+            let imported_id = self.parse_c_import(&import)?;
+            let path = self.files[imported_id as usize].path.display().to_string();
+            let TopLevelItem::Import(original) = &mut self.files[file_id as usize].ast.items[index]
+            else {
+                unreachable!()
+            };
+            original.path = path;
+        }
         let imports: Vec<(String, SourceSpan)> = self.files[file_id as usize]
             .ast
             .items
             .iter()
             .filter_map(|item| {
-                if let TopLevelItem::Import(imp) = item {
+                if let TopLevelItem::Import(imp) = item
+                    && !imp.is_c
+                {
                     Some((imp.path.clone(), imp.span))
                 } else {
                     None
@@ -171,6 +197,104 @@ impl Resolver {
         }
 
         Ok(())
+    }
+
+    fn parse_c_import(&mut self, import: &ImportDef) -> Result<FileId, Vec<CompileError>> {
+        if let ImportKind::Named(names) = &import.kind
+            && names.iter().any(ImportName::is_path)
+        {
+            return Err(vec![CompileError::new(
+                "C imports require unqualified declaration names".into(),
+                import.span,
+            )]);
+        }
+        let existing = self.c_headers.get(&import.path).copied();
+        let kind = match (&import.kind, existing) {
+            (ImportKind::Named(names), Some(id)) => ImportKind::Named(
+                names
+                    .iter()
+                    .filter(|name| {
+                        !self.files[id as usize]
+                            .ast
+                            .items
+                            .iter()
+                            .any(|item| match item {
+                                TopLevelItem::TypeAlias(alias) => alias.name == name.local_name(),
+                                TopLevelItem::Const(constant) => constant.name == name.local_name(),
+                                _ => false,
+                            })
+                    })
+                    .cloned()
+                    .collect(),
+            ),
+            _ => import.kind.clone(),
+        };
+        if let ImportKind::Named(names) = &kind
+            && names.is_empty()
+        {
+            return Ok(existing.unwrap());
+        }
+        let items = crate::c_import::import(&import.path, &kind)
+            .map_err(|message| vec![CompileError::new(message, import.span)])?;
+        let id = existing.unwrap_or(self.files.len() as FileId);
+        if existing.is_none() {
+            let path = PathBuf::from(format!("/solar-c-import/{id}.solar"));
+            self.path_to_id.insert(path.clone(), id);
+            self.source_map.add_file(
+                id,
+                format!("import(C) from {:?}", import.path),
+                String::new(),
+            );
+            self.files.push(ParsedFile {
+                file_id: id,
+                path,
+                ast: desugared_ast::SourceFile { items: Vec::new() },
+            });
+            self.c_headers.insert(import.path.clone(), id);
+            self.source_map.add_c_header(import.path.clone(), id);
+        }
+        for item in items {
+            if let TopLevelItem::Struct(record) = &item {
+                if let Some(&owner) = self.c_records.get(&record.name) {
+                    if owner != id {
+                        let path = self.files[owner as usize].path.display().to_string();
+                        self.files[id as usize]
+                            .ast
+                            .items
+                            .push(TopLevelItem::Import(ImportDef {
+                                is_c: false,
+                                kind: ImportKind::Named(vec![ImportName {
+                                    segments: vec![record.name.clone()],
+                                }]),
+                                path,
+                                is_pub: false,
+                                span: SourceSpan::default(),
+                            }));
+                    }
+                    continue;
+                }
+                self.c_records.insert(record.name.clone(), id);
+            }
+            let duplicate =
+                self.files[id as usize]
+                    .ast
+                    .items
+                    .iter()
+                    .any(|existing| match (&item, existing) {
+                        (TopLevelItem::TypeAlias(a), TopLevelItem::TypeAlias(b)) => {
+                            a.name == b.name
+                        }
+                        (TopLevelItem::Const(a), TopLevelItem::Const(b)) => a.name == b.name,
+                        _ => false,
+                    });
+            if !duplicate {
+                self.files[id as usize].ast.items.push(item);
+            }
+        }
+        let source = crate::fmt::format_generated_items(&self.files[id as usize].ast.items);
+        self.source_map
+            .add_file(id, format!("import(C) from {:?}", import.path), source);
+        Ok(id)
     }
 
     /// Collect exports from a file, preserving the provenance of re-exported
@@ -633,6 +757,12 @@ impl Resolver {
             }
         }
 
+        // Qualified access must preserve the defining file of re-exports, too.
+        for (alias, target) in &module_aliases {
+            for (name, exports) in self.collect_exports(*target, all_module_aliases) {
+                rename_map.insert(format!("{alias}::{name}"), exports[0].def.clone());
+            }
+        }
         let mut rewritten = Vec::new();
         let rewrite_errors = RefCell::new(Vec::new());
         let rewrite_ctx = RewriteCtx {
@@ -819,6 +949,11 @@ fn resolve_type_ref(
     module_aliases: &ModuleAliasMap,
     type_params: &[String],
 ) -> DefId {
+    if name.name.contains("::")
+        && let Some(definition) = rename_map.get(name.name.as_str())
+    {
+        return definition.clone();
+    }
     // `module::Local` module-qualified reference.
     if let Some((module, local)) = name.name.split_once("::") {
         return match module_aliases.get(module) {
@@ -847,6 +982,10 @@ fn resolve_qualified_def(
 ) {
     match module {
         Some(m) => {
+            if let Some(definition) = rename_map.get(&format!("{m}::{}", name.name)) {
+                *name = definition.clone();
+                return;
+            }
             if let Some(fid) = module_aliases.get(&m) {
                 *name = DefId::new(*fid, name.name.as_str());
             }
@@ -1459,7 +1598,13 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<Ident>) {
             } else if let Some(fid) = ctx.module_aliases.get(enum_name.name.as_str()).cloned() {
                 // `alias::Item` where `alias` is a module — a reference to a
                 // top-level function / const in that module.
-                expr.kind = ExprKind::GlobalRef(DefId::new(fid, variant_name.clone()));
+                let key = format!("{}::{variant_name}", enum_name.name);
+                let definition = ctx
+                    .rename_map
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_else(|| DefId::new(fid, variant_name.clone()));
+                expr.kind = ExprKind::GlobalRef(definition);
                 return;
             } else if let Some(defid) = ctx.rename_map.get(enum_name.name.as_str()) {
                 *enum_name = defid.clone();
@@ -1635,6 +1780,7 @@ fn resolve_impl(
         resolver.files[i].ast.items.insert(
             0,
             TopLevelItem::Import(ImportDef {
+                is_c: false,
                 kind: ImportKind::Wildcard,
                 path: "@std".to_string(),
                 is_pub: false,

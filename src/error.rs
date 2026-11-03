@@ -10,6 +10,7 @@ pub struct SourceMap {
     files: HashMap<u32, (String, String)>,
     /// The entry file, whose definitions keep their bare names.
     root_file_id: Option<u32>,
+    c_headers: Vec<(String, u32)>,
 }
 
 impl SourceMap {
@@ -28,6 +29,18 @@ impl SourceMap {
         self.files
             .get(&file_id)
             .map(|(f, s)| (f.as_str(), s.as_str()))
+    }
+
+    /// Associates a C header import path with its generated Solar declarations.
+    pub fn add_c_header(&mut self, path: String, file_id: u32) {
+        self.c_headers.push((path, file_id));
+    }
+
+    /// Finds the generated declarations for a C header in this compilation.
+    pub fn c_header_file_id(&self, path: &str) -> Option<u32> {
+        self.c_headers
+            .iter()
+            .find_map(|(header, id)| (header == path).then_some(*id))
     }
 
     /// Marks a file as the compilation root.

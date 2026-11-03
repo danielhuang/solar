@@ -1,0 +1,3 @@
+pub import(C) {Node, ANSWER} from "./tests/c_import/wrapper.h";
+
+pub fn node_value(node: Node) -> Int { node.value }

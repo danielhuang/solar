@@ -41,6 +41,37 @@ struct Test {
 
 This is memory-safe, since a reference to a variant can be obtained only if that variant is currently used (and the variant's memory space is initialized), and changing the variant by assignment will change the discriminant and write to the new variant's memory space. The old variant's memory space is kept as-is, so references remain valid.
 
+## C header imports
+
+`import(C)` imports constants and types without linking C functions:
+
+```rs
+import(C) {size_t} from "string.h";
+import(C) {INT_MAX} from "limits.h";
+import(C) {Packet} from "./packet.h";
+```
+
+Header lookup uses Clang's system include paths, like `#include <...>`.
+Paths starting with `./` are relative to the compiler's working directory.
+Named, module, wildcard, and public re-export forms use the ordinary import
+rules. Module and wildcard imports request all public C constants and types;
+use named imports when a header also contains unsupported declarations.
+
+Clang evaluates object-like macros, enum constants, and constant initializers.
+Integers retain their C width and signedness: `int` becomes `Int32`, `long`
+becomes `Int`, and `long long` becomes `Int64`, with corresponding unsigned
+types. `float` and `double` become `Float32` and `Float64`. Constant arrays keep
+their element types and lengths; C strings include their trailing NUL byte.
+
+Structs become `struct(repr(C))` with public fields. Typedefs become type aliases,
+fixed arrays remain fixed arrays, and pointers become nullable references
+(`&?T`, or `&?()` for `void *`). Const qualification does not create a distinct
+Solar type. Struct sizes, alignment, and field offsets must match Solar's C
+layout. Unions, bitfields, explicit attributes (including packing and alignment),
+flexible arrays, incomplete structs, enum types, function pointers, and other
+unrepresentable types are errors. Importing C functions or mutable globals is
+an error; C FFI is not supported.
+
 ## Extension methods
 
 `method(ext)` declares a method without requiring any parameter type to be

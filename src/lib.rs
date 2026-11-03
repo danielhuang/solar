@@ -4,6 +4,7 @@
 pub mod ast;
 /// AST interpreter.
 pub mod ast_interp;
+mod c_import;
 /// C code generation.
 pub mod codegen;
 /// Untyped AST with surface syntax normalized.

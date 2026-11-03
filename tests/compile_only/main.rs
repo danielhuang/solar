@@ -101,12 +101,20 @@ fn sleep() {
 fn tcp_echo() {
     let output = run_codegen_file(&fixture("tcp_echo.solar"), "compile_only_tcp_echo");
     assert_eq!(output, "hello over tcp\n");
+    assert_eq!(
+        test_utils::run_release_file(&fixture("tcp_echo.solar"), "tcp_echo_release"),
+        output
+    );
 }
 
 #[test]
 fn tcp_echo6() {
     let output = run_codegen_file(&fixture("tcp_echo6.solar"), "compile_only_tcp_echo6");
     assert_eq!(output, "hello over tcp6\n");
+    assert_eq!(
+        test_utils::run_release_file(&fixture("tcp_echo6.solar"), "tcp_echo6_release"),
+        output
+    );
 }
 
 #[test]
@@ -142,6 +150,10 @@ fn file_ops() {
     assert_eq!(
         output,
         "dir created\n5\nworld\nWORLD\n11\n0\n1\nno phantom\nlocked\n2\na.txt listed\nrenamed\ncleaned\n"
+    );
+    assert_eq!(
+        test_utils::run_release_file(&fixture("file_ops.solar"), "file_ops_release"),
+        output
     );
 }
 

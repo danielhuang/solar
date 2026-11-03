@@ -76,6 +76,7 @@ module.exports = grammar({
     import_statement: ($) => seq(
       optional("pub"),
       "import",
+      optional(field("language", seq("(", "C", ")"))),
       choice(
         seq("{", $.import_name_list, "}"),
         field("module_name", $.identifier),

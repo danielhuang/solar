@@ -4,15 +4,11 @@ import intrinsics from "@intrinsics";
 // Async functions are ordinary structs plus poll methods; there is no compiler
 // support for async/await in this example.
 
-const SYS_IO_URING_SETUP = 425i64;
-const SYS_IO_URING_ENTER = 426i64;
-
-const PAGE_SIZE = 4096u;
+import(C) {SYS_io_uring_setup, SYS_io_uring_enter} from "sys/syscall.h";
+import(C) {EXEC_PAGESIZE} from "asm/param.h";
+import(C) {IORING_SETUP_NO_MMAP, IORING_ENTER_GETEVENTS, IORING_OP_WRITE} from "linux/io_uring.h";
+import(C) {EINTR} from "errno.h";
 const RING_ENTRIES = 8u64;
-
-const IORING_SETUP_NO_MMAP = 16384u64;
-const IORING_ENTER_GETEVENTS = 1u64;
-const IORING_OP_WRITE = 23u64;
 
 // io_uring_sqe is eight 64-bit words. Keeping addr pointer-typed is important:
 // the kernel sees a raw address at byte 16, while Solar's GC sees a reference
@@ -103,13 +99,14 @@ fn Ring::() -> Ring {
 	// NO_MMAP requires page-aligned contiguous storage. Solar's 4096-byte arena
 	// size class supplies that for these two exactly-page-sized allocations.
 	// The kernel places both SQ and CQ structures in ring_storage.
-	let ring_storage: [Uint32] = [0u32; 1024u];
-	let sqe_storage: [Sqe] = [64u; empty_sqe];
+	let ring_storage: [Uint32] = [0u32; Uint(EXEC_PAGESIZE) /
+		size_of#[Uint32]()];
+	let sqe_storage: [Sqe] = [Uint(EXEC_PAGESIZE) / size_of#[Sqe](); empty_sqe];
 	let rings = ring_storage&;
 	let sqes = sqe_storage&;
 	let params = SetupParams {
 		entries: 0u64,
-		flags_and_cpu: IORING_SETUP_NO_MMAP,
+		flags_and_cpu: Uint64(IORING_SETUP_NO_MMAP),
 		idle_and_features: 0u64,
 		wq_fd_and_reserved: 0u64,
 		reserved: 0u64,
@@ -128,7 +125,7 @@ fn Ring::() -> Ring {
 	assert(size_of#[Sqe]() == 64u);
 
 	let setup = unsafe {
-		intrinsics::syscall(SYS_IO_URING_SETUP, RING_ENTRIES, params&)
+		intrinsics::syscall(Int64(SYS_io_uring_setup), RING_ENTRIES, params&)
 	};
 	check_syscall(setup, "io_uring_setup NO_MMAP failed"&);
 	let fd = unsafe { intrinsics::fd_from_raw(Int32(setup)) };
@@ -145,9 +142,9 @@ fn Ring::() -> Ring {
 	let cqes = Uint32(params.cq_overflow_and_cqes >> 32u);
 	let sq_entry_count = ring_load(rings, sq_entries);
 	let cq_entry_count = ring_load(rings, cq_entries);
-	assert(Uint(sq_array) + Uint(sq_entry_count) * 4u <= PAGE_SIZE);
-	assert(Uint(cqes) + Uint(cq_entry_count) * 16u <= PAGE_SIZE);
-	assert(Uint(sq_entry_count) * 64u <= PAGE_SIZE);
+	assert(Uint(sq_array) + Uint(sq_entry_count) * 4u <= Uint(EXEC_PAGESIZE));
+	assert(Uint(cqes) + Uint(cq_entry_count) * 16u <= Uint(EXEC_PAGESIZE));
+	assert(Uint(sq_entry_count) * 64u <= Uint(EXEC_PAGESIZE));
 
 	Ring {
 		fd: fd,
@@ -183,7 +180,7 @@ method submit_write(self: &Ring, fd: FileDesc, buffer: &[Uint8]) -> Uint64 {
 	let sqe = self@.sqes@[Uint(sqe_index)]&;
 
 	// opcode:u8, flags:u8, ioprio:u16, fd:i32
-	sqe@.header = IORING_OP_WRITE +
+	sqe@.header = Uint64(IORING_OP_WRITE) +
 		(Uint64(Uint32(intrinsics::fd_to_raw(fd))) << 32u);
 	sqe@.offset = 18446744073709551615u64; // -1: use the file position
 	sqe@.address = buffer@[0u]&;
@@ -199,7 +196,7 @@ method submit_write(self: &Ring, fd: FileDesc, buffer: &[Uint8]) -> Uint64 {
 
 	let entered = unsafe {
 		intrinsics::syscall(
-			SYS_IO_URING_ENTER,
+			Int64(SYS_io_uring_enter),
 			raw_fd(self@.fd),
 			1u64,
 			0u64,
@@ -221,17 +218,17 @@ method wait_completion(self: &Ring) -> (Uint64, Int64) {
 	while head == tail {
 		let entered = unsafe {
 			intrinsics::syscall(
-				SYS_IO_URING_ENTER,
+				Int64(SYS_io_uring_enter),
 				raw_fd(self@.fd),
 				0u64,
 				1u64,
-				IORING_ENTER_GETEVENTS,
+				Uint64(IORING_ENTER_GETEVENTS),
 				0u64,
 				0u64,
 			)
 		};
 
-		if entered != 0i64 - 4i64 {
+		if entered != 0i64 - Int64(EINTR) {
 			check_syscall(entered, "io_uring wait failed"&);
 		}
 

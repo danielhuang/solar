@@ -291,6 +291,7 @@ fn convert_import_statement(
     };
 
     Ok(ImportDef {
+        is_c: node.child_by_field_name("language").is_some(),
         kind,
         path,
         is_pub,

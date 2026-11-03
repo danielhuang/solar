@@ -1,6 +1,10 @@
 import intrinsics from "@intrinsics";
 import linux from "linux.solar";
 
+// The fixed inode/offset prefix of Linux getdents64 records. The remaining
+// fields are a Uint16 record length, a Uint8 type, and a NUL-terminated name.
+struct(repr(C)) DirentPrefix { inode: linux::ino_t, offset: linux::off_t }
+
 fn raw_fd(file: FileDesc) -> Int64 {
 	Int64(intrinsics::fd_to_raw(file))
 }
@@ -15,14 +19,14 @@ fn nul_terminated(path: &[Uint8]) -> &[Uint8] {
 	result&
 }
 
-fn open_raw(path: &[Uint8], flags: Int, mode: Uint) -> FileDesc {
+fn open_raw(path: &[Uint8], flags: Int32, mode: Int32) -> FileDesc {
 	// Linux x86-64 openat(2). Keep close(2) private: FileDesc.close uses the
 	// runtime's dup-based stale-handle protection instead.
 	let nul_path = nul_terminated(path);
 	let raw = unsafe {
 		intrinsics::syscall(
-			linux::SYS_OPENAT,
-			linux::AT_FDCWD,
+			Int64(linux::SYS_openat),
+			Int64(linux::AT_FDCWD),
 			nul_path,
 			Int64(flags + linux::O_CLOEXEC),
 			Uint64(mode),
@@ -81,7 +85,7 @@ pub fn stderr() -> FileDesc {
 
 /// Opens the directory at `path` for listing with `read_entries`.
 pub fn open_dir(path: &[Uint8]) -> FileDesc {
-	open_raw(path, linux::O_RDONLY + linux::O_DIRECTORY, 0u)
+	open_raw(path, linux::O_RDONLY + linux::O_DIRECTORY, 0i32)
 }
 
 /// "Closes" `f`: the underlying file is released now, but the fd number stays
@@ -97,7 +101,7 @@ pub method read(self: FileDesc, buf: &[Uint8]) -> Uint {
 	loop {
 		let result = unsafe {
 			intrinsics::syscall(
-				linux::SYS_READ,
+				Int64(linux::SYS_read),
 				raw_fd(self),
 				buf,
 				Uint64(buf.len()),
@@ -125,7 +129,7 @@ pub method write_partial(self: FileDesc, src: &[Uint8]) -> Uint {
 	loop {
 		let result = unsafe {
 			intrinsics::syscall(
-				linux::SYS_WRITE,
+				Int64(linux::SYS_write),
 				raw_fd(self),
 				src,
 				Uint64(src.len()),
@@ -155,7 +159,7 @@ pub method read_at(self: FileDesc, buf: &[Uint8], offset: Uint) -> Uint {
 	loop {
 		let result = unsafe {
 			intrinsics::syscall(
-				linux::SYS_PREAD64,
+				Int64(linux::SYS_pread64),
 				raw_fd(self),
 				buf,
 				Uint64(buf.len()),
@@ -175,7 +179,7 @@ pub method write_at_partial(self: FileDesc, src: &[Uint8], offset: Uint) -> Uint
 	loop {
 		let result = unsafe {
 			intrinsics::syscall(
-				linux::SYS_PWRITE64,
+				Int64(linux::SYS_pwrite64),
 				raw_fd(self),
 				src,
 				Uint64(src.len()),
@@ -205,7 +209,7 @@ pub method write_at(self: FileDesc, src: &[Uint8], offset: Uint) {
 pub method sync(self: FileDesc) {
 	loop {
 		let result = unsafe {
-			intrinsics::syscall(linux::SYS_FSYNC, raw_fd(self))
+			intrinsics::syscall(Int64(linux::SYS_fsync), raw_fd(self))
 		};
 
 		if result != 0i64 - Int64(linux::EINTR) {
@@ -225,7 +229,11 @@ pub method lock(self: FileDesc, exclusive = true, block = true) -> Bool {
 
 	loop {
 		let result = unsafe {
-			intrinsics::syscall(linux::SYS_FLOCK, raw_fd(self), Int64(op))
+			intrinsics::syscall(
+				Int64(linux::SYS_flock),
+				raw_fd(self),
+				Int64(op),
+			)
 		};
 		if result == 0i64 - Int64(linux::EAGAIN) { return false; }
 
@@ -241,7 +249,7 @@ pub method unlock(self: FileDesc) {
 	loop {
 		let result = unsafe {
 			intrinsics::syscall(
-				linux::SYS_FLOCK,
+				Int64(linux::SYS_flock),
 				raw_fd(self),
 				Int64(linux::LOCK_UN),
 			)
@@ -259,7 +267,9 @@ pub fn remove(path: &[Uint8]) {
 	let path = nul_terminated(path);
 
 	loop {
-		let result = unsafe { intrinsics::syscall(linux::SYS_UNLINK, path) };
+		let result = unsafe {
+			intrinsics::syscall(Int64(linux::SYS_unlink), path)
+		};
 
 		if result != 0i64 - Int64(linux::EINTR) {
 			linux::check_syscall(result, "file_remove failed"&);
@@ -273,7 +283,9 @@ pub fn remove_dir(path: &[Uint8]) {
 	let path = nul_terminated(path);
 
 	loop {
-		let result = unsafe { intrinsics::syscall(linux::SYS_RMDIR, path) };
+		let result = unsafe {
+			intrinsics::syscall(Int64(linux::SYS_rmdir), path)
+		};
 
 		if result != 0i64 - Int64(linux::EINTR) {
 			linux::check_syscall(result, "dir_remove failed"&);
@@ -289,7 +301,7 @@ pub fn rename(old: &[Uint8], new: &[Uint8]) {
 
 	loop {
 		let result = unsafe {
-			intrinsics::syscall(linux::SYS_RENAME, old, new)
+			intrinsics::syscall(Int64(linux::SYS_rename), old, new)
 		};
 
 		if result != 0i64 - Int64(linux::EINTR) {
@@ -306,7 +318,7 @@ pub fn create_dir(path: &[Uint8], mode = linux::ACCESSPERMS) {
 
 	loop {
 		let result = unsafe {
-			intrinsics::syscall(linux::SYS_MKDIR, path, Uint64(mode))
+			intrinsics::syscall(Int64(linux::SYS_mkdir), path, Uint64(mode))
 		};
 
 		if result != 0i64 - Int64(linux::EINTR) {
@@ -335,14 +347,15 @@ pub struct FileInfo {
 /// the remaining fields are zero. `mtime_nanos` is nanoseconds since the Unix
 /// epoch.
 pub fn stat(path: &[Uint8]) -> FileInfo {
-	// Linux x86-64 stat(2), whose struct stat is 144 bytes. The fields used
-	// here are st_mode @ 24, st_size @ 48, and st_mtim @ 88.
+	// The imported type supplies stat(2) field layout and scalar widths.
 	let path = nul_terminated(path);
-	let raw = [0u8; linux::STAT_SIZE];
+	let raw = unsafe { intrinsics::zeroed#[linux::stat]() };
 	let result = 0i64;
 
 	loop {
-		result = unsafe { intrinsics::syscall(linux::SYS_STAT, path, raw&) };
+		result = unsafe {
+			intrinsics::syscall(Int64(linux::SYS_stat), path, raw&)
+		};
 		if result != 0i64 - Int64(linux::EINTR) { break; }
 	};
 
@@ -353,27 +366,18 @@ pub fn stat(path: &[Uint8]) -> FileInfo {
 
 	linux::check_syscall(result, "file_stat failed"&);
 
-	let mode = intrinsics::u32_from_le(
-		raw[linux::STAT_MODE_OFFSET..linux::STAT_MODE_OFFSET + 4u],
-	);
-	let file_type = mode & linux::S_IFMT;
-	let kind = if file_type == linux::S_IFREG {
+	let file_type = raw.st_mode & Uint32(linux::S_IFMT);
+	let kind = if file_type == Uint32(linux::S_IFREG) {
 		0u
-	} else if file_type == linux::S_IFDIR { 1u } else { 2u };
-	let seconds = intrinsics::u64_from_le(
-		raw[linux::STAT_MTIME_SEC_OFFSET..linux::STAT_MTIME_SEC_OFFSET + 8u],
-	);
-	let nanos = intrinsics::u64_from_le(
-		raw[linux::STAT_MTIME_NSEC_OFFSET..linux::STAT_MTIME_NSEC_OFFSET + 8u],
-	);
+	} else if file_type == Uint32(linux::S_IFDIR) { 1u } else { 2u };
 	FileInfo {
 		found: true,
-		size: Uint(
-			intrinsics::u64_from_le(
-				raw[linux::STAT_SIZE_OFFSET..linux::STAT_SIZE_OFFSET + 8u],
-			),
+		size: Uint(raw.st_size),
+		mtime_nanos: Uint(
+			Uint64(
+				raw.st_mtim.tv_sec,
+			) * linux::NSEC_PER_SEC + Uint64(raw.st_mtim.tv_nsec),
 		),
-		mtime_nanos: Uint(seconds * linux::NSEC_PER_SEC + nanos),
 		kind: kind,
 	}
 }
@@ -394,13 +398,16 @@ pub struct DirEntry {
 
 /// Reads all non-dot entries from an open directory.
 pub method read_entries(self: FileDesc) -> &[DirEntry] {
+	let reclen_offset = intrinsics::size_of#[DirentPrefix]();
+	let type_offset = reclen_offset + intrinsics::size_of#[Uint16]();
+	let name_offset = type_offset + intrinsics::size_of#[Uint8]();
 	let out = [DirEntry { kind: 2u, name: "?"& }; 0u]^;
 
 	loop {
 		let batch = [0u8; linux::GETDENTS_BUFFER_SIZE];
 		let result = unsafe {
 			intrinsics::syscall(
-				linux::SYS_GETDENTS64,
+				Int64(linux::SYS_getdents64),
 				raw_fd(self),
 				batch&,
 				Uint64(batch&.len()),
@@ -417,20 +424,19 @@ pub method read_entries(self: FileDesc) -> &[DirEntry] {
 		let pos = 0u;
 
 		while pos < bytes_read {
-			// linux_dirent64: d_reclen u16 @ 16, d_type u8 @ 18,
-			// followed by the NUL-terminated d_name @ 19.
-			let record_len = Uint(batch[pos + linux::DIRENT64_RECLEN_OFFSET]) +
-				(Uint(batch[pos + linux::DIRENT64_RECLEN_OFFSET + 1u]) << 8u);
-			let name_start = pos + linux::DIRENT64_NAME_OFFSET;
+			// Decode the variable-length record after its fixed prefix.
+			let record_len = Uint(batch[pos + reclen_offset]) +
+				(Uint(batch[pos + reclen_offset + 1u]) << 8u);
+			let name_start = pos + name_offset;
 			let name_end = name_start;
 			while batch[name_end] != 0u8 { name_end = name_end + 1u; }
 			let name: [Uint8] = batch[name_start..name_end];
 
 			if name != "." && name != ".." {
-				let raw_kind = batch[pos + linux::DIRENT64_TYPE_OFFSET];
-				let kind = if raw_kind == linux::DT_REG {
+				let raw_kind = batch[pos + type_offset];
+				let kind = if Int32(raw_kind) == linux::DT_REG {
 					0u
-				} else if raw_kind == linux::DT_DIR { 1u } else { 2u };
+				} else if Int32(raw_kind) == linux::DT_DIR { 1u } else { 2u };
 				out = (out@ + [DirEntry { kind: kind, name: name& }])^;
 			}
 

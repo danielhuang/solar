@@ -46,6 +46,16 @@ fn check_does_not_execute_the_program() {
 #[test]
 fn dump_stages_write_to_stdout_without_running_or_building() {
     let directory = tempdir::TempDir::new("solar-cli-test").unwrap();
+    // Typed stages parse the standard library's C headers, but do not need
+    // any of the code-generation, linker, or runtime build tools.
+    let tools = tempdir::TempDir::new("solar-cli-tools").unwrap();
+    let clang = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|directory| directory.join("clang"))
+        .find(|path| path.is_file())
+        .unwrap()
+        .canonicalize()
+        .unwrap();
+    std::os::unix::fs::symlink(clang, tools.path().join("clang")).unwrap();
     let source = directory.path().join("dump.solar");
     std::fs::write(&source, "fn main() { assert(false); }\n").unwrap();
     for (stage, marker) in [
@@ -60,7 +70,14 @@ fn dump_stages_write_to_stdout_without_running_or_building() {
                 .arg("dump")
                 .arg(&source)
                 .args(["--stage", stage])
-                .env("PATH", "")
+                .env(
+                    "PATH",
+                    if stage == "ast" {
+                        Path::new("")
+                    } else {
+                        tools.path()
+                    },
+                )
                 .env("TMPDIR", directory.path());
             if release {
                 command.arg("--release");

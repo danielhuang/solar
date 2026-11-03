@@ -16,8 +16,7 @@ import {
 	syscall,
 } from "@intrinsics";
 
-// Linux x86-64 timespec layout for relative FUTEX_WAIT timeouts.
-struct(repr(C)) Timespec { seconds: Int64, nanoseconds: Int64 }
+import(C) {timespec} from "time.h";
 
 /// Adds with wrapping arithmetic, returning the previous value.
 /// Uses acquire-release ordering. Accepts integers.
@@ -101,23 +100,23 @@ pub method futex_wait(
 	if timeout == linux::FUTEX_NO_TIMEOUT {
 		unsafe {
 			syscall(
-				linux::SYS_FUTEX,
+				Int64(linux::SYS_futex),
 				self,
-				linux::FUTEX_WAIT_PRIVATE,
+				Int64(linux::FUTEX_WAIT_PRIVATE),
 				Uint64(expected),
 				0u64,
 			);
 		}
 	} else {
-		let ts = Timespec {
-			seconds: Int64(timeout / linux::NSEC_PER_SEC),
-			nanoseconds: Int64(timeout % linux::NSEC_PER_SEC),
+		let ts = timespec {
+			tv_sec: Int(timeout / linux::NSEC_PER_SEC),
+			tv_nsec: Int(timeout % linux::NSEC_PER_SEC),
 		};
 		unsafe {
 			syscall(
-				linux::SYS_FUTEX,
+				Int64(linux::SYS_futex),
 				self,
-				linux::FUTEX_WAIT_PRIVATE,
+				Int64(linux::FUTEX_WAIT_PRIVATE),
 				Uint64(expected),
 				ts&,
 			);
@@ -132,9 +131,9 @@ pub method futex_wake(self: &Uint32, count: Uint32) {
 	// FUTEX_WAKE | FUTEX_PRIVATE_FLAG.
 	unsafe {
 		syscall(
-			linux::SYS_FUTEX,
+			Int64(linux::SYS_futex),
 			self,
-			linux::FUTEX_WAKE_PRIVATE,
+			Int64(linux::FUTEX_WAKE_PRIVATE),
 			Uint64(count),
 		);
 	}
@@ -143,7 +142,7 @@ pub method futex_wake(self: &Uint32, count: Uint32) {
 
 /// Wakes all waiters.
 pub method futex_wake(self: &Uint32) {
-	self.futex_wake(linux::FUTEX_WAKE_ALL);
+	self.futex_wake(Uint32(linux::INT_MAX));
 }
 
 /// A futex-backed mutual exclusion lock.

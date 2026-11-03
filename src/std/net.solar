@@ -1,5 +1,25 @@
 import intrinsics from "@intrinsics";
 import linux from "linux.solar";
+import(C) {sockaddr_in} from "linux/in.h";
+import(C) {sa_family_t} from "sys/socket.h";
+import(C) {in_port_t} from "netinet/in.h";
+
+// The C IPv6 address uses a union of byte/word views. Represent its 128 bits
+// as bytes because Solar cannot import unions. The remaining fields follow
+// the Linux sockaddr_in6 ABI, with C scalar types for the family and port.
+struct(repr(C)) SockaddrIn6 {
+	family: sa_family_t,
+	port: in_port_t,
+	flowinfo: Uint32,
+	address: [Uint8; 16],
+	scope_id: Uint32,
+}
+
+enum SocketAddress { V4(sockaddr_in), V6(SockaddrIn6) }
+
+fn network_port(port: Uint) -> in_port_t {
+	Uint16(((port & 255u) << 8u) | ((port >> 8u) & 255u))
+}
 
 /// A listening TCP socket.
 pub struct TcpListener {
@@ -17,10 +37,10 @@ fn raw_fd(fd: FileDesc) -> Int64 {
 	Int64(intrinsics::fd_to_raw(fd))
 }
 
-fn socket_create(domain: Int) -> FileDesc {
+fn socket_create(domain: Int32) -> FileDesc {
 	let raw = unsafe {
 		intrinsics::syscall(
-			linux::SYS_SOCKET,
+			Int64(linux::SYS_socket),
 			Int64(domain),
 			Int64(linux::SOCK_STREAM + linux::SOCK_CLOEXEC),
 			Int64(linux::IPPROTO_IP),
@@ -30,13 +50,13 @@ fn socket_create(domain: Int) -> FileDesc {
 	unsafe { intrinsics::fd_from_raw(Int32(raw)) }
 }
 
-fn socket_bind(fd: FileDesc, addr: &[Uint8]) {
+fn socket_bind#[T](fd: FileDesc, addr: &T) {
 	let result = unsafe {
 		intrinsics::syscall(
-			linux::SYS_BIND,
+			Int64(linux::SYS_bind),
 			raw_fd(fd),
 			addr,
-			Uint64(addr.len()),
+			Uint64(intrinsics::size_of#[T]()),
 		)
 	};
 	linux::check_syscall(result, "socket_bind failed"&);
@@ -44,7 +64,11 @@ fn socket_bind(fd: FileDesc, addr: &[Uint8]) {
 
 fn socket_listen(fd: FileDesc, backlog: Int) {
 	let result = unsafe {
-		intrinsics::syscall(linux::SYS_LISTEN, raw_fd(fd), Int64(backlog))
+		intrinsics::syscall(
+			Int64(linux::SYS_listen),
+			raw_fd(fd),
+			Int64(backlog),
+		)
 	};
 	linux::check_syscall(result, "socket_listen failed"&);
 }
@@ -53,7 +77,7 @@ fn socket_accept(fd: FileDesc) -> FileDesc {
 	loop {
 		let raw = unsafe {
 			intrinsics::syscall(
-				linux::SYS_ACCEPT4,
+				Int64(linux::SYS_accept4),
 				raw_fd(fd),
 				0u64,
 				0u64,
@@ -71,14 +95,14 @@ fn socket_accept(fd: FileDesc) -> FileDesc {
 	}
 }
 
-fn socket_connect(fd: FileDesc, addr: &[Uint8]) {
+fn socket_connect#[T](fd: FileDesc, addr: &T) {
 	loop {
 		let result = unsafe {
 			intrinsics::syscall(
-				linux::SYS_CONNECT,
+				Int64(linux::SYS_connect),
 				raw_fd(fd),
 				addr,
-				Uint64(addr.len()),
+				Uint64(intrinsics::size_of#[T]()),
 			)
 		};
 		if result == 0i64 || result == 0i64 - Int64(linux::EISCONN) { break; }
@@ -90,33 +114,38 @@ fn socket_connect(fd: FileDesc, addr: &[Uint8]) {
 	}
 }
 
-fn socket_set_option(fd: FileDesc, level: Int, name: Int, value: Int) {
+fn socket_set_option(fd: FileDesc, level: Int32, name: Int32, value: Int) {
 	let optval = Int32(value);
 	let result = unsafe {
 		intrinsics::syscall(
-			linux::SYS_SETSOCKOPT,
+			Int64(linux::SYS_setsockopt),
 			raw_fd(fd),
 			Int64(level),
 			Int64(name),
 			optval&,
-			linux::SOCKOPT_INT_SIZE,
+			Uint64(intrinsics::size_of#[Int32]()),
 		)
 	};
 	linux::check_syscall(result, "socket_set_option failed"&);
 }
 
-fn socket_local_addr(fd: FileDesc, dst: &[Uint8]) -> Uint {
-	let len = Uint32(dst.len());
+fn socket_local_addr#[T](fd: FileDesc, dst: &T) -> Uint {
+	let len = Uint32(intrinsics::size_of#[T]());
 	let result = unsafe {
-		intrinsics::syscall(linux::SYS_GETSOCKNAME, raw_fd(fd), dst, len&)
+		intrinsics::syscall(
+			Int64(linux::SYS_getsockname),
+			raw_fd(fd),
+			dst,
+			len&,
+		)
 	};
 	linux::check_syscall(result, "socket_local_addr failed"&);
 	Uint(len)
 }
 
-fn socket_shutdown(fd: FileDesc, how: Int) {
+fn socket_shutdown(fd: FileDesc, how: Int32) {
 	let result = unsafe {
-		intrinsics::syscall(linux::SYS_SHUTDOWN, raw_fd(fd), Int64(how))
+		intrinsics::syscall(Int64(linux::SYS_shutdown), raw_fd(fd), Int64(how))
 	};
 	linux::check_syscall(result, "socket_shutdown failed"&);
 }
@@ -235,37 +264,26 @@ pub fn parse_ipv6(addr: &[Uint8], out: &[Uint8]) {
 	let full = parse_groups(addr, 0u, n, out, 0u);
 }
 
-/// Builds a sockaddr into `sa` (which must be SOCKADDR_MAX bytes, zeroed) and
-/// returns its size: a 16-byte sockaddr_in for dotted-quad `addr`, a 28-byte
-/// sockaddr_in6 for an IPv6 literal. Port lands at bytes 2..4 (big-endian) in
-/// both layouts.
-fn build_sockaddr(sa: &[Uint8], addr: &[Uint8], port: Uint) -> Uint {
-	sa@[linux::SOCKADDR_PORT_OFFSET] = Uint8(port >> 8u);
-	sa@[linux::SOCKADDR_PORT_OFFSET + 1u] = Uint8(port & 255u);
-
+// Constructs a typed address; the syscall receives its C layout directly.
+fn build_sockaddr(addr: &[Uint8], port: Uint) -> SocketAddress {
 	if is_ipv6(addr) {
-		sa@[linux::SOCKADDR_FAMILY_OFFSET] = Uint8(linux::AF_INET6); // AF_INET6, little-endian u16
-
-		// bytes 4..8: sin6_flowinfo (0); 8..24: sin6_addr; 24..28: scope id (0)
-		parse_ipv6(
-			addr,
-			sa@[linux::SOCKADDR_IN6_ADDR_OFFSET..linux::SOCKADDR_IN6_ADDR_END]&,
-		);
-		linux::SOCKADDR_IN6_SIZE
+		let sa = unsafe { intrinsics::zeroed#[SockaddrIn6]() };
+		sa.family = Uint16(linux::AF_INET6);
+		sa.port = network_port(port);
+		parse_ipv6(addr, sa.address&);
+		SocketAddress::V6(sa)
 	} else {
-		sa@[linux::SOCKADDR_FAMILY_OFFSET] = Uint8(linux::AF_INET); // AF_INET, little-endian u16
-		parse_ipv4_range(
-			addr,
-			0u,
-			addr.len(),
-			sa,
-			linux::SOCKADDR_IN_ADDR_OFFSET,
-		);
-		linux::SOCKADDR_IN_SIZE
+		let sa = unsafe { intrinsics::zeroed#[sockaddr_in]() };
+		sa.sin_family = Uint16(linux::AF_INET);
+		sa.sin_port = network_port(port);
+		let bytes = [0u8; 4u];
+		parse_ipv4(addr, bytes&);
+		sa.sin_addr.s_addr = intrinsics::u32_from_le(bytes[0u..4u]);
+		SocketAddress::V4(sa)
 	}
 }
 
-fn family_of(addr: &[Uint8]) -> Int {
+fn family_of(addr: &[Uint8]) -> Int32 {
 	if is_ipv6(addr) { linux::AF_INET6 } else { linux::AF_INET }
 }
 
@@ -275,9 +293,10 @@ fn family_of(addr: &[Uint8]) -> Int {
 pub fn listen(addr: &[Uint8], port: Uint, backlog = linux::TCP_LISTEN_BACKLOG) -> TcpListener {
 	let fd = socket_create(family_of(addr));
 	socket_set_option(fd, linux::SOL_SOCKET, linux::SO_REUSEADDR, 1);
-	let sa = [0u8; linux::SOCKADDR_MAX];
-	let len = build_sockaddr(sa&, addr, port);
-	socket_bind(fd, sa[0u..len]&);
+	match build_sockaddr(addr, port) {
+		SocketAddress::V4(sa) => socket_bind(fd, sa&),
+		SocketAddress::V6(sa) => socket_bind(fd, sa&),
+	};
 	socket_listen(fd, backlog);
 	TcpListener { fd: fd }
 }
@@ -289,12 +308,10 @@ pub method accept(self: TcpListener) -> TcpStream {
 
 /// The port this listener is actually bound to (useful after binding port 0).
 pub method local_port(self: TcpListener) -> Uint {
-	let sa = [0u8; linux::SOCKADDR_MAX];
+	// Both address layouts begin with the same family and network-order port.
+	let sa = unsafe { intrinsics::zeroed#[SockaddrIn6]() };
 	socket_local_addr(self.fd, sa&);
-
-	// sin_port and sin6_port are both big-endian at bytes 2..4.
-	Uint(sa[linux::SOCKADDR_PORT_OFFSET]) * 256u +
-		Uint(sa[linux::SOCKADDR_PORT_OFFSET + 1u])
+	Uint(network_port(Uint(sa.port)))
 }
 
 /// Stops accepting now instead of when the collector reclaims the listener.
@@ -305,9 +322,10 @@ pub method close(self: TcpListener) {
 /// Connects to `addr:port` (IPv4 or IPv6 literal) and returns the stream.
 pub fn connect(addr: &[Uint8], port: Uint) -> TcpStream {
 	let fd = socket_create(family_of(addr));
-	let sa = [0u8; linux::SOCKADDR_MAX];
-	let len = build_sockaddr(sa&, addr, port);
-	socket_connect(fd, sa[0u..len]&);
+	match build_sockaddr(addr, port) {
+		SocketAddress::V4(sa) => socket_connect(fd, sa&),
+		SocketAddress::V6(sa) => socket_connect(fd, sa&),
+	};
 	TcpStream { fd: fd }
 }
 

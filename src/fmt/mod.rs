@@ -537,7 +537,11 @@ fn import_doc(definition: &ImportDef) -> Doc {
     };
     Doc::concat([
         visibility(definition.is_pub),
-        Doc::text("import "),
+        Doc::text(if definition.is_c {
+            "import(C) "
+        } else {
+            "import "
+        }),
         names,
         Doc::text(" from "),
         Doc::text(quoted_literal(&definition.path, '"')),
@@ -870,16 +874,26 @@ fn expr_doc(expression: &Expr, context: &SourceContext<'_>) -> Doc {
             Doc::concat([type_doc(ty), Doc::text("::"), Doc::text(name)])
         }
         ExprKind::IntegerLiteral(value, ty) => literal_doc(expression, context, || {
-            format!("{value}{}", integer_suffix(*ty))
+            let suffix = integer_suffix(*ty);
+            if *value < 0 {
+                // Generated C constants can be negative. Solar has no unary
+                // minus; keep every operand in range even for signed MIN.
+                format!("(0{suffix} - {}{suffix} - 1{suffix})", -(value + 1))
+            } else {
+                format!("{value}{suffix}")
+            }
         }),
         ExprKind::FloatLiteral(value, ty) => literal_doc(expression, context, || {
-            format!(
-                "{value}{}",
-                match ty {
-                    FloatType::Float32 => "f32",
-                    FloatType::Float64 => "f",
-                }
-            )
+            let suffix = match ty {
+                FloatType::Float32 => "f32",
+                FloatType::Float64 => "f",
+            };
+            if value.is_sign_negative() {
+                // Multiplication preserves the sign of negative zero, too.
+                format!("((0{suffix} - 1{suffix}) * {}{suffix})", value.abs())
+            } else {
+                format!("{value}{suffix}")
+            }
         }),
         ExprKind::BooleanLiteral(value) => Doc::text(value.to_string()),
         ExprKind::StringLiteral(value) => literal_doc(expression, context, || {
@@ -1598,9 +1612,49 @@ pub fn format_source(source: &str) -> Result<String, String> {
     Ok(formatted)
 }
 
+/// Renders generated declarations without source trivia, for diagnostics and
+/// tooling that inspect imported C declarations as Solar definitions.
+pub(crate) fn format_generated_items(items: &[TopLevelItem]) -> String {
+    let context = SourceContext::new("", &[], &[], &[]);
+    items
+        .iter()
+        .map(|item| render(top_level_doc(item, &context)) + "\n")
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::format_source;
+
+    #[test]
+    fn generated_negative_constants_have_parseable_source() {
+        use crate::ast::*;
+        let items = [
+            ExprKind::IntegerLiteral(-100, IntegerType::Int32),
+            ExprKind::IntegerLiteral(i64::MIN.into(), IntegerType::Int64),
+            ExprKind::FloatLiteral(-1.25, FloatType::Float32),
+            ExprKind::FloatLiteral(-0.0, FloatType::Float64),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, kind)| {
+            TopLevelItem::Const(ConstDef {
+                name: format!("VALUE_{index}"),
+                ty: None,
+                value: Box::new(Expr {
+                    kind,
+                    span: SourceSpan::default(),
+                }),
+                is_pub: true,
+                doc: None,
+                span: SourceSpan::default(),
+            })
+        })
+        .collect::<Vec<_>>();
+        let source = super::format_generated_items(&items);
+        crate::parser::parse(&source)
+            .expect("generated declarations must be usable by editor tooling");
+    }
 
     fn formatted(source: &str) -> String {
         format_source(source).unwrap()

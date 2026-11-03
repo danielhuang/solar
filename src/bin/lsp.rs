@@ -4527,7 +4527,7 @@ fn visible_completion_defs(source_map: &SourceMap) -> HashSet<ast::DefId> {
             TopLevelItem::Import(import) => match import.kind {
                 ImportKind::Named(names) => {
                     if let Some(imported_file) =
-                        imported_completion_file(source_map, root_file, &import.path)
+                        imported_completion_file(source_map, root_file, &import.path, import.is_c)
                     {
                         for name in names {
                             let Some(defining_file) =
@@ -4550,7 +4550,7 @@ fn visible_completion_defs(source_map: &SourceMap) -> HashSet<ast::DefId> {
                 }
                 ImportKind::Wildcard => {
                     if let Some(file_id) =
-                        imported_completion_file(source_map, root_file, &import.path)
+                        imported_completion_file(source_map, root_file, &import.path, import.is_c)
                     {
                         visible.extend(exported_completion_defs(
                             file_id,
@@ -4607,7 +4607,7 @@ fn exported_completion_defs(
                 TopLevelItem::Import(import) if import.is_pub => match import.kind {
                     ImportKind::Named(imported) => {
                         if let Some(imported_file) =
-                            imported_completion_file(source_map, file_id, &import.path)
+                            imported_completion_file(source_map, file_id, &import.path, import.is_c)
                         {
                             for name in imported {
                                 let Some(defining_file) =
@@ -4630,7 +4630,7 @@ fn exported_completion_defs(
                     }
                     ImportKind::Wildcard => {
                         if let Some(imported_file) =
-                            imported_completion_file(source_map, file_id, &import.path)
+                            imported_completion_file(source_map, file_id, &import.path, import.is_c)
                         {
                             defs.extend(exported_completion_defs(
                                 imported_file,
@@ -4667,7 +4667,7 @@ fn imported_completion_name_file(
             };
             matches!(&import.kind, ImportKind::Module(alias) if alias == segment).then_some(import)
         })?;
-        file_id = imported_completion_file(source_map, file_id, &module.path)?;
+        file_id = imported_completion_file(source_map, file_id, &module.path, module.is_c)?;
     }
     Some(file_id)
 }
@@ -4676,7 +4676,11 @@ fn imported_completion_file(
     source_map: &SourceMap,
     from_file: u32,
     import_path: &str,
+    is_c: bool,
 ) -> Option<u32> {
+    if is_c {
+        return source_map.c_header_file_id(import_path);
+    }
     if import_path == "@std" {
         return Some(0);
     }
@@ -4774,7 +4778,8 @@ fn collect_module_imports(source_map: &SourceMap) -> HashMap<(u32, String), Modu
             if import.path == "@intrinsics" {
                 continue;
             }
-            let Some(imported_file) = imported_completion_file(source_map, file_id, &import.path)
+            let Some(imported_file) =
+                imported_completion_file(source_map, file_id, &import.path, import.is_c)
             else {
                 continue;
             };
@@ -4806,7 +4811,8 @@ fn collect_module_imports(source_map: &SourceMap) -> HashMap<(u32, String), Modu
                 continue;
             };
             if matches!(import.kind, ImportKind::Wildcard)
-                && let Some(file_id) = imported_completion_file(source_map, root_file, &import.path)
+                && let Some(file_id) =
+                    imported_completion_file(source_map, root_file, &import.path, import.is_c)
             {
                 wildcard_sources.push(file_id);
             }
@@ -5996,6 +6002,23 @@ fn main() {
             items
                 .iter()
                 .any(|item| { item["label"] == "Enum" && item["kind"] == 13 }),
+            "{items:?}"
+        );
+    }
+
+    #[test]
+    fn completion_lists_imported_c_constants_and_types() {
+        let items = completion_items(
+            "import(C) {size_t} from \"string.h\"; fn main() { size_; }",
+            "{ size_",
+        );
+        assert!(
+            items.iter().any(|item| item["label"] == "size_t"),
+            "{items:?}"
+        );
+        let items = completion_items("fn main() { linux::O_CL; }", "linux::O_CL");
+        assert!(
+            items.iter().any(|item| item["label"] == "O_CLOEXEC"),
             "{items:?}"
         );
     }
