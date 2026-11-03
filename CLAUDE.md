@@ -32,3 +32,5 @@ cargo fmt --check
 cargo nextest run --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
+
+Do not edit README unless specifically instructed.
