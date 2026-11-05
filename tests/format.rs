@@ -36,10 +36,10 @@ fn empty_tuple_preserves_explicit_syntax_and_semicolons() {
 }
 
 #[test]
-fn generator_and_yield_formatting() {
-    let source = "fn main(){let g=generator(input:Int){let x=yield input+1;yield (yield x)+2;};let empty=generator{};}";
+fn coroutine_and_yield_formatting() {
+    let source = "fn main(){let g=coroutine(input:Int){let x=yield input+1;yield (yield x)+2;};let empty=coroutine{};}";
     let formatted = solar::fmt::format_source(source).unwrap();
-    assert!(formatted.contains("generator (input: Int)"));
+    assert!(formatted.contains("coroutine (input: Int)"));
     assert!(formatted.contains("yield (yield x) + 2"));
     assert_eq!(solar::fmt::format_source(&formatted).unwrap(), formatted);
 }

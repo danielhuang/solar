@@ -570,7 +570,7 @@ impl Renderer<'_> {
     fn conv_stmt_kind(&self, k: &ta::StatementKind) -> StatementKind {
         use ta::StatementKind as K;
         match k {
-            K::GeneratorTry { .. } => unreachable!("generator lowering removes exception regions"),
+            K::CoroutineTry { .. } => unreachable!("coroutine lowering removes exception regions"),
             K::Let { name, ty, value } => StatementKind::Let {
                 name: self.ident_name(name),
                 ty: self.conv_type(ty),
@@ -615,7 +615,7 @@ impl Renderer<'_> {
     fn conv_expr_kind(&self, k: &ta::ExprKind) -> ExprKind {
         use ta::ExprKind as K;
         match k {
-            K::Yield(_) => unreachable!("generator lowering removes suspension markers"),
+            K::Yield(_) => unreachable!("coroutine lowering removes suspension markers"),
             K::Identifier(name) => ExprKind::Identifier(self.ident_name(name)),
             K::FloatLiteral(v) => ExprKind::FloatLiteral(*v),
             K::Global(def) => ExprKind::Global(self.base_name(def)),

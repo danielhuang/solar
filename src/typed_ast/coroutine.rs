@@ -1,4 +1,4 @@
-//! Generator typing and suspension lowering. Each generator is a private struct
+//! Coroutine typing and suspension lowering. Each coroutine is a private struct
 //! with a program counter, captured references, and MaybeZeroed local storage.
 //! An explicit `next(&self, input)` method executes its state machine using
 //! ordinary typed AST shared by all backends.
@@ -15,7 +15,7 @@ pub(super) struct Context {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub(super) struct GeneratorKey {
+pub(super) struct CoroutineKey {
     owner: Option<FuncId>,
     file: u32,
     line: u32,
@@ -23,7 +23,7 @@ pub(super) struct GeneratorKey {
 }
 
 #[derive(Clone)]
-pub(super) struct GeneratorInfo {
+pub(super) struct CoroutineInfo {
     resume: Option<Type>,
     yielded: Option<Type>,
     initial: Option<Expr>,
@@ -32,26 +32,26 @@ pub(super) struct GeneratorInfo {
 }
 
 impl Lowerer<'_> {
-    fn generator_identity(&mut self, span: ast::SourceSpan, resume: Option<Type>) -> TypeId {
-        let key = GeneratorKey {
+    fn coroutine_identity(&mut self, span: ast::SourceSpan, resume: Option<Type>) -> TypeId {
+        let key = CoroutineKey {
             owner: self.current_function.clone(),
             file: span.file_id,
             line: span.start.line,
             col: span.start.col,
         };
-        if let Some(id) = self.generator_instances.get(&key) {
+        if let Some(id) = self.coroutine_instances.get(&key) {
             return id.clone();
         }
         let index = self.closure_counter;
         self.closure_counter += 1;
         let id = TypeId::plain(DefId::synthetic(format!(
-            "Generator_{}_{}_{}_{index}",
+            "Coroutine_{}_{}_{}_{index}",
             span.file_id, span.start.line, span.start.col
         )));
-        self.generator_instances.insert(key, id.clone());
-        self.generator_types.insert(
+        self.coroutine_instances.insert(key, id.clone());
+        self.coroutine_types.insert(
             id.clone(),
-            GeneratorInfo {
+            CoroutineInfo {
                 resume,
                 yielded: None,
                 initial: None,
@@ -70,14 +70,14 @@ impl Lowerer<'_> {
                 }],
             },
         );
-        self.register_generator_struct(&id);
+        self.register_coroutine_struct(&id);
         id
     }
 
-    /// A generator's nominal identity is known before its body, permitting
+    /// A coroutine's nominal identity is known before its body, permitting
     /// recursive factories. Layout validation decides whether their local
     /// storage is finite once all field types have been inferred.
-    pub(super) fn predeclare_generator_return(
+    pub(super) fn predeclare_coroutine_return(
         &mut self,
         function: &ast::FunctionDef,
         fid: &FuncId,
@@ -91,11 +91,11 @@ impl Lowerer<'_> {
         }
         fn find(e: &ast::Expr) -> Option<(&ast::Expr, Vec<bool>)> {
             match &e.kind {
-                ast::ExprKind::Generator { .. } => Some((e, Vec::new())),
+                ast::ExprKind::Coroutine { .. } => Some((e, Vec::new())),
                 ast::ExprKind::Reference(inner) | ast::ExprKind::Unique(inner) => {
-                    let (generator, mut refs) = find(inner)?;
+                    let (coroutine, mut refs) = find(inner)?;
                     refs.push(matches!(e.kind, ast::ExprKind::Unique(_)));
-                    Some((generator, refs))
+                    Some((coroutine, refs))
                 }
                 ast::ExprKind::Block(body) => find(tail(body)?),
                 _ => None,
@@ -104,17 +104,17 @@ impl Lowerer<'_> {
         if function.return_type.is_some() {
             return Ok(());
         }
-        let Some((generator, references)) = tail(&function.body).and_then(find) else {
+        let Some((coroutine, references)) = tail(&function.body).and_then(find) else {
             return Ok(());
         };
-        let ast::ExprKind::Generator { parameter, .. } = &generator.kind else {
+        let ast::ExprKind::Coroutine { parameter, .. } = &coroutine.kind else {
             unreachable!()
         };
         let resume = parameter
             .as_ref()
             .map(|p| self.resolve_ast_type(&p.ty))
             .transpose()?;
-        let id = self.generator_identity(generator.span, resume);
+        let id = self.coroutine_identity(coroutine.span, resume);
         let mut ty = Type::Struct(id);
         for unique in references {
             ty = if unique {
@@ -138,9 +138,9 @@ impl Lowerer<'_> {
         Ok(())
     }
 
-    fn generator_next_id(&self, id: &TypeId) -> FuncId {
+    fn coroutine_next_id(&self, id: &TypeId) -> FuncId {
         let mut args = vec![Type::Ref(Box::new(Type::Struct(id.clone())))];
-        args.extend(self.generator_types[id].resume.iter().cloned());
+        args.extend(self.coroutine_types[id].resume.iter().cloned());
         FuncId {
             def: DefId::new(ast::SYNTHETIC_FILE, "next"),
             args,
@@ -150,10 +150,10 @@ impl Lowerer<'_> {
         }
     }
 
-    fn register_generator_struct(&mut self, id: &TypeId) {
+    fn register_coroutine_struct(&mut self, id: &TypeId) {
         let span = ast::SourceSpan {
             file_id: ast::SYNTHETIC_FILE,
-            ..self.generator_types[id].span
+            ..self.coroutine_types[id].span
         };
         let fields = self.lowered_structs[id]
             .fields
@@ -182,7 +182,7 @@ impl Lowerer<'_> {
         );
     }
 
-    fn register_generator_method(&mut self, function: FunctionDef) {
+    fn register_coroutine_method(&mut self, function: FunctionDef) {
         let span = ast::SourceSpan {
             file_id: ast::SYNTHETIC_FILE,
             ..function.def_span
@@ -212,7 +212,7 @@ impl Lowerer<'_> {
             inline_hint: false,
             is_extension: false,
             doc: Some(
-                "Advances the generator to its next yield, or returns None after completion."
+                "Advances the coroutine to its next yield, or returns None after completion."
                     .into(),
             ),
             span,
@@ -233,7 +233,7 @@ impl Lowerer<'_> {
             .insert(function.id.clone(), function);
     }
 
-    fn validate_generator_layout(&self, id: &TypeId) -> Result<(), CompileError> {
+    fn validate_coroutine_layout(&self, id: &TypeId) -> Result<(), CompileError> {
         fn visit(
             ty: &Type,
             lowerer: &Lowerer<'_>,
@@ -275,12 +275,12 @@ impl Lowerer<'_> {
             &mut HashSet::new(),
             &mut HashSet::new(),
         ) {
-            return Err(CompileError::new("recursive generator has unbounded size: its stored fields contain the generator by value; put the recursive value behind a reference".into(), self.generator_types[id].span));
+            return Err(CompileError::new("recursive coroutine has unbounded size: its stored fields contain the coroutine by value; put the recursive value behind a reference".into(), self.coroutine_types[id].span));
         }
         Ok(())
     }
 
-    pub(super) fn lower_generator_try(
+    pub(super) fn lower_coroutine_try(
         &mut self,
         span: ast::SourceSpan,
         body: &[ast::Statement],
@@ -314,7 +314,7 @@ impl Lowerer<'_> {
         self.pop_scope();
         let handler = handler?.into_iter().flatten().collect();
         Ok(vec![statement(
-            StatementKind::GeneratorTry {
+            StatementKind::CoroutineTry {
                 body,
                 binding: binding.clone(),
                 exception_type,
@@ -329,20 +329,20 @@ impl Lowerer<'_> {
         span: ast::SourceSpan,
         value: &ast::Expr,
     ) -> Result<Expr, CompileError> {
-        if self.generator_context.is_none() {
+        if self.coroutine_context.is_none() {
             return Err(CompileError::new(
-                "yield is only allowed inside a generator body".into(),
+                "yield is only allowed inside a coroutine body".into(),
                 span,
             ));
         }
         let value = self.lower_expr(value)?;
         if !value.ty.is_sized(&self.lowered_structs) {
             return Err(CompileError::new(
-                format!("generator cannot yield unsized type {}", value.ty),
+                format!("coroutine cannot yield unsized type {}", value.ty),
                 span,
             ));
         }
-        let ctx = self.generator_context.as_mut().unwrap();
+        let ctx = self.coroutine_context.as_mut().unwrap();
         if value.ty != Type::Never {
             if let Some(ty) = &ctx.yielded {
                 if *ty != value.ty {
@@ -355,7 +355,7 @@ impl Lowerer<'_> {
                 ctx.yielded = Some(value.ty.clone());
             }
         }
-        self.generator_types.get_mut(&ctx.id).unwrap().yielded = ctx.yielded.clone();
+        self.coroutine_types.get_mut(&ctx.id).unwrap().yielded = ctx.yielded.clone();
         Ok(Expr {
             ty: ctx.resume.clone(),
             kind: ExprKind::Yield(Box::new(value)),
@@ -363,7 +363,7 @@ impl Lowerer<'_> {
         })
     }
 
-    pub(super) fn lower_generator(
+    pub(super) fn lower_coroutine(
         &mut self,
         span: ast::SourceSpan,
         parameter: Option<&ast::Parameter>,
@@ -375,18 +375,18 @@ impl Lowerer<'_> {
             .unwrap_or(Type::Unit);
         if !resume.is_sized(&self.lowered_structs) {
             return Err(CompileError::new(
-                format!("generator parameter has unsized type {resume}"),
+                format!("coroutine parameter has unsized type {resume}"),
                 span,
             ));
         }
-        let id = self.generator_identity(span, parameter.map(|_| resume.clone()));
-        if let Some(initial) = self.generator_types[&id].initial.clone() {
-            for capture in self.generator_types[&id].captures.clone() {
+        let id = self.coroutine_identity(span, parameter.map(|_| resume.clone()));
+        if let Some(initial) = self.coroutine_types[&id].initial.clone() {
+            for capture in self.coroutine_types[&id].captures.clone() {
                 self.lookup_var(&capture.name);
             }
             return Ok(initial);
         }
-        let saved_generator = self.generator_context.replace(Context {
+        let saved_coroutine = self.coroutine_context.replace(Context {
             id: id.clone(),
             resume: resume.clone(),
             yielded: None,
@@ -413,7 +413,7 @@ impl Lowerer<'_> {
         self.nested_function_defs.pop();
         self.pop_scope();
         let captures = self.capture_contexts.pop().unwrap().captures;
-        let context = std::mem::replace(&mut self.generator_context, saved_generator);
+        let context = std::mem::replace(&mut self.coroutine_context, saved_coroutine);
         self.loop_ctx = saved_loops;
         self.in_try_block = saved_try;
         self.current_return_type = saved_return;
@@ -427,9 +427,9 @@ impl Lowerer<'_> {
             &[self.concrete_type_to_ast_type(&yielded)],
         )?;
         let option = self.lowered_enums[&option_id].clone();
-        let input_name = ast::Ident::synthetic("generator_input");
-        let self_name = ast::Ident::synthetic("generator_self");
-        self.generator_types.get_mut(&id).unwrap().yielded = Some(yielded);
+        let input_name = ast::Ident::synthetic("coroutine_input");
+        let self_name = ast::Ident::synthetic("coroutine_self");
+        self.coroutine_types.get_mut(&id).unwrap().yielded = Some(yielded);
         let maybe_zeroed = self
             .generic_structs
             .keys()
@@ -438,7 +438,7 @@ impl Lowerer<'_> {
             .cloned()
             .ok_or_else(|| {
                 CompileError::new(
-                    "generators require the standard library MaybeZeroed type".into(),
+                    "coroutines require the standard library MaybeZeroed type".into(),
                     span,
                 )
             })?;
@@ -479,7 +479,7 @@ impl Lowerer<'_> {
         machine.complete();
         let (definition, initial, body, helpers) = machine.finish();
         self.lowered_structs.insert(id.clone(), definition);
-        self.validate_generator_layout(&id)?;
+        self.validate_coroutine_layout(&id)?;
         self.pending_closures.extend(helpers);
         let mut parameters = vec![Parameter {
             name: self_name,
@@ -494,7 +494,7 @@ impl Lowerer<'_> {
             });
         }
         let next = FunctionDef {
-            id: self.generator_next_id(&id),
+            id: self.coroutine_next_id(&id),
             parameters,
             return_type: Type::Enum(option.id),
             body,
@@ -502,15 +502,15 @@ impl Lowerer<'_> {
             inline_hint: false,
             def_span: span,
         };
-        self.register_generator_method(next);
-        self.register_generator_struct(&id);
-        let info = self.generator_types.get_mut(&id).unwrap();
+        self.register_coroutine_method(next);
+        self.register_coroutine_struct(&id);
+        let info = self.coroutine_types.get_mut(&id).unwrap();
         info.captures = captures;
         info.initial = Some(initial.clone());
         Ok(initial)
     }
 
-    pub(super) fn lower_generator_method(
+    pub(super) fn lower_coroutine_method(
         &mut self,
         span: ast::SourceSpan,
         receiver: &Expr,
@@ -526,20 +526,20 @@ impl Lowerer<'_> {
         let Type::Struct(id) = &object.ty else {
             return None;
         };
-        let info = self.generator_types.get(id)?.clone();
+        let info = self.coroutine_types.get(id)?.clone();
         let id = id.clone();
         let params: Vec<Type> = info.resume.iter().cloned().collect();
         let result = (|| {
             if !type_args.is_empty() || !kwargs.is_empty() {
                 return Err(CompileError::new(
-                    "generator methods do not accept type or keyword arguments".into(),
+                    "coroutine methods do not accept type or keyword arguments".into(),
                     span,
                 ));
             }
             if method == "iter" {
                 if !params.is_empty() || !arguments.is_empty() {
                     return Err(CompileError::new(
-                        "only generators without a resume parameter can be iterated".into(),
+                        "only coroutines without a resume parameter can be iterated".into(),
                         span,
                     ));
                 }
@@ -552,7 +552,7 @@ impl Lowerer<'_> {
             if arguments.len() != params.len() {
                 return Err(CompileError::new(
                     format!(
-                        "generator next expects {} arguments, got {}",
+                        "coroutine next expects {} arguments, got {}",
                         params.len(),
                         arguments.len()
                     ),
@@ -565,7 +565,7 @@ impl Lowerer<'_> {
                 let value = self.try_coerce(value, ty);
                 if value.ty != *ty && value.ty != Type::Never {
                     return Err(CompileError::new(
-                        format!("generator next expects {ty}, got {}", value.ty),
+                        format!("coroutine next expects {ty}, got {}", value.ty),
                         arg.span,
                     ));
                 }
@@ -573,7 +573,7 @@ impl Lowerer<'_> {
             }
             let yielded = info.yielded.ok_or_else(|| {
                 CompileError::new(
-                    "cannot infer a recursive generator's yielded type before its first yield"
+                    "cannot infer a recursive coroutine's yielded type before its first yield"
                         .into(),
                     span,
                 )
@@ -593,14 +593,14 @@ impl Lowerer<'_> {
             Ok(expr(
                 Type::Enum(option),
                 ExprKind::Call {
-                    function: self.generator_next_id(&id),
+                    function: self.coroutine_next_id(&id),
                     arguments: args,
                 },
                 span,
             ))
         })();
         Some(result.and_then(|result| {
-            // Generator iter/next have a dedicated lowering path, but an
+            // Coroutine iter/next have a dedicated lowering path, but an
             // applicable extension must still conflict with these methods.
             let extensions: Vec<_> = self
                 .method_defs
@@ -639,7 +639,7 @@ impl Lowerer<'_> {
                         span,
                     )
                     .with_label("extension method defined here", extension.ast_def.span)
-                    .with_label("generator method defined here", info.span));
+                    .with_label("coroutine method defined here", info.span));
                 }
             }
             Ok(result)
@@ -837,7 +837,7 @@ impl<'a, 'b> Machine<'a, 'b> {
     fn boxed(&mut self, value: Expr, prefix: &str) -> Expr {
         // Address-taken bindings need fresh storage on each declaration. This
         // preserves references and closures escaping earlier loop iterations.
-        let name = ast::Ident::synthetic(format!("generator_value_{}", self.fields.len()));
+        let name = ast::Ident::synthetic(format!("coroutine_value_{}", self.fields.len()));
         let local = expr(
             value.ty.clone(),
             ExprKind::Identifier(name.clone()),
@@ -862,7 +862,7 @@ impl<'a, 'b> Machine<'a, 'b> {
     fn program_counter(&self) -> Expr {
         expr(
             Type::Int,
-            ExprKind::Identifier(ast::Ident::synthetic("generator_pc")),
+            ExprKind::Identifier(ast::Ident::synthetic("coroutine_pc")),
             self.span,
         )
     }
@@ -947,7 +947,7 @@ impl<'a, 'b> Machine<'a, 'b> {
     }
     fn statement(&mut self, stmt: &Statement) {
         match &stmt.kind {
-            StatementKind::GeneratorTry {
+            StatementKind::CoroutineTry {
                 body,
                 binding,
                 exception_type,
@@ -1426,7 +1426,7 @@ impl<'a, 'b> Machine<'a, 'b> {
         }
         arms.push(TypedMatchArm {
             pattern: TypedPattern::Wildcard(
-                ast::Ident::synthetic("completed_generator"),
+                ast::Ident::synthetic("completed_coroutine"),
                 Type::Int,
             ),
             body: vec![statement(
@@ -1444,11 +1444,11 @@ impl<'a, 'b> Machine<'a, 'b> {
         );
         // Internal control flow belongs to this invocation. Only suspension
         // writes a continuation into the persistent state; poison it once so
-        // exceptions and reentrant calls still observe a completed generator.
+        // exceptions and reentrant calls still observe a completed coroutine.
         let mut body = vec![
             statement(
                 StatementKind::Let {
-                    name: ast::Ident::synthetic("generator_pc"),
+                    name: ast::Ident::synthetic("coroutine_pc"),
                     ty: Type::Int,
                     value: self.state(),
                 },
@@ -1531,7 +1531,7 @@ impl<'a, 'b> Machine<'a, 'b> {
         }
         let (drive, driver_fn) = self.helper("drive", Vec::new(), driver, captures);
         let exception_ty = Type::Struct(self.lowerer.exception_type().unwrap());
-        let exception_name = ast::Ident::synthetic("generator_exception");
+        let exception_name = ast::Ident::synthetic("coroutine_exception");
         let exception = expr(
             exception_ty.clone(),
             ExprKind::Identifier(exception_name.clone()),
@@ -1565,7 +1565,7 @@ impl<'a, 'b> Machine<'a, 'b> {
         }
         arms.push(TypedMatchArm {
             pattern: TypedPattern::Wildcard(
-                ast::Ident::synthetic("unhandled_generator_exception"),
+                ast::Ident::synthetic("unhandled_coroutine_exception"),
                 Type::Int,
             ),
             body: vec![statement(
@@ -1810,7 +1810,7 @@ fn address_taken(body: &[Statement]) -> HashSet<ast::Ident> {
                     expression(condition, false, names);
                     statements(body, address, names);
                 }
-                StatementKind::GeneratorTry { body, handler, .. } => {
+                StatementKind::CoroutineTry { body, handler, .. } => {
                     statements(body, address, names);
                     statements(handler, address, names);
                 }

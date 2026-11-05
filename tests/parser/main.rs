@@ -5,6 +5,43 @@ fn parse(source: &str) -> SourceFile {
 }
 
 #[test]
+fn coroutine_keyword() {
+    for (expression, has_parameter) in [
+        ("coroutine { yield 1; }", false),
+        ("coroutine (input: Int) { yield input; }", true),
+    ] {
+        let ast = parse(&format!("fn f() {{ let value = {expression}; }}"));
+        let TopLevelItem::Function(function) = &ast.items[0] else {
+            panic!("expected function");
+        };
+        let StatementKind::Let { value, .. } = &function.body[0].kind else {
+            panic!("expected binding");
+        };
+        let ExprKind::Coroutine { parameter, body } = &value.kind else {
+            panic!("expected coroutine");
+        };
+        assert_eq!(parameter.is_some(), has_parameter);
+        assert!(matches!(
+            body[0].kind,
+            StatementKind::Expression(Expr {
+                kind: ExprKind::Yield(_),
+                ..
+            })
+        ));
+    }
+}
+
+#[test]
+fn generator_is_no_longer_a_coroutine_keyword() {
+    for expression in [
+        "generator { yield 1; }",
+        "generator (input: Int) { yield input; }",
+    ] {
+        assert!(solar::parser::parse(&format!("fn f() {{ let value = {expression}; }}")).is_err());
+    }
+}
+
+#[test]
 fn thread_local_static_attribute() {
     let ast = parse("static(thread_local) COUNT: Int = 1;");
     let TopLevelItem::Static(item) = &ast.items[0] else {

@@ -18,7 +18,7 @@
 
 ; ── Definitions ────────────────────────────────────────────────────────────
 (function_def name: (identifier) @function)
-(function_def associated_type: (identifier) @type)
+(function_def associated_type: (named_type (identifier) @type))
 (method_def name: (identifier) @function.method)
 
 (struct_def name: (identifier) @type)
@@ -37,7 +37,7 @@
 ; ── Parameters ─────────────────────────────────────────────────────────────
 (parameter pattern: (identifier) @variable.parameter)
 (closure_param name: (identifier) @variable.parameter)
-(generator_parameter name: (identifier) @variable.parameter)
+(coroutine_parameter name: (identifier) @variable.parameter)
 (fn_type_param name: (identifier) @variable.parameter)
 
 ; Keyword argument name at a call site: `f(step = 5)`
@@ -133,7 +133,7 @@
 
 [
   "fn"
-  "generator"
+  "coroutine"
   "method"
 ] @keyword.function
 

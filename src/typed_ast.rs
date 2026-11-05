@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
 
-mod generator;
+mod coroutine;
 
 /// Source-level definition identity.
 pub use crate::ast::DefId;
@@ -454,7 +454,7 @@ fn apply_subst_to_ast_expr(expr: &ast::Expr, subst: &HashMap<String, ast::Type>)
                 .map(|s| apply_subst_to_ast_statement(s, subst))
                 .collect(),
         ),
-        ast::ExprKind::Generator { parameter, body } => ast::ExprKind::Generator {
+        ast::ExprKind::Coroutine { parameter, body } => ast::ExprKind::Coroutine {
             parameter: parameter.as_ref().map(|p| {
                 Box::new(ast::Parameter {
                     pattern: p.pattern.clone(),
@@ -1062,8 +1062,8 @@ pub struct Statement {
 /// A typed statement.
 #[derive(Debug, Clone)]
 pub enum StatementKind {
-    /// A generator-local exception region, eliminated by suspension lowering.
-    GeneratorTry {
+    /// A coroutine-local exception region, eliminated by suspension lowering.
+    CoroutineTry {
         body: Vec<Statement>,
         binding: ast::Ident,
         exception_type: Type,
@@ -1096,7 +1096,7 @@ pub enum StatementKind {
 /// A control-flow exit remains diverging even when it has no value tail.
 fn statement_diverges(statement: &Statement) -> bool {
     match &statement.kind {
-        StatementKind::GeneratorTry { body, handler, .. } => {
+        StatementKind::CoroutineTry { body, handler, .. } => {
             body_type(body) == Type::Never && body_type(handler) == Type::Never
         }
         StatementKind::Return(_) | StatementKind::Break(_) | StatementKind::Continue => true,
@@ -1155,7 +1155,7 @@ pub struct Expr {
 /// A typed expression.
 #[derive(Debug, Clone)]
 pub enum ExprKind {
-    /// Temporary suspension marker, eliminated by generator lowering.
+    /// Temporary suspension marker, eliminated by coroutine lowering.
     Yield(Box<Expr>),
     Identifier(ast::Ident),
     /// A float literal; the expression's `ty` selects Float32/Float64.
@@ -1364,7 +1364,7 @@ fn all_function_type_params(def: &ast::FunctionDef) -> Vec<String> {
 
 /// Per-method-name index of the concrete overload set, keyed by the base
 /// struct/enum name of the first (`self`) parameter. Built lazily on the first
-/// call of a method name. Registering a generated generator method invalidates
+/// call of a method name. Registering a generated coroutine method invalidates
 /// that name's index. This lets a method call consider only
 /// the overloads whose receiver type can possibly match, instead of scanning
 /// every same-named method in the program (which was quadratic: #call-sites ×
@@ -1814,9 +1814,9 @@ struct Lowerer<'a> {
     current_return_type: Option<Type>,
     current_return_type_span: Option<ast::SourceSpan>,
     closure_counter: usize,
-    generator_context: Option<generator::Context>,
-    generator_types: HashMap<TypeId, generator::GeneratorInfo>,
-    generator_instances: HashMap<generator::GeneratorKey, TypeId>,
+    coroutine_context: Option<coroutine::Context>,
+    coroutine_types: HashMap<TypeId, coroutine::CoroutineInfo>,
+    coroutine_instances: HashMap<coroutine::CoroutineKey, TypeId>,
     synthetic_structs: HashMap<TypeId, ast::StructDef>,
     current_function: Option<FuncId>,
     destructure_counter: usize,
@@ -2351,9 +2351,9 @@ impl<'a> Lowerer<'a> {
             current_return_type: None,
             current_return_type_span: None,
             closure_counter: 0,
-            generator_context: None,
-            generator_types: HashMap::new(),
-            generator_instances: HashMap::new(),
+            coroutine_context: None,
+            coroutine_types: HashMap::new(),
+            coroutine_instances: HashMap::new(),
             synthetic_structs: HashMap::new(),
             current_function: None,
             destructure_counter: 0,
@@ -4428,7 +4428,7 @@ impl<'a> Lowerer<'a> {
         fid: &FuncId,
     ) -> Result<FunctionDef, CompileError> {
         let saved_function = self.current_function.replace(fid.clone());
-        let saved_generator = self.generator_context.take();
+        let saved_coroutine = self.coroutine_context.take();
         // An unsafe declaration does not make its body an unsafe context, and
         // lazy lowering must not inherit an unsafe block from its call site.
         let saved_unsafe_depth = std::mem::replace(&mut self.unsafe_depth, 0);
@@ -4521,7 +4521,7 @@ impl<'a> Lowerer<'a> {
             std::mem::replace(&mut self.current_return_type, explicit_return_type.clone());
         let prev_return_type_span =
             std::mem::replace(&mut self.current_return_type_span, func.return_type_span);
-        self.predeclare_generator_return(func, fid, &parameters)?;
+        self.predeclare_coroutine_return(func, fid, &parameters)?;
         let mut body: Vec<Statement> = func
             .body
             .iter()
@@ -4534,7 +4534,7 @@ impl<'a> Lowerer<'a> {
         self.current_return_type = prev_return_type;
         self.current_return_type_span = prev_return_type_span;
 
-        self.generator_context = saved_generator;
+        self.coroutine_context = saved_coroutine;
         self.current_function = saved_function;
         // Prepend param destructuring statements
         if !param_destructure_stmts.is_empty() {
@@ -4918,8 +4918,8 @@ impl<'a> Lowerer<'a> {
         binding_type: Option<&ast::Type>,
         handler: &[ast::Statement],
     ) -> Result<Vec<Statement>, CompileError> {
-        if self.generator_context.is_some() {
-            return self.lower_generator_try(span, body, binding, binding_type, handler);
+        if self.coroutine_context.is_some() {
+            return self.lower_coroutine_try(span, body, binding, binding_type, handler);
         }
         let index = self.try_counter;
         self.try_counter += 1;
@@ -7506,8 +7506,8 @@ impl<'a> Lowerer<'a> {
                     span: expr.span,
                 })
             }
-            ast::ExprKind::Generator { parameter, body } => {
-                self.lower_generator(expr.span, parameter.as_deref(), body)
+            ast::ExprKind::Coroutine { parameter, body } => {
+                self.lower_coroutine(expr.span, parameter.as_deref(), body)
             }
             ast::ExprKind::Yield(value) => self.lower_yield(expr.span, value),
             ast::ExprKind::Closure {
@@ -8734,7 +8734,7 @@ impl<'a> Lowerer<'a> {
         body: &[ast::Statement],
         expected_type: Option<&Type>,
     ) -> Result<Expr, CompileError> {
-        let saved_generator = self.generator_context.take();
+        let saved_coroutine = self.coroutine_context.take();
         // Extract expected param types from expected function type
         let expected_params: Option<&Vec<Type>> = expected_type.and_then(|t| match t {
             Type::Function { params, .. } => Some(params),
@@ -8831,7 +8831,7 @@ impl<'a> Lowerer<'a> {
         self.pop_scope();
         self.loop_ctx = saved_loop_ctx;
 
-        self.generator_context = saved_generator;
+        self.coroutine_context = saved_coroutine;
         // Extract captures (pop this closure's context off the stack).
         let ctx = self.capture_contexts.pop().unwrap();
         let captures = ctx.captures;
@@ -10061,7 +10061,7 @@ impl<'a> Lowerer<'a> {
         if matches!(method, "next" | "iter") {
             let receiver = self.lower_expr(receiver)?;
             if let Some(result) =
-                self.lower_generator_method(span, &receiver, method, type_args, arguments, kwargs)
+                self.lower_coroutine_method(span, &receiver, method, type_args, arguments, kwargs)
             {
                 return result;
             }
@@ -10094,10 +10094,10 @@ impl<'a> Lowerer<'a> {
             pattern,
             ast::DestructurePattern::Tuple(_) | ast::DestructurePattern::Struct { .. }
         ) && let Type::Struct(id) = base_ty
-            && self.generator_types.contains_key(id)
+            && self.coroutine_types.contains_key(id)
         {
             return Err(CompileError::new(
-                "cannot destructure private generator fields".into(),
+                "cannot destructure private coroutine fields".into(),
                 base_expr.span,
             ));
         }

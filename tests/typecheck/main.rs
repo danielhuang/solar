@@ -56,53 +56,53 @@ fn old_unit_name_is_not_a_builtin() {
 }
 
 #[test]
-fn generator_type_errors() {
-    let directory = tempdir::TempDir::new("solar-generator-types").unwrap();
+fn coroutine_type_errors() {
+    let directory = tempdir::TempDir::new("solar-coroutine-types").unwrap();
     let path = directory.path().join("main.solar");
     for (body, expected) in [
-        ("yield 1;", "yield is only allowed inside a generator body"),
+        ("yield 1;", "yield is only allowed inside a coroutine body"),
         (
-            "let g = generator { yield 1; yield true; };",
+            "let g = coroutine { yield 1; yield true; };",
             "yield type mismatch",
         ),
         (
-            "let g = generator { let x: Int = yield 1; };",
+            "let g = coroutine { let x: Int = yield 1; };",
             "type mismatch",
         ),
         (
-            "let g = generator (x: Int) { let y: Bool = yield 1; };",
+            "let g = coroutine (x: Int) { let y: Bool = yield 1; };",
             "type mismatch",
         ),
         (
-            "let g = generator { yield 1; }; g.next(1);",
-            "generator next expects 0 arguments",
+            "let g = coroutine { yield 1; }; g.next(1);",
+            "coroutine next expects 0 arguments",
         ),
         (
-            "let g = generator (x: Int) { yield x; }; g.next();",
-            "generator next expects 1 arguments",
+            "let g = coroutine (x: Int) { yield x; }; g.next();",
+            "coroutine next expects 1 arguments",
         ),
         (
-            "let g = generator (x: Int) { yield x; }; g.next(true);",
-            "generator next expects Int",
+            "let g = coroutine (x: Int) { yield x; }; g.next(true);",
+            "coroutine next expects Int",
         ),
         (
-            "let g = generator { yield \"unsized\"; };",
-            "generator cannot yield unsized type",
+            "let g = coroutine { yield \"unsized\"; };",
+            "coroutine cannot yield unsized type",
         ),
         (
-            "let g = generator (x: [Int]) {};",
-            "generator parameter has unsized type",
+            "let g = coroutine (x: [Int]) {};",
+            "coroutine parameter has unsized type",
         ),
         (
-            "let g = generator { let f = \\ { yield 1; }; };",
-            "yield is only allowed inside a generator body",
+            "let g = coroutine { let f = \\ { yield 1; }; };",
+            "yield is only allowed inside a coroutine body",
         ),
-        ("loop { let g = generator { break; }; }", "break"),
-        ("let g = generator { return 1; };", "return type mismatch"),
+        ("loop { let g = coroutine { break; }; }", "break"),
+        ("let g = coroutine { return 1; };", "return type mismatch"),
     ] {
         std::fs::write(&path, format!("fn main() {{ {body} }}")).unwrap();
         let Err((errors, _)) = solar::pipeline::compile(&path) else {
-            panic!("accepted invalid generator: {body}");
+            panic!("accepted invalid coroutine: {body}");
         };
         let messages = errors
             .iter()

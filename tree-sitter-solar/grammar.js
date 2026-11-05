@@ -310,7 +310,7 @@ module.exports = grammar({
         $.loop_expression,
         $.unsafe_block,
         $.closure_expr,
-        $.generator_expression,
+        $.coroutine_expression,
         $.yield_expression,
         $.path_expr,
         $.match_expression,
@@ -446,13 +446,13 @@ module.exports = grammar({
     element_list: ($) => seq($._expression_with_struct, repeat(seq(",", $._expression_with_struct)), optional(",")),
 
     // ── Closures ──────────────────────────────────────────────
-    generator_expression: ($) => seq(
-      "generator",
-      optional(seq("(", field("parameter", $.generator_parameter), ")")),
+    coroutine_expression: ($) => seq(
+      "coroutine",
+      optional(seq("(", field("parameter", $.coroutine_parameter), ")")),
       field("body", $.block),
     ),
 
-    generator_parameter: ($) => seq(field("name", $.identifier), ":", field("type", $._type)),
+    coroutine_parameter: ($) => seq(field("name", $.identifier), ":", field("type", $._type)),
 
     yield_expression: ($) => prec.right(0, seq("yield", field("value", $._expression_with_struct))),
 

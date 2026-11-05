@@ -8,46 +8,46 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 #[test]
-fn generators() {
-    assert_eq!(run(&fixture("generators.solar"), "generators"), "passed\n");
+fn coroutines() {
+    assert_eq!(run(&fixture("coroutines.solar"), "coroutines"), "passed\n");
 }
 
 #[test]
-fn generators_release() {
+fn coroutines_release() {
     assert_eq!(
-        test_utils::run_release_file(&fixture("generators.solar"), "generators"),
+        test_utils::run_release_file(&fixture("coroutines.solar"), "coroutines"),
         "passed\n"
     );
 }
 
 #[test]
-fn generator_for_loop() {
+fn coroutine_for_loop() {
     assert_eq!(
-        run(&fixture("generator_for_loop.solar"), "generator_for_loop"),
+        run(&fixture("coroutine_for_loop.solar"), "coroutine_for_loop"),
         "passed\n"
     );
 }
 
 #[test]
-fn generator_for_loop_release() {
+fn coroutine_for_loop_release() {
     assert_eq!(
-        test_utils::run_release_file(&fixture("generator_for_loop.solar"), "generator_for_loop"),
+        test_utils::run_release_file(&fixture("coroutine_for_loop.solar"), "coroutine_for_loop"),
         "passed\n"
     );
 }
 
 #[test]
-fn generator_control() {
+fn coroutine_control() {
     assert_eq!(
-        run(&fixture("generator_control.solar"), "generator_control"),
+        run(&fixture("coroutine_control.solar"), "coroutine_control"),
         "passed\n"
     );
 }
 
 #[test]
-fn generator_control_release() {
+fn coroutine_control_release() {
     assert_eq!(
-        test_utils::run_release_file(&fixture("generator_control.solar"), "generator_control"),
+        test_utils::run_release_file(&fixture("coroutine_control.solar"), "coroutine_control"),
         "passed\n"
     );
 }

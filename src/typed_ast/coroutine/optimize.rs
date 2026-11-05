@@ -1,4 +1,4 @@
-//! Keep storage that is confined to one dispatch block out of the generator.
+//! Keep storage that is confined to one dispatch block out of the coroutine.
 
 use super::*;
 
@@ -60,7 +60,7 @@ pub(super) fn localize_temporaries(machine: &mut Machine<'_, '_>) {
             return true;
         }
         let block = *blocks.iter().next().unwrap();
-        let name = ast::Ident::synthetic(format!("generator_{}", field.name));
+        let name = ast::Ident::synthetic(format!("coroutine_{}", field.name));
         promoted.insert(field.name.clone(), name.clone());
         declarations[block].push(statement(
             StatementKind::Let {
@@ -144,7 +144,7 @@ fn visit_statement(s: &mut Statement, visit: &mut impl FnMut(&mut Expr)) {
             visit_expr(condition, visit);
             visit_body(body, visit);
         }
-        StatementKind::GeneratorTry { body, handler, .. } => {
+        StatementKind::CoroutineTry { body, handler, .. } => {
             visit_body(body, visit);
             visit_body(handler, visit);
         }

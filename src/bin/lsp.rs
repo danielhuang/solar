@@ -1449,7 +1449,7 @@ fn completion_scope_probe_sources(source: &str, cursor_byte: usize) -> Vec<Strin
             };
             if matches!(
                 parent.kind(),
-                "function_def" | "method_def" | "closure_expr" | "generator_expression"
+                "function_def" | "method_def" | "closure_expr" | "coroutine_expression"
             ) {
                 return sources;
             }
@@ -1736,7 +1736,7 @@ fn binding_scope(mut node: Node<'_>) -> Option<Node<'_>> {
                     .then(|| closure.child_by_field_name("body"))
                     .flatten();
             }
-            "generator_parameter" => return parent.parent()?.child_by_field_name("body"),
+            "coroutine_parameter" => return parent.parent()?.child_by_field_name("body"),
             "for_statement"
             | "reflect_fields_statement"
             | "reflect_fields_pair_statement"
@@ -2084,8 +2084,8 @@ fn collect_expression_types(
                 collect_expression_type(value, target, out);
             }
         }
-        StatementKind::GeneratorTry { .. } => {
-            unreachable!("generator lowering removes exception regions")
+        StatementKind::CoroutineTry { .. } => {
+            unreachable!("coroutine lowering removes exception regions")
         }
         StatementKind::Continue => {}
     }
@@ -3308,7 +3308,7 @@ fn local_definition<'a>(node: Node<'a>, name: &str, source: &str) -> Option<Node
                     }
                 }
             }
-            "generator_expression" => {
+            "coroutine_expression" => {
                 if let Some(parameter) = parent.child_by_field_name("parameter")
                     && let Some(binding) = parameter.child_by_field_name("name")
                     && &source[binding.byte_range()] == name
@@ -3571,7 +3571,7 @@ fn is_binding_identifier(node: Node<'_>) -> bool {
             "parameter" | "let_statement" => {
                 return parent.child_by_field_name("pattern").is_some_and(contains);
             }
-            "closure_param" | "generator_parameter" => {
+            "closure_param" | "coroutine_parameter" => {
                 return parent.child_by_field_name("name") == Some(node);
             }
             "for_statement"
@@ -3758,8 +3758,8 @@ impl DefFinder<'_> {
                     self.walk_expr(value);
                 }
             }
-            StatementKind::GeneratorTry { .. } => {
-                unreachable!("generator lowering removes exception regions")
+            StatementKind::CoroutineTry { .. } => {
+                unreachable!("coroutine lowering removes exception regions")
             }
             StatementKind::Continue => {}
         }
@@ -5088,8 +5088,8 @@ impl BindingSignatureCollector<'_> {
                     self.walk_expr(value);
                 }
             }
-            StatementKind::GeneratorTry { .. } => {
-                unreachable!("generator lowering removes exception regions")
+            StatementKind::CoroutineTry { .. } => {
+                unreachable!("coroutine lowering removes exception regions")
             }
             StatementKind::Continue => {}
         }
@@ -5288,8 +5288,8 @@ fn collect_statement_overlays(
                 collect_expr_overlays(value, file_id, overlays);
             }
         }
-        StatementKind::GeneratorTry { .. } => {
-            unreachable!("generator lowering removes exception regions")
+        StatementKind::CoroutineTry { .. } => {
+            unreachable!("coroutine lowering removes exception regions")
         }
         StatementKind::Continue => {}
     }

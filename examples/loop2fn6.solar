@@ -7,7 +7,7 @@ fn add(x: Int) -> fn(Int) -> Int {
 }
 
 fn looper(i: &Int) {
-	generator {
+	coroutine {
 		while i@ < 1000000000 {
 			if i@ % 10000 == 0 {
 				yield i@;

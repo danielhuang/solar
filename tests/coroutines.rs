@@ -1,49 +1,49 @@
-//! Generator layout and recursive storage regressions.
+//! Coroutine layout and recursive storage regressions.
 
 use solar::typed_ast::{Type, TypeId};
 
 #[test]
-fn generator_loop_keeps_short_lived_temporaries_out_of_the_frame() {
-    let directory = tempdir::TempDir::new("solar-generator-local-temps").unwrap();
+fn coroutine_loop_keeps_short_lived_temporaries_out_of_the_frame() {
+    let directory = tempdir::TempDir::new("solar-coroutine-local-temps").unwrap();
     let path = directory.path().join("main.solar");
     std::fs::write(
         &path,
-        "fn looper(i: &Int) { generator { while i@ < 1000 { if i@ % 10 == 0 { yield i@; } i@ = i@ + 1; } } } fn main() { let i = 0; looper(i&).next(); }",
+        "fn looper(i: &Int) { coroutine { while i@ < 1000 { if i@ % 10 == 0 { yield i@; } i@ = i@ + 1; } } } fn main() { let i = 0; looper(i&).next(); }",
     )
     .unwrap();
     let typed = solar::pipeline::compile(&path).unwrap();
-    let generator = typed
+    let coroutine = typed
         .typed
         .structs
         .values()
-        .find(|s| s.id.def.name.starts_with("Generator_"))
+        .find(|s| s.id.def.name.starts_with("Coroutine_"))
         .unwrap();
     // Neither loop arithmetic nor the assignment address lives across a yield.
     // The only persistent data is the resume state and the captured binding.
-    assert_eq!(generator.fields.len(), 2, "{:?}", generator.fields);
-    assert_eq!(generator.fields[0].ty, Type::Int);
+    assert_eq!(coroutine.fields.len(), 2, "{:?}", coroutine.fields);
+    assert_eq!(coroutine.fields[0].ty, Type::Int);
     assert_eq!(
-        generator.fields[1].ty,
+        coroutine.fields[1].ty,
         Type::Ref(Box::new(Type::Ref(Box::new(Type::Int))))
     );
 }
 
 #[test]
-fn generator_owns_storage_and_has_a_concrete_next_method() {
-    let directory = tempdir::TempDir::new("solar-generator-layout").unwrap();
+fn coroutine_owns_storage_and_has_a_concrete_next_method() {
+    let directory = tempdir::TempDir::new("solar-coroutine-layout").unwrap();
     let path = directory.path().join("main.solar");
-    std::fs::write(&path, "fn main() { let captured = 7; let g = generator { let local = captured; yield local; local = local + 1; yield local; }; g.next(); }").unwrap();
+    std::fs::write(&path, "fn main() { let captured = 7; let g = coroutine { let local = captured; yield local; local = local + 1; yield local; }; g.next(); }").unwrap();
     let typed = solar::pipeline::compile(&path).unwrap();
-    let generators: Vec<_> = typed
+    let coroutines: Vec<_> = typed
         .typed
         .structs
         .values()
-        .filter(|s| s.id.def.name.starts_with("Generator_"))
+        .filter(|s| s.id.def.name.starts_with("Coroutine_"))
         .collect();
-    assert_eq!(generators.len(), 1);
-    let generator = generators[0];
+    assert_eq!(coroutines.len(), 1);
+    let coroutine = coroutines[0];
     assert_eq!(
-        generator
+        coroutine
             .fields
             .iter()
             .find(|f| f.name == "state")
@@ -52,12 +52,12 @@ fn generator_owns_storage_and_has_a_concrete_next_method() {
         Type::Int
     );
     assert!(
-        generator
+        coroutine
             .fields
             .iter()
             .all(|f| !matches!(f.ty, Type::Function { .. }))
     );
-    let local = generator
+    let local = coroutine
         .fields
         .iter()
         .find(|f| f.name.starts_with("local_local_"))
@@ -68,7 +68,7 @@ fn generator_owns_storage_and_has_a_concrete_next_method() {
     assert_eq!(storage.def.name.as_str(), "MaybeZeroed");
     assert_eq!(storage.args, vec![Type::Int]);
     assert_eq!(
-        generator
+        coroutine
             .fields
             .iter()
             .find(|f| f.name.starts_with("capture_captured_"))
@@ -83,7 +83,7 @@ fn generator_owns_storage_and_has_a_concrete_next_method() {
         .find(|f| {
             f.id.method
                 && f.id.def.name == "next"
-                && f.parameters[0].ty == Type::Ref(Box::new(Type::Struct(generator.id.clone())))
+                && f.parameters[0].ty == Type::Ref(Box::new(Type::Struct(coroutine.id.clone())))
         })
         .unwrap();
     assert_eq!(next.parameters.len(), 1);
@@ -92,18 +92,18 @@ fn generator_owns_storage_and_has_a_concrete_next_method() {
 }
 
 #[test]
-fn recursive_generator_storage_must_have_finite_size() {
-    let directory = tempdir::TempDir::new("solar-generator-recursion").unwrap();
+fn recursive_coroutine_storage_must_have_finite_size() {
+    let directory = tempdir::TempDir::new("solar-coroutine-recursion").unwrap();
     let path = directory.path().join("main.solar");
     for source in [
-        "fn recursive() { generator { yield 1; let child = recursive(); } } fn main() {}",
-        "fn some#[T](value: T) -> Option#[T] { Option#[T]::Some(value) } fn recursive() { generator { yield 1; let child = some(recursive()); } } fn main() {}",
-        "fn first() { generator { yield 1; let child = second(); } } fn second() { generator { yield 2; let child = first(); } } fn main() {}",
-        "fn recursive#[T](value: T) { generator { yield value; let child = recursive(value); } } fn main() { recursive(1); }",
+        "fn recursive() { coroutine { yield 1; let child = recursive(); } } fn main() {}",
+        "fn some#[T](value: T) -> Option#[T] { Option#[T]::Some(value) } fn recursive() { coroutine { yield 1; let child = some(recursive()); } } fn main() {}",
+        "fn first() { coroutine { yield 1; let child = second(); } } fn second() { coroutine { yield 2; let child = first(); } } fn main() {}",
+        "fn recursive#[T](value: T) { coroutine { yield value; let child = recursive(value); } } fn main() { recursive(1); }",
     ] {
         std::fs::write(&path, source).unwrap();
         let Err((errors, _)) = solar::pipeline::compile(&path) else {
-            panic!("accepted infinitely sized generator: {source}");
+            panic!("accepted infinitely sized coroutine: {source}");
         };
         fn messages(error: &solar::error::CompileError) -> String {
             format!(
@@ -115,21 +115,21 @@ fn recursive_generator_storage_must_have_finite_size() {
         assert!(
             errors
                 .iter()
-                .any(|e| messages(e).contains("recursive generator has unbounded size")),
+                .any(|e| messages(e).contains("recursive coroutine has unbounded size")),
             "{source}: {errors:?}"
         );
     }
 }
 
 #[test]
-fn generator_fields_are_private_and_cannot_be_reflected() {
-    let directory = tempdir::TempDir::new("solar-generator-private").unwrap();
+fn coroutine_fields_are_private_and_cannot_be_reflected() {
+    let directory = tempdir::TempDir::new("solar-coroutine-private").unwrap();
     let path = directory.path().join("main.solar");
     for (operation, expected) in [
         ("g.state = 0;", "field `state` is private"),
         (
             "let (state, storage) = g;",
-            "cannot destructure private generator fields",
+            "cannot destructure private coroutine fields",
         ),
         (
             "for.reflect_fields (name, value) in g& {}",
@@ -138,11 +138,11 @@ fn generator_fields_are_private_and_cannot_be_reflected() {
     ] {
         std::fs::write(
             &path,
-            format!("fn main() {{ let g = generator {{ yield 1; }}; {operation} }}"),
+            format!("fn main() {{ let g = coroutine {{ yield 1; }}; {operation} }}"),
         )
         .unwrap();
         let Err((errors, _)) = solar::pipeline::compile(&path) else {
-            panic!("exposed generator internals");
+            panic!("exposed coroutine internals");
         };
         assert!(
             errors.iter().any(|e| e.message.contains(expected)),

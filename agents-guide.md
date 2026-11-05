@@ -153,9 +153,9 @@ fn#[T] Box#[T]::(value: T) -> Box#[T] { Box#[T] { value: value } }
   equality. `method operator_index(self: &MyType, i: Uint) -> &T` enables
   indexing as a readable/writable place.
 
-## Generators
+## Coroutines
 
-`generator { ... }` creates a suspended computation with its own synthetic
+`coroutine { ... }` creates a suspended computation with its own synthetic
 type. Its body starts on the first `.next()` call. Each `yield value` returns
 `Option#[Y]::Some(value)` from that call and suspends execution; the next call
 continues immediately after the yield. Completion, including `return;`, returns
@@ -164,10 +164,10 @@ with no yields produces `Option#[()]`.
 
 ```solar
 fn main() {
-    let values = generator { for i in 0..3 { yield i; } };
+    let values = coroutine { for i in 0..3 { yield i; } };
     for value in values { println(value); } // 0, 1, 2
 
-    let exchange = generator (initial: Int) {
+    let exchange = coroutine (initial: Int) {
         let reply = yield initial;
         yield reply + 1;
     };
@@ -177,26 +177,26 @@ fn main() {
 }
 ```
 
-Without a parameter, `yield` evaluates to `()`. With `generator (name: T)`,
+Without a parameter, `yield` evaluates to `()`. With `coroutine (name: T)`,
 every `.next(value)` takes `T`: the first call initializes `name`, and later
 calls supply the result of the suspended `yield`. The original parameter
-remains a separate mutable local. Generators without a parameter also support
+remains a separate mutable local. Coroutines without a parameter also support
 `iter()` and `for` loops.
 
 Locals, expression evaluation, and `try`/`catch` regions survive suspension.
-Outer bindings are captured by reference, like closures. A generator is one
+Outer bindings are captured by reference, like closures. A coroutine is one
 struct with private state, `MaybeZeroed` local storage, and captured references;
 its generated `next` method borrows that struct. Copying it copies the state and
 local values using normal Solar copying rules. Captured references remain shared.
 Locals whose addresses escape use separate storage, preserving references and
 closures from earlier loop iterations. Unsized locals also use separate storage.
 References and closures yielded from the body can outlive it.
-Recursive generator storage must have finite size: storing another instance of
-the same generator by value, directly or through other types, is rejected.
-Use a reference for recursive children, e.g. `let child = make_generator()&;`.
+Recursive coroutine storage must have finite size: storing another instance of
+the same coroutine by value, directly or through other types, is rejected.
+Use a reference for recursive children, e.g. `let child = make_coroutine()&;`.
 An uncaught exception propagates from `.next()` and ends
-the generator. Nested functions and closures cannot yield from an enclosing
-generator; they may create their own generators. A generator body starts its
+the coroutine. Nested functions and closures cannot yield from an enclosing
+coroutine; they may create their own coroutines. A coroutine body starts its
 own unsafe context, so unsafe operations require an `unsafe` block inside it.
 
 ## Modules and visibility

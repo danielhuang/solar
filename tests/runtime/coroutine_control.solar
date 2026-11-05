@@ -8,7 +8,7 @@ fn collect() {
 
 fn expressions() {
 	let count = 0;
-	let g = generator (input: Int) {
+	let g = coroutine (input: Int) {
 		let value = bump(count&) + (yield 1) + bump(count&);
 		yield value;
 		let value = if (yield 2) == 0 { yield 3; 30 } else { yield 4; 40 };
@@ -23,7 +23,7 @@ fn expressions() {
 	assert(g.next(0).unwrap() == 30);
 	assert(g.next(0).is_none());
 
-	let flags = generator (input: Bool) {
+	let flags = coroutine (input: Bool) {
 		let first = false && (yield false);
 		let second = true || (yield false);
 		let third = true && (yield true);
@@ -35,7 +35,7 @@ fn expressions() {
 }
 
 fn control_flow() {
-	let g = generator {
+	let g = coroutine {
 		let i = 0;
 
 		while i < 5 {
@@ -56,7 +56,7 @@ fn control_flow() {
 	for expected in [1, 3, 10, 20] { assert(g.next().unwrap() == expected@); }
 	assert(g.next().is_none());
 
-	let g = generator {
+	let g = coroutine {
 		let value = Option#[Int]::Some(10);
 		let output = match value {
 			Option#[Int]::Some(n) => { yield n; n = 20; n + 1 },
@@ -80,7 +80,7 @@ fn control_flow() {
 
 fn local_dispatch() {
 	let i = 0;
-	let g = generator {
+	let g = coroutine {
 		while i < 30 {
 			if i % 10 == 0 { yield i; }
 			i = i + 1;
@@ -95,7 +95,7 @@ fn local_dispatch() {
 	assert(g.next().is_none());
 
 	let callback = \ {};
-	let reentrant = generator {
+	let reentrant = coroutine {
 		callback();
 		yield 1;
 		callback();
@@ -109,7 +109,7 @@ fn local_dispatch() {
 
 fn captures() {
 	let outer = 10;
-	let make = \ { generator { yield outer; outer = outer + 1; yield outer; } };
+	let make = \ { coroutine { yield outer; outer = outer + 1; yield outer; } };
 	let g = make();
 	outer = 20;
 	assert(g.next().unwrap() == 20);
@@ -117,7 +117,7 @@ fn captures() {
 	assert(outer == 21);
 	assert(g.next().is_none());
 
-	let callbacks = generator {
+	let callbacks = coroutine {
 		for i in 0..3 {
 			let local = i;
 			yield \ { local = local + 10; local };
@@ -133,9 +133,9 @@ fn captures() {
 	collect();
 	assert(second() == 21);
 
-	let nested = generator {
+	let nested = coroutine {
 		let value = 50;
-		let inner = generator { yield value; value = 60; yield value; };
+		let inner = coroutine { yield value; value = 60; yield value; };
 		yield inner.next().unwrap();
 		yield inner.next().unwrap();
 		yield value;
@@ -145,7 +145,7 @@ fn captures() {
 	assert(nested.next().unwrap() == 60);
 	assert(nested.next().unwrap() == 60);
 
-	let unsized = generator {
+	let unsized = coroutine {
 		let bytes = "hello";
 		yield bytes&;
 		bytes[0u] = 'H';
@@ -164,7 +164,7 @@ fn places() {
 	let a = [1, 2];
 	let b = [3, 4];
 	let target = a&;
-	let g = generator (input: Int) {
+	let g = coroutine (input: Int) {
 		target@[0u] = yield 0;
 		yield target@[0u];
 	};
@@ -175,7 +175,7 @@ fn places() {
 	assert(b[0u] == 3);
 
 	let owned = 1^;
-	let g = generator (input: Int) {
+	let g = coroutine (input: Int) {
 		owned@ = yield owned@;
 		yield owned@;
 	};
@@ -185,23 +185,23 @@ fn places() {
 }
 
 fn failures() {
-	let g = generator {
+	let g = coroutine {
 		yield 1;
-		throw("generator failed"&);
+		throw("coroutine failed"&);
 		yield 2;
 	};
 	assert(g.next().unwrap() == 1);
 	let caught = false;
 
 	try { g.next(); } catch (e) {
-		assert(e.message@ == "generator failed");
+		assert(e.message@ == "coroutine failed");
 		caught = true;
 	}
 
 	assert(caught);
 	assert(g.next().is_none());
 
-	let g = generator (input: Int) {
+	let g = coroutine (input: Int) {
 		try {
 			let resumed = yield input;
 			yield resumed;
@@ -221,7 +221,7 @@ fn failures() {
 
 	assert(g.next(10).is_none());
 
-	let g = generator {
+	let g = coroutine {
 		for i in 0..4 {
 			try {
 				if i == 0 { continue; }

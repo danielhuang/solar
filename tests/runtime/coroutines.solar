@@ -1,13 +1,13 @@
 fn numbers(n: Int) {
-	generator {
+	coroutine {
 		for i in 0..n { yield i; }
 	}
 }
 
-fn singleton#[T](value: T) { generator { yield value; } }
+fn singleton#[T](value: T) { coroutine { yield value; } }
 
 fn countdown(n: Int) {
-	generator {
+	coroutine {
 		yield n;
 
 		if n > 0 {
@@ -18,7 +18,7 @@ fn countdown(n: Int) {
 }
 
 fn countdown_ref(n: Int) {
-	generator {
+	coroutine {
 		yield n;
 
 		if n > 0 {
@@ -30,7 +30,7 @@ fn countdown_ref(n: Int) {
 
 fn main() {
 	let effects = 0;
-	let g = generator {
+	let generator = coroutine {
 		effects = effects + 1;
 		let x = 10;
 		let resumed: () = yield x;
@@ -39,13 +39,13 @@ fn main() {
 		effects = effects + 10;
 	};
 	assert(effects == 0);
-	assert(g.next().unwrap() == 10);
+	assert(generator.next().unwrap() == 10);
 	assert(effects == 1);
-	assert(g&.next().unwrap() == 11);
-	assert(g.next().is_none());
-	assert(g.next().is_none());
+	assert(generator&.next().unwrap() == 11);
+	assert(generator.next().is_none());
+	assert(generator.next().is_none());
 	assert(effects == 11);
-	let shared = generator { yield 1; yield 2; };
+	let shared = coroutine { yield 1; yield 2; };
 	let copy = shared;
 	assert(shared.next().unwrap() == 1);
 	assert(copy.next().unwrap() == 1);
@@ -53,13 +53,13 @@ fn main() {
 	assert(copy.next().unwrap() == 2);
 	assert(shared.next().is_none());
 	assert(copy.next().is_none());
-	let locals = generator { let n = 5; yield n; n = n + 1; yield n; };
+	let locals = coroutine { let n = 5; yield n; n = n + 1; yield n; };
 	assert(locals.next().unwrap() == 5);
 	let locals_copy = locals;
 	assert(locals.next().unwrap() == 6);
 	assert(locals_copy.next().unwrap() == 6);
 
-	let g = generator (start: Int) {
+	let g = coroutine (start: Int) {
 		let second = yield start;
 		let third = yield second + start;
 		yield third;
@@ -68,11 +68,11 @@ fn main() {
 	assert(g.next(20).unwrap() == 30);
 	assert(g.next(40).unwrap() == 40);
 	assert(g.next(99).is_none());
-	let nested_yield = generator (input: Int) { yield yield input; };
+	let nested_yield = coroutine (input: Int) { yield yield input; };
 	assert(nested_yield.next(1).unwrap() == 1);
 	assert(nested_yield.next(2).unwrap() == 2);
 	assert(nested_yield.next(3).is_none());
-	let unit_input = generator (input: ()) { let resumed: () = yield input; };
+	let unit_input = coroutine (input: ()) { let resumed: () = yield input; };
 	assert(unit_input.next(()).is_some());
 	assert(unit_input.next(()).is_none());
 
@@ -82,7 +82,7 @@ fn main() {
 	assert(total == 10);
 	assert(singleton(7).next().unwrap() == 7);
 	assert(singleton(true).next().unwrap());
-	let empty = generator {};
+	let empty = coroutine {};
 	assert(empty.next().is_none());
 	let recursive = countdown(3);
 

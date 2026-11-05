@@ -640,11 +640,11 @@ pub enum ExprKind {
         body: Vec<Statement>,
     },
     /// A suspended computation, optionally accepting a value on each resume.
-    Generator {
+    Coroutine {
         parameter: Option<Box<Parameter>>,
         body: Vec<Statement>,
     },
-    /// Suspend the nearest generator and produce its next resume argument.
+    /// Suspend the nearest coroutine and produce its next resume argument.
     Yield(Box<Expr>),
     EnumVariant {
         module_path: Vec<String>,

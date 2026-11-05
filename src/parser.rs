@@ -1346,7 +1346,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Result<Expr, ParseErro
             let body_node = required_field(node, "body")?;
             ExprKind::Loop(convert_block(body_node, source)?)
         }
-        "generator_expression" => ExprKind::Generator {
+        "coroutine_expression" => ExprKind::Coroutine {
             parameter: node
                 .child_by_field_name("parameter")
                 .map(|p| convert_closure_parameter(p, source).map(Box::new))

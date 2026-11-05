@@ -448,7 +448,7 @@ fn extension_method_errors() {
             "generated methods also conflict with extensions",
             "",
             "",
-            "method(ext) next#[T](self: T) -> Int { 1 } fn main() { let g = generator { yield 1; }; g&.next(); }",
+            "method(ext) next#[T](self: T) -> Int { 1 } fn main() { let g = coroutine { yield 1; }; g&.next(); }",
             "conflicting extension method",
         ),
     ];

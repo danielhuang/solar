@@ -3,7 +3,7 @@ fn apply#[T](f: fn(T), x: [T; 1]) { f(x[0u]); }
 fn add(x: Int) -> fn(Int) -> Int { \y: Int x + y }
 
 fn looper(i: &Int, end: Int) {
-	generator {
+	coroutine {
 		while i@ < end {
 			if i@ % 3 == 0 { yield i@; }
 			apply(\x: &Int { x@ = add(x@)(1); }, [i]);
@@ -50,10 +50,10 @@ fn main() {
 	assert(g.next().is_none());
 
 	let sum = 0;
-	for value in generator { yield 41; yield 42; } { sum = sum + value; }
+	for value in coroutine { yield 41; yield 42; } { sum = sum + value; }
 	assert(sum == 83);
 	let visited = false;
-	for value in generator {} { visited = true; }
+	for value in coroutine {} { visited = true; }
 	assert(!visited);
 	println("passed"&);
 }
