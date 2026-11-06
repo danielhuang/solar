@@ -124,9 +124,9 @@ fn def_id_of_def(name: &str, span: ast::SourceSpan) -> DefId {
 
 fn def_id_of_function(def: &ast::FunctionDef) -> DefId {
     if def.associated_type.is_none() {
-        return def_id_of_def(&def.name, def.span);
+        return DefId::with_ident(def.span.file_id, def.name.clone());
     }
-    DefId::with_ident(def.span.file_id, ast::Ident::Synthetic(def.name.clone()))
+    DefId::with_ident(def.span.file_id, ast::Ident::synthetic(def.name.as_str()))
 }
 
 fn from_ast_type(ty: &ast::Type) -> Type {
@@ -449,6 +449,9 @@ fn apply_subst_to_ast_expr(expr: &ast::Expr, subst: &HashMap<String, ast::Type>)
                 .map(|s| apply_subst_to_ast_statement(s, subst))
                 .collect(),
         ),
+        ast::ExprKind::ForIn { .. } | ast::ExprKind::ForRange { .. } => {
+            unreachable!("surface expression reached generic substitution")
+        }
         ast::ExprKind::Loop(stmts) => ast::ExprKind::Loop(
             stmts
                 .iter()
@@ -639,18 +642,6 @@ fn apply_subst_to_ast_statement(
                 .map(|s| apply_subst_to_ast_statement(s, subst))
                 .collect(),
         },
-        ast::StatementKind::ForIn {
-            variable,
-            iterable,
-            body,
-        } => ast::StatementKind::ForIn {
-            variable: variable.clone(),
-            iterable: apply_subst_to_ast_expr(iterable, subst),
-            body: body
-                .iter()
-                .map(|s| apply_subst_to_ast_statement(s, subst))
-                .collect(),
-        },
         ast::StatementKind::Try {
             body,
             binding,
@@ -709,6 +700,18 @@ fn apply_subst_to_ast_statement(
         }
         ast::StatementKind::Continue => ast::StatementKind::Continue,
         ast::StatementKind::NestedFunction(fdef) => {
+            // A nested declaration's own binders shadow the enclosing function's
+            // substitutions, including binders on compiler-generated helpers.
+            let mut subst = subst.clone();
+            for parameter in fdef
+                .associated_type_params
+                .iter()
+                .chain(&fdef.type_params)
+                .chain(&fdef.out_type_params)
+            {
+                subst.remove(parameter);
+            }
+            let subst = &subst;
             ast::StatementKind::NestedFunction(ast::FunctionDef {
                 associated_type_params: fdef.associated_type_params.clone(),
                 associated_type: fdef
@@ -787,10 +790,7 @@ fn apply_subst_to_ast_pattern(
 /// Extract the name from a simple DestructurePattern::Name, or return a placeholder.
 fn pattern_name_or_placeholder(pat: &ast::DestructurePattern) -> String {
     match pat {
-        ast::DestructurePattern::Name(ast::Ident::User(name)) => name.clone(),
-        ast::DestructurePattern::Name(ast::Ident::Synthetic(_)) => {
-            unreachable!("synthetic parameter used for source-level diagnostics")
-        }
+        ast::DestructurePattern::Name(name) => name.to_string(),
         _ => "<pattern>".to_string(),
     }
 }
@@ -967,7 +967,7 @@ impl SourceFile {
         };
         let entry = self.functions.iter().find(|(id, _)| {
             id.def.file == root_file_id
-                && id.def.name == "main"
+                && id.def.name == ast::Ident::user("main")
                 && !id.method
                 && id.args.is_empty()
                 && id.overload.is_none()
@@ -1795,10 +1795,10 @@ struct Lowerer<'a> {
     generic_structs: HashMap<DefId, GenericStructDef>,
     generic_enums: HashMap<DefId, GenericEnumDef>,
     function_defs: HashMap<DefId, Vec<FunctionEntry>>,
-    associated_function_defs: HashMap<String, Vec<FunctionEntry>>,
-    method_defs: HashMap<String, Vec<FunctionEntry>>,
+    associated_function_defs: HashMap<(String, ast::Ident), Vec<FunctionEntry>>,
+    method_defs: HashMap<ast::Ident, Vec<FunctionEntry>>,
     /// Lazily-built per-name receiver index over `method_defs` (see `MethodIndex`).
-    method_index: HashMap<String, MethodIndex>,
+    method_index: HashMap<ast::Ident, MethodIndex>,
     /// Mangled function/method name → original un-mangled name, for diagnostics.
     /// Maps mangled function name → AST def (populated in lower_all for concrete functions)
     concrete_ast_defs: HashMap<FuncId, Rc<ast::FunctionDef>>,
@@ -1841,7 +1841,7 @@ struct Lowerer<'a> {
     /// from above an outer closure forces the outer closure to capture it too
     /// (transitive capture through nesting).
     capture_contexts: Vec<CaptureContext>,
-    nested_function_defs: Vec<HashMap<String, Vec<FunctionEntry>>>,
+    nested_function_defs: Vec<HashMap<ast::Ident, Vec<FunctionEntry>>>,
     type_aliases: HashMap<DefId, (Vec<String>, ast::Type)>,
     /// Top-level const declarations, by (possibly module-mangled) name. Their
     /// literal values are substituted at each use site during lowering.
@@ -1880,8 +1880,9 @@ struct Lowerer<'a> {
 /// Per-loop state used to type `loop` expressions and validate `break`.
 #[derive(Clone)]
 struct LoopCtx {
-    /// True for a `loop` expression (a `break <value>` is allowed); false for
-    /// `while`/`for`, which are statements and accept only valueless `break`.
+    /// True for `loop` and desugared iterable `for` expressions, which accept
+    /// `break <value>`; false for `while` and counted ranges, which accept only
+    /// valueless `break`.
     is_value_loop: bool,
     /// Unified type of `break` values seen so far. `None` means no `break` has
     /// been encountered yet. A valueless `break` contributes `()`.
@@ -1941,8 +1942,9 @@ impl<'a> Lowerer<'a> {
         let mut generic_structs: HashMap<DefId, GenericStructDef> = HashMap::new();
         let mut generic_enums: HashMap<DefId, GenericEnumDef> = HashMap::new();
         let mut function_defs: HashMap<DefId, Vec<FunctionEntry>> = HashMap::new();
-        let mut associated_function_defs: HashMap<String, Vec<FunctionEntry>> = HashMap::new();
-        let mut method_defs: HashMap<String, Vec<FunctionEntry>> = HashMap::new();
+        let mut associated_function_defs: HashMap<(String, ast::Ident), Vec<FunctionEntry>> =
+            HashMap::new();
+        let mut method_defs: HashMap<ast::Ident, Vec<FunctionEntry>> = HashMap::new();
         let mut consts: HashMap<DefId, &ast::ConstDef> = HashMap::new();
         // Register constants before functions so keyword defaults can refer to
         // constants declared later or imported from another module.
@@ -2020,9 +2022,9 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 ast::TopLevelItem::Function(f) => {
-                    if f.associated_type.is_none() {
+                    if f.associated_type.is_none() && matches!(f.name, ast::Ident::User(_)) {
                         if let Some((type_span, _)) =
-                            declared_types.get(&(f.span.file_id, f.name.clone()))
+                            declared_types.get(&(f.span.file_id, f.name.to_string()))
                         {
                             return Err(CompileError::new(
                                 format!("function `{}` collides with a type name", f.name),
@@ -2059,12 +2061,10 @@ impl<'a> Lowerer<'a> {
                     let mut f = f.clone();
                     prepare_keyword_params(&mut f, &consts)?;
                     let entries = if f.associated_type.is_some() {
-                        let key = format!("{:?}::{}", f.associated_type, f.name);
+                        let key = (format!("{:?}", f.associated_type), f.name.clone());
                         associated_function_defs.entry(key).or_default()
                     } else {
-                        function_defs
-                            .entry(def_id_of_def(&f.name, f.span))
-                            .or_default()
+                        function_defs.entry(def_id_of_function(&f)).or_default()
                     };
                     let overload_index = entries.len();
                     entries.push(FunctionEntry {
@@ -2224,10 +2224,12 @@ impl<'a> Lowerer<'a> {
         function_entries.extend(
             associated_function_defs
                 .values()
-                .map(|entries| (entries[0].ast_def.name.clone(), entries)),
+                .map(|entries| (entries[0].ast_def.name.to_string(), entries)),
         );
-        let method_entries: Vec<(String, &Vec<FunctionEntry>)> =
-            method_defs.iter().map(|(n, e)| (n.clone(), e)).collect();
+        let method_entries: Vec<(String, &Vec<FunctionEntry>)> = method_defs
+            .iter()
+            .map(|(n, e)| (n.to_string(), e))
+            .collect();
         for (kind, defs) in [("function", function_entries), ("method", method_entries)] {
             for (name, entries) in defs {
                 // Check duplicate concrete overloads (same param types among
@@ -2438,7 +2440,8 @@ impl<'a> Lowerer<'a> {
     /// cross-file calls carry a `GlobalRef` and must never arrive here by
     /// spelling alone.
     fn bare_function_candidate(def: &DefId, name: &str, source_file: u32) -> bool {
-        def.name == name && (def.file == source_file || def.file == ast::SYNTHETIC_FILE)
+        matches!(&def.name, ast::Ident::User(candidate) if candidate == name)
+            && (def.file == source_file || def.file == ast::SYNTHETIC_FILE)
     }
 
     fn require_unsafe_access(
@@ -4227,7 +4230,7 @@ impl<'a> Lowerer<'a> {
             .function_defs
             .iter()
             .filter(|(id, entries)| {
-                id.name == "main"
+                id.name == ast::Ident::user("main")
                     && entries.iter().any(|entry| {
                         entry.ast_def.is_overlap
                             && entry.type_params.is_empty()
@@ -4703,7 +4706,7 @@ impl<'a> Lowerer<'a> {
         Ok(FunctionDef {
             // Placeholder identity — the caller (concrete registration / mono /
             // closure) overwrites `.id` with the real `FuncId` it computed.
-            id: FuncId::free(def_id_of_def(&func.name, func.span), Vec::new()),
+            id: FuncId::free(def_id_of_function(func), Vec::new()),
             parameters,
             return_type,
             body,
@@ -5257,7 +5260,7 @@ impl<'a> Lowerer<'a> {
         };
         if !target.is_value_loop {
             return Err(CompileError::new(
-                "cannot `break` with a value out of a `while`/`for` loop".to_string(),
+                "cannot `break` with a value out of a `while`/range `for` loop".to_string(),
                 span,
             ));
         }
@@ -5667,9 +5670,6 @@ impl<'a> Lowerer<'a> {
                 body,
                 paired,
             } => self.lower_match_reflect_variant(stmt.span, pattern, object, body, *paired),
-            ast::StatementKind::ForIn { .. } => {
-                unreachable!("surface statement reached typed AST lowering")
-            }
             ast::StatementKind::Try {
                 body,
                 binding,
@@ -5735,7 +5735,7 @@ impl<'a> Lowerer<'a> {
                     Some(v) => {
                         if !self.loop_ctx.last().unwrap().is_value_loop {
                             return Err(CompileError::new(
-                                "cannot `break` with a value out of a `while`/`for` loop"
+                                "cannot `break` with a value out of a `while`/range `for` loop"
                                     .to_string(),
                                 stmt.span,
                             ));
@@ -5919,7 +5919,7 @@ impl<'a> Lowerer<'a> {
                     &fdef.body,
                 )?;
                 let fn_ty = closure_expr.ty.clone();
-                let local_name = ast::Ident::user(fdef.name.clone());
+                let local_name = fdef.name.clone();
                 self.define_var(local_name.clone(), fn_ty.clone());
                 if fdef.is_unsafe {
                     self.unsafe_function_scopes
@@ -6065,7 +6065,7 @@ impl<'a> Lowerer<'a> {
             .associated_function_defs
             .values()
             .flat_map(|entries| entries.iter())
-            .filter(|entry| entry.ast_def.name == name)
+            .filter(|entry| entry.ast_def.name == ast::Ident::user(name))
             .cloned()
             .collect::<Vec<_>>();
         if entries.is_empty() {
@@ -6132,33 +6132,27 @@ impl<'a> Lowerer<'a> {
                 };
                 // Check for nested overloaded/generic functions (can't be used as values)
                 let has_nested_multi = self.nested_function_defs.iter().rev().any(|m| {
-                    source_name
-                        .and_then(|name| m.get(name))
-                        .is_some_and(|entries| {
-                            entries.len() > 1 || !entries[0].type_params.is_empty()
-                        })
+                    m.get(name).is_some_and(|entries| {
+                        entries.len() > 1 || !entries[0].type_params.is_empty()
+                    })
                 });
                 if has_nested_multi {
                     return Err(CompileError::new(
                         format!(
                             "ambiguous function reference: nested function `{}` has multiple overloads",
-                            source_name.unwrap()
+                            name
                         ),
                         expr.span,
                     ));
                 }
                 if let Some(ty) = self.lookup_var(name) {
                     if self.is_unsafe_function_binding(name) {
-                        let function = source_name
-                            .and_then(|name| {
-                                self.nested_function_defs
-                                    .iter()
-                                    .rev()
-                                    .find_map(|functions| functions.get(name))
-                                    .and_then(|entries| {
-                                        (entries.len() == 1).then(|| &entries[0].ast_def)
-                                    })
-                            })
+                        let function = self
+                            .nested_function_defs
+                            .iter()
+                            .rev()
+                            .find_map(|functions| functions.get(name))
+                            .and_then(|entries| (entries.len() == 1).then(|| &entries[0].ast_def))
                             .unwrap();
                         self.require_unsafe_access(function, expr.span)?;
                     }
@@ -6685,12 +6679,12 @@ impl<'a> Lowerer<'a> {
                 // (Intrinsic calls are handled by IntrinsicCall variant now)
 
                 // Nested function calls (unified: generic + concrete + overloaded)
-                if let ast::ExprKind::Identifier(ast::Ident::User(name)) = &function.as_ref().kind {
+                if let ast::ExprKind::Identifier(name) = &function.as_ref().kind {
                     let nested_entries = self
                         .nested_function_defs
                         .iter()
                         .rev()
-                        .find_map(|m| m.get(name.as_str()))
+                        .find_map(|m| m.get(name))
                         .cloned();
                     if let Some(entries) = nested_entries
                         && (entries.len() > 1
@@ -7186,7 +7180,7 @@ impl<'a> Lowerer<'a> {
                 // primitive path; only non-primitive operands desugar.
                 if !Self::binop_primitive_applies(*op, &lhs.ty) {
                     let method = op.method_name();
-                    if self.method_defs.contains_key(method) {
+                    if self.method_defs.contains_key(&ast::Ident::user(method)) {
                         let recv = Self::auto_reference(left);
                         let arg = Self::auto_reference(right);
                         return self.lower_method_call(
@@ -7438,6 +7432,9 @@ impl<'a> Lowerer<'a> {
                     kind: ExprKind::Block(lowered),
                     span: expr.span,
                 })
+            }
+            ast::ExprKind::ForIn { .. } | ast::ExprKind::ForRange { .. } => {
+                unreachable!("surface expression reached typed AST lowering")
             }
             ast::ExprKind::Loop(stmts) => {
                 self.push_scope();
@@ -8728,9 +8725,7 @@ impl<'a> Lowerer<'a> {
         let mut typed_params: Vec<Parameter> = Vec::new();
         for (i, p) in parameters.iter().enumerate() {
             let name = pattern_name(&p.pattern).clone();
-            let ast::Ident::User(display_name) = &name else {
-                unreachable!("closure parameters originate in source")
-            };
+            let display_name = name.as_str();
             let ty = if matches!(p.ty, ast::Type::Infer) {
                 expected_params
                     .and_then(|ps| ps.get(i))
@@ -9016,10 +9011,14 @@ impl<'a> Lowerer<'a> {
     /// Build the receiver index for a method name. Generated method registration
     /// removes that name's cached index before adding more overloads.
     fn build_method_index(&mut self, name: &str) {
-        if self.method_index.contains_key(name) {
+        if self.method_index.contains_key(&ast::Ident::user(name)) {
             return;
         }
-        let entries: Vec<FunctionEntry> = self.method_defs.get(name).cloned().unwrap_or_default();
+        let entries: Vec<FunctionEntry> = self
+            .method_defs
+            .get(&ast::Ident::user(name))
+            .cloned()
+            .unwrap_or_default();
         let mut index = MethodIndex::default();
         for (i, entry) in entries.iter().enumerate() {
             if !entry.type_params.is_empty() {
@@ -9036,16 +9035,16 @@ impl<'a> Lowerer<'a> {
                 None => index.wildcard.push(i),
             }
         }
-        self.method_index.insert(name.to_string(), index);
+        self.method_index.insert(ast::Ident::user(name), index);
     }
 
     /// Visible generic overloads of a method name, in declaration order.
     fn method_generic_entries(&mut self, name: &str, file: u32) -> Vec<FunctionEntry> {
         self.build_method_index(name);
-        let Some(entries) = self.method_defs.get(name) else {
+        let Some(entries) = self.method_defs.get(&ast::Ident::user(name)) else {
             return Vec::new();
         };
-        let index = &self.method_index[name];
+        let index = &self.method_index[&ast::Ident::user(name)];
         index
             .generic
             .iter()
@@ -9065,10 +9064,10 @@ impl<'a> Lowerer<'a> {
         file: u32,
     ) -> Vec<FunctionEntry> {
         self.build_method_index(name);
-        let Some(entries) = self.method_defs.get(name) else {
+        let Some(entries) = self.method_defs.get(&ast::Ident::user(name)) else {
             return Vec::new();
         };
-        let index = &self.method_index[name];
+        let index = &self.method_index[&ast::Ident::user(name)];
         match recv.and_then(Self::type_base_key) {
             Some(key) => {
                 let bucket = index.by_base.get(&key).map_or(&[][..], Vec::as_slice);
@@ -9105,14 +9104,19 @@ impl<'a> Lowerer<'a> {
             CandidateSource::Entries(entries)
             | CandidateSource::MethodEntries(entries)
             | CandidateSource::FunctionProbe(entries) => count(entries),
-            CandidateSource::Methods => self.method_defs.get(name).map_or(0, |entries| {
-                entries
-                    .iter()
-                    .filter(|e| {
-                        e.type_params.is_empty() && self.source.method_is_visible(&e.ast_def, file)
+            CandidateSource::Methods => {
+                self.method_defs
+                    .get(&ast::Ident::user(name))
+                    .map_or(0, |entries| {
+                        entries
+                            .iter()
+                            .filter(|e| {
+                                e.type_params.is_empty()
+                                    && self.source.method_is_visible(&e.ast_def, file)
+                            })
+                            .count()
                     })
-                    .count()
-            }),
+            }
         }
     }
 
@@ -9232,9 +9236,11 @@ impl<'a> Lowerer<'a> {
         // Instance identities must not depend on which extensions a caller imports.
         let num_generic_overloads = overload_count.unwrap_or_else(|| {
             if is_method {
-                self.method_defs.get(name).map_or(0, |entries| {
-                    entries.iter().filter(|e| !e.type_params.is_empty()).count()
-                })
+                self.method_defs
+                    .get(&ast::Ident::user(name))
+                    .map_or(0, |entries| {
+                        entries.iter().filter(|e| !e.type_params.is_empty()).count()
+                    })
             } else {
                 generic_entries.len()
             }

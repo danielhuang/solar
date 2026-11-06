@@ -558,7 +558,7 @@ fn convert_function_def(node: tree_sitter::Node, source: &str) -> Result<Functio
         associated_type_params,
         associated_type,
         display_name: name.clone(),
-        name,
+        name: Ident::user(name),
         type_params,
         out_type_params,
         parameters,
@@ -737,7 +737,13 @@ fn convert_block(node: tree_sitter::Node, source: &str) -> Result<Vec<Statement>
             }
             "if_statement" => stmts.push(convert_if_statement(child, source)?),
             "while_statement" => stmts.push(convert_while_statement(child, source)?),
-            "for_statement" => stmts.push(convert_for_statement(child, source)?),
+            "for_statement" => stmts.push(Statement {
+                kind: StatementKind::Expression(convert_expr(
+                    required_named_child(child, "for_expression")?,
+                    source,
+                )?),
+                span: source_span(child),
+            }),
             "reflect_fields_statement" => {
                 stmts.push(convert_reflect_fields_statement(child, source, false)?)
             }
@@ -873,39 +879,23 @@ fn convert_while_statement(node: tree_sitter::Node, source: &str) -> Result<Stat
     })
 }
 
-fn convert_for_statement(node: tree_sitter::Node, source: &str) -> Result<Statement, ParseError> {
-    let span = source_span(node);
+fn convert_for_expression(node: tree_sitter::Node, source: &str) -> Result<ExprKind, ParseError> {
     let variable = Ident::user(node_text(required_field(node, "variable")?, source));
-    let body_node = required_field(node, "body")?;
-    let body = convert_block(body_node, source)?;
-
-    Ok(
-        if let Some(start_node) = node.child_by_field_name("start") {
-            // Range form: for i in start..end { ... }
-            let start = convert_expr(start_node, source)?;
-            let end = convert_expr(required_field(node, "end")?, source)?;
-            Statement {
-                kind: StatementKind::ForRange {
-                    variable,
-                    start,
-                    end,
-                    body,
-                },
-                span,
-            }
-        } else {
-            // Iterable form: for x in list { ... }
-            let iterable = convert_expr(required_field(node, "iterable")?, source)?;
-            Statement {
-                kind: StatementKind::ForIn {
-                    variable,
-                    iterable,
-                    body,
-                },
-                span,
-            }
-        },
-    )
+    let body = convert_block(required_field(node, "body")?, source)?;
+    Ok(if let Some(start) = node.child_by_field_name("start") {
+        ExprKind::ForRange {
+            variable,
+            start: Box::new(convert_expr(start, source)?),
+            end: Box::new(convert_expr(required_field(node, "end")?, source)?),
+            body,
+        }
+    } else {
+        ExprKind::ForIn {
+            variable,
+            iterable: Box::new(convert_expr(required_field(node, "iterable")?, source)?),
+            body,
+        }
+    })
 }
 
 fn convert_reflect_fields_statement(
@@ -1350,6 +1340,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Result<Expr, ParseErro
         "unsafe_block" => {
             ExprKind::UnsafeBlock(convert_block(required_field(node, "body")?, source)?)
         }
+        "for_expression" => convert_for_expression(node, source)?,
         "loop_expression" => {
             let body_node = required_field(node, "body")?;
             ExprKind::Loop(convert_block(body_node, source)?)

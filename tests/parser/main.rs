@@ -870,3 +870,87 @@ fn overlap_attributes_round_trip() {
         assert!(errors[0].message.contains("cannot be combined"));
     }
 }
+
+#[test]
+fn for_expressions_round_trip() {
+    let source = "fn f() { for i in 0..3 {} let x = for v in coroutine { yield 1; 42 } {}; for v in [1, 2] {} }";
+    let formatted = solar::fmt::format_source(source).unwrap();
+    assert_eq!(formatted, solar::fmt::format_source(&formatted).unwrap());
+    for text in [source, &formatted] {
+        let ast = parse(text);
+        let TopLevelItem::Function(function) = &ast.items[0] else {
+            panic!("expected function")
+        };
+        assert_eq!(function.body.len(), 3);
+        assert!(matches!(
+            &function.body[0].kind,
+            StatementKind::Expression(Expr {
+                kind: ExprKind::ForRange { .. },
+                ..
+            })
+        ));
+        assert!(matches!(
+            &function.body[1].kind,
+            StatementKind::Let {
+                value: Expr {
+                    kind: ExprKind::ForIn { .. },
+                    ..
+                },
+                ..
+            }
+        ));
+        assert!(matches!(
+            &function.body[2].kind,
+            StatementKind::Expression(Expr {
+                kind: ExprKind::ForIn { .. },
+                ..
+            })
+        ));
+    }
+}
+
+#[test]
+fn for_statements_end_before_parentheses_and_arrays() {
+    for tail in ["(42)", "[42]", "(\\x: Int x)(42)"] {
+        let source = format!("fn f() {{ for v in [1] {{}} {tail} }}");
+        let formatted = solar::fmt::format_source(&source).unwrap();
+        assert_eq!(formatted, solar::fmt::format_source(&formatted).unwrap());
+        for text in [&source, &formatted] {
+            let ast = parse(text);
+            let TopLevelItem::Function(function) = &ast.items[0] else {
+                panic!("expected function")
+            };
+            assert_eq!(function.body.len(), 2, "{text}");
+            assert!(matches!(
+                &function.body[0].kind,
+                StatementKind::Expression(Expr {
+                    kind: ExprKind::ForIn { .. },
+                    ..
+                })
+            ));
+        }
+    }
+}
+
+#[test]
+fn postfix_method_calls_bind_before_binary_and_unary_operators() {
+    let source = "fn f() { let sum = a + b&.read(); let empty = !b&.empty(); }";
+    let ast = parse(source);
+    let TopLevelItem::Function(function) = &ast.items[0] else {
+        panic!("expected function")
+    };
+    let StatementKind::Let { value, .. } = &function.body[0].kind else {
+        panic!("expected binding")
+    };
+    let ExprKind::BinaryOp { right, .. } = &value.kind else {
+        panic!("expected addition")
+    };
+    assert!(matches!(right.kind, ExprKind::MethodCall { .. }));
+    let StatementKind::Let { value, .. } = &function.body[1].kind else {
+        panic!("expected binding")
+    };
+    let ExprKind::Not(operand) = &value.kind else {
+        panic!("expected negation")
+    };
+    assert!(matches!(operand.kind, ExprKind::MethodCall { .. }));
+}

@@ -331,10 +331,14 @@ impl Resolver {
                         def: DefId::new(file_id, &e.name),
                     });
                 }
-                TopLevelItem::Function(f) if f.is_pub && f.associated_type.is_none() => {
-                    exports.entry(f.name.clone()).or_default().push(Export {
+                TopLevelItem::Function(f)
+                    if f.is_pub
+                        && f.associated_type.is_none()
+                        && matches!(f.name, Ident::User(_)) =>
+                {
+                    exports.entry(f.name.to_string()).or_default().push(Export {
                         kind: ExportKind::Function,
-                        def: DefId::new(file_id, &f.name),
+                        def: DefId::with_ident(file_id, f.name.clone()),
                     });
                 }
                 TopLevelItem::Function(f)
@@ -357,12 +361,12 @@ impl Resolver {
                             def: DefId::new(file_id, owner.name.as_str()),
                         });
                 }
-                TopLevelItem::Method(m) if m.is_pub => {
-                    exports.entry(m.name.clone()).or_default().push(Export {
+                TopLevelItem::Method(m) if m.is_pub && matches!(m.name, Ident::User(_)) => {
+                    exports.entry(m.name.to_string()).or_default().push(Export {
                         kind: ExportKind::Method {
                             extension: m.is_extension,
                         },
-                        def: DefId::new(file_id, &m.name),
+                        def: DefId::with_ident(file_id, m.name.clone()),
                     });
                 }
                 TopLevelItem::TypeAlias(ta) if ta.is_pub => {
@@ -517,6 +521,7 @@ impl Resolver {
         for item in &file.ast.items {
             if let TopLevelItem::Function(function) = item
                 && function.associated_type.is_none()
+                && matches!(function.name, Ident::User(_))
             {
                 if let Some(type_span) = local_types.get(function.name.as_str()) {
                     return Err(vec![
@@ -549,15 +554,21 @@ impl Resolver {
                     rename_map.insert(e.name.clone(), DefId::new(file_id, e.name.clone()));
                 }
                 TopLevelItem::Function(f) => {
-                    if f.associated_type.is_none() {
-                        local_defs.insert(f.name.clone());
-                        rename_map.insert(f.name.clone(), DefId::new(file_id, f.name.clone()));
+                    if f.associated_type.is_none() && matches!(f.name, Ident::User(_)) {
+                        local_defs.insert(f.name.to_string());
+                        rename_map.insert(
+                            f.name.to_string(),
+                            DefId::with_ident(file_id, f.name.clone()),
+                        );
                     }
                 }
-                TopLevelItem::Method(m) => {
-                    local_defs.insert(m.name.clone());
-                    local_method_defs.insert(m.name.clone());
-                    rename_map.insert(m.name.clone(), DefId::new(file_id, m.name.clone()));
+                TopLevelItem::Method(m) if matches!(m.name, Ident::User(_)) => {
+                    local_defs.insert(m.name.to_string());
+                    local_method_defs.insert(m.name.to_string());
+                    rename_map.insert(
+                        m.name.to_string(),
+                        DefId::with_ident(file_id, m.name.clone()),
+                    );
                 }
                 TopLevelItem::TypeAlias(ta) => {
                     local_defs.insert(ta.name.clone());
@@ -571,7 +582,7 @@ impl Resolver {
                     local_defs.insert(st.name.clone());
                     rename_map.insert(st.name.clone(), DefId::new(file_id, st.name.clone()));
                 }
-                TopLevelItem::Import(_) => {}
+                TopLevelItem::Import(_) | TopLevelItem::Method(_) => {}
             }
         }
 
@@ -1315,9 +1326,6 @@ fn rewrite_statement(stmt: &mut Statement, ctx: &RewriteCtx, locals: &mut HashSe
             rewrite_expr(end, ctx, locals);
             rewrite_statements(body, ctx, locals);
         }
-        StatementKind::ForIn { .. } => {
-            unreachable!("surface statement reached name resolution")
-        }
         StatementKind::Try {
             body,
             binding,
@@ -1357,7 +1365,7 @@ fn rewrite_statement(stmt: &mut Statement, ctx: &RewriteCtx, locals: &mut HashSe
             rewrite_expr(expr, ctx, locals);
         }
         StatementKind::NestedFunction(fdef) => {
-            locals.insert(Ident::user(fdef.name.clone()));
+            locals.insert(fdef.name.clone());
             rewrite_function_body(fdef, ctx);
         }
         StatementKind::Const(c) => {
@@ -1549,6 +1557,9 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<Ident>) {
         ExprKind::UnsafeBlock(stmts) => {
             let mut locals_copy = locals.clone();
             rewrite_statements(stmts, ctx, &mut locals_copy);
+        }
+        ExprKind::ForIn { .. } | ExprKind::ForRange { .. } => {
+            unreachable!("surface expression reached name resolution")
         }
         ExprKind::Loop(stmts) => {
             let mut locals_copy = locals.clone();

@@ -344,8 +344,8 @@ pub struct FunctionDef {
     pub associated_type_params: Vec<String>,
     /// Type owning this associated function, or `None` for a free function.
     pub associated_type: Option<Type>,
-    /// Resolved function name.
-    pub name: String,
+    /// Function name, retaining whether it was written by the user or synthesized.
+    pub name: Ident,
     /// Original name used in diagnostics.
     pub display_name: String,
     /// Generic type parameters.
@@ -443,15 +443,11 @@ pub enum StatementKind {
         condition: Expr,
         body: Vec<Statement>,
     },
+    /// Normalized counted loop, introduced by desugaring a range expression.
     ForRange {
         variable: Ident,
         start: Expr,
         end: Expr,
-        body: Vec<Statement>,
-    },
-    ForIn {
-        variable: Ident,
-        iterable: Expr,
         body: Vec<Statement>,
     },
     /// Surface `try { ... } catch (binding[: type]) { ... }` syntax.
@@ -480,7 +476,7 @@ pub enum StatementKind {
     /// An expression, yielding its value only when last in a block.
     Expression(Expr),
     Return(Expr),
-    /// `break;` (no value) or `break <expr>;` (value, only inside a `loop`).
+    /// `break;` (no value) or `break <expr>;` (value, inside `loop` or iterable `for`).
     Break(Option<Expr>),
     Continue,
     NestedFunction(FunctionDef),
@@ -623,6 +619,19 @@ pub enum ExprKind {
     /// `loop { … }` — an infinite loop usable as an expression; its value comes
     /// from `break <expr>`.
     Loop(Vec<Statement>),
+    /// A counted loop, evaluating to unit on completion.
+    ForRange {
+        variable: Ident,
+        start: Box<Expr>,
+        end: Box<Expr>,
+        body: Vec<Statement>,
+    },
+    /// Iteration yielding the coroutine's completion value, or unit for iterators.
+    ForIn {
+        variable: Ident,
+        iterable: Box<Expr>,
+        body: Vec<Statement>,
+    },
     BinaryOp {
         op: BinOp,
         left: Box<Expr>,

@@ -1089,7 +1089,7 @@ fn completions(
             }
             let adjustment = receiver_match.adjustment;
             let key = (
-                method.def.name.clone(),
+                method.def.name.to_string(),
                 adjustment.clone(),
                 method.detail.clone(),
             );
@@ -1097,10 +1097,10 @@ fn completions(
                 continue;
             }
             let mut item = json!({
-                "label": method.def.name,
+                "label": method.def.name.as_str(),
                 "kind": 2,
                 "sortText": format!("{}{}", if adjustment.is_empty() { 0 } else { 1 }, method.def.name),
-                "textEdit": { "range": replace_range, "newText": method.def.name },
+                "textEdit": { "range": replace_range, "newText": method.def.name.as_str() },
             });
             if let Some(detail) = &method.detail {
                 item["detail"] = json!(detail);
@@ -1738,7 +1738,7 @@ fn binding_scope(mut node: Node<'_>) -> Option<Node<'_>> {
                     .flatten();
             }
             "coroutine_parameter" => return parent.parent()?.child_by_field_name("body"),
-            "for_statement"
+            "for_expression"
             | "reflect_fields_statement"
             | "reflect_fields_pair_statement"
             | "reflect_variant_statement"
@@ -2303,7 +2303,7 @@ fn collect_inlay_hints(node: Node<'_>, context: &InlayHintContext<'_>, out: &mut
                 push_binding_inlay_hint(name, context, out);
             }
         }
-        "for_statement" => {
+        "for_expression" => {
             if let Some(variable) = node.child_by_field_name("variable") {
                 push_binding_inlay_hint(variable, context, out);
             }
@@ -3330,7 +3330,7 @@ fn local_definition<'a>(node: Node<'a>, name: &str, source: &str) -> Option<Node
                     }
                 }
             }
-            "for_statement" => {
+            "for_expression" => {
                 if let Some(body) = parent.child_by_field_name("body")
                     && body.start_byte() <= node.start_byte()
                     && node.end_byte() <= body.end_byte()
@@ -3575,7 +3575,7 @@ fn is_binding_identifier(node: Node<'_>) -> bool {
             "closure_param" | "coroutine_parameter" => {
                 return parent.child_by_field_name("name") == Some(node);
             }
-            "for_statement"
+            "for_expression"
             | "reflect_fields_statement"
             | "reflect_fields_pair_statement"
             | "reflect_variant_statement"
@@ -4377,7 +4377,10 @@ fn collect_completion_functions(
             let ast::TopLevelItem::Function(def) = item else {
                 return None;
             };
-            let id = ast::DefId::new(def.span.file_id, def.name.clone());
+            if matches!(def.name, ast::Ident::Synthetic(_)) {
+                return None;
+            }
+            let id = ast::DefId::with_ident(def.span.file_id, def.name.clone());
             Some(CompletionFunction {
                 visible_unqualified: visible_defs.contains(&id)
                     || def.span.file_id == ast::SYNTHETIC_FILE,
@@ -4400,7 +4403,12 @@ fn collect_completion_catalog(
     let mut all_symbols = HashMap::<ast::DefId, Vec<CompletionSymbol>>::new();
     for item in &ast.items {
         let (label, kind, doc, span) = match item {
-            TopLevelItem::Function(def) => (&def.name, 3, &def.doc, def.span),
+            TopLevelItem::Function(def) => {
+                let ast::Ident::User(name) = &def.name else {
+                    continue;
+                };
+                (name.as_str(), 3, &def.doc, def.span)
+            }
             TopLevelItem::Struct(def) => {
                 fields.insert(
                     def.def_id.clone(),
@@ -4414,17 +4422,17 @@ fn collect_completion_catalog(
                         })
                         .collect(),
                 );
-                (&def.name, 22, &def.doc, def.span)
+                (def.name.as_str(), 22, &def.doc, def.span)
             }
-            TopLevelItem::Enum(def) => (&def.name, 13, &def.doc, def.span),
-            TopLevelItem::TypeAlias(def) => (&def.name, 7, &def.doc, def.span),
-            TopLevelItem::Const(def) => (&def.name, 21, &def.doc, def.span),
-            TopLevelItem::Static(def) => (&def.name, 6, &def.doc, def.span),
+            TopLevelItem::Enum(def) => (def.name.as_str(), 13, &def.doc, def.span),
+            TopLevelItem::TypeAlias(def) => (def.name.as_str(), 7, &def.doc, def.span),
+            TopLevelItem::Const(def) => (def.name.as_str(), 21, &def.doc, def.span),
+            TopLevelItem::Static(def) => (def.name.as_str(), 6, &def.doc, def.span),
             TopLevelItem::Method(_) | TopLevelItem::Import(_) => continue,
         };
         let def = ast::DefId::new(span.file_id, label);
         let symbol = CompletionSymbol {
-            label: label.clone(),
+            label: label.to_string(),
             kind,
             detail: signatures.get(&span_key(span)).cloned(),
             documentation: doc.clone(),
@@ -4516,7 +4524,7 @@ fn visible_completion_defs(source_map: &SourceMap) -> HashSet<ast::DefId> {
     for item in parsed.items {
         match item {
             TopLevelItem::Function(def) | TopLevelItem::Method(def) => {
-                visible.insert(ast::DefId::new(root_file, def.name));
+                visible.insert(ast::DefId::with_ident(root_file, def.name));
             }
             TopLevelItem::Struct(def) => {
                 visible.insert(ast::DefId::new(root_file, def.name));
@@ -4596,7 +4604,7 @@ fn exported_completion_defs(
         for item in parsed.items {
             match item {
                 TopLevelItem::Function(def) | TopLevelItem::Method(def) if def.is_pub => {
-                    defs.insert(ast::DefId::new(file_id, def.name));
+                    defs.insert(ast::DefId::with_ident(file_id, def.name));
                 }
                 TopLevelItem::Struct(def) if def.is_pub => {
                     defs.insert(ast::DefId::new(file_id, def.name));
@@ -4710,7 +4718,7 @@ fn collect_definition_catalog(
     for item in &ast.items {
         match item {
             TopLevelItem::Function(def) => {
-                let id = ast::DefId::new(def.span.file_id, def.name.clone());
+                let id = ast::DefId::with_ident(def.span.file_id, def.name.clone());
                 out.function_defs.entry(id).or_default().push(def.span);
                 if !def.type_params.is_empty() && root_file == Some(def.span.file_id) {
                     out.generic_bodies.push(def.span);
@@ -4937,7 +4945,7 @@ fn collect_binding_declarations(
     let pattern = match node.kind() {
         "parameter" | "let_statement" => node.child_by_field_name("pattern"),
         "closure_param" => node.child_by_field_name("name"),
-        "for_statement" | "reflect_fields_statement" | "reflect_fields_pair_statement" => {
+        "for_expression" | "reflect_fields_statement" | "reflect_fields_pair_statement" => {
             node.child_by_field_name("variable")
         }
         "reflect_variant_statement" | "reflect_variant_pair_statement" => {
@@ -6761,6 +6769,10 @@ fn main() {
     for index in 0..radius {
         println(index);
     }
+    let completed = for item in coroutine { yield 3; 42 } {
+        println(item);
+    };
+    println(completed);
     try {
         println(radius);
     } catch (message) {
@@ -6769,7 +6781,13 @@ fn main() {
 }
 "#;
         let document = compute(&uri, source);
-        for (name, ty) in [("value", "Int"), ("index", "Int"), ("message", "Exception")] {
+        for (name, ty) in [
+            ("value", "Int"),
+            ("index", "Int"),
+            ("item", "Int"),
+            ("completed", "Int"),
+            ("message", "Exception"),
+        ] {
             for occurrence in 0..2 {
                 let (line, character) = occurrence_position(source, name, occurrence);
                 let hover = hover(source, line, character, &document)

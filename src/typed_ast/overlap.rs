@@ -65,12 +65,16 @@ impl Lowerer<'_> {
         span: ast::SourceSpan,
     ) -> Result<Expr, CompileError> {
         let has_overlap = match &source {
-            CandidateSource::Methods => self.method_defs.get(name).is_some_and(|entries| {
-                entries.iter().any(|entry| {
-                    entry.ast_def.is_overlap
-                        && self.source.method_is_visible(&entry.ast_def, span.file_id)
-                })
-            }),
+            CandidateSource::Methods => {
+                self.method_defs
+                    .get(&ast::Ident::user(name))
+                    .is_some_and(|entries| {
+                        entries.iter().any(|entry| {
+                            entry.ast_def.is_overlap
+                                && self.source.method_is_visible(&entry.ast_def, span.file_id)
+                        })
+                    })
+            }
             CandidateSource::Entries(entries) => {
                 entries.iter().any(|entry| entry.ast_def.is_overlap)
             }
@@ -92,7 +96,7 @@ impl Lowerer<'_> {
             _ => unreachable!(),
         };
         let overload_count = if is_method {
-            self.method_defs[name]
+            self.method_defs[&ast::Ident::user(name)]
                 .iter()
                 .filter(|entry| !entry.type_params.is_empty())
                 .count()

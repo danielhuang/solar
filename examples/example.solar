@@ -352,6 +352,12 @@ fn main() {
 		println(x@); // 10, 20, 30
 	}
 
+	// A for expression yields the coroutine's return value when it completes.
+	let completed = for value in coroutine { yield 7; yield 8; 42 } {
+		println(value); // 7, 8
+	};
+	println(completed); // 42
+
 	// break and continue (target the innermost loop)
 	for n in 0..10 {
 		if n == 1 { continue; } // skip 1

@@ -2,6 +2,8 @@
 
 use crate::ast;
 
+mod for_loop;
+
 /// An untyped program after type-independent normalization.
 #[derive(Debug)]
 pub struct SourceFile {
@@ -117,15 +119,6 @@ impl Desugarer {
                     end: self.expr(end),
                     body,
                 })
-            }
-            ast::StatementKind::ForIn {
-                variable,
-                iterable,
-                mut body,
-            } => {
-                self.statements(&mut body);
-                let iterable = self.expr(iterable);
-                self.for_in(span, variable, iterable, body)
             }
             ast::StatementKind::Try {
                 mut body,
@@ -299,6 +292,41 @@ impl Desugarer {
                 element: Box::new(self.expr(*element)),
                 count: Box::new(self.expr(*count)),
             },
+            ast::ExprKind::ForRange {
+                variable,
+                start,
+                end,
+                mut body,
+            } => {
+                self.statements(&mut body);
+                ast::ExprKind::Block(vec![
+                    ast::Statement {
+                        kind: ast::StatementKind::ForRange {
+                            variable,
+                            start: self.expr(*start),
+                            end: self.expr(*end),
+                            body,
+                        },
+                        span,
+                    },
+                    ast::Statement {
+                        kind: ast::StatementKind::Expression(ast::Expr {
+                            kind: ast::ExprKind::TupleLiteral(Vec::new()),
+                            span,
+                        }),
+                        span,
+                    },
+                ])
+            }
+            ast::ExprKind::ForIn {
+                variable,
+                iterable,
+                mut body,
+            } => {
+                self.statements(&mut body);
+                let iterable = self.expr(*iterable);
+                ast::ExprKind::Block(self.for_in(span, variable, iterable, body))
+            }
             ast::ExprKind::Loop(mut body) => {
                 self.statements(&mut body);
                 ast::ExprKind::Loop(body)
@@ -424,114 +452,5 @@ impl Desugarer {
             },
         };
         ast::Expr { kind, span }
-    }
-
-    fn for_in(
-        &mut self,
-        span: ast::SourceSpan,
-        variable: ast::Ident,
-        iterable: ast::Expr,
-        body: Vec<ast::Statement>,
-    ) -> Vec<ast::Statement> {
-        let index = self.for_counter;
-        self.for_counter += 1;
-        let iterator = ast::Ident::synthetic(format!("__for_iter_{index}"));
-
-        let identifier = |name: &ast::Ident| ast::Expr {
-            kind: ast::ExprKind::Identifier(name.clone()),
-            span,
-        };
-        let reference = |value: ast::Expr| ast::Expr {
-            kind: ast::ExprKind::Reference(Box::new(value)),
-            span,
-        };
-        let method_call = |receiver: ast::Expr, method: &str| ast::Expr {
-            kind: ast::ExprKind::MethodCall {
-                receiver: Box::new(receiver),
-                method: method.to_string(),
-                type_args: Vec::new(),
-                arguments: Vec::new(),
-                kwargs: Vec::new(),
-            },
-            span,
-        };
-        let statement = |kind| ast::Statement { kind, span };
-
-        // Evaluate the iterable once and use ordinary method lookup for both
-        // operations. The synthetic references match Solar's mutable iterator
-        // convention (`iter(self: &T)`, `next(self: &Iter)`) without imposing a
-        // nominal iterator type.
-        let iterator_binding = statement(ast::StatementKind::Let {
-            pattern: ast::DestructurePattern::Name(iterator.clone()),
-            ty: None,
-            value: method_call(reference(iterable), "iter"),
-        });
-
-        // The payload type is inferred from next()'s concrete Option instance
-        // during typed-AST lowering. Keeping this as normal match/loop syntax
-        // means break and continue need no special for-in handling downstream.
-        let option_type_args = vec![ast::Type::Infer];
-        let next = method_call(reference(identifier(&iterator)), "next");
-        let ignored_body = vec![statement(ast::StatementKind::If {
-            condition: ast::Expr {
-                kind: ast::ExprKind::BooleanLiteral(true),
-                span,
-            },
-            body,
-            else_body: Vec::new(),
-        })];
-        let mut ignored_body = ignored_body;
-        ignored_body.push(statement(ast::StatementKind::Expression(ast::Expr {
-            kind: ast::ExprKind::TupleLiteral(Vec::new()),
-            span,
-        })));
-        let match_next = ast::Expr {
-            kind: ast::ExprKind::Match {
-                scrutinee: Box::new(next),
-                arms: vec![
-                    ast::MatchArm {
-                        pattern: ast::Pattern::Variant {
-                            module_path: Vec::new(),
-                            enum_name: ast::DefId::new(0, "Option"),
-                            type_args: option_type_args.clone(),
-                            variant_name: "Some".to_string(),
-                            binding: Some(variable),
-                        },
-                        body: ast::Expr {
-                            kind: ast::ExprKind::Block(ignored_body),
-                            span,
-                        },
-                    },
-                    ast::MatchArm {
-                        pattern: ast::Pattern::Variant {
-                            module_path: Vec::new(),
-                            enum_name: ast::DefId::new(0, "Option"),
-                            type_args: option_type_args,
-                            variant_name: "None".to_string(),
-                            binding: None,
-                        },
-                        body: ast::Expr {
-                            kind: ast::ExprKind::Block(vec![statement(ast::StatementKind::Break(
-                                None,
-                            ))]),
-                            span,
-                        },
-                    },
-                ],
-            },
-            span,
-        };
-        let loop_statement = statement(ast::StatementKind::Expression(ast::Expr {
-            kind: ast::ExprKind::Loop(vec![
-                statement(ast::StatementKind::Expression(match_next)),
-                statement(ast::StatementKind::Expression(ast::Expr {
-                    kind: ast::ExprKind::TupleLiteral(Vec::new()),
-                    span,
-                })),
-            ]),
-            span,
-        }));
-
-        vec![iterator_binding, loop_statement]
     }
 }

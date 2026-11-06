@@ -193,7 +193,7 @@ impl Lowerer<'_> {
         let ast_def = Rc::new(ast::FunctionDef {
             associated_type_params: Vec::new(),
             associated_type: None,
-            name: name.clone(),
+            name: ast::Ident::user(name.clone()),
             display_name: name.clone(),
             type_params: Vec::new(),
             out_type_params: Vec::new(),
@@ -222,7 +222,10 @@ impl Lowerer<'_> {
             }),
             span,
         });
-        let entries = self.method_defs.entry(name.clone()).or_default();
+        let entries = self
+            .method_defs
+            .entry(ast::Ident::user(name.clone()))
+            .or_default();
         entries.push(FunctionEntry {
             owner_specificity: Vec::new(),
             associated_type_params: Vec::new(),
@@ -231,7 +234,7 @@ impl Lowerer<'_> {
             ast_def: ast_def.clone(),
             overload_index: entries.len(),
         });
-        self.method_index.remove(&name);
+        self.method_index.remove(&ast::Ident::user(name.clone()));
         self.concrete_ast_defs.insert(function.id.clone(), ast_def);
         self.resolved_return_types
             .insert(function.id.clone(), function.return_type.clone());
@@ -757,7 +760,7 @@ impl Lowerer<'_> {
             // applicable extension must still conflict with these methods.
             let extensions: Vec<_> = self
                 .method_defs
-                .get(method)
+                .get(&ast::Ident::user(method))
                 .into_iter()
                 .flatten()
                 .filter(|entry| {

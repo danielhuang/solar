@@ -216,6 +216,48 @@ fn coroutine_type_errors() {
 }
 
 #[test]
+fn for_completion_type_errors() {
+    let directory = tempdir::TempDir::new("solar-for-types").unwrap();
+    let path = directory.path().join("main.solar");
+    for (source, expected) in [
+        (
+            "fn main() { let x: Bool = for v in coroutine { yield 1; 42 } {}; }",
+            "type mismatch",
+        ),
+        (
+            "fn main() { for v in coroutine { yield 1; 42 } { break; } }",
+            "break",
+        ),
+        (
+            "fn main() { for v in coroutine { yield 1; 42 } { break true; } }",
+            "break",
+        ),
+        ("fn main() { for v in [1] { break 42; } }", "break"),
+        (
+            "fn f() -> Int { for v in coroutine { 42 } {}; } fn main() {}",
+            "should return Int",
+        ),
+        ("fn main() { for v in 0..3 { break 42; } }", "break"),
+        (
+            "fn main() { let g = coroutine (x: Int) { yield x; 42 }; for v in g {} }",
+            "only coroutines without a resume parameter can be iterated",
+        ),
+    ] {
+        std::fs::write(&path, source).unwrap();
+        let errors = solar::pipeline::compile(&path).err().unwrap().0;
+        let messages = errors
+            .iter()
+            .map(error_chain)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            messages.contains(expected),
+            "{source}: expected {expected}, got {messages}"
+        );
+    }
+}
+
+#[test]
 fn discarded_tails_do_not_supply_values() {
     for name in [
         "block_tail_discarded.solar",
@@ -899,7 +941,7 @@ fn continue_outside_loop() {
 
 // `break <value>` is only allowed in a `loop`, not a `while`/`for`.
 #[test]
-#[should_panic(expected = "cannot `break` with a value out of a `while`/`for` loop")]
+#[should_panic(expected = "cannot `break` with a value out of a `while`/range `for` loop")]
 fn break_value_in_while() {
     compile(&fixture("break_value_in_while.solar"));
 }

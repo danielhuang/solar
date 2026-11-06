@@ -27,6 +27,8 @@ module.exports = grammar({
     [$.binary_expression, $.not_expression, $.reference_expr],
     [$.binary_expression, $.not_expression, $.unique_expr],
     [$.unsafe_block_statement, $._expression],
+    [$.for_statement, $._expression],
+    [$.block, $.for_statement, $._expression],
     [$._expression, $.struct_literal],
   ],
 
@@ -207,7 +209,9 @@ module.exports = grammar({
         seq(field("pattern", $._destructure_target), "=", field("default", $._expression)),
       ),
 
-    block: ($) => seq("{", repeat($._statement), optional(field("tail", $._expression_with_struct)), "}"),
+    // Prefer a bare for as a statement before another expression, but as the
+    // block's value when it is the tail (priority 2 beats for_statement's 1).
+    block: ($) => seq("{", repeat($._statement), optional(field("tail", choice(prec.dynamic(2, $.for_expression), $._expression_with_struct))), "}"),
 
     unsafe_block: ($) => seq("unsafe", field("body", $.block)),
 
@@ -267,7 +271,10 @@ module.exports = grammar({
     // also stand alone as a statement without a trailing semicolon, like `while`.
     loop_expression: ($) => seq("loop", field("body", $.block)),
 
-    for_statement: ($) => choice(
+    // A final for loop supplies the block's value; elsewhere it needs no semicolon.
+    for_statement: ($) => prec.dynamic(1, $.for_expression),
+
+    for_expression: ($) => choice(
       seq("for", field("variable", $.identifier), "in",
           field("start", $._expression), "..", field("end", $._expression),
           field("body", $.block)),
@@ -308,6 +315,7 @@ module.exports = grammar({
         $.not_expression,
         $.if_expression,
         $.loop_expression,
+        $.for_expression,
         $.unsafe_block,
         $.closure_expr,
         $.coroutine_expression,

@@ -684,7 +684,6 @@ fn statement_has_block(statement: &Statement) -> bool {
         StatementKind::If { .. }
             | StatementKind::While { .. }
             | StatementKind::ForRange { .. }
-            | StatementKind::ForIn { .. }
             | StatementKind::Try { .. }
             | StatementKind::ForReflectFields { .. }
             | StatementKind::MatchReflectVariant { .. }
@@ -694,6 +693,8 @@ fn statement_has_block(statement: &Statement) -> bool {
         StatementKind::Expression(Expr {
             kind: ExprKind::Block(_)
                 | ExprKind::If { .. }
+                | ExprKind::ForRange { .. }
+                | ExprKind::ForIn { .. }
                 | ExprKind::Loop(_)
                 | ExprKind::Coroutine { .. }
                 | ExprKind::Closure { .. },
@@ -765,19 +766,6 @@ fn statement_doc(statement: &Statement, context: &SourceContext<'_>) -> Doc {
             expr_doc(start, context),
             Doc::text(".."),
             expr_doc(end, context),
-            Doc::text(" "),
-            block_doc(body, statement.span, context),
-        ])
-        .group(),
-        StatementKind::ForIn {
-            variable,
-            iterable,
-            body,
-        } => Doc::concat([
-            Doc::text("for "),
-            ident_doc(variable),
-            Doc::text(" in "),
-            expr_doc(iterable, context),
             Doc::text(" "),
             block_doc(body, statement.span, context),
         ])
@@ -979,6 +967,35 @@ fn expr_doc(expression: &Expr, context: &SourceContext<'_>) -> Doc {
             expr_doc(count, context),
             Doc::text("]"),
         ]),
+        ExprKind::ForRange {
+            variable,
+            start,
+            end,
+            body,
+        } => Doc::concat([
+            Doc::text("for "),
+            ident_doc(variable),
+            Doc::text(" in "),
+            expr_doc(start, context),
+            Doc::text(".."),
+            expr_doc(end, context),
+            Doc::text(" "),
+            block_doc(body, expression.span, context),
+        ])
+        .group(),
+        ExprKind::ForIn {
+            variable,
+            iterable,
+            body,
+        } => Doc::concat([
+            Doc::text("for "),
+            ident_doc(variable),
+            Doc::text(" in "),
+            expr_doc(iterable, context),
+            Doc::text(" "),
+            block_doc(body, expression.span, context),
+        ])
+        .group(),
         ExprKind::Loop(body) => Doc::concat([
             Doc::text("loop "),
             block_doc(body, expression.span, context),

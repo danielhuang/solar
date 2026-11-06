@@ -20,7 +20,10 @@ impl SourceFile {
             || method.span.file_id == file
             || method.is_pub
                 && self.extension_scopes.get(&file).is_some_and(|scope| {
-                    scope.contains(&ast::DefId::new(method.span.file_id, &method.name))
+                    scope.contains(&ast::DefId::with_ident(
+                        method.span.file_id,
+                        method.name.clone(),
+                    ))
                 })
     }
 
@@ -64,7 +67,7 @@ fn generate_numeric_constructors(items: &mut Vec<ast::TopLevelItem>) {
             items.push(ast::TopLevelItem::Function(ast::FunctionDef {
                 associated_type_params: Vec::new(),
                 associated_type: Some(ast::Type::Named(ast::DefId::new(0, target_name))),
-                name: String::new(),
+                name: ast::Ident::user(""),
                 display_name: target_name.to_string(),
                 type_params: Vec::new(),
                 out_type_params: Vec::new(),

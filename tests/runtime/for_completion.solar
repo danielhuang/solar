@@ -1,0 +1,172 @@
+// Both protocols are valid: for must choose resume and retain its return value.
+struct Both { current: Int, resumes: &Int, nexts: &Int }
+
+method resume(self: &Both) -> CoroutineState#[Int, Int] {
+	self@.resumes@ = self@.resumes@ + 1;
+	self@.current = self@.current + 1;
+
+	if self@.current <= 3 {
+		return CoroutineState#[Int, Int]::Yield(self@.current);
+	}
+
+	CoroutineState#[Int, Int]::Complete(42)
+}
+
+method next(self: &Both) -> Option#[Int] {
+	self@.nexts@ = self@.nexts@ + 1;
+	Option#[Int]::None
+}
+
+fn make_both(created: &Int, resumes: &Int, nexts: &Int) {
+	created@ = created@ + 1;
+	Both { current: 0, resumes: resumes, nexts: nexts }
+}
+
+struct NextOnly { current: Int }
+
+method next(self: &NextOnly) -> Option#[Int] {
+	self@.current = self@.current + 1;
+
+	if self@.current < 3 { Option#[Int]::Some(self@.current) } else {
+		Option#[Int]::None
+	}
+}
+
+// A resume body that fails substitution must not contaminate the next attempt.
+struct InvalidResume#[T] { cursor: T }
+
+method resume#[T](self: &InvalidResume#[T]) { self@.cursor.missing() }
+
+method next(self: &InvalidResume#[NextOnly]) -> Option#[Int] {
+	self@.cursor&.next()
+}
+
+// A successfully typechecked resume with a different result is not the protocol.
+struct WrongState { cursor: NextOnly }
+
+method resume(self: &WrongState) -> Int { 99 }
+
+method next(self: &WrongState) -> Option#[Int] { self@.cursor&.next() }
+
+// Source functions with the helpers' spellings remain separate declarations.
+fn for_step_0#[T](value: &T) -> Int { 101 }
+
+fn for_state_0#[T](value: T) -> Int { 102 }
+
+fn finish#[Iterator](iterator: Iterator) {
+	fn for_step_0#[T](value: &T) -> Int { 103 }
+
+	let completed = for value in iterator {};
+	assert(for_step_0(0&) == 103);
+	assert(for_state_0(()) == 102);
+	completed
+}
+
+// The helper's own binders shadow equally named enclosing type parameters.
+fn finish_shadowed#[Iterator, Yield, Return](
+	iterator: Iterator,
+	y: Yield,
+	r: Return,
+) {
+	for value in iterator {}
+}
+
+fn return_from_body() -> Int {
+	for value in coroutine { yield 7; 90 } { return value; }
+	0
+}
+
+fn following_parentheses() -> Int {
+	for value in [1] {}
+	(42)
+}
+
+fn following_array() -> Int {
+	for value in [1] {}
+	[42][0u]
+}
+
+fn main() {
+	assert(for_step_0(0&) == 101);
+	assert(finish_shadowed(coroutine { yield 1; 42 }, false, false) == 42);
+	assert(following_parentheses() == 42);
+	assert(following_array() == 42);
+	assert(
+		(for value in coroutine { let values: [Int; 2] = [41, 42]; values } {})[1u] ==
+			42,
+	);
+	assert((for value in coroutine { \x: Int x + 1 } {})(41) == 42);
+	let sum = 0;
+	let result = for value in coroutine { yield 1; yield 2; (42, true) } {
+		sum = sum + value;
+	};
+	assert(sum == 3);
+	assert(result == (42, true));
+	assert(finish(coroutine { yield 1; return 23; }) == 23);
+	assert(finish(coroutine { 17 }) == 17);
+	assert(return_from_body() == 7);
+
+	let cursor = coroutine { yield 5; yield 6; 80 };
+	let early = for value in cursor& { break value + 10; };
+	assert(early == 15);
+	assert(cursor.next().unwrap() == 6);
+	assert(finish(cursor&) == 80);
+	let caught = false;
+
+	try { cursor.resume(); } catch (error) {
+		assert(
+			error.message@ == "cannot resume a completed or running coroutine",
+		);
+		caught = true;
+	}
+
+	assert(caught);
+
+	let created = 0;
+	let resumes = 0;
+	let nexts = 0;
+	sum = 0;
+	let completion = for value in make_both(created&, resumes&, nexts&) {
+		if value == 2 { continue; }
+		sum = sum + value;
+	};
+	assert(completion == 42);
+	assert(sum == 4);
+	assert(created == 1);
+	assert(resumes == 4);
+	assert(nexts == 0);
+
+	sum = 0;
+	let unit: () = for value in (NextOnly { current: 0 }) {
+		sum = sum + value;
+	};
+	assert(sum == 3);
+	let invalid_resume_result: () = finish(
+		InvalidResume#[NextOnly] { cursor: NextOnly { current: 0 } },
+	);
+	let wrong_state_result: () = finish(
+		WrongState { cursor: NextOnly { current: 0 } },
+	);
+	let array_result: () = finish([1, 2, 3]&);
+	let range: () = for i in 0..3 { if i == 1 { continue; } };
+
+	let nested = coroutine {
+		let result = for outer in coroutine { yield 3; 70 } {
+			let inner_result = for inner in coroutine { yield 4; 60 } {
+				yield outer + inner;
+			};
+			assert(inner_result == 60);
+		};
+		result + 1
+	};
+	sum = 0;
+	let nested_result = for value in nested { sum = sum + value; };
+	assert(sum == 7);
+	assert(nested_result == 71);
+
+	let try_result = for value in coroutine { yield 5; 6 } {
+		try { break value; } catch (error) { assert(false); }
+	};
+	assert(try_result == 5);
+	println("passed"&);
+}

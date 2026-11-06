@@ -37,6 +37,22 @@ fn coroutine_for_loop_release() {
 }
 
 #[test]
+fn for_completion() {
+    assert_eq!(
+        run(&fixture("for_completion.solar"), "for_completion"),
+        "passed\n"
+    );
+}
+
+#[test]
+fn for_completion_release() {
+    assert_eq!(
+        test_utils::run_release_file(&fixture("for_completion.solar"), "for_completion"),
+        "passed\n"
+    );
+}
+
+#[test]
 fn coroutine_control() {
     assert_eq!(
         run(&fixture("coroutine_control.solar"), "coroutine_control"),
