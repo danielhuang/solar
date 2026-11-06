@@ -156,11 +156,18 @@ fn#[T] Box#[T]::(value: T) -> Box#[T] { Box#[T] { value: value } }
 ## Coroutines
 
 `coroutine { ... }` creates a suspended computation with its own synthetic
-type. Its body starts on the first `.next()` call. Each `yield value` returns
-`Option#[Y]::Some(value)` from that call and suspends execution; the next call
-continues immediately after the yield. Completion, including `return;`, returns
-`None`, as do later calls. Yielded values must have one sized type `Y`; a body
-with no yields produces `Option#[()]`.
+type. Its body starts on the first `.resume()` or `.next()` call. `resume`
+returns `CoroutineState#[Y, R]`: `yield value` produces `Yield(value)` and
+suspends execution, while `return value` or the block's final expression
+produces `Complete(value)`. Yielded values share one sized type `Y`, and
+return values share one inferred sized type `R`. A body with no yields uses
+`()` for `Y`; an empty body or `return;` completes with `()`.
+
+`next` calls `resume`, returning `Some(value)` for `Yield(value)` and `None`
+for `Complete(value)`, discarding the final value. The two methods share the
+same execution state and may be mixed. After completion, further calls to
+either method throw. Calling either method while the coroutine is already
+running also throws.
 
 ```solar
 fn main() {
@@ -174,27 +181,31 @@ fn main() {
     assert(exchange.next(10).unwrap() == 10);
     assert(exchange.next(20).unwrap() == 21);
     assert(exchange.next(30).is_none());
+
+    let answer = coroutine { yield 1; 42 };
+    assert(answer.resume() == CoroutineState#[Int, Int]::Yield(1));
+    assert(answer.resume() == CoroutineState#[Int, Int]::Complete(42));
 }
 ```
 
 Without a parameter, `yield` evaluates to `()`. With `coroutine (name: T)`,
-every `.next(value)` takes `T`: the first call initializes `name`, and later
-calls supply the result of the suspended `yield`. The original parameter
+every `.resume(value)` or `.next(value)` takes `T`: the first call initializes
+`name`, and later calls supply the result of the suspended `yield`. The original parameter
 remains a separate mutable local. Coroutines without a parameter also support
 `iter()` and `for` loops.
 
 Locals, expression evaluation, and `try`/`catch` regions survive suspension.
 Outer bindings are captured by reference, like closures. A coroutine is one
 struct with private state, `MaybeZeroed` local storage, and captured references;
-its generated `next` method borrows that struct. Copying it copies the state and
-local values using normal Solar copying rules. Captured references remain shared.
+its generated `resume` and `next` methods borrow that struct. Copying it copies
+the state and local values using normal Solar copying rules. Captured references remain shared.
 Locals whose addresses escape use separate storage, preserving references and
 closures from earlier loop iterations. Unsized locals also use separate storage.
-References and closures yielded from the body can outlive it.
+References and closures yielded or returned from the body can outlive it.
 Recursive coroutine storage must have finite size: storing another instance of
 the same coroutine by value, directly or through other types, is rejected.
 Use a reference for recursive children, e.g. `let child = make_coroutine()&;`.
-An uncaught exception propagates from `.next()` and ends
+An uncaught exception propagates from `.resume()` or `.next()` and ends
 the coroutine. Nested functions and closures cannot yield from an enclosing
 coroutine; they may create their own coroutines. A coroutine body starts its
 own unsafe context, so unsafe operations require an `unsafe` block inside it.

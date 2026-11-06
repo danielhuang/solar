@@ -29,7 +29,7 @@ fn coroutine_loop_keeps_short_lived_temporaries_out_of_the_frame() {
 }
 
 #[test]
-fn coroutine_owns_storage_and_has_a_concrete_next_method() {
+fn coroutine_owns_storage_and_has_concrete_resume_and_next_methods() {
     let directory = tempdir::TempDir::new("solar-coroutine-layout").unwrap();
     let path = directory.path().join("main.solar");
     std::fs::write(&path, "fn main() { let captured = 7; let g = coroutine { let local = captured; yield local; local = local + 1; yield local; }; g.next(); }").unwrap();
@@ -89,6 +89,19 @@ fn coroutine_owns_storage_and_has_a_concrete_next_method() {
     assert_eq!(next.parameters.len(), 1);
     assert!(matches!(&next.return_type, Type::Enum(TypeId { args, .. }) if args == &[Type::Int]));
     assert!(!next.body.is_empty());
+    let resume = typed
+        .typed
+        .functions
+        .values()
+        .find(|f| {
+            f.id.method && f.id.def.name == "resume" && f.parameters[0].ty == next.parameters[0].ty
+        })
+        .unwrap();
+    assert_eq!(resume.parameters.len(), 1);
+    assert!(
+        matches!(&resume.return_type, Type::Enum(TypeId { def, args }) if def.name == "CoroutineState" && args == &[Type::Int, Type::Unit])
+    );
+    assert!(!resume.body.is_empty());
 }
 
 #[test]

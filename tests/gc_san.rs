@@ -36,6 +36,35 @@ fn main() {
 "#;
 
 #[test]
+fn coroutine_results_survive_collection() {
+    test_utils::ensure_release_runtime_built();
+    let directory = tempdir::TempDir::new("solar-coroutine-gc").unwrap();
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/runtime/coroutine_resume.solar");
+    let c_source = solar::pipeline::compile(&source)
+        .unwrap()
+        .to_mangled()
+        .to_tree_ir()
+        .optimized()
+        .to_c(&source.display().to_string());
+    for optimize in [false, true] {
+        let binary = solar::pipeline::CSource {
+            c_source: c_source.c_source.clone(),
+            source_map: c_source.source_map.clone(),
+        }
+        .to_binary(
+            directory.path().join(format!("coroutine_gc_{optimize}")),
+            CompileOptions {
+                enable_gc: true,
+                gc_san: true,
+                optimize,
+            },
+        );
+        assert_eq!(binary.run("coroutine_gc"), "passed\n");
+    }
+}
+
+#[test]
 fn gc_san_runs_collections_without_rejecting_live_objects() {
     test_utils::ensure_release_runtime_built();
     let directory = tempdir::TempDir::new("solar-test").unwrap();

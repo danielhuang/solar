@@ -47,7 +47,14 @@ fn main() {
 
 	assert(count == 1);
 	assert(i == 10);
-	assert(g.next().is_none());
+	let caught = false;
+
+	try { g.next(); } catch (e) {
+		assert(e.message@ == "cannot resume a completed or running coroutine");
+		caught = true;
+	}
+
+	assert(caught);
 
 	let sum = 0;
 	for value in coroutine { yield 41; yield 42; } { sum = sum + value; }

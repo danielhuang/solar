@@ -947,6 +947,8 @@ pub struct SourceFile {
     pub enums: HashMap<TypeId, EnumDef>,
     /// Function instances keyed by identity.
     pub functions: HashMap<FuncId, FunctionDef>,
+    /// Source-shaped signatures of compiler-generated methods for tooling.
+    pub generated_methods: Vec<ast::FunctionDef>,
     /// Copy constructors selected for concrete value types.
     pub copy_constructors: HashMap<Type, FuncId>,
     /// Mutable globals in source order.
@@ -4334,6 +4336,12 @@ impl<'a> Lowerer<'a> {
             structs,
             enums,
             functions,
+            generated_methods: self
+                .concrete_ast_defs
+                .iter()
+                .filter(|(id, _)| id.method && id.def.file == ast::SYNTHETIC_FILE)
+                .map(|(_, def)| def.as_ref().clone())
+                .collect(),
             statics: statics_out,
             copy_constructors,
         })
@@ -5623,6 +5631,7 @@ impl<'a> Lowerer<'a> {
                     // Inferred-return-type context: record for validation against
                     // the inferred type once the whole body is lowered.
                     self.inference_returns.push((lowered.ty.clone(), stmt.span));
+                    self.record_coroutine_return(&lowered.ty);
                 }
                 let lowered = if let Some(ref expected) = self.current_return_type {
                     let coerced = self.try_coerce(lowered, expected);
@@ -10058,7 +10067,7 @@ impl<'a> Lowerer<'a> {
         arguments: &[ast::Expr],
         kwargs: &[(String, ast::Expr)],
     ) -> Result<Expr, CompileError> {
-        if matches!(method, "next" | "iter") {
+        if matches!(method, "next" | "resume" | "iter") {
             let receiver = self.lower_expr(receiver)?;
             if let Some(result) =
                 self.lower_coroutine_method(span, &receiver, method, type_args, arguments, kwargs)

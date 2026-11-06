@@ -306,3 +306,6 @@ pub fn throw(message: &[Uint8]) {
 pub fn throw(message: &[Uint8], payload: Any) {
 	throw(Exception(message, payload));
 }
+
+/// The yielded value or final return value from one coroutine resume.
+pub enum CoroutineState#[T, R] { Yield(T), Complete(R) }

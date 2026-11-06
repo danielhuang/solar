@@ -53,6 +53,22 @@ fn coroutine_control_release() {
 }
 
 #[test]
+fn coroutine_resume() {
+    assert_eq!(
+        run(&fixture("coroutine_resume.solar"), "coroutine_resume"),
+        "passed\n"
+    );
+}
+
+#[test]
+fn coroutine_resume_release() {
+    assert_eq!(
+        test_utils::run_release_file(&fixture("coroutine_resume.solar"), "coroutine_resume"),
+        "passed\n"
+    );
+}
+
+#[test]
 fn stdlib_format() {
     assert_eq!(
         run(&fixture("stdlib_format.solar"), "stdlib_format"),

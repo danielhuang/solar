@@ -98,7 +98,34 @@ fn coroutine_type_errors() {
             "yield is only allowed inside a coroutine body",
         ),
         ("loop { let g = coroutine { break; }; }", "break"),
-        ("let g = coroutine { return 1; };", "return type mismatch"),
+        (
+            "let g = coroutine { if true { return 1; } false };",
+            "return type mismatch",
+        ),
+        (
+            "let g = coroutine { if true { return 1; } };",
+            "return type mismatch",
+        ),
+        (
+            "let g = coroutine { return \"unsized\"; };",
+            "coroutine cannot return unsized type",
+        ),
+        (
+            "let g = coroutine { \"unsized\" };",
+            "coroutine cannot return unsized type",
+        ),
+        (
+            "let g = coroutine { 1 }; g.resume(1);",
+            "coroutine resume expects 0 arguments",
+        ),
+        (
+            "let g = coroutine (x: Int) { x }; g.resume();",
+            "coroutine resume expects 1 arguments",
+        ),
+        (
+            "let g = coroutine (x: Int) { x }; g.resume(true);",
+            "coroutine resume expects Int",
+        ),
     ] {
         std::fs::write(&path, format!("fn main() {{ {body} }}")).unwrap();
         let Err((errors, _)) = solar::pipeline::compile(&path) else {

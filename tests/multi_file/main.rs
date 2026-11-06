@@ -451,6 +451,13 @@ fn extension_method_errors() {
             "method(ext) next#[T](self: T) -> Int { 1 } fn main() { let g = coroutine { yield 1; }; g&.next(); }",
             "conflicting extension method",
         ),
+        (
+            "coroutine resume conflicts with extensions",
+            "",
+            "",
+            "method(ext) resume#[T](self: T) -> Int { 1 } fn main() { let g = coroutine { yield 1; }; g&.resume(); }",
+            "conflicting extension method",
+        ),
     ];
     for (label, left_source, right_source, root_source, expected) in cases {
         std::fs::write(&left, left_source).unwrap();

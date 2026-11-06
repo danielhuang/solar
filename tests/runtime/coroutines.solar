@@ -43,7 +43,6 @@ fn main() {
 	assert(effects == 1);
 	assert(generator&.next().unwrap() == 11);
 	assert(generator.next().is_none());
-	assert(generator.next().is_none());
 	assert(effects == 11);
 	let shared = coroutine { yield 1; yield 2; };
 	let copy = shared;

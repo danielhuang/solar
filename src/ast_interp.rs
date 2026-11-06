@@ -1221,9 +1221,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     _ => else_body,
                 };
                 self.push_scope();
-                let result = self.exec_body_place(branch)?;
+                let result = self.exec_body_place(branch);
                 self.pop_scope();
-                result
+                result?
             }
             ExprKind::Match { scrutinee, arms } => {
                 let match_slot = self.eval_place(scrutinee)?;
@@ -1266,9 +1266,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                             }
                             _ => {}
                         }
-                        let result = self.exec_body_place(&arm.body)?;
+                        let result = self.exec_body_place(&arm.body);
                         self.pop_scope();
-                        return Ok(result);
+                        return result;
                     }
                 }
                 unreachable!("no matching arm in match expression");
@@ -1527,9 +1527,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                         func_def.parameters[0].name.clone(),
                         Rc::new(RefCell::new(Value::Int(i as i64))),
                     );
-                    let result = self.exec_function_body(&func_def.body, &func_def.return_type)?;
+                    let result = self.exec_function_body(&func_def.body, &func_def.return_type);
                     self.pop_scope();
-                    slots.push(Rc::new(RefCell::new(result)));
+                    slots.push(Rc::new(RefCell::new(result?)));
                 }
                 Value::Array(slots)
             }
@@ -1901,9 +1901,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     self.define_var(param.name.clone(), Rc::new(RefCell::new(val)));
                 }
 
-                let result = self.exec_function_body(&func_def.body, &func_def.return_type)?;
+                let result = self.exec_function_body(&func_def.body, &func_def.return_type);
                 self.pop_scope();
-                result
+                result?
             }
             ExprKind::IntrinsicCall {
                 intrinsic,
@@ -1952,9 +1952,9 @@ impl<'a, 'io> Interpreter<'a, 'io> {
                     self.define_var(param.name.clone(), Rc::new(RefCell::new(val)));
                 }
 
-                let result = self.exec_function_body(&func_def.body, &func_def.return_type)?;
+                let result = self.exec_function_body(&func_def.body, &func_def.return_type);
                 self.pop_scope();
-                result
+                result?
             }
         })
     }

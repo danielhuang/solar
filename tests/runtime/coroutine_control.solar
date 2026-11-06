@@ -92,7 +92,6 @@ fn local_dispatch() {
 	i = 29;
 	assert(g.next().is_none());
 	assert(i == 30);
-	assert(g.next().is_none());
 
 	let callback = \ {};
 	let reentrant = coroutine {
@@ -101,7 +100,18 @@ fn local_dispatch() {
 		callback();
 		yield 2;
 	};
-	callback = \ { assert(reentrant.next().is_none()); };
+	callback = \ {
+		let caught = false;
+
+		try { reentrant.next(); } catch (e) {
+			assert(
+				e.message@ == "cannot resume a completed or running coroutine",
+			);
+			caught = true;
+		}
+
+		assert(caught);
+	};
 	assert(reentrant.next().unwrap() == 1);
 	assert(reentrant.next().unwrap() == 2);
 	assert(reentrant.next().is_none());
@@ -199,7 +209,14 @@ fn failures() {
 	}
 
 	assert(caught);
-	assert(g.next().is_none());
+	caught = false;
+
+	try { g.next(); } catch (e) {
+		assert(e.message@ == "cannot resume a completed or running coroutine");
+		caught = true;
+	}
+
+	assert(caught);
 
 	let g = coroutine (input: Int) {
 		try {

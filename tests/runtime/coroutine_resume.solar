@@ -1,0 +1,196 @@
+fn yielded#[T, R](state: CoroutineState#[T, R]) -> T {
+	match state {
+		CoroutineState#[T, R]::Yield(value) => value,
+		CoroutineState#[T, R]::Complete(value) => throw("expected yield"&),
+	}
+}
+
+fn completed#[T, R](state: CoroutineState#[T, R]) -> R {
+	match state {
+		CoroutineState#[T, R]::Yield(value) => throw("expected completion"&),
+		CoroutineState#[T, R]::Complete(value) => value,
+	}
+}
+
+fn closed(call: fn()) {
+	let caught = false;
+
+	try { call(); } catch (e) {
+		assert(e.message@ == "cannot resume a completed or running coroutine");
+		caught = true;
+	}
+
+	assert(caught);
+}
+
+fn collect() {
+	try { gc::collect_gc(); } catch (e) {
+		assert(e.message@ == "collect_gc: GC is disabled");
+	}
+}
+
+fn make#[T](value: T) { coroutine { yield value; value } }
+
+fn recursive(n: Int) {
+	coroutine {
+		if n == 0 { return 0; }
+		yield n;
+		let child = recursive(n - 1)&;
+
+		loop {
+			match child.resume() {
+				CoroutineState#[Int, Int]::Yield(value) => { yield value; },
+				CoroutineState#[Int, Int]::Complete(value) => {
+					return n + value;
+				},
+			};
+		}
+	}
+}
+
+fn results() {
+	let effects = 0;
+	let g = coroutine {
+		effects = effects + 1;
+		yield 1;
+		yield 2;
+		let result = 42;
+		result
+	};
+	assert(effects == 0);
+	let first: CoroutineState#[Int, Int] = g.resume();
+	assert(yielded(first) == 1);
+	assert(effects == 1);
+	assert(g.next().unwrap() == 2);
+	assert(completed(g&.resume()) == 42);
+	closed(\ { g.resume(); });
+	closed(\ { g.next(); });
+	assert(effects == 1);
+
+	let g = coroutine { yield 3; return true; };
+	assert(g.next().unwrap() == 3);
+	assert(g.next().is_none());
+	closed(\ { g.next(); });
+	closed(\ { g.resume(); });
+
+	let empty = coroutine {};
+	let result: () = completed(empty.resume());
+	closed(\ { empty.next(); });
+	closed(\ { empty.resume(); });
+	let explicit = coroutine { return 27; };
+	assert(completed(explicit.resume()) == 27);
+	let unit = coroutine { return; };
+	let result: () = completed(unit.resume());
+
+	let g = make(true);
+	assert(yielded(g.resume()));
+	assert(completed(g.resume()));
+
+	for condition in [true, false] {
+		let g = coroutine { if condition@ { return 7; } 8 };
+		assert(completed(g.resume()) == if condition@ { 7 } else { 8 });
+	}
+
+	let g = coroutine (input: Int) { let reply = yield input; input + reply };
+	assert(yielded(g.resume(10)) == 10);
+	assert(completed(g.resume(20)) == 30);
+	closed(\ { g.resume(0); });
+	closed(\ { g.next(0); });
+	let g = coroutine (input: Int) { return yield input; };
+	assert(g.next(5).unwrap() == 5);
+	assert(completed(g.resume(9)) == 9);
+
+	let g = coroutine { loop { yield 1; } };
+	assert(yielded(g.resume()) == 1);
+	assert(g.next().unwrap() == 1);
+
+	let g = coroutine {
+		let inner = coroutine { return true; };
+		let f = \ { return 6; };
+		yield completed(inner.resume());
+		f()
+	};
+	assert(yielded(g.resume()));
+	assert(completed(g.resume()) == 6);
+
+	let g = recursive(3);
+	assert(yielded(g.resume()) == 3);
+	assert(g.next().unwrap() == 2);
+	assert(yielded(g.resume()) == 1);
+	assert(completed(g.resume()) == 6);
+}
+
+fn exceptions() {
+	let caught = 0;
+	let g = coroutine {
+		try { yield 1; return 42; } catch (e) { caught = caught + 1; return 0; }
+	};
+	assert(yielded(g.resume()) == 1);
+	assert(completed(g.resume()) == 42);
+	closed(\ { g.resume(); });
+	closed(\ { g.next(); });
+	assert(caught == 0);
+
+	let g = coroutine {
+		try { yield 1; throw("caught"&); } catch (e) {
+			assert(e.message@ == "caught");
+			yield 2;
+			return 17;
+		}
+	};
+	assert(g.next().unwrap() == 1);
+	assert(yielded(g.resume()) == 2);
+	assert(completed(g.resume()) == 17);
+	closed(\ { g.resume(); });
+
+	let g = coroutine { throw("uncaught"&); };
+	let failed = false;
+
+	try { g.resume(); } catch (e) {
+		assert(e.message@ == "uncaught");
+		failed = true;
+	}
+
+	assert(failed);
+	closed(\ { g.resume(); });
+	closed(\ { g.next(); });
+}
+
+fn retained_results() {
+	let g = coroutine { let values: [Int; 2] = [10, 20]; yield 1; values };
+	assert(g.next().unwrap() == 1);
+	let values = completed(g.resume());
+	collect();
+	assert(values[0u] == 10);
+	assert(values[1u] == 20);
+
+	let g = coroutine { let local = 50; yield 1; local& };
+	assert(g.next().unwrap() == 1);
+	let reference = completed(g.resume());
+	collect();
+	assert(reference@ == 50);
+	reference@ = 60;
+	assert(reference@ == 60);
+
+	let g = coroutine {
+		let local = 70;
+
+		try {
+			yield 1;
+			return \ { local = local + 1; local };
+		} catch (e) { throw(e); }
+	};
+	assert(yielded(g.resume()) == 1);
+	let callback = completed(g.resume());
+	collect();
+	assert(callback() == 71);
+	assert(callback() == 72);
+	closed(\ { g.resume(); });
+}
+
+fn main() {
+	results();
+	exceptions();
+	retained_results();
+	println("passed"&);
+}

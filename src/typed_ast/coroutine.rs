@@ -1,7 +1,7 @@
 //! Coroutine typing and suspension lowering. Each coroutine is a private struct
 //! with a program counter, captured references, and MaybeZeroed local storage.
-//! An explicit `next(&self, input)` method executes its state machine using
-//! ordinary typed AST shared by all backends.
+//! An explicit `resume(&self, input)` method executes its state machine using
+//! ordinary typed AST shared by all backends; `next` keeps only yielded values.
 
 use super::*;
 
@@ -26,6 +26,7 @@ pub(super) struct CoroutineKey {
 pub(super) struct CoroutineInfo {
     resume: Option<Type>,
     yielded: Option<Type>,
+    returned: Option<Type>,
     initial: Option<Expr>,
     captures: Vec<CapturedVar>,
     span: ast::SourceSpan,
@@ -54,6 +55,7 @@ impl Lowerer<'_> {
             CoroutineInfo {
                 resume,
                 yielded: None,
+                returned: None,
                 initial: None,
                 captures: Vec::new(),
                 span,
@@ -138,11 +140,11 @@ impl Lowerer<'_> {
         Ok(())
     }
 
-    fn coroutine_next_id(&self, id: &TypeId) -> FuncId {
+    fn coroutine_method_id(&self, id: &TypeId, method: &str) -> FuncId {
         let mut args = vec![Type::Ref(Box::new(Type::Struct(id.clone())))];
         args.extend(self.coroutine_types[id].resume.iter().cloned());
         FuncId {
-            def: DefId::new(ast::SYNTHETIC_FILE, "next"),
+            def: DefId::new(ast::SYNTHETIC_FILE, method),
             args,
             overload: None,
             method: true,
@@ -183,6 +185,7 @@ impl Lowerer<'_> {
     }
 
     fn register_coroutine_method(&mut self, function: FunctionDef) {
+        let name = function.id.def.name.to_string();
         let span = ast::SourceSpan {
             file_id: ast::SYNTHETIC_FILE,
             ..function.def_span
@@ -190,8 +193,8 @@ impl Lowerer<'_> {
         let ast_def = Rc::new(ast::FunctionDef {
             associated_type_params: Vec::new(),
             associated_type: None,
-            name: "next".into(),
-            display_name: "next".into(),
+            name: name.clone(),
+            display_name: name.clone(),
             type_params: Vec::new(),
             out_type_params: Vec::new(),
             parameters: function
@@ -211,13 +214,14 @@ impl Lowerer<'_> {
             is_unsafe: false,
             inline_hint: false,
             is_extension: false,
-            doc: Some(
-                "Advances the coroutine to its next yield, or returns None after completion."
-                    .into(),
-            ),
+            doc: Some(if name == "resume" {
+                "Advances to Yield or Complete. Throws if already completed or running.".into()
+            } else {
+                "Returns the next yielded value, or None on completion, discarding the return value. Throws if already completed or running.".into()
+            }),
             span,
         });
-        let entries = self.method_defs.entry("next".into()).or_default();
+        let entries = self.method_defs.entry(name.clone()).or_default();
         entries.push(FunctionEntry {
             associated_type_params: Vec::new(),
             type_params: Vec::new(),
@@ -225,7 +229,7 @@ impl Lowerer<'_> {
             ast_def: ast_def.clone(),
             overload_index: entries.len(),
         });
-        self.method_index.remove("next");
+        self.method_index.remove(&name);
         self.concrete_ast_defs.insert(function.id.clone(), ast_def);
         self.resolved_return_types
             .insert(function.id.clone(), function.return_type.clone());
@@ -363,6 +367,18 @@ impl Lowerer<'_> {
         })
     }
 
+    pub(super) fn record_coroutine_return(&mut self, ty: &Type) {
+        if ty != &Type::Never
+            && let Some(context) = &self.coroutine_context
+        {
+            self.coroutine_types
+                .get_mut(&context.id)
+                .unwrap()
+                .returned
+                .get_or_insert_with(|| ty.clone());
+        }
+    }
+
     pub(super) fn lower_coroutine(
         &mut self,
         span: ast::SourceSpan,
@@ -393,7 +409,8 @@ impl Lowerer<'_> {
         });
         let saved_loops = std::mem::take(&mut self.loop_ctx);
         let saved_try = self.in_try_block.take();
-        let saved_return = self.current_return_type.replace(Type::Unit);
+        let saved_return = self.current_return_type.take();
+        let saved_inference_returns = std::mem::take(&mut self.inference_returns);
         let saved_return_span = self.current_return_type_span.take();
         let saved_unsafe = std::mem::replace(&mut self.unsafe_depth, 0);
         self.capture_contexts.push(CaptureContext {
@@ -417,11 +434,37 @@ impl Lowerer<'_> {
         self.loop_ctx = saved_loops;
         self.in_try_block = saved_try;
         self.current_return_type = saved_return;
+        let returns = std::mem::replace(&mut self.inference_returns, saved_inference_returns);
         self.current_return_type_span = saved_return_span;
         self.unsafe_depth = saved_unsafe;
         let body: Vec<_> = lowered?.into_iter().flatten().collect();
+        let returned = inferred_return_type(&body, &returns);
+        if !returned.is_sized(&self.lowered_structs) {
+            return Err(CompileError::new(
+                format!("coroutine cannot return unsized type {returned}"),
+                span,
+            ));
+        }
+        for (ty, span) in returns {
+            if ty != Type::Never && ty != returned {
+                return Err(CompileError::new(
+                    format!(
+                        "return type mismatch: expected {returned} (inferred from the coroutine body), got {ty}"
+                    ),
+                    span,
+                ));
+            }
+        }
         let context = context.unwrap();
         let yielded = context.yielded.unwrap_or(Type::Unit);
+        let state_id = self.ensure_enum_monomorphized(
+            &DefId::new(ast::STDLIB_FILE, "CoroutineState"),
+            &[
+                self.concrete_type_to_ast_type(&yielded),
+                self.concrete_type_to_ast_type(&returned),
+            ],
+        )?;
+        let state = self.lowered_enums[&state_id].clone();
         let option_id = self.ensure_enum_monomorphized(
             &DefId::new(ast::STDLIB_FILE, "Option"),
             &[self.concrete_type_to_ast_type(&yielded)],
@@ -430,6 +473,37 @@ impl Lowerer<'_> {
         let input_name = ast::Ident::synthetic("coroutine_input");
         let self_name = ast::Ident::synthetic("coroutine_self");
         self.coroutine_types.get_mut(&id).unwrap().yielded = Some(yielded);
+        self.coroutine_types.get_mut(&id).unwrap().returned = Some(returned);
+        let completed_error = self.lower_expr(&ast::Expr {
+            kind: ast::ExprKind::Call {
+                function: Box::new(ast::Expr {
+                    kind: ast::ExprKind::GlobalRef(DefId::new(ast::STDLIB_FILE, "throw")),
+                    span,
+                }),
+                type_args: Vec::new(),
+                arguments: vec![ast::Expr {
+                    kind: ast::ExprKind::Reference(Box::new(ast::Expr {
+                        kind: ast::ExprKind::ArrayLiteral(
+                            b"cannot resume a completed or running coroutine"
+                                .iter()
+                                .map(|byte| ast::Expr {
+                                    kind: ast::ExprKind::IntegerLiteral(
+                                        *byte as i128,
+                                        ast::IntegerType::Uint8,
+                                    ),
+                                    span,
+                                })
+                                .collect(),
+                            None,
+                        ),
+                        span,
+                    })),
+                    span,
+                }],
+                kwargs: Vec::new(),
+            },
+            span,
+        })?;
         let maybe_zeroed = self
             .generic_structs
             .keys()
@@ -447,7 +521,7 @@ impl Lowerer<'_> {
             id.clone(),
             self_name.clone(),
             input_name.clone(),
-            option.clone(),
+            state.clone(),
             span,
         );
         machine.maybe_zeroed = Some(maybe_zeroed);
@@ -475,9 +549,11 @@ impl Lowerer<'_> {
             let local = machine.local(&name, input);
             machine.locals.insert(name, local);
         }
-        machine.body(&body, false);
-        machine.complete();
-        let (definition, initial, body, helpers) = machine.finish();
+        let value = machine.body(&body, false);
+        if body_type(&body) != Type::Never {
+            machine.complete(value);
+        }
+        let (definition, initial, body, helpers) = machine.finish(completed_error);
         self.lowered_structs.insert(id.clone(), definition);
         self.validate_coroutine_layout(&id)?;
         self.pending_closures.extend(helpers);
@@ -493,16 +569,77 @@ impl Lowerer<'_> {
                 span: p.span,
             });
         }
-        let next = FunctionDef {
-            id: self.coroutine_next_id(&id),
-            parameters,
-            return_type: Type::Enum(option.id),
+        let resume = FunctionDef {
+            id: self.coroutine_method_id(&id, "resume"),
+            parameters: parameters.clone(),
+            return_type: Type::Enum(state.id.clone()),
             body,
             is_unsafe: false,
             inline_hint: false,
             def_span: span,
         };
-        self.register_coroutine_method(next);
+        let resumed = expr(
+            resume.return_type.clone(),
+            ExprKind::Call {
+                function: resume.id.clone(),
+                arguments: parameters
+                    .iter()
+                    .map(|p| expr(p.ty.clone(), ExprKind::Identifier(p.name.clone()), p.span))
+                    .collect(),
+            },
+            span,
+        );
+        let arms = state
+            .variants
+            .iter()
+            .map(|v| {
+                let name = ast::Ident::synthetic("coroutine_yielded");
+                let value = (v.name == "Yield").then(|| {
+                    expr(
+                        v.inner_type.clone().unwrap(),
+                        ExprKind::Identifier(name.clone()),
+                        span,
+                    )
+                });
+                TypedMatchArm {
+                    pattern: TypedPattern::Variant {
+                        enum_id: state.id.clone(),
+                        variant_name: v.name.clone(),
+                        variant_index: v.index,
+                        binding: value.as_ref().map(|e| (name, e.ty.clone())),
+                    },
+                    body: vec![statement(
+                        StatementKind::Expression(enum_variant(
+                            &option,
+                            if value.is_some() { "Some" } else { "None" },
+                            value,
+                            span,
+                        )),
+                        span,
+                    )],
+                }
+            })
+            .collect();
+        self.register_coroutine_method(resume);
+        self.register_coroutine_method(FunctionDef {
+            id: self.coroutine_method_id(&id, "next"),
+            parameters,
+            return_type: Type::Enum(option.id.clone()),
+            body: vec![statement(
+                StatementKind::Expression(expr(
+                    Type::Enum(option.id),
+                    ExprKind::Match {
+                        scrutinee: Box::new(resumed),
+                        arms,
+                    },
+                    span,
+                )),
+                span,
+            )],
+            is_unsafe: false,
+            inline_hint: false,
+            def_span: span,
+        });
         self.register_coroutine_struct(&id);
         let info = self.coroutine_types.get_mut(&id).unwrap();
         info.captures = captures;
@@ -552,7 +689,7 @@ impl Lowerer<'_> {
             if arguments.len() != params.len() {
                 return Err(CompileError::new(
                     format!(
-                        "coroutine next expects {} arguments, got {}",
+                        "coroutine {method} expects {} arguments, got {}",
                         params.len(),
                         arguments.len()
                     ),
@@ -565,7 +702,7 @@ impl Lowerer<'_> {
                 let value = self.try_coerce(value, ty);
                 if value.ty != *ty && value.ty != Type::Never {
                     return Err(CompileError::new(
-                        format!("coroutine next expects {ty}, got {}", value.ty),
+                        format!("coroutine {method} expects {ty}, got {}", value.ty),
                         arg.span,
                     ));
                 }
@@ -578,9 +715,23 @@ impl Lowerer<'_> {
                     span,
                 )
             })?;
-            let option = self.ensure_enum_monomorphized(
-                &DefId::new(ast::STDLIB_FILE, "Option"),
-                &[self.concrete_type_to_ast_type(&yielded)],
+            let mut result_args = vec![self.concrete_type_to_ast_type(&yielded)];
+            let result_name = if method == "resume" {
+                let returned = info.returned.ok_or_else(|| {
+                    CompileError::new(
+                        "cannot infer a recursive coroutine's return type before its first return"
+                            .into(),
+                        span,
+                    )
+                })?;
+                result_args.push(self.concrete_type_to_ast_type(&returned));
+                "CoroutineState"
+            } else {
+                "Option"
+            };
+            let result = self.ensure_enum_monomorphized(
+                &DefId::new(ast::STDLIB_FILE, result_name),
+                &result_args,
             )?;
             args.insert(
                 0,
@@ -591,16 +742,16 @@ impl Lowerer<'_> {
                 ),
             );
             Ok(expr(
-                Type::Enum(option),
+                Type::Enum(result),
                 ExprKind::Call {
-                    function: self.coroutine_next_id(&id),
+                    function: self.coroutine_method_id(&id, method),
                     arguments: args,
                 },
                 span,
             ))
         })();
         Some(result.and_then(|result| {
-            // Coroutine iter/next have a dedicated lowering path, but an
+            // Coroutine methods have a dedicated lowering path, but an
             // applicable extension must still conflict with these methods.
             let extensions: Vec<_> = self
                 .method_defs
@@ -656,6 +807,20 @@ fn statement(kind: StatementKind, span: ast::SourceSpan) -> Statement {
 fn unit(span: ast::SourceSpan) -> Expr {
     expr(Type::Unit, ExprKind::Block(Vec::new()), span)
 }
+
+fn enum_variant(def: &EnumDef, name: &str, value: Option<Expr>, span: ast::SourceSpan) -> Expr {
+    let variant = def.variants.iter().find(|v| v.name == name).unwrap();
+    expr(
+        Type::Enum(def.id.clone()),
+        ExprKind::EnumVariant {
+            enum_id: def.id.clone(),
+            variant_name: name.into(),
+            variant_index: variant.index,
+            value: value.map(Box::new),
+        },
+        span,
+    )
+}
 fn deref(value: Expr) -> Expr {
     if let ExprKind::Reference(place) = value.kind {
         return *place;
@@ -692,7 +857,7 @@ struct Machine<'a, 'b> {
     input_type: Option<Type>,
     maybe_zeroed: Option<DefId>,
     boxed_locals: HashSet<ast::Ident>,
-    option: EnumDef,
+    outcome: EnumDef,
     span: ast::SourceSpan,
     fields: Vec<FieldInit>,
     locals: HashMap<ast::Ident, Expr>,
@@ -710,7 +875,7 @@ impl<'a, 'b> Machine<'a, 'b> {
         frame_id: TypeId,
         frame_name: ast::Ident,
         input_name: ast::Ident,
-        option: EnumDef,
+        outcome: EnumDef,
         span: ast::SourceSpan,
     ) -> Self {
         Self {
@@ -721,7 +886,7 @@ impl<'a, 'b> Machine<'a, 'b> {
             input_type: None,
             maybe_zeroed: None,
             boxed_locals: HashSet::new(),
-            option,
+            outcome,
             span,
             fields: vec![FieldInit {
                 name: "state".into(),
@@ -897,26 +1062,27 @@ impl<'a, 'b> Machine<'a, 'b> {
             statement(StatementKind::Continue, self.span),
         ]
     }
-    fn option(&self, value: Option<Expr>) -> Expr {
-        let name = if value.is_some() { "Some" } else { "None" };
-        let variant = self
-            .option
-            .variants
-            .iter()
-            .find(|v| v.name == name)
-            .unwrap();
-        expr(
-            Type::Enum(self.option.id.clone()),
-            ExprKind::EnumVariant {
-                enum_id: self.option.id.clone(),
-                variant_name: name.into(),
-                variant_index: variant.index,
-                value: value.map(Box::new),
-            },
+    fn complete(&mut self, value: Expr) {
+        if value.ty == Type::Never {
+            return;
+        }
+        // Read the return value before clearing persistent storage. A returned
+        // reference already points to separately allocated, escaping storage.
+        let name = ast::Ident::synthetic(format!(
+            "coroutine_complete_{}_{}",
+            self.current,
+            self.blocks[self.current].len()
+        ));
+        let result = expr(
+            value.ty.clone(),
+            ExprKind::Identifier(name.clone()),
             self.span,
-        )
-    }
-    fn complete(&mut self) {
+        );
+        self.emit(StatementKind::Let {
+            name,
+            ty: value.ty.clone(),
+            value,
+        });
         self.set_state(-1);
         for field in self.fields.clone() {
             if matches!(
@@ -929,7 +1095,12 @@ impl<'a, 'b> Machine<'a, 'b> {
                 self.assign(self.field(&field.name, field.value.ty.clone()), field.value);
             }
         }
-        self.emit(StatementKind::Return(self.option(None)));
+        self.emit(StatementKind::Return(enum_variant(
+            &self.outcome,
+            "Complete",
+            Some(result),
+            self.span,
+        )));
     }
     fn body(&mut self, body: &[Statement], place: bool) -> Expr {
         let saved = self.locals.clone();
@@ -991,8 +1162,8 @@ impl<'a, 'b> Machine<'a, 'b> {
                 self.expression(e, false);
             }
             StatementKind::Return(e) => {
-                self.expression(e, false);
-                self.complete();
+                let value = self.expression(e, false);
+                self.complete(value);
             }
             StatementKind::If {
                 condition,
@@ -1094,7 +1265,12 @@ impl<'a, 'b> Machine<'a, 'b> {
                 let value = self.expression(value, false);
                 let next = self.block();
                 self.set_state(next as i64);
-                self.emit(StatementKind::Return(self.option(Some(value))));
+                self.emit(StatementKind::Return(enum_variant(
+                    &self.outcome,
+                    "Yield",
+                    Some(value),
+                    self.span,
+                )));
                 self.current = next;
                 return self.save(if ty == Type::Unit {
                     unit(span)
@@ -1390,7 +1566,10 @@ impl<'a, 'b> Machine<'a, 'b> {
             })
             .unwrap_or_else(|| unit(self.span))
     }
-    fn finish(mut self) -> (StructDef, Expr, Vec<Statement>, Vec<FunctionDef>) {
+    fn finish(
+        mut self,
+        completed_error: Expr,
+    ) -> (StructDef, Expr, Vec<Statement>, Vec<FunctionDef>) {
         optimize::localize_temporaries(&mut self);
         let handler_field = if self.handlers.is_empty() {
             None
@@ -1430,7 +1609,7 @@ impl<'a, 'b> Machine<'a, 'b> {
                 Type::Int,
             ),
             body: vec![statement(
-                StatementKind::Return(self.option(None)),
+                StatementKind::Expression(completed_error.clone()),
                 self.span,
             )],
         });
@@ -1479,6 +1658,34 @@ impl<'a, 'b> Machine<'a, 'b> {
             body = wrapped;
             helpers = functions;
         }
+        // Keep this outside the coroutine's own catch regions: a completed
+        // coroutine must not resume a stale exception handler.
+        body.insert(
+            0,
+            statement(
+                StatementKind::If {
+                    condition: expr(
+                        Type::Bool,
+                        ExprKind::BinaryOp {
+                            op: ast::BinOp::Lt,
+                            left: Box::new(self.state()),
+                            right: Box::new(expr(
+                                Type::Int,
+                                ExprKind::IntegerLiteral(0),
+                                self.span,
+                            )),
+                        },
+                        self.span,
+                    ),
+                    body: vec![statement(
+                        StatementKind::Expression(completed_error),
+                        self.span,
+                    )],
+                    else_body: Vec::new(),
+                },
+                self.span,
+            ),
+        );
         let frame = StructDef {
             id: self.frame_id.clone(),
             repr_c: false,
@@ -1511,7 +1718,15 @@ impl<'a, 'b> Machine<'a, 'b> {
         mut driver: Vec<Statement>,
         handler: Expr,
     ) -> (Vec<Statement>, Vec<FunctionDef>) {
-        let result = self.add_field(self.option(None), "result");
+        let result = deref(self.named_slot(&Type::Enum(self.outcome.id.clone()), "result"));
+        let result_field = self.fields.last().unwrap().clone();
+        let clear_result = statement(
+            StatementKind::Assignment {
+                target: self.field(&result_field.name, result_field.value.ty.clone()),
+                value: result_field.value,
+            },
+            self.span,
+        );
         let paused = self.add_field(
             expr(Type::Bool, ExprKind::BooleanLiteral(false), self.span),
             "paused",
@@ -1617,13 +1832,7 @@ impl<'a, 'b> Machine<'a, 'b> {
                         },
                         self.span,
                     ),
-                    statement(
-                        StatementKind::Assignment {
-                            target: result.clone(),
-                            value: self.option(None),
-                        },
-                        self.span,
-                    ),
+                    clear_result.clone(),
                     statement(
                         StatementKind::Expression(expr(
                             Type::Unit,
@@ -1639,7 +1848,27 @@ impl<'a, 'b> Machine<'a, 'b> {
                     statement(
                         StatementKind::If {
                             condition: paused,
-                            body: vec![statement(StatementKind::Return(result), self.span)],
+                            body: vec![
+                                statement(
+                                    StatementKind::Let {
+                                        name: ast::Ident::synthetic("coroutine_result"),
+                                        ty: result.ty.clone(),
+                                        value: result.clone(),
+                                    },
+                                    self.span,
+                                ),
+                                clear_result,
+                                statement(
+                                    StatementKind::Return(expr(
+                                        result.ty,
+                                        ExprKind::Identifier(ast::Ident::synthetic(
+                                            "coroutine_result",
+                                        )),
+                                        self.span,
+                                    )),
+                                    self.span,
+                                ),
+                            ],
                             else_body: Vec::new(),
                         },
                         self.span,

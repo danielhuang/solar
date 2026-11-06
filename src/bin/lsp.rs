@@ -680,13 +680,14 @@ fn signature_candidate_matches(
             return false;
         };
         if !receiver_types.is_empty() {
-            states = signature_match_type(
-                states,
-                &receiver_parameter.ty,
-                receiver_types,
-                &type_parameters,
-                aliases,
-            );
+            let expected = expand_completion_aliases(&receiver_parameter.ty, aliases, 0);
+            states = receiver_types
+                .iter()
+                .filter_map(|actual| {
+                    method_receiver_match(actual, &expected, &type_parameters)
+                        .map(|matched| matched.substitutions)
+                })
+                .collect();
             if states.is_empty() {
                 return false;
             }
@@ -4264,7 +4265,7 @@ fn compute_with_diagnostics(uri: &str, source: &str) -> (Document, HashMap<Strin
     let definition_catalog = collect_definition_catalog(&ast, source_map.root_file_id());
     let module_imports = collect_module_imports(&source_map);
     let signatures = collect_signatures(&ast, &source_map);
-    let completion_methods = ast
+    let mut completion_methods: Vec<_> = ast
         .items
         .iter()
         .filter_map(|item| {
@@ -4314,6 +4315,14 @@ fn compute_with_diagnostics(uri: &str, source: &str) -> (Document, HashMap<Strin
             diagnostics_from_errors(uri, source, std::slice::from_ref(&error), &source_map),
         ),
     };
+    if let Some(analysis) = &analysis {
+        completion_methods.extend(analysis.typed.generated_methods.iter().map(|def| {
+            CompletionMethod {
+                def: def.clone(),
+                detail: None,
+            }
+        }));
+    }
     let binding_facts = analysis
         .as_ref()
         .map_or_else(BindingFacts::default, |analysis| {
@@ -5743,6 +5752,27 @@ fn main() { select(1, ); }
         let help = signatures_at_for_path(&path, source, "lib::make_pair(1, ");
         assert_eq!(help["signatures"].as_array().unwrap().len(), 1, "{help}");
         assert_eq!(help["signatures"][0]["parameters"][1]["label"], "b: Int");
+    }
+
+    #[test]
+    fn coroutine_resume_completion_and_signature_show_both_result_types() {
+        let source = "fn main() { let g = coroutine (input: Int) { yield input; true }; g.re; }";
+        let items = completion_items(source, "g.re");
+        assert!(
+            items.iter().any(|item| item["label"] == "resume"),
+            "{items:?}"
+        );
+        let source = source.replace("g.re;", "g.resume(0);");
+        let help = signatures_at(&source, "g.resume(");
+        let signatures = help["signatures"].as_array().unwrap();
+        assert_eq!(signatures.len(), 1, "{help}");
+        assert!(
+            signatures[0]["label"]
+                .as_str()
+                .unwrap()
+                .contains("CoroutineState#[Int, Bool]"),
+            "{help}"
+        );
     }
 
     #[test]
