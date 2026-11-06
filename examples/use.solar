@@ -1,0 +1,20 @@
+struct Object {}
+
+method close(self: &Object) {
+	println("closing object"&);
+}
+
+fn use#[T](x: T) {
+	coroutine {
+		yield x;
+		x&.close();
+	}
+}
+
+fn main() {
+	for x in use(Object {}) {
+		println("using object"&);
+	}
+
+	println("out of loop"&);
+}
