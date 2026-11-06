@@ -1,7 +1,6 @@
 import {Option} from "../lib.solar";
 import raw from "raw.solar";
 import tag from "tag.solar";
-import {Iterator} from "../iter.solar";
 
 /// A hash map using deterministic foldhash.
 /// Assignment semantics are currently unspecified.
@@ -133,25 +132,23 @@ pub struct Iter#[K, V] {
 }
 
 /// Iterates over key/value references in unspecified order without allocating.
-pub method iter#[K, V](self: &HashMap#[K, V]) -> Iterator#[Iter#[K, V]] {
+pub method iter#[K, V](self: &HashMap#[K, V]) -> Iter#[K, V] {
 	let table = self@.table&;
 	let buckets = if table@.bucket_mask == 0u { 0u } else {
 		table@.bucket_mask + 1u
 	};
-	Iterator(
-		Iter#[K, V] {
-			slots: table@.slots,
-			ctrl: table@.ctrl,
-			front: 0u,
-			back: buckets,
-			remaining: table@.items,
-		},
-	)
+	Iter#[K, V] {
+		slots: table@.slots,
+		ctrl: table@.ctrl,
+		front: 0u,
+		back: buckets,
+		remaining: table@.items,
+	}
 }
 
 /// Returns the next occupied entry.
-pub method next#[K, V](self: &Iterator#[Iter#[K, V]]) -> Option#[(&K, &V)] {
-	let state = self@.inner&;
+pub method next#[K, V](self: &Iter#[K, V]) -> Option#[(&K, &V)] {
+	let state = self;
 
 	while state@.front < state@.back {
 		let at = state@.front;
@@ -170,8 +167,8 @@ pub method next#[K, V](self: &Iterator#[Iter#[K, V]]) -> Option#[(&K, &V)] {
 }
 
 /// Returns the last remaining occupied entry.
-pub method next_back#[K, V](self: &Iterator#[Iter#[K, V]]) -> Option#[(&K, &V)] {
-	let state = self@.inner&;
+pub method next_back#[K, V](self: &Iter#[K, V]) -> Option#[(&K, &V)] {
+	let state = self;
 
 	while state@.front < state@.back {
 		state@.back = state@.back - 1u;
@@ -190,8 +187,8 @@ pub method next_back#[K, V](self: &Iterator#[Iter#[K, V]]) -> Option#[(&K, &V)] 
 }
 
 /// Returns the exact number of remaining entries.
-pub method len#[K, V](self: &Iterator#[Iter#[K, V]]) -> Uint {
-	self@.inner.remaining
+pub method len#[K, V](self: &Iter#[K, V]) -> Uint {
+	self@.remaining
 }
 
 /// Iterates over key references.
@@ -208,10 +205,7 @@ pub method values#[K, V](self: &HashMap#[K, V]) {
 pub fn#[K, V] HashMap#[K, V]::default() -> HashMap#[K, V] { HashMap#[K, V]() }
 
 /// Collects key/value pairs; the last value for a duplicate key wins.
-pub fn#[K, V] HashMap#[K, V]::from_iter#[I](source: Iterator#[I]) -> HashMap#[
-	K,
-	V,
-] {
+pub fn#[K, V] HashMap#[K, V]::from_iter#[I](source: I) -> HashMap#[K, V] {
 	let output = HashMap#[K, V]();
 	let item: Option#[(K, V)] = source&.next();
 

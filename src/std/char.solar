@@ -1,4 +1,4 @@
-import {Option, Iterator, throw} from "lib.solar";
+import {Option, throw} from "lib.solar";
 import data from "unicode_data.solar";
 import num from "num.solar";
 
@@ -50,25 +50,25 @@ pub fn decode_last(text: &[Uint8]) -> (Uint32, Uint) {
 pub struct Chars { remaining: &[Uint8] }
 
 /// Iterates over Unicode scalar values rather than bytes; invalid UTF-8 throws.
-pub method chars(self: &[Uint8]) -> Iterator#[Chars] {
-	Iterator(Chars { remaining: self })
+pub method chars(self: &[Uint8]) -> Chars {
+	Chars { remaining: self }
 }
 
 /// Decodes the next Unicode scalar.
-pub method next(self: &Iterator#[Chars]) -> Option#[Uint32] {
-	let text = self@.inner.remaining;
+pub method next(self: &Chars) -> Option#[Uint32] {
+	let text = self@.remaining;
 	if text.len() == 0u { return Option#[Uint32]::None; }
 	let (code, width) = decode_first(text);
-	self@.inner.remaining = text@[width..text.len()]&;
+	self@.remaining = text@[width..text.len()]&;
 	Option#[Uint32]::Some(code)
 }
 
 /// Decodes the last remaining Unicode scalar.
-pub method next_back(self: &Iterator#[Chars]) -> Option#[Uint32] {
-	let text = self@.inner.remaining;
+pub method next_back(self: &Chars) -> Option#[Uint32] {
+	let text = self@.remaining;
 	if text.len() == 0u { return Option#[Uint32]::None; }
 	let (code, width) = decode_last(text);
-	self@.inner.remaining = text@[0u..text.len() - width]&;
+	self@.remaining = text@[0u..text.len() - width]&;
 	Option#[Uint32]::Some(code)
 }
 

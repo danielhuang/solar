@@ -9926,6 +9926,30 @@ impl<'a> Lowerer<'a> {
 
                 let subst: HashMap<String, ast::Type> = partial_bindings;
 
+                // A blanket overload may match the receiver without determining
+                // the callback's input types. It cannot supply context for an
+                // inferred closure parameter; try the other overloads instead
+                // of resolving an unbound type parameter as a concrete struct.
+                let missing_context = arguments.iter().enumerate().any(|(i, arg)| {
+                    let ast::ExprKind::Closure { parameters, .. } = &arg.kind else {
+                        return false;
+                    };
+                    let expected = apply_subst_to_ast_type(&param_ast_types[i], &subst);
+                    let ast::Type::Function { params, .. } = self.expand_type_aliases(&expected, 0)
+                    else {
+                        return false;
+                    };
+                    parameters.iter().zip(&params).any(|(parameter, (_, ty))| {
+                        matches!(parameter.ty, ast::Type::Infer)
+                            && type_params.iter().any(|name| {
+                                !subst.contains_key(name) && type_param_appears_in(ty, name)
+                            })
+                    })
+                });
+                if missing_context {
+                    continue;
+                }
+
                 // Pass 2: compute expected types for closure args and lower them
                 for (i, arg) in arguments.iter().enumerate() {
                     if lowered_args[i].is_none() {

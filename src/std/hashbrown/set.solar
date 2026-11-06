@@ -1,5 +1,5 @@
 import {HashMap} from "map.solar";
-import {Option, Iterator} from "../lib.solar";
+import {Option} from "../lib.solar";
 
 /// A set of distinct values backed by Solar's deterministic hash map.
 /// Assignment semantics are currently unspecified.
@@ -14,7 +14,7 @@ pub fn HashSet::#[out T]() -> HashSet#[T] {
 pub fn#[T] HashSet#[T]::default() -> HashSet#[T] { HashSet#[T]() }
 
 /// Collects unique items from an iterator.
-pub fn#[T] HashSet#[T]::from_iter#[I](source: Iterator#[I]) -> HashSet#[T] {
+pub fn#[T] HashSet#[T]::from_iter#[I](source: I) -> HashSet#[T] {
 	let output = HashSet#[T]();
 	let item: Option#[T] = source&.next();
 

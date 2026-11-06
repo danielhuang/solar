@@ -1,4 +1,4 @@
-import {Option, Ordering, Iterator} from "lib.solar";
+import {Option, Ordering} from "lib.solar";
 import {Vec} from "vec.solar";
 
 const CAPACITY: Uint = 16u;
@@ -327,7 +327,7 @@ pub method range#[K, V](
 	upper: Option#[K],
 	include_lower = true,
 	include_upper = false,
-) -> Iterator#[Iter#[K, V]] {
+) -> Iter#[K, V] {
 	let (front, front_index, start) = match lower {
 		Option#[K]::Some(key) => seek(self@.root, key&, !include_lower),
 		Option#[K]::None => (edge_leaf(self@.root, false), 0u, 0u),
@@ -339,20 +339,18 @@ pub method range#[K, V](
 			(leaf, leaf@.entries&.len(), self@.count)
 		},
 	};
-	Iterator(
-		Iter#[K, V] {
-			front: front,
-			front_index: front_index,
-			back: back,
-			back_index: back_index,
-			remaining: end.saturating_sub(start),
-		},
-	)
+	Iter#[K, V] {
+		front: front,
+		front_index: front_index,
+		back: back,
+		back_index: back_index,
+		remaining: end.saturating_sub(start),
+	}
 }
 
 /// Returns the next entry, following the next-leaf link at each boundary.
-pub method next#[K, V](self: &Iterator#[Iter#[K, V]]) -> Option#[(&K, &V)] {
-	let state = self@.inner&;
+pub method next#[K, V](self: &Iter#[K, V]) -> Option#[(&K, &V)] {
+	let state = self;
 	if state@.remaining == 0u { return Option#[(&K, &V)]::None; }
 
 	while state@.front_index == state@.front@.entries&.len() {
@@ -367,8 +365,8 @@ pub method next#[K, V](self: &Iterator#[Iter#[K, V]]) -> Option#[(&K, &V)] {
 }
 
 /// Returns the last remaining entry, following the previous-leaf link at boundaries.
-pub method next_back#[K, V](self: &Iterator#[Iter#[K, V]]) -> Option#[(&K, &V)] {
-	let state = self@.inner&;
+pub method next_back#[K, V](self: &Iter#[K, V]) -> Option#[(&K, &V)] {
+	let state = self;
 	if state@.remaining == 0u { return Option#[(&K, &V)]::None; }
 
 	while state@.back_index == 0u {
@@ -383,12 +381,12 @@ pub method next_back#[K, V](self: &Iterator#[Iter#[K, V]]) -> Option#[(&K, &V)] 
 }
 
 /// Returns the exact number of remaining entries in constant time.
-pub method len#[K, V](self: &Iterator#[Iter#[K, V]]) -> Uint {
-	self@.inner.remaining
+pub method len#[K, V](self: &Iter#[K, V]) -> Uint {
+	self@.remaining
 }
 
 /// Iterates over all entries in ascending key order through the leaf chain.
-pub method iter#[K, V](self: &BTreeMap#[K, V]) -> Iterator#[Iter#[K, V]] {
+pub method iter#[K, V](self: &BTreeMap#[K, V]) -> Iter#[K, V] {
 	self.range(Option#[K]::None, Option#[K]::None)
 }
 
@@ -403,10 +401,7 @@ pub method values#[K, V](self: &BTreeMap#[K, V]) {
 }
 
 /// Collects entries, replacing duplicate keys with the last value.
-pub fn#[K, V] BTreeMap#[K, V]::from_iter#[I](source: Iterator#[I]) -> BTreeMap#[
-	K,
-	V,
-] {
+pub fn#[K, V] BTreeMap#[K, V]::from_iter#[I](source: I) -> BTreeMap#[K, V] {
 	let output = BTreeMap#[K, V]();
 	let item: Option#[(K, V)] = source&.next();
 

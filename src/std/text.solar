@@ -1,4 +1,4 @@
-import {Option, Iterator, throw} from "lib.solar";
+import {Option, throw} from "lib.solar";
 import char from "char.solar";
 import {Vec} from "vec.solar";
 
@@ -78,37 +78,31 @@ pub struct TextSplit {
 	done: Bool,
 }
 
-fn make_split(text: &[Uint8], separator: Pattern, count: Uint) -> Iterator#[
-	TextSplit,
-] {
-	Iterator(
-		TextSplit {
-			text: text,
-			separator: separator,
-			front: 0u,
-			back: text.len(),
-			front_edge: true,
-			back_edge: true,
-			remaining: count,
-			done: count == 0u,
-		},
-	)
+fn make_split(text: &[Uint8], separator: Pattern, count: Uint) -> TextSplit {
+	TextSplit {
+		text: text,
+		separator: separator,
+		front: 0u,
+		back: text.len(),
+		front_edge: true,
+		back_edge: true,
+		remaining: count,
+		done: count == 0u,
+	}
 }
 
 /// Splits on a substring. An empty separator splits at Unicode scalar boundaries.
-pub method split(self: &[Uint8], separator: &[Uint8]) -> Iterator#[TextSplit] {
+pub method split(self: &[Uint8], separator: &[Uint8]) -> TextSplit {
 	make_split(self, pattern(separator), !0u)
 }
 
 /// Splits on one byte, retaining empty pieces.
-pub method split(self: &[Uint8], separator: Uint8) -> Iterator#[TextSplit] {
+pub method split(self: &[Uint8], separator: Uint8) -> TextSplit {
 	make_split(self, pattern(separator), !0u)
 }
 
 /// Splits wherever a Unicode scalar satisfies the predicate.
-pub method split(self: &[Uint8], predicate: fn(Uint32) -> Bool) -> Iterator#[
-	TextSplit,
-] {
+pub method split(self: &[Uint8], predicate: fn(Uint32) -> Bool) -> TextSplit {
 	make_split(self, pattern(predicate), !0u)
 }
 
@@ -118,15 +112,13 @@ pub method rsplit#[P](self: &[Uint8], separator: P) {
 }
 
 /// Splits into at most `count` pieces, leaving the unsplit remainder in the final piece.
-pub method splitn#[P](self: &[Uint8], count: Uint, separator: P) -> Iterator#[
-	TextSplit,
-] {
+pub method splitn#[P](self: &[Uint8], count: Uint, separator: P) -> TextSplit {
 	make_split(self, pattern(separator), count)
 }
 
 /// Returns the next text piece.
-pub method next(self: &Iterator#[TextSplit]) -> Option#[&[Uint8]] {
-	let s = self@.inner&;
+pub method next(self: &TextSplit) -> Option#[&[Uint8]] {
+	let s = self;
 	if s@.done { return Option#[&[Uint8]]::None; }
 
 	if s@.remaining == 1u {
@@ -173,8 +165,8 @@ pub method next(self: &Iterator#[TextSplit]) -> Option#[&[Uint8]] {
 }
 
 /// Returns the last remaining piece, searching for separators from the right.
-pub method next_back(self: &Iterator#[TextSplit]) -> Option#[&[Uint8]] {
-	let s = self@.inner&;
+pub method next_back(self: &TextSplit) -> Option#[&[Uint8]] {
+	let s = self;
 	if s@.done { return Option#[&[Uint8]]::None; }
 
 	if s@.remaining == 1u {
@@ -289,17 +281,15 @@ pub struct Lines {
 }
 
 /// Iterates over LF- or CRLF-terminated lines; an empty input yields no lines.
-pub method lines(self: &[Uint8]) -> Iterator#[Lines] {
+pub method lines(self: &[Uint8]) -> Lines {
 	let terminated = self.ends_with('\n');
-	Iterator(
-		Lines {
-			text: self,
-			front: 0u,
-			back: if terminated { self.len() - 1u } else { self.len() },
-			back_terminated: terminated,
-			done: self.is_empty(),
-		},
-	)
+	Lines {
+		text: self,
+		front: 0u,
+		back: if terminated { self.len() - 1u } else { self.len() },
+		back_terminated: terminated,
+		done: self.is_empty(),
+	}
 }
 
 fn line_piece(text: &[Uint8], begin: Uint, end: Uint, terminated: Bool) -> &[Uint8] {
@@ -310,8 +300,8 @@ fn line_piece(text: &[Uint8], begin: Uint, end: Uint, terminated: Bool) -> &[Uin
 }
 
 /// Returns the next line.
-pub method next(self: &Iterator#[Lines]) -> Option#[&[Uint8]] {
-	let s = self@.inner&;
+pub method next(self: &Lines) -> Option#[&[Uint8]] {
+	let s = self;
 	if s@.done { return Option#[&[Uint8]]::None; }
 	let begin = s@.front;
 	let at = begin;
@@ -332,8 +322,8 @@ pub method next(self: &Iterator#[Lines]) -> Option#[&[Uint8]] {
 }
 
 /// Returns the last remaining line.
-pub method next_back(self: &Iterator#[Lines]) -> Option#[&[Uint8]] {
-	let s = self@.inner&;
+pub method next_back(self: &Lines) -> Option#[&[Uint8]] {
+	let s = self;
 	if s@.done { return Option#[&[Uint8]]::None; }
 	let end = s@.back;
 	let at = end;
@@ -364,22 +354,18 @@ pub struct MatchIndices {
 }
 
 /// Iterates over non-overlapping matches and their byte offsets.
-pub method match_indices#[P](self: &[Uint8], separator: P) -> Iterator#[
-	MatchIndices,
-] {
-	Iterator(
-		MatchIndices {
-			text: self,
-			separator: pattern(separator),
-			at: 0u,
-			done: false,
-		},
-	)
+pub method match_indices#[P](self: &[Uint8], separator: P) -> MatchIndices {
+	MatchIndices {
+		text: self,
+		separator: pattern(separator),
+		at: 0u,
+		done: false,
+	}
 }
 
 /// Returns the next byte offset and matched text.
-pub method next(self: &Iterator#[MatchIndices]) -> Option#[(Uint, &[Uint8])] {
-	let s = self@.inner&;
+pub method next(self: &MatchIndices) -> Option#[(Uint, &[Uint8])] {
+	let s = self;
 	if s@.done { return Option#[(Uint, &[Uint8])]::None; }
 
 	if empty_pattern(s@.separator) {
@@ -409,7 +395,7 @@ fn string_item(value: Uint8) -> &[Uint8] { [value]& }
 fn string_item(value: &[Uint8]) -> &[Uint8] { value }
 
 /// Collects UTF-8 scalars, bytes, or byte-string pieces into a new byte string.
-pub method collect_string#[I](self: Iterator#[I]) -> &[Uint8] {
+pub method collect_string#[I](self: I) -> &[Uint8] {
 	let output = Vec([]#[Uint8]&);
 	let item = self&.next();
 

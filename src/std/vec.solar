@@ -1,7 +1,6 @@
 import {transmute_ref} from "@intrinsics";
 import {throw, Ordering} from "lib.solar";
 import slice from "slice.solar";
-import {Iterator} from "iter.solar";
 import {MaybeZeroed} from "mem.solar";
 import {Option} from "lib.solar";
 
@@ -56,7 +55,7 @@ pub method at#[T](self: &Vec#[T], index: Uint) -> &T {
 }
 
 /// Iterates over the vector's elements.
-pub method iter#[T](self: &Vec#[T]) -> Iterator#[slice::Iter#[T]] {
+pub method iter#[T](self: &Vec#[T]) -> slice::Iter#[T] {
 	self.as_slice().iter()
 }
 
@@ -64,7 +63,7 @@ pub method iter#[T](self: &Vec#[T]) -> Iterator#[slice::Iter#[T]] {
 pub fn#[T] Vec#[T]::default() -> Vec#[T] { Vec([]#[T]&) }
 
 /// Collects an iterator's values into a new vector.
-pub fn#[T] Vec#[T]::from_iter#[I](source: Iterator#[I]) -> Vec#[T] {
+pub fn#[T] Vec#[T]::from_iter#[I](source: I) -> Vec#[T] {
 	let output = Vec([]#[T]&);
 	let item: Option#[T] = source&.next();
 	while item.is_some() { output&.push(item.unwrap()); item = source&.next(); }

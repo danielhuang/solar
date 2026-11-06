@@ -202,6 +202,14 @@ fn iterator() {
 }
 
 #[test]
+fn iterator_release() {
+    assert_eq!(
+        test_utils::run_release_file(&fixture("iterator.solar"), "iterator"),
+        "passed\n"
+    );
+}
+
+#[test]
 fn iterator_map() {
     let output = run(&fixture("iterator_map.solar"), "iterator_map");
     assert_eq!(output, "passed\n");

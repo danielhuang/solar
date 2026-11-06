@@ -1,6 +1,6 @@
 fn main() {
 	let values = [1, 2, 3, 4, 5];
-	let source = values&.iter().copied();
+	let source: iter::Copied#[slice::Iter#[Int]] = values&.iter().copied();
 	assert(source.count() == 5u);
 	assert(source.sum() == 15);
 	assert(source.product() == 120);
@@ -75,6 +75,8 @@ fn main() {
 		(n@ <= 3).then_some(n@)
 	});
 	assert(generated.sum() == 6);
+	let direct = coroutine { yield 4; yield 5; true };
+	assert(direct.map(\value: Int value * 2).sum() == 18);
 	let lookahead = source.peekable();
 	assert(lookahead&.peek().unwrap() == 1);
 	assert(lookahead&.peek().unwrap() == 1);

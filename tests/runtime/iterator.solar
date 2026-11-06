@@ -1,16 +1,16 @@
 struct Counter { value: Int }
 
-method next(self: &Iterator#[Counter]) -> Option#[Int] {
-	if self@.inner.value >= 3 {
+method next(self: &Counter) -> Option#[Int] {
+	if self@.value >= 3 {
 		return Option#[Int]::None;
 	}
 
-	self@.inner.value = self@.inner.value + 1;
-	Option#[Int]::Some(self@.inner.value)
+	self@.value = self@.value + 1;
+	Option#[Int]::Some(self@.value)
 }
 
 fn main() {
-	let iterator = iter::Iterator(Counter { value: 0 });
+	let iterator = Counter { value: 0 };
 	assert(iterator&.next() == Option#[Int]::Some(1));
 	let copy = iterator;
 
@@ -21,5 +21,23 @@ fn main() {
 	assert(copy&.next() == Option#[Int]::None);
 	assert(iterator&.next() == Option#[Int]::None);
 	assert(iterator&.next() == Option#[Int]::None);
+
+	let source = Counter { value: 0 };
+	let mapped: iter::Map#[
+		Counter,
+		Int,
+		Int,
+	] = source.map(\value: Int value * 10);
+	assert(mapped.filter(\value: Int value > 10).sum() == 50);
+	assert(source.collect#[vec::Vec#[Int]]()&.as_slice() == [1, 2, 3]&);
+	let total = 0;
+	for value in source { total = total + value; }
+	assert(total == 6);
+	assert(source&.next() == Option#[Int]::Some(1));
+
+	// The Option overload must still infer its callback input despite the
+	// blanket iterator adapter also accepting this receiver.
+	let option: Option#[Int] = Option#[Int]::Some(4).map(\value value + 1);
+	assert(option.unwrap() == 5);
 	println("passed"&);
 }

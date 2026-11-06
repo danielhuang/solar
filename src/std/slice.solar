@@ -1,6 +1,5 @@
 import intrinsics from "@intrinsics";
 import {Option, Ordering, throw} from "lib.solar";
-import {Iterator} from "iter.solar";
 import {Vec} from "vec.solar";
 
 /// An iterator over borrowed slice elements.
@@ -10,7 +9,7 @@ pub struct Iter#[T] { remaining: &[T] }
 pub struct SplitState#[T] { remaining: &[T], separator: &T, finished: Bool }
 
 /// A composable iterator over subslices separated by an element.
-pub type Split#[T] = Iterator#[SplitState#[T]];
+pub type Split#[T] = SplitState#[T];
 
 /// Number of elements in a slice.
 pub method len#[T](self: &[T]) -> Uint {
@@ -112,31 +111,25 @@ pub method contains#[T](self: &[T], value: &[T]) -> Bool {
 
 /// Returns an iterator over subslices separated by `separator`.
 pub method split#[T](self: &[T], separator: &T) -> Split#[T] {
-	Iterator(
-		SplitState#[T] {
-			remaining: self,
-			separator: separator,
-			finished: false,
-		},
-	)
+	SplitState#[T] { remaining: self, separator: separator, finished: false }
 }
 
 /// Advances the split iterator and returns the next subslice.
 pub method next#[T](self: &Split#[T]) -> Option#[&[T]] {
-	if self@.inner.finished {
+	if self@.finished {
 		return Option#[&[T]]::None;
 	}
 
-	let remaining = self@.inner.remaining;
+	let remaining = self@.remaining;
 
-	match remaining.find(self@.inner.separator) {
+	match remaining.find(self@.separator) {
 		Option#[Uint]::Some(index) => {
 			let item = remaining@[0u..index]&;
-			self@.inner.remaining = remaining@[index + 1u..remaining.len()]&;
+			self@.remaining = remaining@[index + 1u..remaining.len()]&;
 			Option#[&[T]]::Some(item)
 		},
 		Option#[Uint]::None => {
-			self@.inner.finished = true;
+			self@.finished = true;
 			Option#[&[T]]::Some(remaining)
 		},
 	}
@@ -144,51 +137,51 @@ pub method next#[T](self: &Split#[T]) -> Option#[&[T]] {
 
 /// Splits from the back, preserving empty leading and trailing pieces.
 pub method next_back#[T](self: &Split#[T]) -> Option#[&[T]] {
-	if self@.inner.finished { return Option#[&[T]]::None; }
-	let remaining = self@.inner.remaining;
+	if self@.finished { return Option#[&[T]]::None; }
+	let remaining = self@.remaining;
 	let at = remaining.len();
 
 	while at > 0u {
 		at = at - 1u;
 
-		if remaining@[at] == self@.inner.separator@ {
-			self@.inner.remaining = remaining@[0u..at]&;
+		if remaining@[at] == self@.separator@ {
+			self@.remaining = remaining@[0u..at]&;
 			return Option#[&[T]]::Some(remaining@[at + 1u..remaining.len()]&);
 		}
 	}
 
-	self@.inner.finished = true;
+	self@.finished = true;
 	Option#[&[T]]::Some(remaining)
 }
 
 /// Returns an iterator over the slice's elements.
-pub method iter#[T](self: &[T]) -> Iterator#[Iter#[T]] {
-	Iterator(Iter#[T] { remaining: self })
+pub method iter#[T](self: &[T]) -> Iter#[T] {
+	Iter#[T] { remaining: self }
 }
 
 /// Advances the iterator and returns the next element.
-pub method next#[T](self: &Iterator#[Iter#[T]]) -> Option#[&T] {
-	if self@.inner.remaining.len() == 0u {
+pub method next#[T](self: &Iter#[T]) -> Option#[&T] {
+	if self@.remaining.len() == 0u {
 		return Option#[&T]::None;
 	}
 
-	let item = self@.inner.remaining@[0u]&;
-	self@.inner.remaining = self@.inner.remaining@[1u..self@.inner.remaining.len()]&;
+	let item = self@.remaining@[0u]&;
+	self@.remaining = self@.remaining@[1u..self@.remaining.len()]&;
 	Option#[&T]::Some(item)
 }
 
 /// Advances a slice iterator from the back without revisiting front-consumed items.
-pub method next_back#[T](self: &Iterator#[Iter#[T]]) -> Option#[&T] {
-	let remaining = self@.inner.remaining;
+pub method next_back#[T](self: &Iter#[T]) -> Option#[&T] {
+	let remaining = self@.remaining;
 	if remaining.len() == 0u { return Option#[&T]::None; }
 	let index = remaining.len() - 1u;
-	self@.inner.remaining = remaining@[0u..index]&;
+	self@.remaining = remaining@[0u..index]&;
 	Option#[&T]::Some(remaining@[index]&)
 }
 
 /// Returns the exact number of remaining slice elements.
-pub method len#[T](self: &Iterator#[Iter#[T]]) -> Uint {
-	self@.inner.remaining.len()
+pub method len#[T](self: &Iter#[T]) -> Uint {
+	self@.remaining.len()
 }
 
 /// Compares slices element by element.
@@ -213,7 +206,7 @@ pub method operator_eq#[T](self: &[T], other: &[T]) -> Bool {
 }
 
 /// Iterates through a borrowed slice reference, as used by nested iterables.
-pub method iter#[T](self: &&[T]) -> Iterator#[Iter#[T]] { self@.iter() }
+pub method iter#[T](self: &&[T]) -> Iter#[T] { self@.iter() }
 
 /// Returns whether the slice is empty.
 pub method is_empty#[T](self: &[T]) -> Bool { self.len() == 0u }
@@ -317,37 +310,37 @@ pub method split_once#[T](self: &[T], separator: &T) -> Option#[(&[T], &[T])] {
 pub struct Windows#[T] { source: &[T], width: Uint, front: Uint, back: Uint }
 
 /// Returns overlapping windows. Zero width throws; oversized windows yield no items.
-pub method windows#[T](self: &[T], width: Uint) -> Iterator#[Windows#[T]] {
+pub method windows#[T](self: &[T], width: Uint) -> Windows#[T] {
 	if width == 0u { throw("windows: width must be positive"&); }
 	let count = if width > self.len() { 0u } else { self.len() - width + 1u };
-	Iterator(Windows#[T] { source: self, width: width, front: 0u, back: count })
+	Windows#[T] { source: self, width: width, front: 0u, back: count }
 }
 
 /// Returns overlapping array windows with a runtime-selected width.
 /// Each result is a slice that may be destructured with a checked array pattern.
-pub method array_windows#[T](self: &[T], width: Uint) -> Iterator#[Windows#[T]] {
+pub method array_windows#[T](self: &[T], width: Uint) -> Windows#[T] {
 	self.windows(width)
 }
 
 /// Returns the next overlapping window.
-pub method next#[T](self: &Iterator#[Windows#[T]]) -> Option#[&[T]] {
-	if self@.inner.front == self@.inner.back { return Option#[&[T]]::None; }
-	let at = self@.inner.front;
-	self@.inner.front = at + 1u;
-	Option#[&[T]]::Some(self@.inner.source@[at..at + self@.inner.width]&)
+pub method next#[T](self: &Windows#[T]) -> Option#[&[T]] {
+	if self@.front == self@.back { return Option#[&[T]]::None; }
+	let at = self@.front;
+	self@.front = at + 1u;
+	Option#[&[T]]::Some(self@.source@[at..at + self@.width]&)
 }
 
 /// Returns the last remaining overlapping window.
-pub method next_back#[T](self: &Iterator#[Windows#[T]]) -> Option#[&[T]] {
-	if self@.inner.front == self@.inner.back { return Option#[&[T]]::None; }
-	self@.inner.back = self@.inner.back - 1u;
-	let at = self@.inner.back;
-	Option#[&[T]]::Some(self@.inner.source@[at..at + self@.inner.width]&)
+pub method next_back#[T](self: &Windows#[T]) -> Option#[&[T]] {
+	if self@.front == self@.back { return Option#[&[T]]::None; }
+	self@.back = self@.back - 1u;
+	let at = self@.back;
+	Option#[&[T]]::Some(self@.source@[at..at + self@.width]&)
 }
 
 /// Returns the exact number of remaining windows.
-pub method len#[T](self: &Iterator#[Windows#[T]]) -> Uint {
-	self@.inner.back - self@.inner.front
+pub method len#[T](self: &Windows#[T]) -> Uint {
+	self@.back - self@.front
 }
 
 /// Copies this sequence `count` times into a new slice.
