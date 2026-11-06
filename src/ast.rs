@@ -657,6 +657,9 @@ pub enum ExprKind {
     },
     /// Suspend the nearest coroutine and produce its next resume argument.
     Yield(Box<Expr>),
+    /// Forward an iterable's yields and evaluate to its completion value.
+    /// Desugars to `for value in operand { yield value }`.
+    Await(Box<Expr>),
     EnumVariant {
         module_path: Vec<String>,
         enum_name: DefId,

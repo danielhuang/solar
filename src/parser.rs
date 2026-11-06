@@ -1352,6 +1352,10 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Result<Expr, ParseErro
                 .transpose()?,
             body: convert_block(required_field(node, "body")?, source)?,
         },
+        "await_expression" => ExprKind::Await(Box::new(convert_expr(
+            required_field(node, "value")?,
+            source,
+        )?)),
         "yield_expression" => ExprKind::Yield(Box::new(convert_expr(
             required_field(node, "value")?,
             source,

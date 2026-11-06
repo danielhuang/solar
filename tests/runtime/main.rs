@@ -53,6 +53,22 @@ fn for_completion_release() {
 }
 
 #[test]
+fn coroutine_await() {
+    assert_eq!(
+        run(&fixture("coroutine_await.solar"), "coroutine_await"),
+        "passed\n"
+    );
+}
+
+#[test]
+fn coroutine_await_release() {
+    assert_eq!(
+        test_utils::run_release_file(&fixture("coroutine_await.solar"), "coroutine_await"),
+        "passed\n"
+    );
+}
+
+#[test]
 fn coroutine_control() {
     assert_eq!(
         run(&fixture("coroutine_control.solar"), "coroutine_control"),

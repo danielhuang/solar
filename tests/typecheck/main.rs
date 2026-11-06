@@ -216,6 +216,46 @@ fn coroutine_type_errors() {
 }
 
 #[test]
+fn await_type_errors() {
+    let directory = tempdir::TempDir::new("solar-await-types").unwrap();
+    let path = directory.path().join("main.solar");
+    for (body, expected) in [
+        (
+            "await coroutine { yield 1; 42 };",
+            "yield is only allowed inside a coroutine body",
+        ),
+        (
+            "let g = coroutine { let f = \\ { await coroutine { yield 1; 42 }; }; };",
+            "yield is only allowed inside a coroutine body",
+        ),
+        (
+            "let g = coroutine { yield true; await coroutine { yield 1; 42 } };",
+            "yield type mismatch",
+        ),
+        (
+            "let g = coroutine { let result: Bool = await coroutine { yield 1; 42 }; };",
+            "type mismatch",
+        ),
+        (
+            "let g = coroutine { await coroutine (input: Int) { yield input; 42 } };",
+            "only coroutines without a resume parameter can be iterated",
+        ),
+    ] {
+        std::fs::write(&path, format!("fn main() {{ {body} }}")).unwrap();
+        let errors = solar::pipeline::compile(&path).err().unwrap().0;
+        let messages = errors
+            .iter()
+            .map(error_chain)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            messages.contains(expected),
+            "{body}: expected {expected}, got {messages}"
+        );
+    }
+}
+
+#[test]
 fn for_completion_type_errors() {
     let directory = tempdir::TempDir::new("solar-for-types").unwrap();
     let path = directory.path().join("main.solar");

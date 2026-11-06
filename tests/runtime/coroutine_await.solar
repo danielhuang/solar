@@ -1,0 +1,130 @@
+fn completed#[T, R](state: CoroutineState#[T, R]) -> R {
+	match state {
+		CoroutineState#[T, R]::Yield(value) => throw("expected completion"&),
+		CoroutineState#[T, R]::Complete(value) => value,
+	}
+}
+
+fn closed(call: fn()) {
+	let caught = false;
+
+	try { call(); } catch (error) {
+		assert(
+			error.message@ == "cannot resume a completed or running coroutine",
+		);
+		caught = true;
+	}
+
+	assert(caught);
+}
+
+fn forward#[I](inner: I) {
+	coroutine {
+		let value = 17;
+		let __await_value_0 = 18;
+		let result = await inner;
+		assert(value == 17);
+		assert(__await_value_0 == 18);
+		result
+	}
+}
+
+fn source(created: &Int, effects: &Int) {
+	created@ = created@ + 1;
+
+	coroutine {
+		effects@ = effects@ + 1;
+		yield 1;
+		effects@ = effects@ + 1;
+		yield 2;
+		effects@ = effects@ + 1;
+		40
+	}
+}
+
+fn recursive(n: Int) {
+	coroutine {
+		if n == 0 { return 0; }
+		yield n;
+		n + await recursive(n - 1)
+	}
+}
+
+fn main() {
+	let created = 0;
+	let effects = 0;
+	let parent = coroutine { await source(created&, effects&) + 2 };
+	assert(created == 0);
+	assert(effects == 0);
+	assert(parent.next().unwrap() == 1);
+	assert(created == 1);
+	assert(effects == 1);
+	assert(parent.next().unwrap() == 2);
+	assert(effects == 2);
+	assert(completed(parent.resume()) == 42);
+	assert(created == 1);
+	assert(effects == 3);
+	closed(\ { parent.next(); });
+	closed(\ { parent.resume(); });
+
+	let inner = coroutine { yield 3; 99 };
+	let outer = forward(inner&);
+	assert(outer.next().unwrap() == 3);
+	assert(completed(outer.resume()) == 99);
+	closed(\ { inner.resume(); });
+	let empty = forward(coroutine { 37 });
+	assert(completed(empty.resume()) == 37);
+
+	let tail = coroutine { await coroutine { yield 4; (42, true) } };
+	assert(tail.next().unwrap() == 4);
+	assert(completed(tail.resume()) == (42, true));
+	let explicit = coroutine { return await coroutine { yield 5; 25 }; };
+	assert(explicit.next().unwrap() == 5);
+	assert(completed(explicit.resume()) == 25);
+
+	let nested = coroutine {
+		await coroutine { await coroutine { yield 6; 33 } } + 9
+	};
+	assert(nested.next().unwrap() == 6);
+	assert(completed(nested.resume()) == 42);
+	let recursive = recursive(3);
+	assert(recursive.next().unwrap() == 3);
+	assert(recursive.next().unwrap() == 2);
+	assert(recursive.next().unwrap() == 1);
+	assert(completed(recursive.resume()) == 6);
+
+	let ordinary = coroutine { await [10, 20] };
+	assert(ordinary.next().unwrap()@ == 10);
+	assert(ordinary.next().unwrap()@ == 20);
+	let unit: () = completed(ordinary.resume());
+	let discarded = coroutine { await coroutine { yield 7; 99 }; };
+	assert(discarded.next().unwrap() == 7);
+	let unit: () = completed(discarded.resume());
+
+	let parameterized = coroutine (input: Int) {
+		let result = await coroutine { yield 8; yield 9; 11 };
+		result + input
+	};
+	assert(parameterized.next(1).unwrap() == 8);
+	assert(parameterized.next(2).unwrap() == 9);
+	assert(completed(parameterized.resume(3)) == 12);
+
+	let recovered = coroutine {
+		try {
+			await coroutine {
+				yield 10;
+				if true { throw("inner failure"&); }
+				42
+			};
+		} catch (error) {
+			assert(error.message@ == "inner failure");
+			yield 11;
+		}
+
+		123
+	};
+	assert(recovered.next().unwrap() == 10);
+	assert(recovered.next().unwrap() == 11);
+	assert(completed(recovered.resume()) == 123);
+	println("passed"&);
+}

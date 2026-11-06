@@ -32,6 +32,83 @@ fn coroutine_keyword() {
 }
 
 #[test]
+fn await_keyword_round_trip() {
+    for expression in [
+        "await worker",
+        "await coroutine { yield 1; 42 }",
+        "await { worker }",
+        "await Counter { current: 0 }",
+        "await [1, 2]",
+        "await await worker",
+        "await (left + right)",
+        "await worker&",
+        "await worker^",
+        "await worker@",
+        "await workers[0]",
+    ] {
+        let source = format!("fn f() {{ {expression} }}");
+        let formatted = solar::fmt::format_source(&source).unwrap();
+        assert_eq!(formatted, solar::fmt::format_source(&formatted).unwrap());
+        for text in [&source, &formatted] {
+            let ast = parse(text);
+            let TopLevelItem::Function(function) = &ast.items[0] else {
+                panic!("expected function")
+            };
+            assert!(
+                matches!(
+                    function.body[0].kind,
+                    StatementKind::Expression(Expr {
+                        kind: ExprKind::Await(_),
+                        ..
+                    })
+                ),
+                "{text}"
+            );
+        }
+    }
+    for source in ["fn f() { await; }", "fn f() { let x = await; }"] {
+        assert!(solar::parser::parse(source).is_err());
+    }
+}
+
+#[test]
+fn await_precedence_keeps_postfix_operations_inside_the_operand() {
+    for (expression, method) in [
+        ("await worker&.iter() + 1", true),
+        ("await worker + 1", false),
+        ("await worker & mask", false),
+        ("await worker ^ mask", false),
+    ] {
+        let source = format!("fn f() {{ {expression} }}");
+        let formatted = solar::fmt::format_source(&source).unwrap();
+        for text in [&source, &formatted] {
+            let ast = parse(text);
+            let TopLevelItem::Function(function) = &ast.items[0] else {
+                panic!("expected function")
+            };
+            let StatementKind::Expression(Expr {
+                kind: ExprKind::BinaryOp { left, .. },
+                ..
+            }) = &function.body[0].kind
+            else {
+                panic!("expected binary operator outside await: {text}")
+            };
+            let ExprKind::Await(operand) = &left.kind else {
+                panic!("expected await: {text}")
+            };
+            if method {
+                let ExprKind::MethodCall { receiver, .. } = &operand.kind else {
+                    panic!("expected method call: {text}")
+                };
+                assert!(matches!(receiver.kind, ExprKind::Reference(_)), "{text}");
+            } else {
+                assert!(matches!(operand.kind, ExprKind::Identifier(_)), "{text}");
+            }
+        }
+    }
+}
+
+#[test]
 fn generator_is_no_longer_a_coroutine_keyword() {
     for expression in [
         "generator { yield 1; }",

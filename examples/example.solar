@@ -358,6 +358,11 @@ fn main() {
 	};
 	println(completed); // 42
 
+	// await forwards an inner coroutine's yields and preserves its return value.
+	let delegated = coroutine { await coroutine { yield 9; 40 } + 2 };
+	let delegated_result = for value in delegated { println(value); }; // 9
+	println(delegated_result); // 42
+
 	// break and continue (target the innermost loop)
 	for n in 0..10 {
 		if n == 1 { continue; } // skip 1

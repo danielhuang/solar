@@ -157,6 +157,7 @@
 [
   "return"
   "yield"
+  "await"
   "break"
   "continue"
 ] @keyword.return

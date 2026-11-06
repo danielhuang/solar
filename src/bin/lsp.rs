@@ -6773,6 +6773,9 @@ fn main() {
         println(item);
     };
     println(completed);
+    let delegated = coroutine { await coroutine { yield 5; true } };
+    let result = for forwarded in delegated { println(forwarded); };
+    println(result);
     try {
         println(radius);
     } catch (message) {
@@ -6786,6 +6789,7 @@ fn main() {
             ("index", "Int"),
             ("item", "Int"),
             ("completed", "Int"),
+            ("result", "Bool"),
             ("message", "Exception"),
         ] {
             for occurrence in 0..2 {

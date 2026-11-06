@@ -19,13 +19,15 @@ module.exports = grammar({
     [$.named_type, $.qualified_type],
     [$.struct_literal, $.path_segment],
     // The bitwise `&`/`^` binary operators share their token with the postfix
-    // reference/unique operators; GLR resolves by which parse completes. The
-    // unary `!` adds a third interpretation (`!a ^ b` vs `!(a^)`), so its
-    // conflicts list all three rules.
+    // reference/unique operators; GLR resolves by which parse completes.
+    // Unary `!` and `await` add a third interpretation (`!a ^ b` vs `!(a^)`),
+    // so their conflicts list all three rules.
     [$.binary_expression, $.reference_expr],
     [$.binary_expression, $.unique_expr],
     [$.binary_expression, $.not_expression, $.reference_expr],
     [$.binary_expression, $.not_expression, $.unique_expr],
+    [$.binary_expression, $.await_expression, $.reference_expr],
+    [$.binary_expression, $.await_expression, $.unique_expr],
     [$.unsafe_block_statement, $._expression],
     [$.for_statement, $._expression],
     [$.block, $.for_statement, $._expression],
@@ -320,6 +322,7 @@ module.exports = grammar({
         $.closure_expr,
         $.coroutine_expression,
         $.yield_expression,
+        $.await_expression,
         $.path_expr,
         $.match_expression,
         $.reflect_match_expression,
@@ -370,6 +373,10 @@ module.exports = grammar({
         ))
       ));
     },
+
+    // Keep unary rules before postfix rules so GLR ties on &/^ keep the
+    // postfix operation inside the operand. Await binds like unary !.
+    await_expression: ($) => prec.right(65, seq("await", field("value", choice($._expression, $.struct_literal, $.block)))),
 
     // Unary `!`: logical not (Bool) or bitwise complement (integers). Binds
     // looser than the postfix operators (so `!a.b` is `!(a.b)`, `!a@` is

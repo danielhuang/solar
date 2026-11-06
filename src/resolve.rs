@@ -1558,7 +1558,7 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<Ident>) {
             let mut locals_copy = locals.clone();
             rewrite_statements(stmts, ctx, &mut locals_copy);
         }
-        ExprKind::ForIn { .. } | ExprKind::ForRange { .. } => {
+        ExprKind::ForIn { .. } | ExprKind::ForRange { .. } | ExprKind::Await(_) => {
             unreachable!("surface expression reached name resolution")
         }
         ExprKind::Loop(stmts) => {

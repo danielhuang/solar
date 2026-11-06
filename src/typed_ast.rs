@@ -449,7 +449,7 @@ fn apply_subst_to_ast_expr(expr: &ast::Expr, subst: &HashMap<String, ast::Type>)
                 .map(|s| apply_subst_to_ast_statement(s, subst))
                 .collect(),
         ),
-        ast::ExprKind::ForIn { .. } | ast::ExprKind::ForRange { .. } => {
+        ast::ExprKind::ForIn { .. } | ast::ExprKind::ForRange { .. } | ast::ExprKind::Await(_) => {
             unreachable!("surface expression reached generic substitution")
         }
         ast::ExprKind::Loop(stmts) => ast::ExprKind::Loop(
@@ -7433,7 +7433,9 @@ impl<'a> Lowerer<'a> {
                     span: expr.span,
                 })
             }
-            ast::ExprKind::ForIn { .. } | ast::ExprKind::ForRange { .. } => {
+            ast::ExprKind::ForIn { .. }
+            | ast::ExprKind::ForRange { .. }
+            | ast::ExprKind::Await(_) => {
                 unreachable!("surface expression reached typed AST lowering")
             }
             ast::ExprKind::Loop(stmts) => {

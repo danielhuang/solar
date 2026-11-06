@@ -364,6 +364,21 @@ impl Desugarer {
                 self.statements(&mut body);
                 ast::ExprKind::Coroutine { parameter, body }
             }
+            ast::ExprKind::Await(value) => {
+                let iterable = self.expr(*value);
+                let variable = ast::Ident::synthetic(format!("__await_value_{}", self.for_counter));
+                let body = vec![ast::Statement {
+                    kind: ast::StatementKind::Expression(ast::Expr {
+                        kind: ast::ExprKind::Yield(Box::new(ast::Expr {
+                            kind: ast::ExprKind::Identifier(variable.clone()),
+                            span,
+                        })),
+                        span,
+                    }),
+                    span,
+                }];
+                ast::ExprKind::Block(self.for_in(span, variable, iterable, body))
+            }
             ast::ExprKind::Yield(value) => ast::ExprKind::Yield(Box::new(self.expr(*value))),
             ast::ExprKind::Closure {
                 mut parameters,

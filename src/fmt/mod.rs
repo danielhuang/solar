@@ -1051,6 +1051,7 @@ fn expr_doc(expression: &Expr, context: &SourceContext<'_>) -> Doc {
             Doc::text(" "),
             block_doc(body, expression.span, context),
         ]),
+        ExprKind::Await(value) => Doc::concat([Doc::text("await "), expr_doc(value, context)]),
         ExprKind::Yield(value) => Doc::concat([Doc::text("yield "), expr_doc(value, context)]),
         ExprKind::Closure {
             parameters,
