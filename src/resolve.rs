@@ -1,4 +1,4 @@
-use crate::ast::*;
+use crate::desugared_ast::*;
 use crate::error::{CompileError, SourceMap};
 use crate::intrinsics::Intrinsic;
 use crate::parser;
@@ -48,6 +48,8 @@ struct Resolver {
     std_root_id: Option<FileId>,
     c_headers: HashMap<String, FileId>,
     c_records: HashMap<String, FileId>,
+    /// Parsed C declarations retained for formatting before normalization.
+    c_declarations: HashMap<FileId, crate::ast::SourceFile>,
 }
 
 impl Resolver {
@@ -59,6 +61,7 @@ impl Resolver {
             std_root_id: None,
             c_headers: HashMap::new(),
             c_records: HashMap::new(),
+            c_declarations: HashMap::new(),
         }
     }
 
@@ -200,6 +203,8 @@ impl Resolver {
     }
 
     fn parse_c_import(&mut self, import: &ImportDef) -> Result<FileId, Vec<CompileError>> {
+        use crate::ast::TopLevelItem;
+
         if let ImportKind::Named(names) = &import.kind
             && names.iter().any(ImportName::is_path)
         {
@@ -214,8 +219,7 @@ impl Resolver {
                 names
                     .iter()
                     .filter(|name| {
-                        !self.files[id as usize]
-                            .ast
+                        !self.c_declarations[&id]
                             .items
                             .iter()
                             .any(|item| match item {
@@ -253,45 +257,43 @@ impl Resolver {
             self.c_headers.insert(import.path.clone(), id);
             self.source_map.add_c_header(import.path.clone(), id);
         }
+        let declarations = self
+            .c_declarations
+            .entry(id)
+            .or_insert_with(|| crate::ast::SourceFile { items: Vec::new() });
         for item in items {
             if let TopLevelItem::Struct(record) = &item {
                 if let Some(&owner) = self.c_records.get(&record.name) {
                     if owner != id {
                         let path = self.files[owner as usize].path.display().to_string();
-                        self.files[id as usize]
-                            .ast
-                            .items
-                            .push(TopLevelItem::Import(ImportDef {
-                                is_c: false,
-                                kind: ImportKind::Named(vec![ImportName {
-                                    segments: vec![record.name.clone()],
-                                }]),
-                                path,
-                                is_pub: false,
-                                span: SourceSpan::default(),
-                            }));
+                        declarations.items.push(TopLevelItem::Import(ImportDef {
+                            is_c: false,
+                            kind: ImportKind::Named(vec![ImportName {
+                                segments: vec![record.name.clone()],
+                            }]),
+                            path,
+                            is_pub: false,
+                            span: SourceSpan::default(),
+                        }));
                     }
                     continue;
                 }
                 self.c_records.insert(record.name.clone(), id);
             }
-            let duplicate =
-                self.files[id as usize]
-                    .ast
-                    .items
-                    .iter()
-                    .any(|existing| match (&item, existing) {
-                        (TopLevelItem::TypeAlias(a), TopLevelItem::TypeAlias(b)) => {
-                            a.name == b.name
-                        }
-                        (TopLevelItem::Const(a), TopLevelItem::Const(b)) => a.name == b.name,
-                        _ => false,
-                    });
+            let duplicate = declarations
+                .items
+                .iter()
+                .any(|existing| match (&item, existing) {
+                    (TopLevelItem::TypeAlias(a), TopLevelItem::TypeAlias(b)) => a.name == b.name,
+                    (TopLevelItem::Const(a), TopLevelItem::Const(b)) => a.name == b.name,
+                    _ => false,
+                });
             if !duplicate {
-                self.files[id as usize].ast.items.push(item);
+                declarations.items.push(item);
             }
         }
-        let source = crate::fmt::format_generated_items(&self.files[id as usize].ast.items);
+        let source = crate::fmt::format_generated_items(&declarations.items);
+        self.files[id as usize].ast = desugared_ast::lower(declarations);
         self.source_map
             .add_file(id, format!("import(C) from {:?}", import.path), source);
         Ok(id)
@@ -1407,9 +1409,6 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<Ident>) {
         ExprKind::IntegerLiteral(_, _)
         | ExprKind::FloatLiteral(_, _)
         | ExprKind::BooleanLiteral(_) => {}
-        ExprKind::StringLiteral(_) | ExprKind::CharLiteral(_) => {
-            unreachable!("surface literal reached name resolution")
-        }
         ExprKind::FieldAccess { object, .. } => {
             rewrite_expr(object, ctx, locals);
         }
@@ -1509,10 +1508,6 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<Ident>) {
                 rewrite_expr(&mut field.value, ctx, locals);
             }
         }
-        ExprKind::Index { object, index } => {
-            rewrite_expr(object, ctx, locals);
-            rewrite_expr(index, ctx, locals);
-        }
         ExprKind::Slice { object, start, end } => {
             rewrite_expr(object, ctx, locals);
             rewrite_expr(start, ctx, locals);
@@ -1557,9 +1552,6 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<Ident>) {
         ExprKind::UnsafeBlock(stmts) => {
             let mut locals_copy = locals.clone();
             rewrite_statements(stmts, ctx, &mut locals_copy);
-        }
-        ExprKind::ForIn { .. } | ExprKind::ForRange { .. } | ExprKind::Await(_) => {
-            unreachable!("surface expression reached name resolution")
         }
         ExprKind::Loop(stmts) => {
             let mut locals_copy = locals.clone();

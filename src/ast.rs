@@ -1,4 +1,4 @@
-use crate::intrinsics::Intrinsic;
+//! Parsed Solar syntax and the leaf types shared by untyped AST phases.
 
 /// A zero-indexed source position. `line` is a line index and `col` is a byte
 /// offset within that line (not a Unicode character or UTF-16 code-unit index).
@@ -422,7 +422,7 @@ pub struct Statement {
     pub span: SourceSpan,
 }
 
-/// An untyped statement.
+/// A parsed statement before desugaring.
 #[derive(Debug, Clone)]
 pub enum StatementKind {
     Let {
@@ -441,13 +441,6 @@ pub enum StatementKind {
     },
     While {
         condition: Expr,
-        body: Vec<Statement>,
-    },
-    /// Normalized counted loop, introduced by desugaring a range expression.
-    ForRange {
-        variable: Ident,
-        start: Expr,
-        end: Expr,
         body: Vec<Statement>,
     },
     /// Surface `try { ... } catch (binding[: type]) { ... }` syntax.
@@ -556,13 +549,11 @@ pub struct Expr {
     pub span: SourceSpan,
 }
 
-/// An untyped expression.
+/// A parsed expression before desugaring.
 #[derive(Debug, Clone)]
 pub enum ExprKind {
     /// A local or unresolved name.
     Identifier(Ident),
-    /// A resolved top-level name.
-    GlobalRef(DefId),
     IntegerLiteral(i128, IntegerType),
     /// `1f` / `1.0f32` / `2.5f64` — the suffix is mandatory (a bare `1.0` is
     /// not a float literal, and `1.f` is field access on the integer `1`).
@@ -691,12 +682,6 @@ pub enum ExprKind {
         kwargs: Vec<(String, Expr)>,
     },
     TupleLiteral(Vec<Expr>),
-    IntrinsicCall {
-        intrinsic: Intrinsic,
-        /// Explicit type arguments written at the call site.
-        type_args: Vec<Type>,
-        arguments: Vec<Expr>,
-    },
 }
 
 /// A numeric primitive type.

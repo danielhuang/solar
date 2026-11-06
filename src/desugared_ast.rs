@@ -2,23 +2,29 @@
 
 use crate::ast;
 
+// Leaves have the same representation on both sides of desugaring.
+pub use crate::ast::{
+    BinOp, DefId, DestructureField, DestructurePattern, EnumDef, FieldDef, FloatType, Ident,
+    ImportDef, ImportKind, ImportName, IntegerType, NumericType, PRIMITIVE_TYPES, Pattern,
+    PrimitiveType, ReflectPattern, STDLIB_FILE, SYNTHETIC_FILE, SourcePos, SourceSpan, StructDef,
+    Type, TypeAliasDef, VariantDef,
+};
+pub use nodes::*;
+
 mod for_loop;
+mod nodes;
 
-/// An untyped program after type-independent normalization.
-#[derive(Debug)]
-pub struct SourceFile {
-    /// Top-level declarations in source order.
-    pub items: Vec<ast::TopLevelItem>,
-}
-
-/// Normalizes a surface AST before name resolution.
+/// Converts parsed syntax into a separate normalized tree before name resolution.
 pub fn lower(source: &ast::SourceFile) -> SourceFile {
     let mut desugarer = Desugarer::default();
-    let mut items = source.items.clone();
-    for item in &mut items {
-        desugarer.item(item);
+    SourceFile {
+        items: source
+            .items
+            .iter()
+            .cloned()
+            .map(|item| desugarer.item(item))
+            .collect(),
     }
-    SourceFile { items }
 }
 
 #[derive(Default)]
@@ -27,184 +33,196 @@ struct Desugarer {
 }
 
 impl Desugarer {
-    fn item(&mut self, item: &mut ast::TopLevelItem) {
+    fn item(&mut self, item: ast::TopLevelItem) -> TopLevelItem {
         match item {
-            ast::TopLevelItem::Struct(def) => {
+            ast::TopLevelItem::Struct(mut def) => {
                 if def.is_tuple {
                     for (index, field) in def.fields.iter_mut().enumerate() {
                         field.name = format!("_{index}");
                     }
                 }
+                TopLevelItem::Struct(def)
             }
-            ast::TopLevelItem::Function(def) | ast::TopLevelItem::Method(def) => {
-                self.function(def);
-            }
-            ast::TopLevelItem::Enum(_)
-            | ast::TopLevelItem::Import(_)
-            | ast::TopLevelItem::TypeAlias(_) => {}
-            ast::TopLevelItem::Const(def) => {
-                *def.value = self.expr(def.value.as_ref().clone());
-            }
-            ast::TopLevelItem::Static(def) => {
-                *def.value = self.expr(def.value.as_ref().clone());
-            }
+            ast::TopLevelItem::Function(def) => TopLevelItem::Function(self.function(def)),
+            ast::TopLevelItem::Method(def) => TopLevelItem::Method(self.function(def)),
+            ast::TopLevelItem::Enum(def) => TopLevelItem::Enum(def),
+            ast::TopLevelItem::Import(def) => TopLevelItem::Import(def),
+            ast::TopLevelItem::TypeAlias(def) => TopLevelItem::TypeAlias(def),
+            ast::TopLevelItem::Const(def) => TopLevelItem::Const(self.constant(def)),
+            ast::TopLevelItem::Static(def) => TopLevelItem::Static(StaticDef {
+                name: def.name,
+                ty: def.ty,
+                value: Box::new(self.expr(*def.value)),
+                thread_local: def.thread_local,
+                is_pub: def.is_pub,
+                doc: def.doc,
+                span: def.span,
+            }),
         }
     }
 
-    fn function(&mut self, function: &mut ast::FunctionDef) {
-        for parameter in &mut function.parameters {
-            if let Some(default) = &mut parameter.default {
-                **default = self.expr((**default).clone());
-            }
+    fn constant(&mut self, def: ast::ConstDef) -> ConstDef {
+        ConstDef {
+            name: def.name,
+            ty: def.ty,
+            value: Box::new(self.expr(*def.value)),
+            is_pub: def.is_pub,
+            doc: def.doc,
+            span: def.span,
         }
-        self.statements(&mut function.body);
     }
 
-    fn statements(&mut self, statements: &mut Vec<ast::Statement>) {
-        let old = std::mem::take(statements);
-        *statements = old
+    fn parameter(&mut self, parameter: ast::Parameter) -> Parameter {
+        Parameter {
+            pattern: parameter.pattern,
+            ty: parameter.ty,
+            default: parameter.default.map(|value| Box::new(self.expr(*value))),
+            span: parameter.span,
+        }
+    }
+
+    fn function(&mut self, function: ast::FunctionDef) -> FunctionDef {
+        FunctionDef {
+            associated_type_params: function.associated_type_params,
+            associated_type: function.associated_type,
+            name: function.name,
+            display_name: function.display_name,
+            type_params: function.type_params,
+            out_type_params: function.out_type_params,
+            parameters: function
+                .parameters
+                .into_iter()
+                .map(|p| self.parameter(p))
+                .collect(),
+            return_type: function.return_type,
+            return_type_span: function.return_type_span,
+            body: self.statements(function.body),
+            is_pub: function.is_pub,
+            is_unsafe: function.is_unsafe,
+            inline_hint: function.inline_hint,
+            is_extension: function.is_extension,
+            is_overlap: function.is_overlap,
+            doc: function.doc,
+            span: function.span,
+        }
+    }
+
+    fn statements(&mut self, statements: Vec<ast::Statement>) -> Vec<Statement> {
+        statements
             .into_iter()
-            .flat_map(|statement| self.statement(statement))
-            .collect();
+            .map(|statement| self.statement(statement))
+            .collect()
     }
 
-    fn statement(&mut self, statement: ast::Statement) -> Vec<ast::Statement> {
-        let span = statement.span;
-        let one = |kind| vec![ast::Statement { kind, span }];
-        match statement.kind {
-            ast::StatementKind::Let { pattern, ty, value } => one(ast::StatementKind::Let {
+    fn statement(&mut self, statement: ast::Statement) -> Statement {
+        let kind = match statement.kind {
+            ast::StatementKind::Let { pattern, ty, value } => StatementKind::Let {
                 pattern,
                 ty,
                 value: self.expr(value),
-            }),
-            ast::StatementKind::Assignment { target, value } => {
-                one(ast::StatementKind::Assignment {
-                    target: self.expr(target),
-                    value: self.expr(value),
-                })
-            }
+            },
+            ast::StatementKind::Assignment { target, value } => StatementKind::Assignment {
+                target: self.expr(target),
+                value: self.expr(value),
+            },
             ast::StatementKind::If {
                 condition,
-                mut body,
-                mut else_body,
+                body,
+                else_body,
             } => {
-                self.statements(&mut body);
-                self.statements(&mut else_body);
-                one(ast::StatementKind::If {
+                let body = self.statements(body);
+                let else_body = self.statements(else_body);
+                StatementKind::If {
                     condition: self.expr(condition),
                     body,
                     else_body,
-                })
+                }
             }
-            ast::StatementKind::While {
-                condition,
-                mut body,
-            } => {
-                self.statements(&mut body);
-                one(ast::StatementKind::While {
+            ast::StatementKind::While { condition, body } => {
+                let body = self.statements(body);
+                StatementKind::While {
                     condition: self.expr(condition),
                     body,
-                })
-            }
-            ast::StatementKind::ForRange {
-                variable,
-                start,
-                end,
-                mut body,
-            } => {
-                self.statements(&mut body);
-                one(ast::StatementKind::ForRange {
-                    variable,
-                    start: self.expr(start),
-                    end: self.expr(end),
-                    body,
-                })
+                }
             }
             ast::StatementKind::Try {
-                mut body,
+                body,
                 binding,
                 binding_type,
-                mut handler,
-            } => {
-                self.statements(&mut body);
-                self.statements(&mut handler);
-                one(ast::StatementKind::Try {
-                    body,
-                    binding,
-                    binding_type,
-                    handler,
-                })
-            }
+                handler,
+            } => StatementKind::Try {
+                body: self.statements(body),
+                binding,
+                binding_type,
+                handler: self.statements(handler),
+            },
             ast::StatementKind::ForReflectFields {
                 pattern,
                 object,
-                mut body,
+                body,
                 paired,
             } => {
-                self.statements(&mut body);
-                one(ast::StatementKind::ForReflectFields {
+                let body = self.statements(body);
+                StatementKind::ForReflectFields {
                     pattern,
                     object: self.expr(object),
                     body,
                     paired,
-                })
+                }
             }
             ast::StatementKind::MatchReflectVariant {
                 pattern,
                 object,
-                mut body,
+                body,
                 paired,
             } => {
-                self.statements(&mut body);
-                one(ast::StatementKind::MatchReflectVariant {
+                let body = self.statements(body);
+                StatementKind::MatchReflectVariant {
                     pattern,
                     object: self.expr(object),
                     body,
                     paired,
-                })
+                }
             }
-            ast::StatementKind::Expression(expr) => {
-                one(ast::StatementKind::Expression(self.expr(expr)))
+            ast::StatementKind::Expression(expr) => StatementKind::Expression(self.expr(expr)),
+            ast::StatementKind::Return(expr) => StatementKind::Return(self.expr(expr)),
+            ast::StatementKind::Break(value) => {
+                StatementKind::Break(value.map(|value| self.expr(value)))
             }
-            ast::StatementKind::Return(expr) => one(ast::StatementKind::Return(self.expr(expr))),
-            ast::StatementKind::Break(value) => one(ast::StatementKind::Break(
-                value.map(|value| self.expr(value)),
-            )),
-            ast::StatementKind::Continue => one(ast::StatementKind::Continue),
-            ast::StatementKind::NestedFunction(mut function) => {
-                self.function(&mut function);
-                one(ast::StatementKind::NestedFunction(function))
+            ast::StatementKind::Continue => StatementKind::Continue,
+            ast::StatementKind::NestedFunction(function) => {
+                StatementKind::NestedFunction(self.function(function))
             }
-            ast::StatementKind::Const(mut def) => {
-                def.value = Box::new(self.expr(*def.value));
-                one(ast::StatementKind::Const(def))
-            }
+            ast::StatementKind::Const(def) => StatementKind::Const(self.constant(def)),
+        };
+        Statement {
+            kind,
+            span: statement.span,
         }
     }
 
-    fn expr(&mut self, expr: ast::Expr) -> ast::Expr {
+    fn expr(&mut self, expr: ast::Expr) -> Expr {
         let span = expr.span;
         let kind = match expr.kind {
-            ast::ExprKind::Identifier(name) => ast::ExprKind::Identifier(name),
-            ast::ExprKind::GlobalRef(def) => ast::ExprKind::GlobalRef(def),
+            ast::ExprKind::Identifier(name) => ExprKind::Identifier(name),
             ast::ExprKind::AssociatedFunction { ty, name } => {
-                ast::ExprKind::AssociatedFunction { ty, name }
+                ExprKind::AssociatedFunction { ty, name }
             }
-            ast::ExprKind::IntegerLiteral(value, ty) => ast::ExprKind::IntegerLiteral(value, ty),
-            ast::ExprKind::FloatLiteral(value, ty) => ast::ExprKind::FloatLiteral(value, ty),
-            ast::ExprKind::BooleanLiteral(value) => ast::ExprKind::BooleanLiteral(value),
-            ast::ExprKind::StringLiteral(bytes) => ast::ExprKind::ArrayLiteral(
+            ast::ExprKind::IntegerLiteral(value, ty) => ExprKind::IntegerLiteral(value, ty),
+            ast::ExprKind::FloatLiteral(value, ty) => ExprKind::FloatLiteral(value, ty),
+            ast::ExprKind::BooleanLiteral(value) => ExprKind::BooleanLiteral(value),
+            ast::ExprKind::StringLiteral(bytes) => ExprKind::ArrayLiteral(
                 bytes
                     .into_iter()
-                    .map(|byte| ast::Expr {
-                        kind: ast::ExprKind::IntegerLiteral(byte as i128, ast::IntegerType::Uint8),
+                    .map(|byte| Expr {
+                        kind: ExprKind::IntegerLiteral(byte as i128, ast::IntegerType::Uint8),
                         span,
                     })
                     .collect(),
                 Some(ast::Type::Named(ast::DefId::new(0, "Uint8"))),
             ),
             ast::ExprKind::CharLiteral(byte) => {
-                ast::ExprKind::IntegerLiteral(byte as i128, ast::IntegerType::Uint8)
+                ExprKind::IntegerLiteral(byte as i128, ast::IntegerType::Uint8)
             }
             ast::ExprKind::FieldAccess { object, field } => {
                 let field = if !field.is_empty() && field.bytes().all(|byte| byte.is_ascii_digit())
@@ -213,24 +231,22 @@ impl Desugarer {
                 } else {
                     field
                 };
-                ast::ExprKind::FieldAccess {
+                ExprKind::FieldAccess {
                     object: Box::new(self.expr(*object)),
                     field,
                 }
             }
-            ast::ExprKind::Deref(inner) => ast::ExprKind::Deref(Box::new(self.expr(*inner))),
-            ast::ExprKind::Reference(inner) => {
-                ast::ExprKind::Reference(Box::new(self.expr(*inner)))
-            }
-            ast::ExprKind::Unique(inner) => ast::ExprKind::Unique(Box::new(self.expr(*inner))),
-            ast::ExprKind::Not(inner) => ast::ExprKind::Not(Box::new(self.expr(*inner))),
-            ast::ExprKind::NullLiteral(ty) => ast::ExprKind::NullLiteral(ty),
+            ast::ExprKind::Deref(inner) => ExprKind::Deref(Box::new(self.expr(*inner))),
+            ast::ExprKind::Reference(inner) => ExprKind::Reference(Box::new(self.expr(*inner))),
+            ast::ExprKind::Unique(inner) => ExprKind::Unique(Box::new(self.expr(*inner))),
+            ast::ExprKind::Not(inner) => ExprKind::Not(Box::new(self.expr(*inner))),
+            ast::ExprKind::NullLiteral(ty) => ExprKind::NullLiteral(ty),
             ast::ExprKind::Call {
                 function,
                 type_args,
                 arguments,
                 kwargs,
-            } => ast::ExprKind::Call {
+            } => ExprKind::Call {
                 function: Box::new(self.expr(*function)),
                 type_args,
                 arguments: arguments
@@ -247,13 +263,13 @@ impl Desugarer {
                 name,
                 type_args,
                 fields,
-            } => ast::ExprKind::StructLiteral {
+            } => ExprKind::StructLiteral {
                 module,
                 name,
                 type_args,
                 fields: fields
                     .into_iter()
-                    .map(|field| ast::FieldInit {
+                    .map(|field| FieldInit {
                         name: field.name,
                         value: self.expr(field.value),
                     })
@@ -262,10 +278,10 @@ impl Desugarer {
             ast::ExprKind::Index { object, index } => {
                 let object = self.expr(*object);
                 let receiver_span = object.span;
-                ast::ExprKind::Deref(Box::new(ast::Expr {
-                    kind: ast::ExprKind::MethodCall {
-                        receiver: Box::new(ast::Expr {
-                            kind: ast::ExprKind::Reference(Box::new(object)),
+                ExprKind::Deref(Box::new(Expr {
+                    kind: ExprKind::MethodCall {
+                        receiver: Box::new(Expr {
+                            kind: ExprKind::Reference(Box::new(object)),
                             span: receiver_span,
                         }),
                         method: "operator_index".to_owned(),
@@ -276,19 +292,19 @@ impl Desugarer {
                     span,
                 }))
             }
-            ast::ExprKind::Slice { object, start, end } => ast::ExprKind::Slice {
+            ast::ExprKind::Slice { object, start, end } => ExprKind::Slice {
                 object: Box::new(self.expr(*object)),
                 start: Box::new(self.expr(*start)),
                 end: Box::new(self.expr(*end)),
             },
-            ast::ExprKind::ArrayLiteral(elements, ty) => ast::ExprKind::ArrayLiteral(
+            ast::ExprKind::ArrayLiteral(elements, ty) => ExprKind::ArrayLiteral(
                 elements
                     .into_iter()
                     .map(|element| self.expr(element))
                     .collect(),
                 ty,
             ),
-            ast::ExprKind::ArrayRepeat { element, count } => ast::ExprKind::ArrayRepeat {
+            ast::ExprKind::ArrayRepeat { element, count } => ExprKind::ArrayRepeat {
                 element: Box::new(self.expr(*element)),
                 count: Box::new(self.expr(*count)),
             },
@@ -296,12 +312,12 @@ impl Desugarer {
                 variable,
                 start,
                 end,
-                mut body,
+                body,
             } => {
-                self.statements(&mut body);
-                ast::ExprKind::Block(vec![
-                    ast::Statement {
-                        kind: ast::StatementKind::ForRange {
+                let body = self.statements(body);
+                ExprKind::Block(vec![
+                    Statement {
+                        kind: StatementKind::ForRange {
                             variable,
                             start: self.expr(*start),
                             end: self.expr(*end),
@@ -309,9 +325,9 @@ impl Desugarer {
                         },
                         span,
                     },
-                    ast::Statement {
-                        kind: ast::StatementKind::Expression(ast::Expr {
-                            kind: ast::ExprKind::TupleLiteral(Vec::new()),
+                    Statement {
+                        kind: StatementKind::Expression(Expr {
+                            kind: ExprKind::TupleLiteral(Vec::new()),
                             span,
                         }),
                         span,
@@ -321,77 +337,73 @@ impl Desugarer {
             ast::ExprKind::ForIn {
                 variable,
                 iterable,
-                mut body,
+                body,
             } => {
-                self.statements(&mut body);
+                let body = self.statements(body);
                 let iterable = self.expr(*iterable);
-                ast::ExprKind::Block(self.for_in(span, variable, iterable, body))
+                ExprKind::Block(self.for_in(span, variable, iterable, body))
             }
-            ast::ExprKind::Loop(mut body) => {
-                self.statements(&mut body);
-                ast::ExprKind::Loop(body)
+            ast::ExprKind::Loop(body) => {
+                let body = self.statements(body);
+                ExprKind::Loop(body)
             }
-            ast::ExprKind::BinaryOp { op, left, right } => ast::ExprKind::BinaryOp {
+            ast::ExprKind::BinaryOp { op, left, right } => ExprKind::BinaryOp {
                 op,
                 left: Box::new(self.expr(*left)),
                 right: Box::new(self.expr(*right)),
             },
             ast::ExprKind::If {
                 condition,
-                mut then_body,
-                mut else_body,
+                then_body,
+                else_body,
             } => {
-                self.statements(&mut then_body);
-                self.statements(&mut else_body);
-                ast::ExprKind::If {
+                let then_body = self.statements(then_body);
+                let else_body = self.statements(else_body);
+                ExprKind::If {
                     condition: Box::new(self.expr(*condition)),
                     then_body,
                     else_body,
                 }
             }
-            ast::ExprKind::Block(mut body) => {
-                self.statements(&mut body);
-                ast::ExprKind::Block(body)
+            ast::ExprKind::Block(body) => {
+                let body = self.statements(body);
+                ExprKind::Block(body)
             }
-            ast::ExprKind::UnsafeBlock(mut body) => {
-                self.statements(&mut body);
-                ast::ExprKind::UnsafeBlock(body)
+            ast::ExprKind::UnsafeBlock(body) => {
+                let body = self.statements(body);
+                ExprKind::UnsafeBlock(body)
             }
-            ast::ExprKind::Coroutine {
-                parameter,
-                mut body,
-            } => {
-                self.statements(&mut body);
-                ast::ExprKind::Coroutine { parameter, body }
+            ast::ExprKind::Coroutine { parameter, body } => {
+                let body = self.statements(body);
+                ExprKind::Coroutine {
+                    parameter: parameter.map(|p| Box::new(self.parameter(*p))),
+                    body,
+                }
             }
             ast::ExprKind::Await(value) => {
                 let iterable = self.expr(*value);
                 let variable = ast::Ident::synthetic(format!("__await_value_{}", self.for_counter));
-                let body = vec![ast::Statement {
-                    kind: ast::StatementKind::Expression(ast::Expr {
-                        kind: ast::ExprKind::Yield(Box::new(ast::Expr {
-                            kind: ast::ExprKind::Identifier(variable.clone()),
+                let body = vec![Statement {
+                    kind: StatementKind::Expression(Expr {
+                        kind: ExprKind::Yield(Box::new(Expr {
+                            kind: ExprKind::Identifier(variable.clone()),
                             span,
                         })),
                         span,
                     }),
                     span,
                 }];
-                ast::ExprKind::Block(self.for_in(span, variable, iterable, body))
+                ExprKind::Block(self.for_in(span, variable, iterable, body))
             }
-            ast::ExprKind::Yield(value) => ast::ExprKind::Yield(Box::new(self.expr(*value))),
+            ast::ExprKind::Yield(value) => ExprKind::Yield(Box::new(self.expr(*value))),
             ast::ExprKind::Closure {
-                mut parameters,
+                parameters,
                 return_type,
-                mut body,
+                body,
             } => {
-                for parameter in &mut parameters {
-                    if let Some(default) = &mut parameter.default {
-                        **default = self.expr((**default).clone());
-                    }
-                }
-                self.statements(&mut body);
-                ast::ExprKind::Closure {
+                let parameters = parameters.into_iter().map(|p| self.parameter(p)).collect();
+                let body = self.statements(body);
+                ExprKind::Closure {
                     parameters,
                     return_type,
                     body,
@@ -402,27 +414,27 @@ impl Desugarer {
                 enum_name,
                 type_args,
                 variant_name,
-            } => ast::ExprKind::EnumVariant {
+            } => ExprKind::EnumVariant {
                 module_path,
                 enum_name,
                 type_args,
                 variant_name,
             },
-            ast::ExprKind::Match { scrutinee, arms } => ast::ExprKind::Match {
+            ast::ExprKind::Match { scrutinee, arms } => ExprKind::Match {
                 scrutinee: Box::new(self.expr(*scrutinee)),
                 arms: arms
                     .into_iter()
-                    .map(|arm| ast::MatchArm {
+                    .map(|arm| MatchArm {
                         pattern: arm.pattern,
                         body: self.expr(arm.body),
                     })
                     .collect(),
             },
-            ast::ExprKind::MatchReflect { ty, arms } => ast::ExprKind::MatchReflect {
+            ast::ExprKind::MatchReflect { ty, arms } => ExprKind::MatchReflect {
                 ty,
                 arms: arms
                     .into_iter()
-                    .map(|arm| ast::ReflectArm {
+                    .map(|arm| ReflectArm {
                         pattern: arm.pattern,
                         body: self.expr(arm.body),
                     })
@@ -434,7 +446,7 @@ impl Desugarer {
                 type_args,
                 arguments,
                 kwargs,
-            } => ast::ExprKind::MethodCall {
+            } => ExprKind::MethodCall {
                 receiver: Box::new(self.expr(*receiver)),
                 method,
                 type_args,
@@ -447,25 +459,13 @@ impl Desugarer {
                     .map(|(name, value)| (name, self.expr(value)))
                     .collect(),
             },
-            ast::ExprKind::TupleLiteral(elements) => ast::ExprKind::TupleLiteral(
+            ast::ExprKind::TupleLiteral(elements) => ExprKind::TupleLiteral(
                 elements
                     .into_iter()
                     .map(|element| self.expr(element))
                     .collect(),
             ),
-            ast::ExprKind::IntrinsicCall {
-                intrinsic,
-                type_args,
-                arguments,
-            } => ast::ExprKind::IntrinsicCall {
-                intrinsic,
-                type_args,
-                arguments: arguments
-                    .into_iter()
-                    .map(|argument| self.expr(argument))
-                    .collect(),
-            },
         };
-        ast::Expr { kind, span }
+        Expr { kind, span }
     }
 }

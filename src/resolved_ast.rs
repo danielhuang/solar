@@ -1,6 +1,6 @@
 //! Name-resolved AST and compiler-supplied definitions.
 
-use crate::ast;
+use crate::desugared_ast as ast;
 use crate::intrinsics::Intrinsic;
 use std::collections::{HashMap, HashSet};
 

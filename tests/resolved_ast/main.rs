@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use solar::ast::{self, TopLevelItem};
+use solar::{ast, desugared_ast::TopLevelItem};
 
 #[test]
 fn numeric_constructors_are_added_once_to_resolver_output() {

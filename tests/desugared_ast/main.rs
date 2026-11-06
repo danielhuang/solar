@@ -1,10 +1,13 @@
-use solar::ast::{self, ExprKind, StatementKind, TopLevelItem};
+use solar::{
+    ast,
+    desugared_ast::{self, Expr, ExprKind, StatementKind, TopLevelItem},
+};
 
 fn parse(source: &str) -> ast::SourceFile {
     solar::parser::parse(source).unwrap()
 }
 
-fn function(items: &[TopLevelItem], index: usize) -> &ast::FunctionDef {
+fn function(items: &[TopLevelItem], index: usize) -> &desugared_ast::FunctionDef {
     let TopLevelItem::Function(function) = &items[index] else {
         panic!("expected function");
     };
@@ -14,7 +17,7 @@ fn function(items: &[TopLevelItem], index: usize) -> &ast::FunctionDef {
 #[test]
 fn tuple_struct_fields_and_access_are_normalized() {
     let surface = parse("struct Pair(Int, Int); fn first(p: Pair) -> Int { p.0 }");
-    let TopLevelItem::Struct(pair) = &surface.items[0] else {
+    let ast::TopLevelItem::Struct(pair) = &surface.items[0] else {
         panic!("expected struct");
     };
     assert_eq!(pair.fields[0].name, "0");
@@ -26,7 +29,7 @@ fn tuple_struct_fields_and_access_are_normalized() {
     assert_eq!(pair.fields[0].name, "_0");
     assert!(matches!(
         &function(&desugared.items, 1).body[0].kind,
-        StatementKind::Expression(ast::Expr {
+        StatementKind::Expression(Expr {
             kind: ExprKind::FieldAccess { field, .. },
             ..
         }) if field == "_0"
@@ -36,9 +39,12 @@ fn tuple_struct_fields_and_access_are_normalized() {
 #[test]
 fn for_helpers_have_synthetic_function_names() {
     let surface = parse("fn main() { for value in values {} }");
-    assert_eq!(function(&surface.items, 0).name, ast::Ident::user("main"));
+    let ast::TopLevelItem::Function(main) = &surface.items[0] else {
+        panic!("expected parsed function")
+    };
+    assert_eq!(main.name, ast::Ident::user("main"));
     let desugared = solar::desugared_ast::lower(&surface);
-    let StatementKind::Expression(ast::Expr {
+    let StatementKind::Expression(Expr {
         kind: ExprKind::Block(body),
         ..
     }) = &function(&desugared.items, 0).body[0].kind

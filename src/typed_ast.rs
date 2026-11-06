@@ -1,7 +1,7 @@
 use crate::error::CompileError;
 use crate::intrinsics::Intrinsic;
 use crate::scope::ScopeStack;
-use crate::{ast, resolved_ast};
+use crate::{desugared_ast as ast, resolved_ast};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -304,9 +304,7 @@ fn apply_subst_to_ast_expr(expr: &ast::Expr, subst: &HashMap<String, ast::Type>)
         | ast::ExprKind::GlobalRef(_)
         | ast::ExprKind::IntegerLiteral(_, _)
         | ast::ExprKind::FloatLiteral(_, _)
-        | ast::ExprKind::BooleanLiteral(_)
-        | ast::ExprKind::StringLiteral(_)
-        | ast::ExprKind::CharLiteral(_) => expr.kind.clone(),
+        | ast::ExprKind::BooleanLiteral(_) => expr.kind.clone(),
         ast::ExprKind::FieldAccess { object, field } => ast::ExprKind::FieldAccess {
             object: Box::new(apply_subst_to_ast_expr(object, subst)),
             field: field.clone(),
@@ -395,10 +393,6 @@ fn apply_subst_to_ast_expr(expr: &ast::Expr, subst: &HashMap<String, ast::Type>)
                 })
                 .collect(),
         },
-        ast::ExprKind::Index { object, index } => ast::ExprKind::Index {
-            object: Box::new(apply_subst_to_ast_expr(object, subst)),
-            index: Box::new(apply_subst_to_ast_expr(index, subst)),
-        },
         ast::ExprKind::Slice { object, start, end } => ast::ExprKind::Slice {
             object: Box::new(apply_subst_to_ast_expr(object, subst)),
             start: Box::new(apply_subst_to_ast_expr(start, subst)),
@@ -449,9 +443,6 @@ fn apply_subst_to_ast_expr(expr: &ast::Expr, subst: &HashMap<String, ast::Type>)
                 .map(|s| apply_subst_to_ast_statement(s, subst))
                 .collect(),
         ),
-        ast::ExprKind::ForIn { .. } | ast::ExprKind::ForRange { .. } | ast::ExprKind::Await(_) => {
-            unreachable!("surface expression reached generic substitution")
-        }
         ast::ExprKind::Loop(stmts) => ast::ExprKind::Loop(
             stmts
                 .iter()
@@ -820,7 +811,7 @@ fn integer_type_ast_name(it: &ast::IntegerType) -> &'static str {
 
 /// Is `e` a literal usable as a keyword-parameter default? Allowed: integer and
 /// boolean literals, and arrays (literal or repeat) of such literals. (Strings
-/// desugar to byte-array literals in the parser, so they're covered too.)
+/// desugar to byte-array literals before name resolution, so they're covered too.)
 fn is_literal_default(e: &ast::Expr) -> bool {
     match &e.kind {
         ast::ExprKind::IntegerLiteral(..)
@@ -6972,9 +6963,6 @@ impl<'a> Lowerer<'a> {
                     span: expr.span,
                 })
             }
-            ast::ExprKind::Index { .. } => {
-                unreachable!("surface indexing reached typed AST lowering")
-            }
             ast::ExprKind::Slice { object, start, end } => {
                 let obj = self.lower_expr(object)?;
                 let elem_ty = Self::array_inner(&obj.ty)
@@ -7433,11 +7421,6 @@ impl<'a> Lowerer<'a> {
                     span: expr.span,
                 })
             }
-            ast::ExprKind::ForIn { .. }
-            | ast::ExprKind::ForRange { .. }
-            | ast::ExprKind::Await(_) => {
-                unreachable!("surface expression reached typed AST lowering")
-            }
             ast::ExprKind::Loop(stmts) => {
                 self.push_scope();
                 self.loop_ctx.push(LoopCtx {
@@ -7482,9 +7465,6 @@ impl<'a> Lowerer<'a> {
                 type_args,
                 arguments,
             } => self.lower_intrinsic_call(expr.span, intrinsic, type_args, arguments),
-            ast::ExprKind::StringLiteral(_) | ast::ExprKind::CharLiteral(_) => {
-                unreachable!("surface literal reached typed AST lowering")
-            }
         }
     }
 

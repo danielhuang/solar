@@ -2,7 +2,8 @@
 
 use serde_json::{Value, json};
 use solar::{
-    ast::{self, SourceSpan},
+    ast::{self as parsed_ast, SourceSpan},
+    desugared_ast as ast,
     error::{CompileError, SourceMap},
     fmt::format_source,
     intrinsics::Intrinsic,
@@ -1594,7 +1595,7 @@ fn ordinary_completions(
 
     if let Ok(parsed) = solar::parser::parse(source) {
         for item in parsed.items {
-            let ast::TopLevelItem::Import(import) = item else {
+            let parsed_ast::TopLevelItem::Import(import) = item else {
                 continue;
             };
             let ast::ImportKind::Module(alias) = import.kind else {
@@ -2919,7 +2920,7 @@ fn span_key_contains(outer: SpanKey, inner: SpanKey) -> bool {
 }
 
 fn collect_docs(ast: &solar::resolved_ast::SourceFile) -> HashMap<SpanKey, String> {
-    use solar::ast::TopLevelItem;
+    use solar::desugared_ast::TopLevelItem;
     let mut docs = HashMap::new();
     for item in &ast.items {
         let (span, doc) = match item {
@@ -2944,7 +2945,7 @@ fn collect_signatures(
     ast: &solar::resolved_ast::SourceFile,
     source_map: &SourceMap,
 ) -> HashMap<SpanKey, String> {
-    use solar::ast::TopLevelItem;
+    use solar::desugared_ast::TopLevelItem;
     let mut signatures = HashMap::new();
     for item in &ast.items {
         match item {
@@ -4396,7 +4397,7 @@ fn collect_completion_catalog(
     source_map: &SourceMap,
     signatures: &HashMap<SpanKey, String>,
 ) -> CompletionCatalog {
-    use solar::ast::TopLevelItem;
+    use solar::desugared_ast::TopLevelItem;
     let visible_defs = visible_completion_defs(source_map);
     let mut symbols = Vec::new();
     let mut fields = HashMap::<ast::DefId, Vec<CompletionField>>::new();
@@ -4713,7 +4714,7 @@ fn collect_definition_catalog(
     ast: &solar::resolved_ast::SourceFile,
     root_file: Option<u32>,
 ) -> DefinitionCatalog {
-    use solar::ast::TopLevelItem;
+    use solar::desugared_ast::TopLevelItem;
     let mut out = DefinitionCatalog::default();
     for item in &ast.items {
         match item {

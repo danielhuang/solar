@@ -1,6 +1,6 @@
 //! Iteration through ordinary overlapping functions and value-producing loops.
 
-use super::{Desugarer, ast};
+use super::{self as ast, Desugarer};
 use ast::{ExprKind as E, StatementKind as S};
 
 impl Desugarer {

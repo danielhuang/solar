@@ -683,7 +683,6 @@ fn statement_has_block(statement: &Statement) -> bool {
         statement.kind,
         StatementKind::If { .. }
             | StatementKind::While { .. }
-            | StatementKind::ForRange { .. }
             | StatementKind::Try { .. }
             | StatementKind::ForReflectFields { .. }
             | StatementKind::MatchReflectVariant { .. }
@@ -750,22 +749,6 @@ fn statement_doc(statement: &Statement, context: &SourceContext<'_>) -> Doc {
         StatementKind::While { condition, body } => Doc::concat([
             Doc::text("while "),
             expr_doc(condition, context),
-            Doc::text(" "),
-            block_doc(body, statement.span, context),
-        ])
-        .group(),
-        StatementKind::ForRange {
-            variable,
-            start,
-            end,
-            body,
-        } => Doc::concat([
-            Doc::text("for "),
-            ident_doc(variable),
-            Doc::text(" in "),
-            expr_doc(start, context),
-            Doc::text(".."),
-            expr_doc(end, context),
             Doc::text(" "),
             block_doc(body, statement.span, context),
         ])
@@ -868,7 +851,6 @@ fn statement_doc(statement: &Statement, context: &SourceContext<'_>) -> Doc {
 fn expr_doc(expression: &Expr, context: &SourceContext<'_>) -> Doc {
     let doc = match &expression.kind {
         ExprKind::Identifier(identifier) => ident_doc(identifier),
-        ExprKind::GlobalRef(definition) => Doc::text(definition.name.as_str()),
         ExprKind::AssociatedFunction { ty, name } => {
             Doc::concat([type_doc(ty), Doc::text("::"), Doc::text(name)])
         }
@@ -1117,15 +1099,6 @@ fn expr_doc(expression: &Expr, context: &SourceContext<'_>) -> Doc {
             argument_list(arguments, kwargs, context),
         ]),
         ExprKind::TupleLiteral(elements) => expression_list(elements, "(", ")", context),
-        ExprKind::IntrinsicCall {
-            intrinsic,
-            type_args,
-            arguments,
-        } => Doc::concat([
-            Doc::text(intrinsic.name()),
-            type_arguments(type_args),
-            expression_list(arguments, "(", ")", context),
-        ]),
     };
     wrap_parentheses(expression, doc, context)
 }
@@ -1207,9 +1180,6 @@ fn expression_is_huggable_block(expression: &Expr) -> bool {
             ([], [(_, value)]) => expression_is_huggable_block(value),
             _ => false,
         },
-        ExprKind::IntrinsicCall { arguments, .. } => {
-            matches!(arguments.as_slice(), [argument] if expression_is_huggable_block(argument))
-        }
         _ => false,
     }
 }
