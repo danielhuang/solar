@@ -351,23 +351,96 @@ impl Lowerer<'_> {
                 span,
             ));
         }
+        self.record_coroutine_yield(&value.ty, span)?;
+        Ok(Expr {
+            ty: self.coroutine_context.as_ref().unwrap().resume.clone(),
+            kind: ExprKind::Yield(Box::new(value)),
+            span,
+        })
+    }
+
+    fn record_coroutine_yield(
+        &mut self,
+        yielded: &Type,
+        span: ast::SourceSpan,
+    ) -> Result<(), CompileError> {
         let ctx = self.coroutine_context.as_mut().unwrap();
-        if value.ty != Type::Never {
+        if *yielded != Type::Never {
             if let Some(ty) = &ctx.yielded {
-                if *ty != value.ty {
+                if ty != yielded {
                     return Err(CompileError::new(
-                        format!("yield type mismatch: expected {ty}, got {}", value.ty),
+                        format!("yield type mismatch: expected {ty}, got {yielded}"),
                         span,
                     ));
                 }
             } else {
-                ctx.yielded = Some(value.ty.clone());
+                ctx.yielded = Some(yielded.clone());
             }
         }
         self.coroutine_types.get_mut(&ctx.id).unwrap().yielded = ctx.yielded.clone();
+        Ok(())
+    }
+
+    pub(super) fn lower_await(
+        &mut self,
+        span: ast::SourceSpan,
+        value: &ast::Expr,
+    ) -> Result<Expr, CompileError> {
+        if self.coroutine_context.is_none() {
+            return Err(CompileError::new(
+                "await is only allowed inside a coroutine body".into(),
+                span,
+            ));
+        }
+        let value = self.lower_expr(value)?;
+        if value.ty == Type::Never {
+            return Ok(value);
+        }
+        let info = match &value.ty {
+            Type::Struct(id) => self
+                .coroutine_types
+                .get(id)
+                .map(|info| (id.clone(), info.clone())),
+            _ => None,
+        };
+        let Some((id, info)) = info else {
+            return Err(CompileError::new(
+                format!("await requires an owned coroutine value, got {}", value.ty),
+                span,
+            ));
+        };
+        // An unfinished factory is on the current lowering stack. Awaiting its
+        // result would close an inline frame cycle, including mutual recursion.
+        // Reject it before asking for inferred types or constructing its layout.
+        if info.initial.is_none() {
+            return Err(CompileError::new(
+                "recursive await is not allowed: the coroutine would contain itself inline".into(),
+                span,
+            ));
+        }
+        if info.resume.is_some() {
+            return Err(CompileError::new(
+                "await requires a coroutine without a resume parameter".into(),
+                span,
+            ));
+        }
+        let yielded = info.yielded.unwrap();
+        let returned = info.returned.unwrap();
+        self.record_coroutine_yield(&yielded, span)?;
+        let outcome = self.ensure_enum_monomorphized(
+            &DefId::new(ast::STDLIB_FILE, "CoroutineState"),
+            &[
+                self.concrete_type_to_ast_type(&yielded),
+                self.concrete_type_to_ast_type(&returned),
+            ],
+        )?;
         Ok(Expr {
-            ty: ctx.resume.clone(),
-            kind: ExprKind::Yield(Box::new(value)),
+            ty: returned,
+            kind: ExprKind::Await {
+                coroutine: Box::new(value),
+                resume: self.coroutine_method_id(&id, "resume"),
+                outcome,
+            },
             span,
         })
     }
@@ -1071,8 +1144,7 @@ impl<'a, 'b> Machine<'a, 'b> {
         if value.ty == Type::Never {
             return;
         }
-        // Read the return value before clearing persistent storage. A returned
-        // reference already points to separately allocated, escaping storage.
+        // Evaluate the completion value before marking the frame complete.
         let name = ast::Ident::synthetic(format!(
             "coroutine_complete_{}_{}",
             self.current,
@@ -1089,17 +1161,6 @@ impl<'a, 'b> Machine<'a, 'b> {
             value,
         });
         self.set_state(-1);
-        for field in self.fields.clone() {
-            if matches!(
-                &field.value.kind,
-                ExprKind::IntrinsicCall {
-                    intrinsic: Intrinsic::Zeroed,
-                    ..
-                }
-            ) {
-                self.assign(self.field(&field.name, field.value.ty.clone()), field.value);
-            }
-        }
         self.emit(StatementKind::Return(enum_variant(
             &self.outcome,
             "Complete",
@@ -1266,6 +1327,21 @@ impl<'a, 'b> Machine<'a, 'b> {
         let span = source.span;
         let ty = source.ty.clone();
         let kind = match &source.kind {
+            ExprKind::Await {
+                coroutine,
+                resume,
+                outcome,
+            } => {
+                let value = self.await_coroutine(coroutine, resume, outcome, &ty);
+                // References to earlier results must survive later executions
+                // of this await in a loop, which reuse the frame's result slot.
+                // Only the explicitly borrowed result needs fresh storage.
+                return if place {
+                    self.boxed(value, "await_result")
+                } else {
+                    value
+                };
+            }
             ExprKind::Yield(value) => {
                 let value = self.expression(value, false);
                 let next = self.block();
@@ -1488,6 +1564,95 @@ impl<'a, 'b> Machine<'a, 'b> {
             self.save(value)
         }
     }
+    fn await_coroutine(
+        &mut self,
+        coroutine: &Expr,
+        resume: &FuncId,
+        outcome: &TypeId,
+        returned: &Type,
+    ) -> Expr {
+        let value = self.expression(coroutine, false);
+        // This slot owns the child. Passing its address to resume must not turn
+        // it into an address-taken source local with separate boxed storage.
+        let child = self.named_slot(&value.ty, "await");
+        self.store(child.clone(), value);
+        let result = (*returned != Type::Unit).then(|| self.slot(returned));
+        let advance = self.block();
+        let end = self.block();
+        self.jump(advance);
+        self.current = advance;
+        let state = self.lowerer.lowered_enums[outcome].clone();
+        let mut arms = Vec::new();
+        for variant in &state.variants {
+            let name = ast::Ident::synthetic(format!("await_{}_{}", variant.name, advance));
+            let ty = variant.inner_type.clone().unwrap();
+            let value = expr(ty.clone(), ExprKind::Identifier(name.clone()), self.span);
+            let body = if variant.name == "Yield" {
+                vec![
+                    statement(
+                        StatementKind::Assignment {
+                            target: self.state(),
+                            value: expr(
+                                Type::Int,
+                                ExprKind::IntegerLiteral(advance as i64),
+                                self.span,
+                            ),
+                        },
+                        self.span,
+                    ),
+                    statement(
+                        StatementKind::Return(enum_variant(
+                            &self.outcome,
+                            "Yield",
+                            Some(value),
+                            self.span,
+                        )),
+                        self.span,
+                    ),
+                ]
+            } else {
+                let mut body = Vec::new();
+                if let Some(result) = &result {
+                    body.push(statement(
+                        StatementKind::Assignment {
+                            target: deref(result.clone()),
+                            value,
+                        },
+                        self.span,
+                    ));
+                }
+                body.extend(self.jump_body(end));
+                body
+            };
+            arms.push(TypedMatchArm {
+                pattern: TypedPattern::Variant {
+                    enum_id: outcome.clone(),
+                    variant_name: variant.name.clone(),
+                    variant_index: variant.index,
+                    binding: Some((name, ty)),
+                },
+                body,
+            });
+        }
+        self.emit(StatementKind::Expression(expr(
+            Type::Never,
+            ExprKind::Match {
+                scrutinee: Box::new(expr(
+                    Type::Enum(outcome.clone()),
+                    ExprKind::Call {
+                        function: resume.clone(),
+                        arguments: vec![child],
+                    },
+                    self.span,
+                )),
+                arms,
+            },
+            self.span,
+        )));
+        self.current = end;
+        result.map(deref).unwrap_or_else(|| unit(self.span))
+    }
+
     fn match_expr(
         &mut self,
         scrutinee: &Expr,
@@ -1724,14 +1889,6 @@ impl<'a, 'b> Machine<'a, 'b> {
         handler: Expr,
     ) -> (Vec<Statement>, Vec<FunctionDef>) {
         let result = deref(self.named_slot(&Type::Enum(self.outcome.id.clone()), "result"));
-        let result_field = self.fields.last().unwrap().clone();
-        let clear_result = statement(
-            StatementKind::Assignment {
-                target: self.field(&result_field.name, result_field.value.ty.clone()),
-                value: result_field.value,
-            },
-            self.span,
-        );
         let paused = self.add_field(
             expr(Type::Bool, ExprKind::BooleanLiteral(false), self.span),
             "paused",
@@ -1837,7 +1994,6 @@ impl<'a, 'b> Machine<'a, 'b> {
                         },
                         self.span,
                     ),
-                    clear_result.clone(),
                     statement(
                         StatementKind::Expression(expr(
                             Type::Unit,
@@ -1853,27 +2009,7 @@ impl<'a, 'b> Machine<'a, 'b> {
                     statement(
                         StatementKind::If {
                             condition: paused,
-                            body: vec![
-                                statement(
-                                    StatementKind::Let {
-                                        name: ast::Ident::synthetic("coroutine_result"),
-                                        ty: result.ty.clone(),
-                                        value: result.clone(),
-                                    },
-                                    self.span,
-                                ),
-                                clear_result,
-                                statement(
-                                    StatementKind::Return(expr(
-                                        result.ty,
-                                        ExprKind::Identifier(ast::Ident::synthetic(
-                                            "coroutine_result",
-                                        )),
-                                        self.span,
-                                    )),
-                                    self.span,
-                                ),
-                            ],
+                            body: vec![statement(StatementKind::Return(result), self.span)],
                             else_body: Vec::new(),
                         },
                         self.span,
@@ -1933,7 +2069,10 @@ fn address_taken(body: &[Statement]) -> HashSet<ast::Ident> {
             ExprKind::Deref(value)
             | ExprKind::Unique(value)
             | ExprKind::Not(value)
-            | ExprKind::Yield(value) => expression(value, false, names),
+            | ExprKind::Yield(value)
+            | ExprKind::Await {
+                coroutine: value, ..
+            } => expression(value, false, names),
             ExprKind::ArraySizeCoerce { expr, .. } => expression(expr, address, names),
             ExprKind::Index { object, index } => {
                 expression(object, address, names);

@@ -2119,6 +2119,9 @@ fn collect_expression_type(
         | ExprKind::Reference(object)
         | ExprKind::Unique(object)
         | ExprKind::Yield(object)
+        | ExprKind::Await {
+            coroutine: object, ..
+        }
         | ExprKind::Not(object)
         | ExprKind::ArraySizeCoerce { expr: object, .. } => {
             collect_expression_type(object, target, out)
@@ -3810,6 +3813,9 @@ impl DefFinder<'_> {
             | ExprKind::Reference(object)
             | ExprKind::Unique(object)
             | ExprKind::Yield(object)
+            | ExprKind::Await {
+                coroutine: object, ..
+            }
             | ExprKind::Not(object)
             | ExprKind::ArraySizeCoerce { expr: object, .. } => self.walk_expr(object),
             ExprKind::Index { object, index } => {
@@ -5132,6 +5138,9 @@ impl BindingSignatureCollector<'_> {
             | ExprKind::Reference(object)
             | ExprKind::Unique(object)
             | ExprKind::Yield(object)
+            | ExprKind::Await {
+                coroutine: object, ..
+            }
             | ExprKind::Not(object)
             | ExprKind::ArraySizeCoerce { expr: object, .. } => self.walk_expr(object),
             ExprKind::Index { object, index } => {
@@ -5360,6 +5369,9 @@ fn collect_expr_overlays(
         | ExprKind::Reference(object)
         | ExprKind::Unique(object)
         | ExprKind::Yield(object)
+        | ExprKind::Await {
+            coroutine: object, ..
+        }
         | ExprKind::Not(object)
         | ExprKind::ArraySizeCoerce { expr: object, .. } => {
             collect_expr_overlays(object, file_id, overlays)

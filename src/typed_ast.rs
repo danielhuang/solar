@@ -466,6 +466,9 @@ fn apply_subst_to_ast_expr(expr: &ast::Expr, subst: &HashMap<String, ast::Type>)
         ast::ExprKind::Yield(value) => {
             ast::ExprKind::Yield(Box::new(apply_subst_to_ast_expr(value, subst)))
         }
+        ast::ExprKind::Await(value) => {
+            ast::ExprKind::Await(Box::new(apply_subst_to_ast_expr(value, subst)))
+        }
         ast::ExprKind::Closure {
             parameters,
             return_type,
@@ -1152,6 +1155,12 @@ pub struct Expr {
 pub enum ExprKind {
     /// Temporary suspension marker, eliminated by coroutine lowering.
     Yield(Box<Expr>),
+    /// Owned child coroutine awaiting inline frame storage and suspension lowering.
+    Await {
+        coroutine: Box<Expr>,
+        resume: FuncId,
+        outcome: TypeId,
+    },
     Identifier(ast::Ident),
     /// A float literal; the expression's `ty` selects Float32/Float64.
     FloatLiteral(f64),
@@ -4468,7 +4477,7 @@ impl<'a> Lowerer<'a> {
         // synthetic functions belonging to the discarded body become orphans
         // (no surviving `Closure` expr references them) and are skipped by IR
         // lowering.
-        let lowered = self.lower_function(&func_def, name)?;
+        let lowered = self.lower_function(&func_def, name);
         self.scopes = saved_scopes;
         self.unsafe_function_scopes = saved_unsafe_function_scopes;
         self.current_return_type = saved_return_type;
@@ -4476,6 +4485,9 @@ impl<'a> Lowerer<'a> {
         self.capture_contexts = saved_capture_contexts;
         self.nested_function_defs = saved_nested;
         self.resolving_return_types.pop();
+        // Restore the caller's scopes even when lazy lowering rejects a
+        // recursive await, so its coroutine can propagate the diagnostic.
+        let lowered = lowered?;
         let ret_ty = lowered.return_type.clone();
         self.resolved_return_types
             .insert(name.clone(), ret_ty.clone());
@@ -7448,6 +7460,7 @@ impl<'a> Lowerer<'a> {
                 self.lower_coroutine(expr.span, parameter.as_deref(), body)
             }
             ast::ExprKind::Yield(value) => self.lower_yield(expr.span, value),
+            ast::ExprKind::Await(value) => self.lower_await(expr.span, value),
             ast::ExprKind::Closure {
                 parameters,
                 return_type,

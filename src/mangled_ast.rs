@@ -615,7 +615,9 @@ impl Renderer<'_> {
     fn conv_expr_kind(&self, k: &ta::ExprKind) -> ExprKind {
         use ta::ExprKind as K;
         match k {
-            K::Yield(_) => unreachable!("coroutine lowering removes suspension markers"),
+            K::Yield(_) | K::Await { .. } => {
+                unreachable!("coroutine lowering removes suspension markers")
+            }
             K::Identifier(name) => ExprKind::Identifier(self.ident_name(name)),
             K::FloatLiteral(v) => ExprKind::FloatLiteral(*v),
             K::Global(def) => ExprKind::Global(self.base_name(def)),

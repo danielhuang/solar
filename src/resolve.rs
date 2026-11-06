@@ -1565,7 +1565,7 @@ fn rewrite_expr(expr: &mut Expr, ctx: &RewriteCtx, locals: &HashSet<Ident>) {
             }
             rewrite_statements(body, ctx, &mut coroutine_locals);
         }
-        ExprKind::Yield(value) => rewrite_expr(value, ctx, locals),
+        ExprKind::Yield(value) | ExprKind::Await(value) => rewrite_expr(value, ctx, locals),
         ExprKind::Closure {
             parameters,
             return_type,

@@ -276,6 +276,8 @@ pub enum ExprKind {
     },
     /// Suspend the nearest coroutine and produce its next resume argument.
     Yield(Box<Expr>),
+    /// Delegate to an owned coroutine; its inline storage is assigned during coroutine lowering.
+    Await(Box<Expr>),
     EnumVariant {
         module_path: Vec<String>,
         enum_name: DefId,

@@ -18,11 +18,6 @@ pub(super) fn localize_temporaries(machine: &mut Machine<'_, '_>) {
     }
     for (index, block) in machine.blocks.iter_mut().enumerate() {
         for stmt in block {
-            // Completion clears storage without reading it. It must not turn
-            // every temporary into a value shared with the completion block.
-            if cleared_field(stmt, &machine.frame_name).is_some() {
-                continue;
-            }
             visit_statement(stmt, &mut |e| {
                 if let Some(name) = temporary_field(e, &machine.frame_name) {
                     uses.entry(name.to_owned()).or_default().insert(index);
@@ -73,9 +68,6 @@ pub(super) fn localize_temporaries(machine: &mut Machine<'_, '_>) {
         false
     });
     for (block, mut declarations) in machine.blocks.iter_mut().zip(declarations) {
-        block.retain(|s| {
-            !cleared_field(s, &machine.frame_name).is_some_and(|name| promoted.contains_key(name))
-        });
         visit_body(block, &mut |e| {
             if let Some(name) = temporary_field(e, &machine.frame_name)
                 && let Some(local) = promoted.get(name)
@@ -95,22 +87,6 @@ fn temporary_field<'a>(e: &'a Expr, frame_name: &ast::Ident) -> Option<&'a str> 
         && matches!(&base.kind, ExprKind::Identifier(name) if name == frame_name)
     {
         Some(field)
-    } else {
-        None
-    }
-}
-
-fn cleared_field<'a>(s: &'a Statement, frame_name: &ast::Ident) -> Option<&'a str> {
-    if let StatementKind::Assignment { target, value } = &s.kind
-        && matches!(
-            value.kind,
-            ExprKind::IntrinsicCall {
-                intrinsic: Intrinsic::Zeroed,
-                ..
-            }
-        )
-    {
-        temporary_field(target, frame_name)
     } else {
         None
     }
@@ -161,6 +137,9 @@ fn visit_expr(e: &mut Expr, visit: &mut impl FnMut(&mut Expr)) {
         | ExprKind::Unique(object)
         | ExprKind::Not(object)
         | ExprKind::Yield(object)
+        | ExprKind::Await {
+            coroutine: object, ..
+        }
         | ExprKind::ArraySizeCoerce { expr: object, .. } => visit_expr(object, visit),
         ExprKind::Call { arguments, .. } | ExprKind::IntrinsicCall { arguments, .. } => {
             for e in arguments {

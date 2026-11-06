@@ -42,14 +42,6 @@ fn source(created: &Int, effects: &Int) {
 	}
 }
 
-fn recursive(n: Int) {
-	coroutine {
-		if n == 0 { return 0; }
-		yield n;
-		n + await recursive(n - 1)
-	}
-}
-
 fn main() {
 	let created = 0;
 	let effects = 0;
@@ -68,10 +60,9 @@ fn main() {
 	closed(\ { parent.resume(); });
 
 	let inner = coroutine { yield 3; 99 };
-	let outer = forward(inner&);
+	let outer = forward(inner);
 	assert(outer.next().unwrap() == 3);
 	assert(completed(outer.resume()) == 99);
-	closed(\ { inner.resume(); });
 	let empty = forward(coroutine { 37 });
 	assert(completed(empty.resume()) == 37);
 
@@ -87,15 +78,25 @@ fn main() {
 	};
 	assert(nested.next().unwrap() == 6);
 	assert(completed(nested.resume()) == 42);
-	let recursive = recursive(3);
-	assert(recursive.next().unwrap() == 3);
-	assert(recursive.next().unwrap() == 2);
-	assert(recursive.next().unwrap() == 1);
-	assert(completed(recursive.resume()) == 6);
+	let repeated = coroutine {
+		let total = 0;
 
-	let ordinary = coroutine { await [10, 20] };
-	assert(ordinary.next().unwrap()@ == 10);
-	assert(ordinary.next().unwrap()@ == 20);
+		for n in 0..3 {
+			total = total + await coroutine { yield n; n + 1 };
+		}
+
+		total
+	};
+	assert(repeated.next().unwrap() == 0);
+	assert(repeated.next().unwrap() == 1);
+	assert(repeated.next().unwrap() == 2);
+	assert(completed(repeated.resume()) == 6);
+
+	let ordinary = coroutine {
+		await coroutine { for value in [10, 20] { yield value@; } }
+	};
+	assert(ordinary.next().unwrap() == 10);
+	assert(ordinary.next().unwrap() == 20);
 	let unit: () = completed(ordinary.resume());
 	let discarded = coroutine { await coroutine { yield 7; 99 }; };
 	assert(discarded.next().unwrap() == 7);
@@ -126,5 +127,48 @@ fn main() {
 	assert(recovered.next().unwrap() == 10);
 	assert(recovered.next().unwrap() == 11);
 	assert(completed(recovered.resume()) == 123);
+	let unit_yield = coroutine { await coroutine { yield (); } };
+	let unit: () = unit_yield.next().unwrap();
+	let unit: () = completed(unit_yield.resume());
+
+	let infinite = coroutine { await coroutine { loop { yield 12; } } };
+	assert(infinite.next().unwrap() == 12);
+	assert(infinite.next().unwrap() == 12);
+
+	let reference = coroutine {
+		let result = await coroutine { let local = 13; yield 13; local& };
+		yield result@;
+		result
+	};
+	assert(reference.next().unwrap() == 13);
+	assert(reference.next().unwrap() == 13);
+	assert(completed(reference.resume())@ == 13);
+	let result_reference = coroutine { (await coroutine { yield 15; 42 })& };
+	assert(result_reference.next().unwrap() == 15);
+	assert(completed(result_reference.resume())@ == 42);
+	let result_references = coroutine {
+		for n in 1..3 {
+			yield (await coroutine { if false { yield n&; } n })&;
+		}
+	};
+	let first = result_references.next().unwrap();
+	let second = result_references.next().unwrap();
+	assert(result_references.next().is_none());
+	assert(first@ == 1);
+	assert(second@ == 2);
+
+	let failing = coroutine {
+		await coroutine { yield 14; throw("await failure"&); }
+	};
+	assert(failing.next().unwrap() == 14);
+	let caught = false;
+
+	try { failing.resume(); } catch (error) {
+		assert(error.message@ == "await failure");
+		caught = true;
+	}
+
+	assert(caught);
+	closed(\ { failing.resume(); });
 	println("passed"&);
 }

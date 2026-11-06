@@ -3,6 +3,73 @@
 use solar::typed_ast::{Type, TypeId};
 
 #[test]
+fn awaited_coroutines_are_stored_inline_in_the_parent_frame() {
+    let directory = tempdir::TempDir::new("solar-inline-await").unwrap();
+    let path = directory.path().join("main.solar");
+    std::fs::write(
+        &path,
+        r#"
+fn child() { coroutine { yield 1; 2 } }
+fn parent() { coroutine { await child() } }
+fn outer() { coroutine { await parent() } }
+fn main() { let g = outer(); g.resume(); }
+"#,
+    )
+    .unwrap();
+    let typed = solar::pipeline::compile(&path).unwrap().typed;
+    let frame = |name: &str| {
+        let function = typed
+            .functions
+            .values()
+            .find(|f| f.id.def.name == name)
+            .unwrap();
+        let Type::Struct(id) = &function.return_type else {
+            panic!("expected coroutine")
+        };
+        &typed.structs[id]
+    };
+    for (parent, child) in [("parent", "child"), ("outer", "parent")] {
+        let parent = frame(parent);
+        let child = Type::Struct(frame(child).id.clone());
+        let fields: Vec<_> = parent
+            .fields
+            .iter()
+            .filter(|f| f.name.starts_with("await_"))
+            .collect();
+        assert_eq!(fields.len(), 1, "{:?}", parent.fields);
+        let Type::Struct(storage) = &fields[0].ty else {
+            panic!("expected inline storage")
+        };
+        assert_eq!(storage.def.name, "MaybeZeroed");
+        assert_eq!(storage.args, vec![child.clone()]);
+        assert_eq!(typed.structs[storage].fields[0].ty, child);
+    }
+}
+
+#[test]
+fn recursive_awaits_are_rejected_before_frame_layout() {
+    let directory = tempdir::TempDir::new("solar-recursive-await").unwrap();
+    let path = directory.path().join("main.solar");
+    for source in [
+        "fn recursive(n: Int) { coroutine { if n == 0 { return 0; } yield n; n + await recursive(n - 1) } } fn main() {}",
+        "fn recursive() { coroutine { await recursive() } } fn main() {}",
+        "fn first() { coroutine { await second() } } fn second() { coroutine { await first() } } fn main() {}",
+        "fn recursive#[T](value: T) { coroutine { yield value; await recursive(value) } } fn main() { recursive(1); }",
+        "fn recursive() { coroutine { await coroutine { await recursive() } } } fn main() {}",
+    ] {
+        std::fs::write(&path, source).unwrap();
+        let Err((errors, _)) = solar::pipeline::compile(&path) else {
+            panic!("accepted recursive await: {source}");
+        };
+        fn recursive_await(error: &solar::error::CompileError) -> bool {
+            error.message.contains("recursive await is not allowed")
+                || error.caused_by.as_deref().is_some_and(recursive_await)
+        }
+        assert!(errors.iter().any(recursive_await), "{source}: {errors:?}");
+    }
+}
+
+#[test]
 fn coroutine_loop_keeps_short_lived_temporaries_out_of_the_frame() {
     let directory = tempdir::TempDir::new("solar-coroutine-local-temps").unwrap();
     let path = directory.path().join("main.solar");

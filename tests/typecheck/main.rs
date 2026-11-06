@@ -222,11 +222,11 @@ fn await_type_errors() {
     for (body, expected) in [
         (
             "await coroutine { yield 1; 42 };",
-            "yield is only allowed inside a coroutine body",
+            "await is only allowed inside a coroutine body",
         ),
         (
             "let g = coroutine { let f = \\ { await coroutine { yield 1; 42 }; }; };",
-            "yield is only allowed inside a coroutine body",
+            "await is only allowed inside a coroutine body",
         ),
         (
             "let g = coroutine { yield true; await coroutine { yield 1; 42 } };",
@@ -238,7 +238,19 @@ fn await_type_errors() {
         ),
         (
             "let g = coroutine { await coroutine (input: Int) { yield input; 42 } };",
-            "only coroutines without a resume parameter can be iterated",
+            "await requires a coroutine without a resume parameter",
+        ),
+        (
+            "let inner = coroutine { yield 1; 42 }; let outer = coroutine { await inner& };",
+            "await requires an owned coroutine value",
+        ),
+        (
+            "let inner = coroutine { yield 1; 42 }; let outer = coroutine { await inner^ };",
+            "await requires an owned coroutine value",
+        ),
+        (
+            "let outer = coroutine { await [1, 2] };",
+            "await requires an owned coroutine value",
         ),
     ] {
         std::fs::write(&path, format!("fn main() {{ {body} }}")).unwrap();

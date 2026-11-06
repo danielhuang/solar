@@ -358,7 +358,8 @@ fn main() {
 	};
 	println(completed); // 42
 
-	// await forwards an inner coroutine's yields and preserves its return value.
+	// await stores an owned child coroutine inline and forwards its yields.
+	// The expression evaluates to the child's return value.
 	let delegated = coroutine { await coroutine { yield 9; 40 } + 2 };
 	let delegated_result = for value in delegated { println(value); }; // 9
 	println(delegated_result); // 42
