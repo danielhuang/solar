@@ -56,6 +56,78 @@ fn old_unit_name_is_not_a_builtin() {
 }
 
 #[test]
+fn overlap_requires_opt_in_and_preserves_errors() {
+    let directory = tempdir::TempDir::new("solar-overlap-errors").unwrap();
+    let path = directory.path().join("main.solar");
+    for (source, expected) in [
+        (
+            "fn pick(x: Int) {} fn(overlap) pick(x: Int) {} fn main() {}",
+            "must have `overlap`",
+        ),
+        (
+            "fn(overlap) pick(x: Int) {} fn pick(x: Int) {} fn main() {}",
+            "must have `overlap`",
+        ),
+        (
+            "fn pick#[T](x: T) {} fn(overlap) pick#[U](x: U) {} fn main() {}",
+            "must have `overlap`",
+        ),
+        (
+            "struct S {} method pick(self: S) {} method(overlap) pick(self: S) {} fn main() {}",
+            "must have `overlap`",
+        ),
+        (
+            "struct S#[T] { value: T } method(overlap) pick#[T](self: S#[T]) {} method pick#[U](self: S#[U]) {} fn main() {}",
+            "must have `overlap`",
+        ),
+        (
+            "struct S#[T] { value: T } fn(overlap)#[T] S#[T]::pick(x: T) {} fn#[U] S#[U]::pick(x: U) {} fn main() {}",
+            "must have `overlap`",
+        ),
+        (
+            "fn main() { fn(overlap) pick#[T](x: T) {} fn pick#[U](x: U) {} }",
+            "must have `overlap`",
+        ),
+        (
+            "method(overlap) pick#[T](self: T) {} fn main() {}",
+            "must use a type defined in the same file",
+        ),
+        (
+            "fn(overlap) pick#[T](x: T) -> Int { x.first_missing() } fn(overlap) pick#[U](x: U) -> Int { x.last_missing() } fn main() { pick(false); }",
+            "last_missing",
+        ),
+        (
+            "struct S#[T] { value: T } fn pick#[T](x: S#[T]) { x.value.missing(); } fn(overlap) pick#[T](x: T) {} fn main() { pick(S#[Int] { value: 1 }); }",
+            "missing",
+        ),
+        (
+            "fn(overlap) pick#[T](x: T) {} unsafe fn(overlap) pick#[T](x: T) {} fn main() { pick(1); }",
+            "requires an unsafe block",
+        ),
+        (
+            "struct S {} method(overlap) pick(self: S) {} method(ext) pick(self: S) {} fn main() { (S {}).pick(); }",
+            "conflicting extension method",
+        ),
+        (
+            "struct S {} method(overlap) pick#[T](self: S, value: T) {} method(ext) pick(self: S, value: Int) {} fn main() { (S {}).pick(1); }",
+            "conflicting extension method",
+        ),
+    ] {
+        std::fs::write(&path, source).unwrap();
+        let (errors, _) = solar::pipeline::compile(&path).err().unwrap();
+        let messages = errors
+            .iter()
+            .map(error_chain)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            messages.contains(expected),
+            "{source}\nexpected {expected}, got {messages}"
+        );
+    }
+}
+
+#[test]
 fn coroutine_type_errors() {
     let directory = tempdir::TempDir::new("solar-coroutine-types").unwrap();
     let path = directory.path().join("main.solar");

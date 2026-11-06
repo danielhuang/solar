@@ -214,6 +214,7 @@ impl Lowerer<'_> {
             is_unsafe: false,
             inline_hint: false,
             is_extension: false,
+            is_overlap: false,
             doc: Some(if name == "resume" {
                 "Advances to Yield or Complete. Throws if already completed or running.".into()
             } else {
@@ -223,6 +224,7 @@ impl Lowerer<'_> {
         });
         let entries = self.method_defs.entry(name.clone()).or_default();
         entries.push(FunctionEntry {
+            owner_specificity: Vec::new(),
             associated_type_params: Vec::new(),
             type_params: Vec::new(),
             out_type_param_count: 0,

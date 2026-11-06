@@ -8,6 +8,7 @@ use std::fmt;
 use std::rc::Rc;
 
 mod coroutine;
+mod overlap;
 
 /// Source-level definition identity.
 pub use crate::ast::DefId;
@@ -745,6 +746,7 @@ fn apply_subst_to_ast_statement(
                 is_unsafe: fdef.is_unsafe,
                 inline_hint: fdef.inline_hint,
                 is_extension: fdef.is_extension,
+                is_overlap: fdef.is_overlap,
                 doc: fdef.doc.clone(),
                 span: fdef.span,
             })
@@ -1331,6 +1333,8 @@ struct GenericEnumDef {
 
 #[derive(Clone)]
 struct FunctionEntry {
+    /// Specificity of the associated owner before substituting its parameters.
+    owner_specificity: Vec<u8>,
     /// Universally quantified parameters matched against the owner type.
     associated_type_params: Vec<String>,
     /// All type parameters in substitution order: inferred parameters first,
@@ -1391,6 +1395,8 @@ enum CandidateSource {
     Entries(Vec<FunctionEntry>),
     /// A single method candidate during isolated extension-conflict checking.
     MethodEntries(Vec<FunctionEntry>),
+    /// A free-function candidate being checked without call-site access checks.
+    FunctionProbe(Vec<FunctionEntry>),
     /// The global method overload set for the called name, fetched lazily via
     /// `MethodIndex` so only receiver-compatible overloads are materialized.
     Methods,
@@ -1781,6 +1787,9 @@ fn type_param_appears_in(ty: &ast::Type, param: &str) -> bool {
 #[derive(Clone)]
 struct Lowerer<'a> {
     source: &'a resolved_ast::SourceFile,
+    overlap_indices: HashMap<(u32, u32, u32), usize>,
+    /// Definition whose selected body failed, distinguishing it from a signature mismatch.
+    failed_overload: Option<(u32, u32, u32)>,
     structs: HashMap<DefId, &'a ast::StructDef>,
     enums: HashMap<DefId, &'a ast::EnumDef>,
     generic_structs: HashMap<DefId, GenericStructDef>,
@@ -2059,6 +2068,7 @@ impl<'a> Lowerer<'a> {
                     };
                     let overload_index = entries.len();
                     entries.push(FunctionEntry {
+                        owner_specificity: Vec::new(),
                         associated_type_params: f.associated_type_params.clone(),
                         type_params: all_function_type_params(&f),
                         out_type_param_count: f.out_type_params.len(),
@@ -2081,6 +2091,7 @@ impl<'a> Lowerer<'a> {
                     let entries = method_defs.entry(m.name.clone()).or_default();
                     let overload_index = entries.len();
                     entries.push(FunctionEntry {
+                        owner_specificity: Vec::new(),
                         associated_type_params: Vec::new(),
                         type_params: all_function_type_params(&m),
                         out_type_param_count: m.out_type_params.len(),
@@ -2189,10 +2200,12 @@ impl<'a> Lowerer<'a> {
                     .chain(b.type_params.iter())
                     .cloned()
                     .collect();
-                if params_alpha_equivalent(&a_signature, &a_binders, &b_signature, &b_binders) {
+                if params_alpha_equivalent(&a_signature, &a_binders, &b_signature, &b_binders)
+                    && !(a.ast_def.is_overlap && b.ast_def.is_overlap)
+                {
                     return Err(CompileError::new(
                         format!(
-                            "associated function `{}` has an identical signature",
+                            "associated function `{}` has an identical signature; all definitions with this signature must have `overlap`",
                             b.ast_def.name
                         ),
                         b.ast_def.span,
@@ -2238,7 +2251,8 @@ impl<'a> Lowerer<'a> {
                         .join(",");
                     let previous = seen_params.entry(key).or_default();
                     if let Some(a) = previous.iter().find(|a| {
-                        kind != "method" || source.methods_share_scope(&a.ast_def, &b.ast_def)
+                        (kind != "method" || source.methods_share_scope(&a.ast_def, &b.ast_def))
+                            && !(a.ast_def.is_overlap && b.ast_def.is_overlap)
                     }) {
                         if kind == "method" && (a.ast_def.is_extension || b.ast_def.is_extension) {
                             return Err(extension_conflict(
@@ -2250,7 +2264,7 @@ impl<'a> Lowerer<'a> {
                         }
                         return Err(CompileError::new(
                             format!(
-                                "duplicate {kind} definition: `{name}` with same parameter types"
+                                "duplicate {kind} definition: `{name}` with same parameter types; all definitions with this signature must have `overlap`"
                             ),
                             b.ast_def.span,
                         )
@@ -2307,6 +2321,9 @@ impl<'a> Lowerer<'a> {
                                 &b.type_params,
                             )
                         {
+                            if a.ast_def.is_overlap && b.ast_def.is_overlap {
+                                continue;
+                            }
                             if kind == "method"
                                 && (a.ast_def.is_extension || b.ast_def.is_extension)
                             {
@@ -2319,7 +2336,7 @@ impl<'a> Lowerer<'a> {
                             }
                             return Err(CompileError::new(
                                 format!(
-                                    "generic {kind} `{name}`: overloads have equivalent parameter patterns"
+                                    "generic {kind} `{name}`: overloads have equivalent parameter patterns; all definitions with this signature must have `overlap`"
                                 ),
                                 b.ast_def.span,
                             )
@@ -2332,6 +2349,22 @@ impl<'a> Lowerer<'a> {
 
         Ok(Lowerer {
             source,
+            failed_overload: None,
+            overlap_indices: source
+                .items
+                .iter()
+                .enumerate()
+                .filter_map(|(index, item)| {
+                    let (ast::TopLevelItem::Function(def) | ast::TopLevelItem::Method(def)) = item
+                    else {
+                        return None;
+                    };
+                    def.is_overlap.then_some((
+                        (def.span.file_id, def.span.start.line, def.span.start.col),
+                        source.items.len() + index,
+                    ))
+                })
+                .collect(),
             structs,
             enums,
             generic_structs,
@@ -3810,7 +3843,9 @@ impl<'a> Lowerer<'a> {
         let mangled = FuncId {
             def: def_id_of_function(&ast_def_clone),
             args: concrete_args,
-            overload: (num_overloads > 1).then_some(overload_index),
+            overload: self
+                .overlap_index(&ast_def_clone)
+                .or_else(|| (num_overloads > 1).then_some(overload_index)),
             method: is_method,
             extension: ast_def_clone.is_extension,
         };
@@ -3914,7 +3949,9 @@ impl<'a> Lowerer<'a> {
         let lowered = self.lower_function(&ast_def, &mangled);
         self.mono_depth -= 1;
         self.monomorphizing.remove(&mangled);
-        let mut lowered = lowered?;
+        let mut lowered = lowered.inspect_err(|_| {
+            self.failed_overload = Some(overlap::definition_location(&ast_def));
+        })?;
         lowered.id = mangled.clone();
         self.resolved_return_types
             .insert(mangled.clone(), lowered.return_type.clone());
@@ -4095,7 +4132,7 @@ impl<'a> Lowerer<'a> {
             .flat_map(|(def, entries)| {
                 entries
                     .iter()
-                    .filter(|e| e.type_params.is_empty())
+                    .filter(|e| e.type_params.is_empty() && !e.ast_def.is_overlap)
                     .map(|e| {
                         let ast_param_types: Vec<ast::Type> =
                             e.ast_def.parameters.iter().map(|p| p.ty.clone()).collect();
@@ -4108,7 +4145,9 @@ impl<'a> Lowerer<'a> {
             entries
                 .iter()
                 .filter(|entry| {
-                    entry.associated_type_params.is_empty() && entry.type_params.is_empty()
+                    entry.associated_type_params.is_empty()
+                        && entry.type_params.is_empty()
+                        && !entry.ast_def.is_overlap
                 })
                 .map(|entry| {
                     let ast_def = entry.ast_def.clone();
@@ -4142,7 +4181,7 @@ impl<'a> Lowerer<'a> {
             .flat_map(|entries| {
                 entries
                     .iter()
-                    .filter(|entry| entry.type_params.is_empty())
+                    .filter(|entry| entry.type_params.is_empty() && !entry.ast_def.is_overlap)
                     .map(|entry| entry.ast_def.clone())
                     .collect::<Vec<_>>()
             })
@@ -4161,7 +4200,7 @@ impl<'a> Lowerer<'a> {
                 let fid = FuncId {
                     def: def_id_of_function(&ast_def),
                     args: param_types,
-                    overload: None,
+                    overload: self.overlap_index(&ast_def),
                     method: true,
                     extension: ast_def.is_extension,
                 };
@@ -4180,6 +4219,32 @@ impl<'a> Lowerer<'a> {
             self.resolved_return_types
                 .insert(fid.clone(), lowered.return_type.clone());
             functions.insert(fid.clone(), lowered);
+        }
+
+        // An overlapping main is an implicit zero-argument call. Preserve the
+        // canonical entry symbol while keeping each alternative's own identity.
+        let overlapping_mains: Vec<_> = self
+            .function_defs
+            .iter()
+            .filter(|(id, entries)| {
+                id.name == "main"
+                    && entries.iter().any(|entry| {
+                        entry.ast_def.is_overlap
+                            && entry.type_params.is_empty()
+                            && entry.ast_def.parameters.is_empty()
+                    })
+            })
+            .map(|(id, entries)| (id.clone(), entries.clone()))
+            .collect();
+        for (id, entries) in overlapping_mains {
+            let span = entries[0].ast_def.span;
+            let call = self.resolve_call_with_parameter_types(entries, "main", &[], span)?;
+            let ExprKind::Call { function, .. } = call.kind else {
+                unreachable!()
+            };
+            let mut entry = self.monomorphized_functions[&function].clone();
+            entry.id = FuncId::free(id, Vec::new());
+            functions.insert(entry.id.clone(), entry);
         }
 
         // Copy constructors are reachable implicitly, including constructors of
@@ -4219,10 +4284,7 @@ impl<'a> Lowerer<'a> {
                     entries =
                         self.associated_call_entries(&ast::Type::Named(name.clone()), "", span)?;
                 }
-                let num_generic_overloads = entries
-                    .iter()
-                    .filter(|entry| !entry.type_params.is_empty())
-                    .count();
+                let mut eligible = Vec::new();
                 let expected = Type::Ref(Box::new(ty.clone()));
                 for entry in entries {
                     if entry.ast_def.parameters.len() != 1 || entry.out_type_param_count != 0 {
@@ -4257,25 +4319,19 @@ impl<'a> Lowerer<'a> {
                             entry.ast_def.span,
                         ));
                     }
-                    let fid = if entry.type_params.is_empty() {
-                        let fid = FuncId::free(
-                            def_id_of_function(&entry.ast_def),
-                            vec![ty.clone(), expected.clone()],
-                        );
-                        self.ensure_concrete_lowered(&fid, &entry.ast_def)?;
-                        fid
-                    } else {
-                        let type_args: Vec<_> =
-                            entry.type_params.iter().map(|p| subst[p].clone()).collect();
-                        self.ensure_function_monomorphized_with_def(
-                            "copy constructor",
-                            &entry,
-                            &type_args,
-                            num_generic_overloads,
-                            false,
-                        )?
+                    eligible.push(entry);
+                }
+                if !eligible.is_empty() {
+                    let call = self.resolve_call_with_parameter_types(
+                        eligible,
+                        "copy constructor",
+                        &[expected],
+                        span,
+                    )?;
+                    let ExprKind::Call { function, .. } = call.kind else {
+                        unreachable!()
                     };
-                    copy_constructors.insert(ty.clone(), fid);
+                    copy_constructors.insert(ty.clone(), function);
                 }
             }
         }
@@ -4364,7 +4420,9 @@ impl<'a> Lowerer<'a> {
         // Register for resolve_return_type before lowering (handles cycles)
         self.concrete_ast_defs
             .insert(mangled.clone(), ast_def.clone());
-        let mut lowered = self.lower_function(&ast_def, mangled)?;
+        let mut lowered = self.lower_function(&ast_def, mangled).inspect_err(|_| {
+            self.failed_overload = Some(overlap::definition_location(&ast_def));
+        })?;
         lowered.id = mangled.clone();
         self.resolved_return_types
             .insert(mangled.clone(), lowered.return_type.clone());
@@ -5756,6 +5814,36 @@ impl<'a> Lowerer<'a> {
                 let mut fdef_owned = fdef.clone();
                 prepare_keyword_params(&mut fdef_owned, &self.consts)?;
                 let fdef = &fdef_owned;
+                if let Some(previous) = self
+                    .nested_function_defs
+                    .last()
+                    .and_then(|scope| scope.get(&fdef.name))
+                {
+                    let params: Vec<_> = fdef.parameters.iter().map(|p| p.ty.clone()).collect();
+                    let type_params = all_function_type_params(fdef);
+                    for entry in previous {
+                        let previous_params: Vec<_> = entry
+                            .ast_def
+                            .parameters
+                            .iter()
+                            .map(|p| p.ty.clone())
+                            .collect();
+                        if entry.out_type_param_count == fdef.out_type_params.len()
+                            && params_alpha_equivalent(
+                                &params,
+                                &type_params,
+                                &previous_params,
+                                &entry.type_params,
+                            )
+                            && !(fdef.is_overlap && entry.ast_def.is_overlap)
+                        {
+                            return Err(CompileError::new(
+                                format!("duplicate function definition: `{}` with same parameter types; all definitions with this signature must have `overlap`", fdef.name),
+                                fdef.span,
+                            ).with_label("first definition here", entry.ast_def.span));
+                        }
+                    }
+                }
                 let mut seen_type_params = HashSet::new();
                 for type_param in fdef.type_params.iter().chain(&fdef.out_type_params) {
                     if !seen_type_params.insert(type_param) {
@@ -5792,12 +5880,14 @@ impl<'a> Lowerer<'a> {
                 if !fdef.type_params.is_empty()
                     || !fdef.out_type_params.is_empty()
                     || has_prev_entries
+                    || fdef.is_overlap
                 {
                     // Store as a FunctionEntry in nested_function_defs
                     if let Some(registry) = self.nested_function_defs.last_mut() {
                         let entries = registry.entry(fdef.name.clone()).or_default();
                         let overload_index = entries.len();
                         entries.push(FunctionEntry {
+                            owner_specificity: Vec::new(),
                             associated_type_params: Vec::new(),
                             type_params: all_function_type_params(fdef),
                             out_type_param_count: fdef.out_type_params.len(),
@@ -5813,6 +5903,7 @@ impl<'a> Lowerer<'a> {
                 if let Some(registry) = self.nested_function_defs.last_mut() {
                     let entries = registry.entry(fdef.name.clone()).or_default();
                     entries.push(FunctionEntry {
+                        owner_specificity: Vec::new(),
                         associated_type_params: Vec::new(),
                         type_params: vec![],
                         out_type_param_count: 0,
@@ -5891,6 +5982,42 @@ impl<'a> Lowerer<'a> {
             // A top-level function used as a value — only a single concrete
             // overload can be taken by reference.
             let concrete_count = entries.iter().filter(|e| e.type_params.is_empty()).count();
+            if entries.len() > 1
+                && concrete_count == entries.len()
+                && entries.iter().all(|entry| entry.ast_def.is_overlap)
+            {
+                let signatures: Vec<Vec<Type>> = entries
+                    .iter()
+                    .map(|entry| {
+                        entry
+                            .ast_def
+                            .parameters
+                            .iter()
+                            .map(|p| self.resolve_ast_type(&p.ty))
+                            .collect()
+                    })
+                    .collect::<Result<_, _>>()?;
+                if signatures.iter().all(|params| params == &signatures[0]) {
+                    let params = signatures[0].clone();
+                    let selected = self.resolve_call_with_parameter_types(
+                        entries,
+                        def.name.as_str(),
+                        &params,
+                        span,
+                    )?;
+                    let ExprKind::Call { function, .. } = selected.kind else {
+                        unreachable!()
+                    };
+                    return Ok(Expr {
+                        ty: Type::Function {
+                            params,
+                            return_type: Box::new(selected.ty),
+                        },
+                        kind: ExprKind::FunctionRef(function),
+                        span,
+                    });
+                }
+            }
             if entries.len() > 1 || concrete_count != entries.len() {
                 return Err(CompileError::new(
                     format!(
@@ -5907,7 +6034,11 @@ impl<'a> Lowerer<'a> {
                 .iter()
                 .map(|p| self.resolve_ast_type(&p.ty))
                 .collect::<Result<Vec<_>, _>>()?;
-            let fid = FuncId::free(def.clone(), params.clone());
+            let mut fid = FuncId::free(def.clone(), params.clone());
+            fid.overload = self.overlap_index(&entries[0].ast_def);
+            if entries[0].ast_def.is_overlap {
+                self.ensure_concrete_lowered(&fid, &entries[0].ast_def)?;
+            }
             let return_type = Box::new(self.resolve_return_type(&fid)?);
             return Ok(Expr {
                 ty: Type::Function {
@@ -5977,6 +6108,7 @@ impl<'a> Lowerer<'a> {
                 &mut specificity,
             );
             let mut instantiated = entry.clone();
+            instantiated.owner_specificity = specificity.clone();
             instantiated.associated_type_params.clear();
             instantiated.ast_def = Rc::new(apply_subst_to_function_def(&entry.ast_def, &bindings));
             matches.push((specificity, instantiated));
@@ -5984,9 +6116,10 @@ impl<'a> Lowerer<'a> {
         let Some(best) = matches.iter().map(|(key, _)| key).max().cloned() else {
             return Ok(Vec::new());
         };
+        let has_overlap = matches.iter().any(|(_, entry)| entry.ast_def.is_overlap);
         Ok(matches
             .into_iter()
-            .filter_map(|(key, entry)| (key == best).then_some(entry))
+            .filter_map(|(key, entry)| (has_overlap || key == best).then_some(entry))
             .collect())
     }
 
@@ -6560,7 +6693,9 @@ impl<'a> Lowerer<'a> {
                         .find_map(|m| m.get(name.as_str()))
                         .cloned();
                     if let Some(entries) = nested_entries
-                        && (entries.len() > 1 || !entries[0].type_params.is_empty())
+                        && (entries.len() > 1
+                            || !entries[0].type_params.is_empty()
+                            || entries[0].ast_def.is_overlap)
                     {
                         if !kwargs.is_empty() {
                             return Err(reject_kwargs(expr.span));
@@ -6575,197 +6710,9 @@ impl<'a> Lowerer<'a> {
                                 expr.span,
                             ));
                         }
-                        // Generic or overloaded nested function — resolve at call site
-                        for entry in &entries {
-                            let gdef = &entry.ast_def;
-                            if entry.type_params.is_empty() {
-                                // Concrete nested overload
-                                if gdef.parameters.len() != arguments.len() {
-                                    continue;
-                                }
-                                let lowered_args: Vec<Expr> = arguments
-                                    .iter()
-                                    .map(|a| self.lower_expr(a))
-                                    .collect::<Result<Vec<_>, _>>()?;
-
-                                let param_types: Vec<Type> = gdef
-                                    .parameters
-                                    .iter()
-                                    .map(|p| self.resolve_ast_type(&p.ty))
-                                    .collect::<Result<Vec<_>, _>>()?;
-                                let all_coercible = lowered_args
-                                    .iter()
-                                    .zip(param_types.iter())
-                                    .all(|(arg, pty)| {
-                                        arg.ty == *pty
-                                            || self.try_coerce(arg.clone(), pty).ty == *pty
-                                    });
-                                if !all_coercible {
-                                    continue;
-                                }
-
-                                self.require_unsafe_access(gdef, expr.span)?;
-                                let closure_expr = self.lower_closure(
-                                    expr.span,
-                                    &gdef.parameters,
-                                    gdef.return_type.as_ref(),
-                                    &gdef.body,
-                                )?;
-                                let (cparams, return_type) = match &closure_expr.ty {
-                                    Type::Function {
-                                        params,
-                                        return_type,
-                                    } => (params.clone(), (**return_type).clone()),
-                                    _ => unreachable!(),
-                                };
-                                let coerced_args: Vec<Expr> = lowered_args
-                                    .into_iter()
-                                    .zip(cparams.iter())
-                                    .map(|(arg, pty)| self.try_coerce(arg, pty))
-                                    .collect();
-
-                                return Ok(Expr {
-                                    ty: return_type,
-                                    kind: ExprKind::CallIndirect {
-                                        callee: Box::new(closure_expr),
-                                        arguments: coerced_args,
-                                    },
-                                    span: expr.span,
-                                });
-                            } else {
-                                // Generic nested function
-                                if gdef.parameters.len() != arguments.len() {
-                                    continue;
-                                }
-                                let type_params = &entry.type_params;
-                                let (effective_type_args, pre_lowered_args) = if !type_args
-                                    .is_empty()
-                                {
-                                    if entry.out_type_param_count == 0
-                                        || type_args.len() != entry.out_type_param_count
-                                    {
-                                        continue;
-                                    }
-                                    let Ok((effective, lowered)) = self.bind_output_generic_call(
-                                        name, entry, type_args, arguments,
-                                    ) else {
-                                        continue;
-                                    };
-                                    (effective, Some(lowered))
-                                } else {
-                                    if entry.out_type_param_count != 0 {
-                                        continue;
-                                    }
-                                    let param_ast_types: Vec<ast::Type> =
-                                        gdef.parameters.iter().map(|p| p.ty.clone()).collect();
-                                    let lowered_args: Vec<Expr> = arguments
-                                        .iter()
-                                        .map(|a| self.lower_expr(a))
-                                        .collect::<Result<Vec<_>, _>>()?;
-                                    let arg_types: Vec<Type> =
-                                        lowered_args.iter().map(|a| a.ty.clone()).collect();
-                                    match self.infer_type_args(
-                                        name,
-                                        type_params,
-                                        &param_ast_types,
-                                        &arg_types,
-                                    ) {
-                                        Ok(args) => (args, Some(lowered_args)),
-                                        Err(_) => continue,
-                                    }
-                                };
-
-                                let subst: HashMap<String, ast::Type> = type_params
-                                    .iter()
-                                    .zip(effective_type_args.iter())
-                                    .map(|(p, a)| (p.clone(), a.clone()))
-                                    .collect();
-
-                                let concrete_params: Vec<ast::Parameter> =
-                                    gdef.parameters
-                                        .iter()
-                                        .map(|p| ast::Parameter {
-                                            pattern: p.pattern.clone(),
-                                            ty: apply_subst_to_ast_type(&p.ty, &subst),
-                                            default: p.default.as_ref().map(|d| {
-                                                Box::new(apply_subst_to_ast_expr(d, &subst))
-                                            }),
-                                            span: p.span,
-                                        })
-                                        .collect();
-                                let concrete_return_type = gdef
-                                    .return_type
-                                    .as_ref()
-                                    .map(|t| apply_subst_to_ast_type(t, &subst));
-                                let concrete_body: Vec<ast::Statement> = gdef
-                                    .body
-                                    .iter()
-                                    .map(|s| apply_subst_to_ast_statement(s, &subst))
-                                    .collect();
-
-                                self.require_unsafe_access(gdef, expr.span)?;
-                                let closure_expr = self.lower_closure(
-                                    expr.span,
-                                    &concrete_params,
-                                    concrete_return_type.as_ref(),
-                                    &concrete_body,
-                                )?;
-
-                                let (param_types, return_type) = match &closure_expr.ty {
-                                    Type::Function {
-                                        params,
-                                        return_type,
-                                    } => (params.clone(), (**return_type).clone()),
-                                    _ => unreachable!(),
-                                };
-
-                                if arguments.len() != param_types.len() {
-                                    continue;
-                                }
-
-                                let mut lowered_args: Vec<Expr> = Vec::new();
-                                let mut all_ok = true;
-                                for (index, (arg, pty)) in
-                                    arguments.iter().zip(param_types.iter()).enumerate()
-                                {
-                                    let lowered = if let Some(lowered) = &pre_lowered_args {
-                                        lowered[index].clone()
-                                    } else {
-                                        self.lower_expr(arg)?
-                                    };
-                                    let coerced = self.try_coerce(lowered, pty);
-                                    if coerced.ty != *pty {
-                                        all_ok = false;
-                                        break;
-                                    }
-                                    lowered_args.push(coerced);
-                                }
-                                if !all_ok {
-                                    continue;
-                                }
-
-                                return Ok(Expr {
-                                    ty: return_type,
-                                    kind: ExprKind::CallIndirect {
-                                        callee: Box::new(closure_expr),
-                                        arguments: lowered_args,
-                                    },
-                                    span: expr.span,
-                                });
-                            }
-                        }
-                        // No nested entry matched
-                        let arg_types_str = arguments
-                            .iter()
-                            .map(|_| "?".to_string())
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        return Err(CompileError::new(
-                            format!(
-                                "no matching overload for nested function `{name}` with argument types ({arg_types_str})"
-                            ),
-                            expr.span,
-                        ));
+                        return self.resolve_nested_overloads(
+                            name, &entries, arguments, type_args, expr.span,
+                        );
                     }
                 }
 
@@ -9155,9 +9102,9 @@ impl<'a> Lowerer<'a> {
         let count =
             |entries: &[FunctionEntry]| entries.iter().filter(|e| e.type_params.is_empty()).count();
         match source {
-            CandidateSource::Entries(entries) | CandidateSource::MethodEntries(entries) => {
-                count(entries)
-            }
+            CandidateSource::Entries(entries)
+            | CandidateSource::MethodEntries(entries)
+            | CandidateSource::FunctionProbe(entries) => count(entries),
             CandidateSource::Methods => self.method_defs.get(name).map_or(0, |entries| {
                 entries
                     .iter()
@@ -9252,7 +9199,7 @@ impl<'a> Lowerer<'a> {
 
     /// Shared overload resolution for both function calls and method calls.
     #[allow(clippy::too_many_arguments)]
-    fn resolve_overloaded_call(
+    fn resolve_overloaded_call_inner(
         &mut self,
         source: CandidateSource,
         name: &str,
@@ -9260,16 +9207,22 @@ impl<'a> Lowerer<'a> {
         kwargs: &[(String, ast::Expr)],
         type_args: &[ast::Type],
         span: ast::SourceSpan,
+        overload_count: Option<usize>,
     ) -> Result<Expr, CompileError> {
         let is_method = matches!(
             &source,
             CandidateSource::Methods | CandidateSource::MethodEntries(_)
         );
-        let probe = matches!(&source, CandidateSource::MethodEntries(_));
+        let probe = matches!(
+            &source,
+            CandidateSource::MethodEntries(_) | CandidateSource::FunctionProbe(_)
+        );
         let has_infer_closures = arguments.iter().any(Self::has_infer_params);
 
         let generic_entries: Vec<FunctionEntry> = match &source {
-            CandidateSource::Entries(entries) | CandidateSource::MethodEntries(entries) => entries
+            CandidateSource::Entries(entries)
+            | CandidateSource::MethodEntries(entries)
+            | CandidateSource::FunctionProbe(entries) => entries
                 .iter()
                 .filter(|e| !e.type_params.is_empty())
                 .cloned()
@@ -9277,13 +9230,15 @@ impl<'a> Lowerer<'a> {
             CandidateSource::Methods => self.method_generic_entries(name, span.file_id),
         };
         // Instance identities must not depend on which extensions a caller imports.
-        let num_generic_overloads = if is_method {
-            self.method_defs.get(name).map_or(0, |entries| {
-                entries.iter().filter(|e| !e.type_params.is_empty()).count()
-            })
-        } else {
-            generic_entries.len()
-        };
+        let num_generic_overloads = overload_count.unwrap_or_else(|| {
+            if is_method {
+                self.method_defs.get(name).map_or(0, |entries| {
+                    entries.iter().filter(|e| !e.type_params.is_empty()).count()
+                })
+            } else {
+                generic_entries.len()
+            }
+        });
 
         // Inferred closures and output parameters need candidate-specific type
         // information. Probe in isolated lowering states so rejected bodies and
@@ -9488,13 +9443,13 @@ impl<'a> Lowerer<'a> {
             // Concrete candidates: for methods, only the overloads whose first
             // (receiver) parameter's base type can match the receiver.
             let concrete_entries: Vec<FunctionEntry> = match &source {
-                CandidateSource::Entries(entries) | CandidateSource::MethodEntries(entries) => {
-                    entries
-                        .iter()
-                        .filter(|e| e.type_params.is_empty())
-                        .cloned()
-                        .collect()
-                }
+                CandidateSource::Entries(entries)
+                | CandidateSource::MethodEntries(entries)
+                | CandidateSource::FunctionProbe(entries) => entries
+                    .iter()
+                    .filter(|e| e.type_params.is_empty())
+                    .cloned()
+                    .collect(),
                 CandidateSource::Methods => {
                     self.method_concrete_entries(name, arg_types.first(), span.file_id)
                 }
@@ -9771,7 +9726,7 @@ impl<'a> Lowerer<'a> {
                     let mangled = FuncId {
                         def: def_id_of_function(&ast_def),
                         args: identity_args,
-                        overload: None,
+                        overload: self.overlap_index(&ast_def),
                         method: is_method,
                         extension: ast_def.is_extension,
                     };
@@ -9861,13 +9816,13 @@ impl<'a> Lowerer<'a> {
             // per candidate, so there is no receiver type to key on yet. These
             // overload sets are small in practice.
             let concrete_entries: Vec<FunctionEntry> = match &source {
-                CandidateSource::Entries(entries) | CandidateSource::MethodEntries(entries) => {
-                    entries
-                        .iter()
-                        .filter(|e| e.type_params.is_empty())
-                        .cloned()
-                        .collect()
-                }
+                CandidateSource::Entries(entries)
+                | CandidateSource::MethodEntries(entries)
+                | CandidateSource::FunctionProbe(entries) => entries
+                    .iter()
+                    .filter(|e| e.type_params.is_empty())
+                    .cloned()
+                    .collect(),
                 CandidateSource::Methods => self.method_concrete_entries(name, None, span.file_id),
             };
             let mut matched_result: Option<Result<Expr, CompileError>> = None;
@@ -10059,7 +10014,7 @@ impl<'a> Lowerer<'a> {
                 let mangled = FuncId {
                     def: def_id_of_function(&entry.ast_def),
                     args: param_types.clone(),
-                    overload: None,
+                    overload: self.overlap_index(&entry.ast_def),
                     method: is_method,
                     extension: entry.ast_def.is_extension,
                 };

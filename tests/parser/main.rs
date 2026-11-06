@@ -846,3 +846,27 @@ fn extension_method_attributes_round_trip() {
     }
     assert!(solar::parser::parse("fn(ext) invalid() {}").is_err());
 }
+
+#[test]
+fn overlap_attributes_round_trip() {
+    let source = "fn(overlap) choose#[T](x: T) { x }\nfn(inline, overlap) choose#[T](x: T) { x }\nmethod(overlap) choose#[T](self: T) { self }\nmethod(inline, overlap) choose#[T](self: T) { self }\n";
+    let formatted = solar::fmt::format_source(source).unwrap();
+    assert!(formatted.contains("fn(overlap, inline)"));
+    assert!(formatted.contains("method(overlap, inline)"));
+    for text in [source, &formatted] {
+        for (index, item) in parse(text).items.iter().enumerate() {
+            let (TopLevelItem::Function(definition) | TopLevelItem::Method(definition)) = item
+            else {
+                panic!("expected function or method")
+            };
+            assert!(definition.is_overlap);
+            assert!(!definition.is_extension);
+            assert_eq!(definition.inline_hint, index % 2 == 1);
+        }
+    }
+    for attributes in ["ext, overlap", "overlap, ext", "inline, ext, overlap"] {
+        let errors = solar::parser::parse(&format!("method({attributes}) invalid(self: Int) {{}}"))
+            .unwrap_err();
+        assert!(errors[0].message.contains("cannot be combined"));
+    }
+}

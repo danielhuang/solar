@@ -546,6 +546,13 @@ fn convert_function_def(node: tree_sitter::Node, source: &str) -> Result<Functio
     };
     let inline_hint = has_attribute("inline");
     let is_extension = has_attribute("ext");
+    let is_overlap = has_attribute("overlap");
+    if is_extension && is_overlap {
+        return Err(ParseError::at(
+            node,
+            "method attributes `overlap` and `ext` cannot be combined",
+        ));
+    }
 
     Ok(FunctionDef {
         associated_type_params,
@@ -562,6 +569,7 @@ fn convert_function_def(node: tree_sitter::Node, source: &str) -> Result<Functio
         is_unsafe,
         inline_hint,
         is_extension,
+        is_overlap,
         doc: leading_doc(node, source),
         span: source_span(node),
     })

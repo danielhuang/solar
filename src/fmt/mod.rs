@@ -479,11 +479,22 @@ fn function_doc(definition: &FunctionDef, keyword: &str, context: &SourceContext
             Doc::Nil
         },
         Doc::text(keyword),
-        match (definition.is_extension, definition.inline_hint) {
-            (true, true) => Doc::text("(ext, inline)"),
-            (true, false) => Doc::text("(ext)"),
-            (false, true) => Doc::text("(inline)"),
-            (false, false) => Doc::Nil,
+        {
+            let mut attributes = Vec::new();
+            if definition.is_extension {
+                attributes.push("ext");
+            }
+            if definition.is_overlap {
+                attributes.push("overlap");
+            }
+            if definition.inline_hint {
+                attributes.push("inline");
+            }
+            if attributes.is_empty() {
+                Doc::Nil
+            } else {
+                Doc::text(format!("({})", attributes.join(", ")))
+            }
         },
         type_parameters(&definition.associated_type_params),
         Doc::text(" "),

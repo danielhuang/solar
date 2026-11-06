@@ -1017,6 +1017,19 @@ fn generic_overloads() {
 }
 
 #[test]
+fn overlap() {
+    assert_eq!(run(&fixture("overlap.solar"), "overlap"), "passed\n");
+}
+
+#[test]
+fn overlap_release() {
+    assert_eq!(
+        test_utils::run_release_file(&fixture("overlap.solar"), "overlap"),
+        "passed\n"
+    );
+}
+
+#[test]
 fn unique_ref_with_refs() {
     let output = run(
         &fixture("unique_ref_with_refs.solar"),

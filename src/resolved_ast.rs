@@ -97,6 +97,7 @@ fn generate_numeric_constructors(items: &mut Vec<ast::TopLevelItem>) {
                 is_unsafe: false,
                 inline_hint: false,
                 is_extension: false,
+                is_overlap: false,
                 doc: None,
                 span,
             }));

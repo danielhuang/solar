@@ -148,18 +148,18 @@ module.exports = grammar({
       seq(field("name", $.identifier), optional(seq("(", field("inner_type", $._type), ")"))),
 
     // ── Function ────────────────────────────────────────────
-    // Optional inline hint: `fn(inline) name(...)` / `method(inline) name(...)`.
-    inline_attr: ($) => seq("(", "inline", ")"),
+    // Functions may request inlining or substitution-based overload fallback.
+    function_attr: ($) => seq("(", choice("inline", "overlap"), repeat(seq(",", choice("inline", "overlap"))), optional(","), ")"),
 
     // Extension methods may also request inlining.
-    method_attr: ($) => seq("(", choice("inline", "ext"), repeat(seq(",", choice("inline", "ext"))), optional(","), ")"),
+    method_attr: ($) => seq("(", choice("inline", "ext", "overlap"), repeat(seq(",", choice("inline", "ext", "overlap"))), optional(","), ")"),
 
     function_def: ($) =>
       seq(
         optional("pub"),
         optional(field("unsafe", "unsafe")),
         "fn",
-        optional(field("attr", $.inline_attr)),
+        optional(field("attr", $.function_attr)),
         choice(
           field("name", $.identifier),
           seq(

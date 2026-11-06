@@ -175,8 +175,8 @@
   "reflect_variant_pair"
 ] @keyword
 
-(inline_attr "inline" @attribute)
-(method_attr ["inline" "ext"] @attribute)
+(function_attr ["inline" "overlap"] @attribute)
+(method_attr ["inline" "ext" "overlap"] @attribute)
 (struct_repr_attr ["repr" "C"] @attribute)
 (struct_opaque_attr) @attribute
 (static_attr "thread_local" @attribute)

@@ -1,0 +1,149 @@
+struct Box#[T] { value: T }
+
+fn(overlap) choose#[T](value: T) -> Int { 10 }
+fn(overlap) choose#[U](value: U) -> Int { value + 1 }
+
+fn(overlap) read#[T](value: T) { value }
+fn(overlap) read#[T](value: T) { value.value }
+
+fn(overlap) ranked#[T](value: Box#[T]) -> Int { 1 }
+fn(overlap) ranked#[T](value: T) -> Int { 2 }
+
+fn(overlap) tied#[A, B](a: A, b: B) -> Int { 1 }
+fn(overlap) tied#[T](a: T, b: T) -> Int { 2 }
+
+fn(overlap) concrete(value: Int) -> Int { value + 1 }
+fn(overlap, inline) concrete(value: Int) -> Int { value + 2 }
+
+fn(overlap) invalid_concrete() -> Int { 4 }
+fn(overlap) invalid_concrete() -> Int { false }
+
+fn(overlap) runtime_failure#[T](value: T) -> Int { 1 }
+fn(overlap) runtime_failure#[T](value: T) -> Int { throw("selected body"&); }
+
+fn(overlap) convert#[T, out U](value: T) -> U { U(7) }
+fn(overlap) convert#[T, out U](value: T) -> U { value }
+
+fn(overlap) closure#[T](value: T, f: fn(T) -> Int) -> Int { f(value) }
+
+fn(overlap) closure#[T](value: T, f: fn(T) -> Int) -> Int {
+	let nested = \ { value.missing(); };
+	nested();
+	f(value)
+}
+
+fn(overlap) closure_rank(value: Int, f: fn(Int) -> Int) -> Int { f(value) + 1 }
+fn(overlap) closure_rank#[T](value: T, f: fn(T) -> Int) -> Int { f(value) + 2 }
+
+fn(overlap) kwargs#[T](value: T, extra = 2) -> Int { extra }
+fn(overlap) kwargs#[T](value: T, extra = 3) -> Int { value + extra }
+
+fn(overlap) recurse#[T](value: T, count: Int) -> Int {
+	if count == 0 { 0 } else { 1 + recurse(value, count - 1) }
+}
+
+fn(overlap) recurse#[T](value: T, count: Int) -> Int { value.missing() }
+
+method(overlap) extract#[T](self: &Box#[T]) -> Int { 1 }
+method(overlap) extract#[U](self: &Box#[U]) -> Int { self@.value + 1 }
+
+method(overlap) same(self: &Box#[Int]) -> Int { 1 }
+method(overlap) same(self: &Box#[Int]) -> Int { 2 }
+
+method(overlap) callback#[T](self: Box#[T], f: fn(T) -> Int) -> Int {
+	f(self.value)
+}
+
+method(overlap) callback#[T](self: Box#[T], f: fn(T) -> Int) -> Int {
+	self.value.missing();
+	f(self.value)
+}
+
+fn(overlap)#[T] Box#[T]::get(value: T) -> Int { 1 }
+fn(overlap)#[U] Box#[U]::get(value: U) -> Int { value + 1 }
+
+fn(overlap) Box#[Int]::rank(value: Int) -> Int { 1 }
+fn(overlap)#[T] Box#[T]::rank(value: T) -> Int { 2 }
+
+fn(overlap)#[T] Box#[T]::fallback(value: T) -> Int { 3 }
+fn(overlap) Box#[Int]::fallback(value: Int) -> Int { value.missing() }
+
+struct Copied#[T] { value: T }
+
+fn(overlap)#[T] Copied#[T]::(original: &Copied#[T]) -> Copied#[T] {
+	Copied#[T] { value: original@.value }
+}
+
+fn(overlap)#[U] Copied#[U]::(original: &Copied#[U]) -> Copied#[U] {
+	Copied#[U] { value: original@.value + 1 }
+}
+
+fn nested() {
+	let captured = 20;
+	fn(overlap) select#[T](value: T) -> Int { captured }
+	fn(overlap) select#[U](value: U) -> Int { value + captured }
+	assert(select(false) == 20);
+	assert(select(3) == 23);
+	fn(overlap) plain() -> Int { captured }
+	fn(overlap) plain() -> Int { false }
+	assert(plain() == 20);
+}
+
+fn(overlap) main() { throw("selected the earlier main"&); }
+
+fn(overlap) main() {
+	assert(choose(5) == 6);
+	assert(choose(false) == 10);
+	assert(choose(false) == 10);
+	assert(choose(8) == 9);
+	let calls = 0&;
+	let argument = \ { calls@ = calls@ + 1; false };
+	assert(choose(argument()) == 10);
+	assert(calls@ == 1);
+	assert(read(true));
+	assert(read(Box#[Int] { value: 7 }) == 7);
+	assert(ranked(Box#[Int] { value: 0 }) == 1);
+	assert(ranked(0) == 2);
+	assert(tied(1, 2) == 2);
+	assert(tied(1, false) == 1);
+	assert(concrete(3) == 5);
+	let reference = concrete;
+	assert(reference(4) == 6);
+	assert(invalid_concrete() == 4);
+	let caught = false;
+
+	try { runtime_failure(0); } catch (error) {
+		assert(error.message@ == "selected body");
+		caught = true;
+	}
+
+	assert(caught);
+	assert(convert#[Int](false) == 7);
+	assert(convert#[Bool](true));
+	assert(closure(3, \value value + 1) == 4);
+	assert(closure_rank(3, \value value + 1) == 5);
+	assert(kwargs(3) == 6);
+	assert(kwargs(false, extra = 9) == 9);
+	assert(recurse(false, 3) == 3);
+	let integer = Box#[Int] { value: 7 };
+	let boolean = Box#[Bool] { value: true };
+	assert(integer&.extract() == 8);
+	assert(boolean&.extract() == 1);
+	assert(integer&.same() == 2);
+	assert(integer.callback(\value value + 2) == 9);
+	assert(Box#[Int]::get(5) == 6);
+	assert(Box#[Bool]::get(false) == 1);
+	assert(Box#[Int]::rank(0) == 1);
+	assert(Box#[Bool]::rank(false) == 2);
+	assert(Box#[Int]::fallback(0) == 3);
+	let original = Copied#[Int] { value: 4 };
+	let copy = original;
+	assert(original.value == 4);
+	assert(copy.value == 5);
+	let boolean_original = Copied#[Bool] { value: true };
+	let boolean_copy = boolean_original;
+	assert(boolean_original.value);
+	assert(boolean_copy.value);
+	nested();
+	println("passed"&);
+}

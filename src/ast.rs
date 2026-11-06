@@ -368,6 +368,8 @@ pub struct FunctionDef {
     pub inline_hint: bool,
     /// Whether this is an extension method, requiring lexical visibility.
     pub is_extension: bool,
+    /// Whether overlapping definitions are tried in reverse declaration order.
+    pub is_overlap: bool,
     /// Attached documentation.
     pub doc: Option<String>,
     /// Declaration span.
