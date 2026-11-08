@@ -8,6 +8,38 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 #[test]
+fn async_io() {
+    assert_eq!(
+        run_codegen_file(&fixture("async.solar"), "async_io"),
+        "passed\n"
+    );
+}
+
+#[test]
+fn async_io_release() {
+    assert_eq!(
+        test_utils::run_release_file(&fixture("async.solar"), "async_io"),
+        "passed\n"
+    );
+}
+
+#[test]
+fn async_spawn() {
+    assert_eq!(
+        run_codegen_file(&fixture("async_spawn.solar"), "async_spawn"),
+        "passed\n"
+    );
+}
+
+#[test]
+fn async_spawn_release() {
+    assert_eq!(
+        test_utils::run_release_file(&fixture("async_spawn.solar"), "async_spawn"),
+        "passed\n"
+    );
+}
+
+#[test]
 fn atomic_fetch() {
     let output = run_codegen_file(&fixture("atomic_fetch.solar"), "compile_only_atomic_fetch");
     assert_eq!(output, "passed\n");

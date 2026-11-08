@@ -36,6 +36,35 @@ fn main() {
 "#;
 
 #[test]
+fn async_tasks_and_completions_survive_collection() {
+    test_utils::ensure_runtime_built();
+    test_utils::ensure_release_runtime_built();
+    let directory = tempdir::TempDir::new("solar-async-gc").unwrap();
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/compile_only/async_spawn.solar");
+    let c_source = solar::pipeline::compile(&source)
+        .unwrap()
+        .to_mangled()
+        .to_tree_ir()
+        .optimized()
+        .to_c(&source.display().to_string());
+    for optimize in [false, true] {
+        let binary = solar::pipeline::CSource {
+            c_source: c_source.c_source.clone(),
+            source_map: c_source.source_map.clone(),
+        }
+        .to_binary(
+            directory.path().join(format!("async_gc_{optimize}")),
+            CompileOptions {
+                optimize,
+                ..CompileOptions::GC_SAN
+            },
+        );
+        assert_eq!(binary.run("async_gc"), "passed\n");
+    }
+}
+
+#[test]
 fn coroutine_results_survive_collection() {
     test_utils::ensure_release_runtime_built();
     let directory = tempdir::TempDir::new("solar-coroutine-gc").unwrap();

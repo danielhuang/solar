@@ -1,0 +1,159 @@
+import intrinsics from "@intrinsics";
+import(C) {SYS_pipe2, SYS_memfd_create} from "sys/syscall.h";
+import(C) {O_CLOEXEC} from "fcntl.h";
+import(C) {MFD_CLOEXEC} from "linux/memfd.h";
+
+fn pipe() -> (FileDesc, FileDesc) {
+	let fds = [0i32; 2u];
+	let result = unsafe {
+		intrinsics::syscall(Int64(SYS_pipe2), fds&, Int64(O_CLOEXEC))
+	};
+	linux::check_syscall(result, "pipe failed"&);
+	unsafe {
+		(intrinsics::fd_from_raw(fds[0u]), intrinsics::fd_from_raw(fds[1u]))
+	}
+}
+
+fn forward#[C](c: C) { coroutine { await c } }
+
+fn main() {
+	// io_uring must use and advance the file's current offset for both operations.
+	let raw = unsafe {
+		intrinsics::syscall(
+			Int64(SYS_memfd_create),
+			"async\0"&,
+			Int64(MFD_CLOEXEC),
+		)
+	};
+	linux::check_syscall(raw, "memfd_create failed"&);
+	let memory = unsafe { intrinsics::fd_from_raw(Int32(raw)) };
+	async::run(\context: &async::Context {
+		coroutine {
+			assert(await async::write(memory, "hello"&) == 5u);
+			assert(await async::write(memory, " world"&) == 6u);
+			assert(await async::read(memory, [0u8; 1u]&) == 0u);
+		}
+	});
+	let written = [0u8; 11u];
+	assert(memory.read_at(written&, 0u) == 11u);
+	assert(written == "hello world");
+	memory.close();
+
+	let (reader, writer) = pipe();
+	let buf = [0u8; 32u];
+	assert(
+		async::run(\context: &async::Context async::write(
+			writer,
+			"hello"&,
+		)) == 5u,
+	);
+	assert(
+		async::run(\context: &async::Context async::read(reader, buf&)) == 5u,
+	);
+	assert(buf[0u..5u] == "hello");
+
+	// Nested awaits and repeated requests reuse the executor's completion queue.
+	let task = coroutine {
+		for index in 0..8 {
+			let text = ("message " + index.to_string()@)&;
+			let written = await forward(async::write(writer, text));
+			gc::collect_gc();
+			let received = await forward(async::read(reader, buf&));
+			assert(written == text.len());
+			assert(received == written);
+			assert(buf[0u..received] == text@);
+		}
+
+		(42, "done"&)
+	};
+	let result = async::run(\context: &async::Context task);
+	assert(result.0 == 42);
+	assert(result.1@ == "done");
+
+	// Completion without a request, and a unit completion value.
+	assert(
+		async::run(\context: &async::Context {
+			coroutine {
+				if false { await async::read(reader, buf&); }
+				17
+			}
+		}) ==
+			17,
+	);
+	let unit: () = async::run(\context: &async::Context {
+		coroutine {
+			assert(await async::write(writer, ""&) == 0u);
+		}
+	});
+	assert(
+		async::run(\context: &async::Context async::read(
+			reader,
+			[0u8; 0u]&,
+		)) == 0u,
+	);
+
+	// A blocking read is completed by another thread, without polling or sleeps.
+	let peer = thread::spawn(\ { writer.write("wake"&); });
+	assert(
+		async::run(\context: &async::Context async::read(reader, buf&)) == 4u,
+	);
+	assert(buf[0u..4u] == "wake");
+	peer.join();
+	writer.close();
+	assert(
+		async::run(\context: &async::Context async::read(reader, buf&)) == 0u,
+	);
+	reader.close();
+
+	// I/O errors reach the await site, where execution can recover and continue.
+	let input = file::open(
+		"tests/compile_only/file_io_data.txt"&,
+		write = false,
+	);
+	let output = file::open("/dev/null"&, read = false);
+	let read_error = ""&;
+	let write_error = ""&;
+	try { output.read(buf&); } catch (error) { read_error = error.message; }
+
+	try { input.write_partial("x"&); } catch (error) {
+		write_error = error.message;
+	}
+
+	assert(read_error.len() > 0u);
+	assert(write_error.len() > 0u);
+	let recovered = async::run(\context: &async::Context {
+		coroutine {
+			let caught = 0;
+
+			try { await async::read(output, buf&); } catch (error) {
+				gc::collect_gc();
+				assert(error.message@ == read_error@);
+				caught = caught + 1;
+			}
+
+			try { await async::write(input, "x"&); } catch (error) {
+				assert(error.message@ == write_error@);
+				caught = caught + 1;
+			}
+
+			assert(await async::write(output, "still running"&) == 13u);
+			assert(await async::read(input, buf[0u..5u]&) == 5u);
+			assert(await async::read(input, buf[5u..32u]&) == 7u);
+			assert(buf[0u..12u] == "hello world\n");
+			caught
+		}
+	});
+	assert(recovered == 2);
+
+	let caught = false;
+
+	try { async::run(\context: &async::Context async::read(output, buf&)); } catch (error) {
+		assert(error.message@ == read_error@);
+		caught = true;
+	}
+
+	assert(caught);
+	input.close();
+	output.close();
+	println("passed"&);
+}

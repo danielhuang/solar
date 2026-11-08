@@ -18,6 +18,9 @@ pub import sync from "sync.solar";
 /// Thread creation and joining.
 pub import thread from "thread.solar";
 
+/// Coroutine execution and asynchronous file I/O.
+pub import async from "async.solar";
+
 /// Filesystem and stream I/O.
 pub import file from "file.solar";
 

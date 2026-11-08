@@ -79,11 +79,12 @@ fn coroutine_loop_keeps_short_lived_temporaries_out_of_the_frame() {
     )
     .unwrap();
     let typed = solar::pipeline::compile(&path).unwrap();
+    let prefix = format!("Coroutine_{}_", typed.source_map.root_file_id().unwrap());
     let coroutine = typed
         .typed
         .structs
         .values()
-        .find(|s| s.id.def.name.starts_with("Coroutine_"))
+        .find(|s| s.id.def.name.starts_with(&prefix))
         .unwrap();
     // Neither loop arithmetic nor the assignment address lives across a yield.
     // The only persistent data is the resume state and the captured binding.
@@ -101,11 +102,12 @@ fn coroutine_owns_storage_and_has_concrete_resume_and_next_methods() {
     let path = directory.path().join("main.solar");
     std::fs::write(&path, "fn main() { let captured = 7; let g = coroutine { let local = captured; yield local; local = local + 1; yield local; }; g.next(); }").unwrap();
     let typed = solar::pipeline::compile(&path).unwrap();
+    let prefix = format!("Coroutine_{}_", typed.source_map.root_file_id().unwrap());
     let coroutines: Vec<_> = typed
         .typed
         .structs
         .values()
-        .filter(|s| s.id.def.name.starts_with("Coroutine_"))
+        .filter(|s| s.id.def.name.starts_with(&prefix))
         .collect();
     assert_eq!(coroutines.len(), 1);
     let coroutine = coroutines[0];

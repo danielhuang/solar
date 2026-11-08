@@ -10,6 +10,8 @@
 - Grammar development requires Node.js and the tree-sitter CLI.
 - Interpreter and GC-disabled runs require Linux procfs with readable
   `/proc/self/smaps_rollup` for resident-memory monitoring.
+- Async executor runs require Linux io_uring support and permission to use
+  `io_uring_setup` and `io_uring_enter` under the process's seccomp policy.
 
 ## Project conventions
 

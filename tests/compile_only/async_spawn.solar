@@ -1,0 +1,203 @@
+import intrinsics from "@intrinsics";
+import(C) {SYS_pipe2, SYS_gettid} from "sys/syscall.h";
+import(C) {O_CLOEXEC} from "fcntl.h";
+
+fn pipe() -> (FileDesc, FileDesc) {
+	let fds = [0i32; 2u];
+	let result = unsafe {
+		intrinsics::syscall(Int64(SYS_pipe2), fds&, Int64(O_CLOEXEC))
+	};
+	linux::check_syscall(result, "pipe failed"&);
+	unsafe {
+		(intrinsics::fd_from_raw(fds[0u]), intrinsics::fd_from_raw(fds[1u]))
+	}
+}
+
+fn tid() -> Int64 { unsafe { intrinsics::syscall(Int64(SYS_gettid)) } }
+
+fn main() {
+	let executor_thread = tid();
+	let (requests, send_request) = pipe();
+	let (replies, send_reply) = pipe();
+	let created = 0;
+	let result = async::run(\context: &async::Context {
+		created = created + 1;
+		// Enqueue from the factory, then enqueue a different coroutine from a child.
+		context.spawn(coroutine {
+			assert(tid() == executor_thread);
+			let request = [0u8; 4u];
+			assert(await async::read(requests, request&) == 4u);
+			assert(request == "ping");
+			assert(tid() == executor_thread);
+			context.spawn(coroutine {
+				gc::collect_gc();
+				assert(await async::write(send_reply, "pong"&) == 4u);
+				true
+			});
+			99
+		});
+
+		coroutine {
+			assert(await async::write(send_request, "ping"&) == 4u);
+			let reply = [0u8; 4u];
+			assert(await async::read(replies, reply&) == 4u);
+			assert(reply == "pong");
+			assert(tid() == executor_thread);
+			(42, "main"&)
+		}
+	});
+	assert(created == 1);
+	assert(result.0 == 42);
+	assert(result.1@ == "main");
+	requests.close();
+	send_request.close();
+	replies.close();
+	send_reply.close();
+
+	// An externally enqueued coroutine wakes a loop waiting for I/O.
+	let contexts = sync::Channel#[&async::Context]();
+	let (external_read, external_write) = pipe();
+	let enqueuer = thread::spawn(\ {
+		let context = contexts&.recv();
+		gc::collect_gc();
+		context.spawn(async::write(external_write, "wake"&));
+	});
+	assert(
+		async::run(\context: &async::Context {
+			coroutine {
+				contexts&.send(context);
+				let bytes = [0u8; 4u];
+				let count = await async::read(external_read, bytes&);
+				assert(bytes == "wake");
+				count
+			}
+		}) ==
+			4u,
+	);
+	enqueuer.join();
+	external_read.close();
+	external_write.close();
+
+	// Every reader waits for a separate writer, with multiple requests in flight.
+	let pipes = [192u; \index: Uint pipe()];
+	let (done, signal_done) = pipe();
+	let completed = 0;
+	let total = async::run(\context: &async::Context {
+		coroutine {
+			for pair in pipes& {
+				context.spawn(reader(pair@.0, signal_done, completed&));
+			}
+
+			for pair in pipes& { context.spawn(async::write(pair@.1, "x"&)); }
+			let buf = [0u8; 192u];
+			let received = 0u;
+
+			while received < 192u {
+				received = received +
+					await async::read(done, buf[received..192u]&);
+			}
+
+			assert(buf == [Uint8('x'); 192u]);
+			completed
+		}
+	});
+	assert(total == 192);
+	for pair in pipes& { pair@.0.close(); pair@.1.close(); }
+	done.close();
+	signal_done.close();
+
+	// The child is blocked before the main coroutine is allowed to finish.
+	let (blocked, unblock) = pipe();
+	let (ready, signal_ready) = pipe();
+	let started = false;
+	let resumed = false;
+	let saved = Option#[&async::Context]::None;
+	assert(
+		async::run(\context: &async::Context {
+			coroutine {
+				saved = Option#[&async::Context]::Some(context);
+				context.spawn(coroutine {
+					started = true;
+					context.spawn(async::write(signal_ready, "r"&));
+					await async::read(blocked, [0u8; 1u]&);
+					resumed = true;
+				});
+				assert(await async::read(ready, [0u8; 1u]&) == 1u);
+				assert(started);
+				7
+			}
+		}) ==
+			7,
+	);
+	assert(!resumed);
+	// Cancellation finishes before run returns: the abandoned read cannot consume
+	// a byte written afterward. Retaining the context cannot restart the executor.
+	unblock.write("x"&);
+	unblock.close();
+	let untouched = [0u8; 1u];
+	assert(blocked.read(untouched&) == 1u);
+	assert(untouched == "x");
+	blocked.close();
+	saved.unwrap().spawn(coroutine {
+		resumed = true;
+		await async::write(signal_ready, "unexpected"&);
+	});
+	gc::collect_gc();
+	assert(
+		async::run(\context: &async::Context async::write(
+			signal_ready,
+			"new"&,
+		)) == 3u,
+	);
+	assert(!resumed);
+
+	ready.close();
+	signal_ready.close();
+
+	// No queued task runs when the main coroutine completes without suspending.
+	let ran = false;
+	let output = file::open("/dev/null"&, read = false);
+	assert(
+		async::run(\context: &async::Context {
+			context.spawn(coroutine {
+				ran = true;
+				await async::write(output, "x"&);
+			});
+			coroutine { if false { await async::write(output, ""&); } 23 }
+		}) ==
+			23,
+	);
+	assert(!ran);
+
+	// An uncaught child exception exits run while the main coroutine is suspended.
+	let (never, release) = pipe();
+	let caught = false;
+
+	try {
+		async::run(\context: &async::Context {
+			coroutine {
+				context.spawn(coroutine {
+					if false { await async::write(output, ""&); }
+					throw("child failed"&);
+				});
+				await async::read(never, [0u8; 1u]&)
+			}
+		});
+	} catch (error) { assert(error.message@ == "child failed"); caught = true; }
+
+	assert(caught);
+	release.close();
+	never.close();
+	output.close();
+	println("passed"&);
+}
+
+fn reader(input: FileDesc, output: FileDesc, completed: &Int) {
+	coroutine {
+		let buf = [0u8; 1u];
+		assert(await async::read(input, buf&) == 1u);
+		completed@ = completed@ + 1;
+		if completed@ % 16 == 0 { gc::collect_gc(); }
+		await async::write(output, buf&)
+	}
+}

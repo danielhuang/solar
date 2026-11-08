@@ -1,0 +1,549 @@
+import {Option, Exception, throw, gc_keepalive, assert, min, max, size_of} from "lib.solar";
+import {Mutex} from "sync.solar";
+import {Vec} from "vec.solar";
+import intrinsics from "@intrinsics";
+import linux from "linux.solar";
+
+import(C) {
+	SYS_io_uring_setup,
+	SYS_io_uring_enter,
+	SYS_mmap,
+	SYS_munmap,
+	SYS_close,
+	SYS_eventfd2,
+	SYS_poll,
+	SYS_read,
+	SYS_write,
+} from "sys/syscall.h";
+import(C) {PROT_READ, PROT_WRITE, MAP_SHARED} from "sys/mman.h";
+import(C) {EFD_CLOEXEC, EFD_NONBLOCK} from "sys/eventfd.h";
+import(C) {pollfd, POLLIN} from "poll.h";
+import(C) {
+	io_uring_params,
+	IORING_FEAT_SINGLE_MMAP,
+	IORING_FEAT_NODROP,
+	IORING_OFF_SQ_RING,
+	IORING_OFF_CQ_RING,
+	IORING_OFF_SQES,
+	IORING_ENTER_GETEVENTS,
+	IORING_OP_READ,
+	IORING_OP_WRITE,
+	IORING_OP_ASYNC_CANCEL,
+} from "linux/io_uring.h";
+
+// The 64-byte SQE's read/write/cancel view. The UAPI struct contains unions
+// and packed fields, which cannot be imported as a Solar type. Unused union
+// arms and the final 24 bytes stay zero; SQE128 is never enabled.
+struct(repr(C)) Sqe {
+	opcode: Uint8,
+	flags: Uint8,
+	ioprio: Uint16,
+	fd: Int32,
+	offset: Uint64,
+	address: Uint64,
+	len: Uint32,
+	operation_flags: Uint32,
+	token: Uint64,
+	reserved: [Uint64; 3],
+}
+
+// The standard 16-byte CQE, without the optional flexible CQE32 extension.
+struct(repr(C)) Cqe { token: Uint64, result: Int32, flags: Uint32 }
+type Completion = (Uint64, Int32);
+type Submit = fn(Sqe);
+type Completions = fn(Bool) -> Option#[Completion];
+
+fn mapping(fd: Int64, bytes: Uint, offset: Uint64) -> &[Uint8] {
+	let address = unsafe {
+		intrinsics::syscall(
+			Int64(SYS_mmap),
+			0u64,
+			Uint64(bytes),
+			Int64(PROT_READ | PROT_WRITE),
+			Int64(MAP_SHARED),
+			fd,
+			offset,
+		)
+	};
+	linux::check_syscall(address, "io_uring mmap failed"&);
+	unsafe {
+		let base = intrinsics::transmute_unchecked#[&Uint8](Uint(address));
+		intrinsics::transmute_ref#[[Uint8]](base, bytes)
+	}
+}
+
+fn field#[out T](memory: &[Uint8], offset: Uint32) -> &T {
+	unsafe { intrinsics::transmute_ref#[T](memory@[Uint(offset)]&, 0u) }
+}
+
+fn enter(fd: Int64, submit: Uint32, wait: Uint32) -> Int64 {
+	unsafe {
+		intrinsics::syscall(
+			Int64(SYS_io_uring_enter),
+			fd,
+			Uint64(submit),
+			Uint64(wait),
+			Int64(IORING_ENTER_GETEVENTS),
+			0u64,
+			0u64,
+		)
+	}
+}
+
+fn release(mappings: &Vec#[&[Uint8]], fd: Int64, wake: Int64) {
+	for index in 0u..mappings.len() {
+		let memory = mappings.at(index)@;
+		unsafe {
+			intrinsics::syscall(Int64(SYS_munmap), memory, Uint64(memory.len()));
+		}
+	}
+
+	// These private descriptors were never registered as GC-managed FileDesc values.
+	unsafe { intrinsics::syscall(Int64(SYS_close), fd); }
+	if wake >= 0i64 { unsafe { intrinsics::syscall(Int64(SYS_close), wake); } }
+}
+
+/// An I/O request yielded to `run`. Each variant contains a file descriptor,
+/// a buffer, and a completion slot holding the byte count and optional exception.
+pub enum Suspend {
+	Read((FileDesc, &[Uint8], &(Uint, Option#[Exception]))),
+	Write((FileDesc, &[Uint8], &(Uint, Option#[Exception]))),
+}
+
+type Task = fn() -> Option#[Suspend];
+
+/// A handle for scheduling coroutines on an executor.
+pub struct Context { enqueue: fn(Task) }
+
+/// Enqueues a coroutine yielding `Suspend` to run alongside the main coroutine.
+/// Its completion value is discarded. An uncaught exception exits `run`.
+/// Tasks submitted after the executor has exited are discarded.
+pub method spawn#[C](self: &Context, c: C) {
+	(self@.enqueue)(\ c.next());
+}
+
+type Pending = (Suspend, Task);
+
+fn submit(enqueue: Submit, request: Suspend, token: Uint64) {
+	let (fd, buf, result, reading) = match request {
+		Suspend::Read(io) => (io.0, io.1, io.2, true),
+		Suspend::Write(io) => (io.0, io.1, io.2, false),
+	};
+	let (address, length) = unsafe {
+		intrinsics::transmute_unchecked#[(Uint64, Uint64)](buf)
+	};
+	let entry = unsafe { intrinsics::zeroed#[Sqe]() };
+	entry.opcode = Uint8(
+		if reading { IORING_OP_READ } else { IORING_OP_WRITE },
+	);
+	entry.fd = intrinsics::fd_to_raw(fd);
+	entry.offset = !0u64;
+	entry.address = address;
+	entry.len = Uint32(min(length, Uint64(linux::INT_MAX)));
+	entry.token = token;
+	enqueue(entry);
+}
+
+fn dispatch(
+	enqueue: Submit,
+	pending: &Vec#[Option#[Pending]],
+	request: Suspend,
+	resume: Task,
+) {
+	let index = 0u;
+
+	while index < pending.len() && pending.at(index)@.is_some() {
+		index = index + 1u;
+	}
+
+	if index == pending.len() { pending.push(Option#[Pending]::None); }
+	// This traced slot owns the buffer, FileDesc, result storage, and task until
+	// completion. The kernel ring only retains raw addresses and IDs.
+	pending.at(index)@ = Option#[Pending]::Some((request, resume));
+	submit(enqueue, request, Uint64(index) + 1u64);
+}
+
+fn poll(
+	enqueue: Submit,
+	completions: Completions,
+	pending: &Vec#[Option#[Pending]],
+	context: &Context,
+	wait: Bool,
+) {
+	let completion = completions(wait);
+	if completion.is_none() { return; }
+	let (token, value) = completion.unwrap();
+	let index = Uint(token - 1u64);
+	let (request, resume) = pending.at(index)@.unwrap();
+
+	if value == 0i32 - linux::EINTR {
+		submit(enqueue, request, token);
+		return;
+	}
+
+	let (result, message) = match request {
+		Suspend::Read(io) => (io.2, "file_read failed"&),
+		Suspend::Write(io) => (io.2, "file_write_partial failed"&),
+	};
+	let error = Option#[Exception]::None;
+
+	try { linux::check_syscall(Int64(value), message); } catch (exception) {
+		error = Option#[Exception]::Some(exception);
+	}
+
+	result@ = (if value >= 0i32 { Uint(value) } else { 0u }, error);
+	pending.at(index)@ = Option#[Pending]::None;
+	(context@.enqueue)(resume);
+}
+
+fn with_shutdown#[R](execute: fn() -> R, stop: fn()) -> R {
+	let result = Option#[R]::None;
+
+	try { result = Option#[R]::Some(execute()); } catch (error) {
+		stop();
+		throw(error);
+	}
+
+	stop();
+	result.unwrap()
+}
+
+/// Creates the main coroutine with a context, runs it, and returns its completion
+/// value. Coroutines yield `Suspend`; I/O is submitted through io_uring.
+/// Ready coroutines run on the calling thread while other requests are in flight.
+/// When the main coroutine finishes, queued tasks are discarded immediately.
+/// Outstanding I/O is cancelled and drained before its buffers are released;
+/// those coroutines are never resumed. Requires kernel io_uring support.
+pub fn run#[C](create: fn(&Context) -> C) {
+	let ready = Vec([]#[Option#[Task]]&);
+	let head = 0u;
+	let lock = Mutex();
+	let wake = 0i64;
+	let pending = Vec([]#[Option#[Pending]]&);
+	let running = true;
+	assert(size_of#[Sqe]() == 64u);
+	assert(size_of#[Cqe]() == 16u);
+	let params = unsafe { intrinsics::zeroed#[io_uring_params]() };
+	let fd = unsafe {
+		intrinsics::syscall(Int64(SYS_io_uring_setup), 64u64, params&)
+	};
+	linux::check_syscall(fd, "io_uring setup failed"&);
+	let mappings = Vec([]#[&[Uint8]]&);
+	wake = 0i64 - 1i64;
+
+	try {
+		if (params.features & Uint32(IORING_FEAT_NODROP)) == 0u32 {
+			throw("io_uring requires completion overflow support"&);
+		}
+
+		let sq_bytes = Uint(params.sq_off.array) +
+			Uint(params.sq_entries) * size_of#[Uint32]();
+		let cq_bytes = Uint(params.cq_off.cqes) +
+			Uint(params.cq_entries) * size_of#[Cqe]();
+
+		if (params.features & Uint32(IORING_FEAT_SINGLE_MMAP)) != 0u32 {
+			mappings&.push(
+				mapping(fd, max(sq_bytes, cq_bytes), IORING_OFF_SQ_RING),
+			);
+		} else {
+			mappings&.push(mapping(fd, sq_bytes, IORING_OFF_SQ_RING));
+			mappings&.push(mapping(fd, cq_bytes, IORING_OFF_CQ_RING));
+		}
+
+		mappings&.push(
+			mapping(
+				fd,
+				Uint(params.sq_entries) * size_of#[Sqe](),
+				IORING_OFF_SQES,
+			),
+		);
+		wake = unsafe {
+			intrinsics::syscall(
+				Int64(SYS_eventfd2),
+				0u64,
+				Int64(EFD_CLOEXEC | EFD_NONBLOCK),
+			)
+		};
+		linux::check_syscall(wake, "io_uring eventfd failed"&);
+	} catch (error) { release(mappings&, fd, wake); throw(error); }
+
+	let sq = mappings&.at(0u)@;
+	let cq = mappings&.at(if mappings&.len() == 2u { 0u } else { 1u })@;
+	let sq_head = field#[Uint32](sq, params.sq_off.head);
+	let sq_tail = field#[Uint32](sq, params.sq_off.tail);
+	let sq_mask = field#[Uint32](sq, params.sq_off.ring_mask)@;
+	let sq_array = unsafe {
+		intrinsics::transmute_ref#[[Uint32]](
+			field#[Uint32](sq, params.sq_off.array),
+			Uint(params.sq_entries),
+		)
+	};
+	let sqes = unsafe {
+		intrinsics::transmute_ref#[[Sqe]](
+			mappings&.at(mappings&.len() - 1u)@,
+			Uint(params.sq_entries),
+		)
+	};
+	let cq_head = field#[Uint32](cq, params.cq_off.head);
+	let cq_tail = field#[Uint32](cq, params.cq_off.tail);
+	let cq_mask = field#[Uint32](cq, params.cq_off.ring_mask)@;
+	let cqes = unsafe {
+		intrinsics::transmute_ref#[[Cqe]](
+			field#[Cqe](cq, params.cq_off.cqes),
+			Uint(params.cq_entries),
+		)
+	};
+	let completed = Vec([]#[Completion]&);
+	let completion_head = 0u;
+	let inflight = 0u;
+	let reap = \ {
+		let cursor = cq_head.atomic_load();
+		let tail = cq_tail.atomic_load();
+
+		while cursor != tail {
+			let entry = cqes@[Uint(cursor & cq_mask)];
+
+			if entry.token != 0u64 {
+				inflight = inflight - 1u;
+				completed&.push((entry.token, entry.result));
+			}
+
+			cursor = cursor ++ 1u32;
+		}
+
+		// Publish consumption only after copying all entries; loads/stores use
+		// the acquire/release atomics shared with the kernel's ring protocol.
+		cq_head.atomic_store(cursor);
+	};
+	let flush = \ {
+		loop {
+			reap();
+			let count = sq_tail.atomic_load() -- sq_head.atomic_load();
+			if count == 0u32 { break; }
+			let status = enter(fd, count, 0u32);
+
+			if status != 0i64 - Int64(linux::EINTR) &&
+				status != 0i64 - Int64(linux::EBUSY) {
+				linux::check_syscall(status, "io_uring submit failed"&);
+			}
+		};
+	};
+	let enqueue: Submit = \entry: Sqe {
+		flush();
+		let tail = sq_tail.atomic_load();
+		let index = Uint(tail & sq_mask);
+		sqes@[index] = entry;
+		sq_array@[index] = Uint32(index);
+		if entry.token != 0u64 { inflight = inflight + 1u; }
+		sq_tail.atomic_store(tail ++ 1u32);
+		flush();
+	};
+	let completions: Completions = \wait: Bool {
+		loop {
+			reap();
+
+			if completion_head < completed&.len() {
+				let value = completed&.at(completion_head)@;
+				completion_head = completion_head + 1u;
+
+				if completion_head >= completed&.len() / 2u {
+					completed = Vec(
+						completed&.as_slice()@[completion_head..completed&.len()]&,
+					);
+					completion_head = 0u;
+				}
+
+				return Option#[Completion]::Some(value);
+			}
+
+			if !wait { return Option#[Completion]::None; }
+			let fds = [
+				pollfd { fd: Int32(fd), events: Int16(POLLIN), revents: 0i16 },
+				pollfd { fd: Int32(wake), events: Int16(POLLIN), revents: 0i16 },
+			];
+			let status = unsafe {
+				intrinsics::syscall(Int64(SYS_poll), fds&, 2u64, 0i64 - 1i64)
+			};
+			if status == 0i64 - Int64(linux::EINTR) { continue; }
+			linux::check_syscall(status, "io_uring wait failed"&);
+
+			if fds[1u].revents != 0i16 {
+				let notification = 0u64;
+				unsafe {
+					intrinsics::syscall(
+						Int64(SYS_read),
+						wake,
+						notification&,
+						8u64,
+					);
+				}
+				return Option#[Completion]::None;
+			}
+
+			let status = enter(fd, 0u32, 0u32);
+
+			if status != 0i64 - Int64(linux::EINTR) {
+				linux::check_syscall(status, "io_uring wait failed"&);
+			}
+		}
+	};
+	let context = Context {
+		enqueue: \task: Task {
+			lock&.lock();
+
+			if running {
+				ready&.push(Option#[Task]::Some(task));
+				let notification = 1u64;
+				let status = 0i64;
+
+				loop {
+					status = unsafe {
+						intrinsics::syscall(
+							Int64(SYS_write),
+							Int64(wake),
+							notification&,
+							8u64,
+						)
+					};
+					if status != 0i64 - Int64(linux::EINTR) { break; }
+				};
+
+				// EAGAIN means a wakeup is already pending on this eventfd.
+				if status < 0i64 && status != 0i64 - Int64(linux::EAGAIN) {
+					lock&.unlock();
+					linux::check_syscall(status, "io_uring wake failed"&);
+					return;
+				}
+			}
+
+			lock&.unlock();
+		},
+	};
+	let stop = \ {
+		lock&.lock();
+		running = false;
+		ready = Vec([]#[Option#[Task]]&);
+		lock&.unlock();
+		flush();
+
+		for index in 0u..pending&.len() {
+			if pending&.at(index)@.is_some() {
+				let cancel = unsafe { intrinsics::zeroed#[Sqe]() };
+				cancel.opcode = Uint8(IORING_OP_ASYNC_CANCEL);
+				cancel.address = Uint64(index) + 1u64;
+				enqueue(cancel);
+			}
+		}
+
+		while inflight != 0u {
+			reap();
+
+			if inflight != 0u {
+				let status = enter(fd, 0u32, 1u32);
+
+				if status != 0i64 - Int64(linux::EINTR) {
+					linux::check_syscall(
+						status,
+						"io_uring cancellation failed"&,
+					);
+				}
+			}
+		}
+
+		release(mappings&, fd, wake);
+		gc_keepalive(pending&);
+		pending = Vec([]#[Option#[Pending]]&);
+	};
+
+	with_shutdown(
+		\ {
+			for request in create(context&) {
+				let resumed = false;
+				dispatch(
+					enqueue,
+					pending&,
+					request,
+					\ {
+						resumed = true;
+						Option#[Suspend]::None
+					},
+				);
+
+				while !resumed {
+					poll(enqueue, completions, pending&, context&, false);
+					lock&.lock();
+					let next = Option#[Task]::None;
+
+					if head < ready&.len() {
+						next = ready&.at(head)@;
+						ready&.at(head)@ = Option#[Task]::None;
+						head = head + 1u;
+					}
+
+					if head == ready&.len() {
+						ready = Vec([]#[Option#[Task]]&);
+						head = 0u;
+					} else if head >= ready&.len() / 2u {
+						// Reclaim consumed slots even when new work keeps arriving.
+						ready = Vec(ready&.as_slice()@[head..ready&.len()]&);
+						head = 0u;
+					}
+
+					lock&.unlock();
+
+					match next {
+						Option#[Task]::Some(task) => {
+							match task() {
+								Option#[Suspend]::Some(request) => dispatch(
+									enqueue,
+									pending&,
+									request,
+									task,
+								),
+								Option#[Suspend]::None => (),
+							}
+						},
+						Option#[Task]::None => poll(
+							enqueue,
+							completions,
+							pending&,
+							context&,
+							true,
+						),
+					}
+				}
+			}
+		},
+		stop,
+	)
+}
+
+/// Returns a coroutine that reads into `buf` through io_uring when run.
+/// Completes with the byte count (zero at EOF); short reads are allowed.
+/// I/O exceptions are rethrown in the coroutine after the I/O completes.
+pub fn read(fd: FileDesc, buf: &[Uint8]) {
+	coroutine {
+		let result = (0u, Option#[Exception]::None);
+		yield Suspend::Read((fd, buf, result&));
+
+		match result.1 {
+			Option#[Exception]::Some(error) => throw(error),
+			Option#[Exception]::None => result.0,
+		}
+	}
+}
+
+/// Returns a coroutine that writes from `buf` through io_uring when run.
+/// Completes with the byte count; short writes are allowed.
+/// I/O exceptions are rethrown in the coroutine after the I/O completes.
+pub fn write(fd: FileDesc, buf: &[Uint8]) {
+	coroutine {
+		let result = (0u, Option#[Exception]::None);
+		yield Suspend::Write((fd, buf, result&));
+
+		match result.1 {
+			Option#[Exception]::Some(error) => throw(error),
+			Option#[Exception]::None => result.0,
+		}
+	}
+}
