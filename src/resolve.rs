@@ -1777,7 +1777,11 @@ fn resolve_impl(
     };
     resolver.source_map.set_root_file_id(root_id);
 
-    resolver.parse_imports(root_id)?;
+    // A standard-library root already had its imports processed above. C import
+    // paths now refer to generated Solar modules and must not be read as headers.
+    if root_id as usize >= std_file_count {
+        resolver.parse_imports(root_id)?;
+    }
 
     for i in std_file_count..resolver.files.len() {
         resolver.files[i].ast.items.insert(

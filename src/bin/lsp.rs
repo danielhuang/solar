@@ -6354,6 +6354,24 @@ fn main() {
     }
 
     #[test]
+    fn diagnostics_accept_std_documents_with_c_imports() {
+        for relative in [
+            "src/std/async.solar",
+            "src/std/sync.solar",
+            "src/std/net.solar",
+        ] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+            let uri = format!("file://{}", path.display());
+            let source = std::fs::read_to_string(path).unwrap();
+
+            let (document, diagnostics) = compute_with_diagnostics(&uri, &source);
+
+            assert!(diagnostics.is_empty(), "{relative}: {diagnostics:?}");
+            assert!(document.analysis.is_some(), "{relative}");
+        }
+    }
+
+    #[test]
     fn diagnostics_analysis_resolves_mutex_unlock() {
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/compile_only/mutex.solar");
