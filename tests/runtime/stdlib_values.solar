@@ -35,5 +35,30 @@ fn main() {
 		assert(e.message == "Option.unwrap: no value"&);
 	}
 
+	assert(Result#[Int]::Ok(42).unwrap() == 42);
+	let unit: () = Result#[()]::Ok(()).unwrap();
+	let value = 7;
+	let reference = Result#[&Int]::Ok(value&).unwrap();
+	assert(ref_eq(reference, value&));
+	reference@ = 8;
+	assert(value == 8);
+	let payload = (42, "retained payload"&);
+	let original = Exception("result failure"&, Any(payload&));
+	let failure = Result#[Int]::Err(original);
+	let caught = false;
+
+	try { failure.unwrap(); } catch (e) {
+		assert(e.message@ == "result failure");
+		assert(ref_eq(e.trace, original.trace));
+		let details = e.payload.downcast#[(Int, &[Uint8])]();
+		assert(details != null#[(Int, &[Uint8])]);
+		assert(ref_eq(details@&, payload&));
+		assert(details@.0 == 42);
+		assert(details@.1@ == "retained payload");
+		caught = true;
+	}
+
+	assert(caught);
+
 	println("passed"&);
 }

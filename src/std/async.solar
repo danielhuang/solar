@@ -1,4 +1,4 @@
-import {Option, Exception, throw, gc_keepalive, assert, min, max, size_of} from "lib.solar";
+import {Option, Result, throw, gc_keepalive, assert, min, max, size_of} from "lib.solar";
 import {Mutex} from "sync.solar";
 import {Vec} from "vec.solar";
 import intrinsics from "@intrinsics";
@@ -113,18 +113,13 @@ fn release(mappings: &Vec#[&[Uint8]], fd: Int64, wake: Int64) {
 /// and completion slots. Open retains a NUL-terminated path, flags, mode, and a
 /// slot for the newly registered descriptor; positioned I/O includes an offset.
 pub enum Suspend {
-	Open(
-		(&[Uint8], Int32, Int32, &(
-				Uint,
-				Option#[Exception],
-			), &Option#[FileDesc])
-	),
-	Close((FileDesc, &(Uint, Option#[Exception]))),
-	Read((FileDesc, &[Uint8], &(Uint, Option#[Exception]))),
-	Write((FileDesc, &[Uint8], &(Uint, Option#[Exception]))),
-	ReadAt((FileDesc, &[Uint8], &(Uint, Option#[Exception]), Uint)),
-	WriteAt((FileDesc, &[Uint8], &(Uint, Option#[Exception]), Uint)),
-	Sync((FileDesc, &(Uint, Option#[Exception]))),
+	Open((&[Uint8], Int32, Int32, &Result#[Uint], &Option#[FileDesc])),
+	Close((FileDesc, &Result#[Uint])),
+	Read((FileDesc, &[Uint8], &Result#[Uint])),
+	Write((FileDesc, &[Uint8], &Result#[Uint])),
+	ReadAt((FileDesc, &[Uint8], &Result#[Uint], Uint)),
+	WriteAt((FileDesc, &[Uint8], &Result#[Uint], Uint)),
+	Sync((FileDesc, &Result#[Uint])),
 }
 
 type Task = fn() -> Option#[Suspend];
@@ -248,14 +243,13 @@ fn dispatch(
 	submit(enqueue, request, Uint64(index) + 1u64, closing);
 }
 
-fn finish(result: &(Uint, Option#[Exception]), value: Int32, message: &[Uint8]) {
-	let error = Option#[Exception]::None;
-
-	try { linux::check_syscall(Int64(value), message); } catch (exception) {
-		error = Option#[Exception]::Some(exception);
+fn finish(result: &Result#[Uint], value: Int32, message: &[Uint8]) {
+	try {
+		linux::check_syscall(Int64(value), message);
+		result@ = Result#[Uint]::Ok(Uint(value));
+	} catch (exception) {
+		result@ = Result#[Uint]::Err(exception);
 	}
-
-	result@ = (if value >= 0i32 { Uint(value) } else { 0u }, error);
 }
 
 fn poll(
@@ -684,10 +678,10 @@ pub fn open(
 		if truncate { flags = flags | linux::O_TRUNC; }
 		if append { flags = flags | linux::O_APPEND; }
 		let nul_path: [Uint8] = path@ + [0u8];
-		let result = (0u, Option#[Exception]::None);
+		let result = Result#[Uint]::Ok(0u);
 		let opened = Option#[FileDesc]::None;
 		yield Suspend::Open((nul_path&, flags, mode, result&, opened&));
-		completed(result);
+		result.unwrap();
 		AsyncFileDesc(opened.unwrap())
 	}
 }
@@ -697,16 +691,9 @@ pub fn open(
 /// private duplicate for the kernel to close, preserving stale-handle protection.
 pub method close(self: AsyncFileDesc) {
 	coroutine {
-		let result = (0u, Option#[Exception]::None);
+		let result = Result#[Uint]::Ok(0u);
 		yield Suspend::Close((self.0, result&));
-		completed(result);
-	}
-}
-
-fn completed(result: (Uint, Option#[Exception])) -> Uint {
-	match result.1 {
-		Option#[Exception]::Some(error) => throw(error),
-		Option#[Exception]::None => result.0,
+		result.unwrap();
 	}
 }
 
@@ -714,9 +701,9 @@ fn completed(result: (Uint, Option#[Exception])) -> Uint {
 /// the byte count (zero at EOF). A single read; may return fewer bytes.
 pub method read(self: AsyncFileDesc, buf: &[Uint8]) {
 	coroutine {
-		let result = (0u, Option#[Exception]::None);
+		let result = Result#[Uint]::Ok(0u);
 		yield Suspend::Read((self.0, buf, result&));
-		completed(result)
+		result.unwrap()
 	}
 }
 
@@ -734,9 +721,9 @@ pub method read(self: AsyncFileDesc, max_size: Uint) {
 /// the number actually written. A single write; may write fewer bytes.
 pub method write_partial(self: AsyncFileDesc, src: &[Uint8]) {
 	coroutine {
-		let result = (0u, Option#[Exception]::None);
+		let result = Result#[Uint]::Ok(0u);
 		yield Suspend::Write((self.0, src, result&));
-		completed(result)
+		result.unwrap()
 	}
 }
 
@@ -765,9 +752,9 @@ pub method read_at(self: AsyncFileDesc, buf: &[Uint8], offset: Uint) {
 			);
 		}
 
-		let result = (0u, Option#[Exception]::None);
+		let result = Result#[Uint]::Ok(0u);
 		yield Suspend::ReadAt((self.0, buf, result&, offset));
-		completed(result)
+		result.unwrap()
 	}
 }
 
@@ -783,9 +770,9 @@ pub method write_at_partial(self: AsyncFileDesc, src: &[Uint8], offset: Uint) {
 			);
 		}
 
-		let result = (0u, Option#[Exception]::None);
+		let result = Result#[Uint]::Ok(0u);
 		yield Suspend::WriteAt((self.0, src, result&, offset));
-		completed(result)
+		result.unwrap()
 	}
 }
 
@@ -809,9 +796,9 @@ pub method write_at(self: AsyncFileDesc, src: &[Uint8], offset: Uint) {
 /// storage through io_uring. Completes with ().
 pub method sync(self: AsyncFileDesc) {
 	coroutine {
-		let result = (0u, Option#[Exception]::None);
+		let result = Result#[Uint]::Ok(0u);
 		yield Suspend::Sync((self.0, result&));
-		completed(result);
+		result.unwrap();
 	}
 }
 

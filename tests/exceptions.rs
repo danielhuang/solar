@@ -13,7 +13,7 @@ fn native_exception_payloads_survive_collection() {
         r#"
 import intrinsics from "@intrinsics";
 struct Details { code: Int, text: &[Uint8] }
-struct Holder { exception: Exception }
+struct Holder { result: Result#[Int] }
 fn failure(n: Int) {
     let text = ("payload " + n.to_string()@)&;
     let payload = Details { code: n, text: text };
@@ -31,23 +31,27 @@ fn main() {
     assert(resolved@ == "0x0 <unknown>");
     resolved@[0u] = 'X';
     assert(resolved@ == "Xx0 <unknown>");
-    let holder = (Holder { exception: Exception("initial"&) })&;
+    let holder = (Holder { result: Result#[Int]::Ok(0) })&;
     for n in 0..20 {
         try { failure(n); } catch (e) {
-            holder@.exception = e;
+            holder@.result = Result#[Int]::Err(e);
         }
         gc::collect_gc();
-        let e = holder@.exception;
-        assert(e.payload.downcast#[Details]()@.code == n);
-        assert(e.message@ == "failure " + n.to_string()@);
-        assert(e.payload.downcast#[Details]()@.text@ == "payload " + n.to_string()@);
-        assert(e.to_string().contains("Payload type: Details"&));
-        assert(e.trace.len() > 0u);
-        try { throw(e); } catch (again) {
-            gc::collect_gc();
-            assert(ref_eq(e.trace, again.trace));
-            assert(again.payload.downcast#[Details]()@.code == n);
+        let caught = false;
+        try { holder@.result.unwrap(); } catch (e) {
+            caught = true;
+            assert(e.payload.downcast#[Details]()@.code == n);
+            assert(e.message@ == "failure " + n.to_string()@);
+            assert(e.payload.downcast#[Details]()@.text@ == "payload " + n.to_string()@);
+            assert(e.to_string().contains("Payload type: Details"&));
+            assert(e.trace.len() > 0u);
+            try { throw(e); } catch (again) {
+                gc::collect_gc();
+                assert(ref_eq(e.trace, again.trace));
+                assert(again.payload.downcast#[Details]()@.code == n);
+            }
         }
+        assert(caught);
     }
     done&.atomic_store(true);
     while !finished&.atomic_load() {}

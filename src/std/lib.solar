@@ -66,6 +66,18 @@ pub import {BTreeMap} from "btree.solar";
 /// A value that may be absent.
 pub enum Option#[T] { Some(T), None }
 
+/// A successful value or a recoverable exception.
+pub enum Result#[T] { Ok(T), Err(Exception) }
+
+/// Returns the successful value, or rethrows the original exception with its
+/// payload and captured trace preserved.
+pub method unwrap#[T](self: Result#[T]) -> T {
+	match self {
+		Result#[T]::Ok(value) => value,
+		Result#[T]::Err(error) => throw(error),
+	}
+}
+
 /// The default option has no value.
 pub fn#[T] Option#[T]::default() -> Option#[T] { Option#[T]::None }
 
