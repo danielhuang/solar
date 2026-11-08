@@ -3,6 +3,7 @@ import {Mutex} from "sync.solar";
 import {Vec} from "vec.solar";
 import intrinsics from "@intrinsics";
 import linux from "linux.solar";
+import file from "file.solar";
 
 import(C) {
 	SYS_io_uring_setup,
@@ -14,7 +15,9 @@ import(C) {
 	SYS_poll,
 	SYS_read,
 	SYS_write,
+	SYS_fcntl,
 } from "sys/syscall.h";
+import(C) {F_DUPFD_CLOEXEC} from "fcntl.h";
 import(C) {PROT_READ, PROT_WRITE, MAP_SHARED} from "sys/mman.h";
 import(C) {EFD_CLOEXEC, EFD_NONBLOCK} from "sys/eventfd.h";
 import(C) {pollfd, POLLIN} from "poll.h";
@@ -28,10 +31,13 @@ import(C) {
 	IORING_ENTER_GETEVENTS,
 	IORING_OP_READ,
 	IORING_OP_WRITE,
+	IORING_OP_FSYNC,
+	IORING_OP_OPENAT,
+	IORING_OP_CLOSE,
 	IORING_OP_ASYNC_CANCEL,
 } from "linux/io_uring.h";
 
-// The 64-byte SQE's read/write/cancel view. The UAPI struct contains unions
+// The 64-byte SQE's I/O view. The UAPI struct contains unions
 // and packed fields, which cannot be imported as a Solar type. Unused union
 // arms and the final 24 bytes stay zero; SQE128 is never enabled.
 struct(repr(C)) Sqe {
@@ -103,11 +109,22 @@ fn release(mappings: &Vec#[&[Uint8]], fd: Int64, wake: Int64) {
 	if wake >= 0i64 { unsafe { intrinsics::syscall(Int64(SYS_close), wake); } }
 }
 
-/// An I/O request yielded to `run`. Each variant contains a file descriptor,
-/// a buffer, and a completion slot holding the byte count and optional exception.
+/// An I/O request yielded to `run`. Requests retain their buffers, descriptors,
+/// and completion slots. Open retains a NUL-terminated path, flags, mode, and a
+/// slot for the newly registered descriptor; positioned I/O includes an offset.
 pub enum Suspend {
+	Open(
+		(&[Uint8], Int32, Int32, &(
+				Uint,
+				Option#[Exception],
+			), &Option#[FileDesc])
+	),
+	Close((FileDesc, &(Uint, Option#[Exception]))),
 	Read((FileDesc, &[Uint8], &(Uint, Option#[Exception]))),
 	Write((FileDesc, &[Uint8], &(Uint, Option#[Exception]))),
+	ReadAt((FileDesc, &[Uint8], &(Uint, Option#[Exception]), Uint)),
+	WriteAt((FileDesc, &[Uint8], &(Uint, Option#[Exception]), Uint)),
+	Sync((FileDesc, &(Uint, Option#[Exception]))),
 }
 
 type Task = fn() -> Option#[Suspend];
@@ -122,24 +139,67 @@ pub method spawn#[C](self: &Context, c: C) {
 	(self@.enqueue)(\ c.next());
 }
 
-type Pending = (Suspend, Task);
+// Close requests own an unregistered duplicate until the kernel closes it.
+type Pending = (Suspend, Task, Int32);
 
-fn submit(enqueue: Submit, request: Suspend, token: Uint64) {
-	let (fd, buf, result, reading) = match request {
-		Suspend::Read(io) => (io.0, io.1, io.2, true),
-		Suspend::Write(io) => (io.0, io.1, io.2, false),
-	};
+fn io_entry(fd: FileDesc, buf: &[Uint8], offset: Uint64, opcode: Uint8) -> Sqe {
 	let (address, length) = unsafe {
 		intrinsics::transmute_unchecked#[(Uint64, Uint64)](buf)
 	};
 	let entry = unsafe { intrinsics::zeroed#[Sqe]() };
-	entry.opcode = Uint8(
-		if reading { IORING_OP_READ } else { IORING_OP_WRITE },
-	);
+	entry.opcode = opcode;
 	entry.fd = intrinsics::fd_to_raw(fd);
-	entry.offset = !0u64;
+	entry.offset = offset;
 	entry.address = address;
 	entry.len = Uint32(min(length, Uint64(linux::INT_MAX)));
+	entry
+}
+
+fn submit(enqueue: Submit, request: Suspend, token: Uint64, closing: Int32) {
+	let entry = match request {
+		Suspend::Open(io) => {
+			let entry = unsafe { intrinsics::zeroed#[Sqe]() };
+			entry.opcode = Uint8(IORING_OP_OPENAT);
+			entry.fd = linux::AT_FDCWD;
+			entry.address = unsafe {
+				intrinsics::transmute_unchecked#[(Uint64, Uint64)](io.0)
+			}.0;
+			entry.operation_flags = Uint32(io.1);
+			entry.len = Uint32(io.2);
+			entry
+		},
+		Suspend::Close(io) => {
+			let entry = unsafe { intrinsics::zeroed#[Sqe]() };
+			entry.opcode = Uint8(IORING_OP_CLOSE);
+			entry.fd = closing;
+			entry
+		},
+		Suspend::Read(io) => io_entry(io.0, io.1, !0u64, Uint8(IORING_OP_READ)),
+		Suspend::Write(io) => io_entry(
+			io.0,
+			io.1,
+			!0u64,
+			Uint8(IORING_OP_WRITE),
+		),
+		Suspend::ReadAt(io) => io_entry(
+			io.0,
+			io.1,
+			Uint64(io.3),
+			Uint8(IORING_OP_READ),
+		),
+		Suspend::WriteAt(io) => io_entry(
+			io.0,
+			io.1,
+			Uint64(io.3),
+			Uint8(IORING_OP_WRITE),
+		),
+		Suspend::Sync(io) => {
+			let entry = unsafe { intrinsics::zeroed#[Sqe]() };
+			entry.opcode = Uint8(IORING_OP_FSYNC);
+			entry.fd = intrinsics::fd_to_raw(io.0);
+			entry
+		},
+	};
 	entry.token = token;
 	enqueue(entry);
 }
@@ -147,9 +207,34 @@ fn submit(enqueue: Submit, request: Suspend, token: Uint64) {
 fn dispatch(
 	enqueue: Submit,
 	pending: &Vec#[Option#[Pending]],
+	context: &Context,
 	request: Suspend,
 	resume: Task,
 ) {
+	let closing = match request {
+		Suspend::Close(io) => {
+			let duplicate = unsafe {
+				intrinsics::syscall(
+					Int64(SYS_fcntl),
+					Int64(intrinsics::fd_to_raw(io.0)),
+					Int64(F_DUPFD_CLOEXEC),
+					3u64,
+				)
+			};
+
+			if duplicate < 0i64 {
+				finish(io.1, Int32(duplicate), "file_close failed"&);
+				(context@.enqueue)(resume);
+				return;
+			}
+
+			// Keep the open file description alive while replacing the managed fd
+			// with its dead-pipe sentinel. The final close runs in the kernel.
+			io.0.close();
+			Int32(duplicate)
+		},
+		_ => 0i32 - 1i32,
+	};
 	let index = 0u;
 
 	while index < pending.len() && pending.at(index)@.is_some() {
@@ -159,8 +244,18 @@ fn dispatch(
 	if index == pending.len() { pending.push(Option#[Pending]::None); }
 	// This traced slot owns the buffer, FileDesc, result storage, and task until
 	// completion. The kernel ring only retains raw addresses and IDs.
-	pending.at(index)@ = Option#[Pending]::Some((request, resume));
-	submit(enqueue, request, Uint64(index) + 1u64);
+	pending.at(index)@ = Option#[Pending]::Some((request, resume, closing));
+	submit(enqueue, request, Uint64(index) + 1u64, closing);
+}
+
+fn finish(result: &(Uint, Option#[Exception]), value: Int32, message: &[Uint8]) {
+	let error = Option#[Exception]::None;
+
+	try { linux::check_syscall(Int64(value), message); } catch (exception) {
+		error = Option#[Exception]::Some(exception);
+	}
+
+	result@ = (if value >= 0i32 { Uint(value) } else { 0u }, error);
 }
 
 fn poll(
@@ -174,24 +269,25 @@ fn poll(
 	if completion.is_none() { return; }
 	let (token, value) = completion.unwrap();
 	let index = Uint(token - 1u64);
-	let (request, resume) = pending.at(index)@.unwrap();
+	let (request, resume, closing) = pending.at(index)@.unwrap();
+	let is_close = match request { Suspend::Close(io) => true, _ => false };
 
-	if value == 0i32 - linux::EINTR {
-		submit(enqueue, request, token);
+	// Linux releases the fd even when close reports EINTR; never retry it.
+	if value == 0i32 - linux::EINTR && !is_close {
+		submit(enqueue, request, token, closing);
 		return;
 	}
 
 	let (result, message) = match request {
+		Suspend::Open(io) => (io.3, "file_open failed"&),
+		Suspend::Close(io) => (io.1, "file_close failed"&),
 		Suspend::Read(io) => (io.2, "file_read failed"&),
 		Suspend::Write(io) => (io.2, "file_write_partial failed"&),
+		Suspend::ReadAt(io) => (io.2, "file_read_at failed"&),
+		Suspend::WriteAt(io) => (io.2, "file_write_at failed"&),
+		Suspend::Sync(io) => (io.1, "file_sync failed"&),
 	};
-	let error = Option#[Exception]::None;
-
-	try { linux::check_syscall(Int64(value), message); } catch (exception) {
-		error = Option#[Exception]::Some(exception);
-	}
-
-	result@ = (if value >= 0i32 { Uint(value) } else { 0u }, error);
+	finish(result, value, message);
 	pending.at(index)@ = Option#[Pending]::None;
 	(context@.enqueue)(resume);
 }
@@ -213,7 +309,8 @@ fn with_shutdown#[R](execute: fn() -> R, stop: fn()) -> R {
 /// Ready coroutines run on the calling thread while other requests are in flight.
 /// When the main coroutine finishes, queued tasks are discarded immediately.
 /// Outstanding I/O is cancelled and drained before its buffers are released;
-/// those coroutines are never resumed. Requires kernel io_uring support.
+/// closes finish and unused opens are released. Those coroutines are never
+/// resumed. Requires kernel io_uring support.
 pub fn run#[C](create: fn(&Context) -> C) {
 	let ready = Vec([]#[Option#[Task]]&);
 	let head = 0u;
@@ -305,6 +402,20 @@ pub fn run#[C](create: fn(&Context) -> C) {
 
 			if entry.token != 0u64 {
 				inflight = inflight - 1u;
+
+				// Register newly opened fds before a completion can be discarded.
+				// The pending request's result slot is a traced GC root.
+				if entry.result >= 0i32 {
+					match pending&.at(Uint(entry.token - 1u64))@.unwrap().0 {
+						Suspend::Open(io) => {
+							io.4@ = Option#[FileDesc]::Some(unsafe {
+								intrinsics::fd_from_raw(entry.result)
+							});
+						},
+						_ => (),
+					}
+				}
+
 				completed&.push((entry.token, entry.result));
 			}
 
@@ -428,6 +539,13 @@ pub fn run#[C](create: fn(&Context) -> C) {
 
 		for index in 0u..pending&.len() {
 			if pending&.at(index)@.is_some() {
+				// Closing already invalidated the managed handle. Let the private
+				// duplicate's close finish rather than cancelling and leaking it.
+				let closing = match pending&.at(index)@.unwrap().0 {
+					Suspend::Close(io) => true,
+					_ => false,
+				};
+				if closing { continue; }
 				let cancel = unsafe { intrinsics::zeroed#[Sqe]() };
 				cancel.opcode = Uint8(IORING_OP_ASYNC_CANCEL);
 				cancel.address = Uint64(index) + 1u64;
@@ -450,6 +568,21 @@ pub fn run#[C](create: fn(&Context) -> C) {
 			}
 		}
 
+		// An open may win the race against cancellation without its coroutine
+		// ever resuming. Release those files while preserving GC handle validity.
+		for index in 0u..pending&.len() {
+			match pending&.at(index)@ {
+				Option#[Pending]::Some(operation) => match operation.0 {
+					Suspend::Open(io) => match io.4@ {
+						Option#[FileDesc]::Some(opened) => opened.close(),
+						Option#[FileDesc]::None => (),
+					},
+					_ => (),
+				},
+				Option#[Pending]::None => (),
+			}
+		}
+
 		release(mappings&, fd, wake);
 		gc_keepalive(pending&);
 		pending = Vec([]#[Option#[Pending]]&);
@@ -462,6 +595,7 @@ pub fn run#[C](create: fn(&Context) -> C) {
 				dispatch(
 					enqueue,
 					pending&,
+					context&,
 					request,
 					\ {
 						resumed = true;
@@ -497,6 +631,7 @@ pub fn run#[C](create: fn(&Context) -> C) {
 								Option#[Suspend]::Some(request) => dispatch(
 									enqueue,
 									pending&,
+									context&,
 									request,
 									task,
 								),
@@ -518,32 +653,178 @@ pub fn run#[C](create: fn(&Context) -> C) {
 	)
 }
 
-/// Returns a coroutine that reads into `buf` through io_uring when run.
-/// Completes with the byte count (zero at EOF); short reads are allowed.
-/// I/O exceptions are rethrown in the coroutine after the I/O completes.
-pub fn read(fd: FileDesc, buf: &[Uint8]) {
+/// A GC-managed file descriptor with coroutine-based I/O. Constructing one from
+/// a FileDesc shares ownership of that descriptor; the public field exposes it
+/// for synchronous operations. I/O coroutines yield `Suspend`
+/// and rethrow I/O exceptions at the await site.
+pub struct AsyncFileDesc(pub FileDesc);
+
+/// Returns a coroutine that opens path through io_uring and completes with an
+/// AsyncFileDesc. Opening and errors occur when the coroutine runs.
+/// Options and defaults match `file::open`: read/write select access, append
+/// writes at EOF, truncate empties the file, create creates it if absent, new
+/// with create rejects an existing file, and mode sets new-file permissions.
+pub fn open(
+	path: &[Uint8],
+	read = true,
+	write = true,
+	append = false,
+	truncate = false,
+	new = false,
+	create = false,
+	mode = linux::DEFFILEMODE,
+) {
+	coroutine {
+		let flags = if read {
+			if write { linux::O_RDWR } else { linux::O_RDONLY }
+		} else if write { linux::O_WRONLY } else { linux::O_RDONLY };
+		flags = flags | linux::O_CLOEXEC;
+		if create { flags = flags | linux::O_CREAT; }
+		if new { flags = flags | linux::O_EXCL; }
+		if truncate { flags = flags | linux::O_TRUNC; }
+		if append { flags = flags | linux::O_APPEND; }
+		let nul_path: [Uint8] = path@ + [0u8];
+		let result = (0u, Option#[Exception]::None);
+		let opened = Option#[FileDesc]::None;
+		yield Suspend::Open((nul_path&, flags, mode, result&, opened&));
+		completed(result);
+		AsyncFileDesc(opened.unwrap())
+	}
+}
+
+/// Returns a coroutine that closes the file through io_uring and completes with
+/// (). The executor first invalidates the managed handle while retaining a
+/// private duplicate for the kernel to close, preserving stale-handle protection.
+pub method close(self: AsyncFileDesc) {
 	coroutine {
 		let result = (0u, Option#[Exception]::None);
-		yield Suspend::Read((fd, buf, result&));
+		yield Suspend::Close((self.0, result&));
+		completed(result);
+	}
+}
 
-		match result.1 {
-			Option#[Exception]::Some(error) => throw(error),
-			Option#[Exception]::None => result.0,
+fn completed(result: (Uint, Option#[Exception])) -> Uint {
+	match result.1 {
+		Option#[Exception]::Some(error) => throw(error),
+		Option#[Exception]::None => result.0,
+	}
+}
+
+/// Returns a coroutine that reads up to buf's length bytes and completes with
+/// the byte count (zero at EOF). A single read; may return fewer bytes.
+pub method read(self: AsyncFileDesc, buf: &[Uint8]) {
+	coroutine {
+		let result = (0u, Option#[Exception]::None);
+		yield Suspend::Read((self.0, buf, result&));
+		completed(result)
+	}
+}
+
+/// Returns a coroutine that reads up to max_size bytes into a new GC buffer and
+/// completes with a reference to the bytes read. A single read.
+pub method read(self: AsyncFileDesc, max_size: Uint) {
+	coroutine {
+		let buf: [Uint8] = [0u8; max_size];
+		let n = await self.read(buf&);
+		buf[0u..n]&
+	}
+}
+
+/// Returns a coroutine that writes up to src's length bytes and completes with
+/// the number actually written. A single write; may write fewer bytes.
+pub method write_partial(self: AsyncFileDesc, src: &[Uint8]) {
+	coroutine {
+		let result = (0u, Option#[Exception]::None);
+		yield Suspend::Write((self.0, src, result&));
+		completed(result)
+	}
+}
+
+/// Returns a coroutine that writes all of src, looping over partial writes.
+/// Completes with ().
+pub method write(self: AsyncFileDesc, src: &[Uint8]) {
+	coroutine {
+		let written = 0u;
+
+		while written < src.len() {
+			written = written +
+				await self.write_partial(src@[written..src.len()]&);
 		}
 	}
 }
 
-/// Returns a coroutine that writes from `buf` through io_uring when run.
-/// Completes with the byte count; short writes are allowed.
-/// I/O exceptions are rethrown in the coroutine after the I/O completes.
-pub fn write(fd: FileDesc, buf: &[Uint8]) {
+/// Returns a coroutine that reads into buf at an absolute byte offset without
+/// moving the file cursor. Completes with the byte count; short reads are allowed.
+pub method read_at(self: AsyncFileDesc, buf: &[Uint8], offset: Uint) {
 	coroutine {
-		let result = (0u, Option#[Exception]::None);
-		yield Suspend::Write((fd, buf, result&));
+		// io_uring reserves -1 for the current cursor; pread rejects it.
+		if offset == !0u {
+			linux::check_syscall(
+				0i64 - Int64(linux::EINVAL),
+				"file_read_at failed"&,
+			);
+		}
 
-		match result.1 {
-			Option#[Exception]::Some(error) => throw(error),
-			Option#[Exception]::None => result.0,
+		let result = (0u, Option#[Exception]::None);
+		yield Suspend::ReadAt((self.0, buf, result&, offset));
+		completed(result)
+	}
+}
+
+/// Returns a coroutine that writes from src at an absolute byte offset without
+/// moving the file cursor. Completes with the byte count; short writes are allowed.
+pub method write_at_partial(self: AsyncFileDesc, src: &[Uint8], offset: Uint) {
+	coroutine {
+		// io_uring reserves -1 for the current cursor; pwrite rejects it.
+		if offset == !0u {
+			linux::check_syscall(
+				0i64 - Int64(linux::EINVAL),
+				"file_write_at failed"&,
+			);
+		}
+
+		let result = (0u, Option#[Exception]::None);
+		yield Suspend::WriteAt((self.0, src, result&, offset));
+		completed(result)
+	}
+}
+
+/// Returns a coroutine that writes all of src at an absolute byte offset,
+/// advancing the offset after each partial write. Completes with ().
+pub method write_at(self: AsyncFileDesc, src: &[Uint8], offset: Uint) {
+	coroutine {
+		let written = 0u;
+
+		while written < src.len() {
+			written = written +
+				await self.write_at_partial(
+					src@[written..src.len()]&,
+					offset + written,
+				);
 		}
 	}
+}
+
+/// Returns a coroutine that flushes the file's data and metadata to stable
+/// storage through io_uring. Completes with ().
+pub method sync(self: AsyncFileDesc) {
+	coroutine {
+		let result = (0u, Option#[Exception]::None);
+		yield Suspend::Sync((self.0, result&));
+		completed(result);
+	}
+}
+
+/// Acquires an advisory lock synchronously, like FileDesc.lock. This can block
+/// the executor thread; block = false returns false when the lock is held.
+pub method lock(self: AsyncFileDesc, exclusive = true, block = true) -> Bool {
+	self.0.lock(exclusive = exclusive, block = block)
+}
+
+/// Releases the file's advisory lock synchronously.
+pub method unlock(self: AsyncFileDesc) { self.0.unlock(); }
+
+/// Reads all non-dot directory entries synchronously, like FileDesc.read_entries.
+pub method read_entries(self: AsyncFileDesc) -> &[file::DirEntry] {
+	self.0.read_entries()
 }

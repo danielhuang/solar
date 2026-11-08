@@ -2,21 +2,104 @@ import intrinsics from "@intrinsics";
 import(C) {SYS_pipe2, SYS_gettid} from "sys/syscall.h";
 import(C) {O_CLOEXEC} from "fcntl.h";
 
-fn pipe() -> (FileDesc, FileDesc) {
+fn pipe() -> (async::AsyncFileDesc, async::AsyncFileDesc) {
 	let fds = [0i32; 2u];
 	let result = unsafe {
 		intrinsics::syscall(Int64(SYS_pipe2), fds&, Int64(O_CLOEXEC))
 	};
 	linux::check_syscall(result, "pipe failed"&);
 	unsafe {
-		(intrinsics::fd_from_raw(fds[0u]), intrinsics::fd_from_raw(fds[1u]))
+		(
+			async::AsyncFileDesc(intrinsics::fd_from_raw(fds[0u])),
+			async::AsyncFileDesc(intrinsics::fd_from_raw(fds[1u])),
+		)
 	}
 }
 
 fn tid() -> Int64 { unsafe { intrinsics::syscall(Int64(SYS_gettid)) } }
 
+fn descriptor_count() -> Uint {
+	gc::collect_gc();
+	let directory = file::open_dir("/proc/self/fd"&);
+	let count = directory.read_entries().len();
+	directory.close();
+	count
+}
+
 fn main() {
 	let executor_thread = tid();
+	// Exit with opens and closes in flight. Successful opens which lose the
+	// shutdown race and private close duplicates must not leak descriptors.
+	let (opened, signal_opened) = pipe();
+	let before = descriptor_count();
+	let started = 0;
+	let executor_tid = 0i64;
+	// Run on a separate stack so conservative roots can disappear before counting.
+	thread::spawn(\ {
+		executor_tid = tid();
+		async::run(\context: &async::Context {
+			for index in 0..64 {
+				context.spawn(coroutine {
+					gc::collect_gc();
+					started = started + 1;
+					if started == 64 { signal_opened.0.write("r"&); }
+					let fd = await async::open(
+						("/dev/" + "null")&,
+						read = false,
+					);
+					await fd.close();
+				});
+			}
+
+			coroutine { await opened.read([0u8; 1u]&) }
+		});
+	}).join();
+	// Solar's join observes the callback completing, just before the native
+	// thread unregisters its GC roots. Wait for native exit as well.
+	let task_path = ("/proc/self/task/" + executor_tid.to_string()@)&;
+	while file::exists(task_path) {}
+	assert(started == 64);
+	assert(descriptor_count() == before);
+	async::run(\context: &async::Context {
+		coroutine { await opened.close(); await signal_opened.close(); }
+	});
+
+	// A write larger than the pipe capacity must transfer the entire buffer while
+	// its reader runs concurrently. The allocating read may return short chunks.
+	let (large_read, large_write) = pipe();
+	let large = [Uint8('x'); 262144u];
+	let written_all = false;
+	let total = async::run(\context: &async::Context {
+		context.spawn(coroutine {
+			let unit: () = await large_write.write(large&);
+			written_all = true;
+			await large_write.close();
+		});
+
+		coroutine {
+			let received = 0u;
+
+			loop {
+				let part = await large_read.read(16384u);
+				gc::collect_gc();
+				if part.len() == 0u { break; }
+				assert(part@ == large[received..received + part.len()]);
+				received = received + part.len();
+			};
+
+			received
+		}
+	});
+	assert(total == large&.len());
+	assert(written_all);
+	async::run(\context: &async::Context large_read.close());
+	let output = async::run(\context: &async::Context async::open(
+		"/dev/null"&,
+		read = false,
+	));
+	let unit: () = async::run(\context: &async::Context output.write(""&));
+	async::run(\context: &async::Context output.close());
+
 	let (requests, send_request) = pipe();
 	let (replies, send_reply) = pipe();
 	let created = 0;
@@ -26,21 +109,21 @@ fn main() {
 		context.spawn(coroutine {
 			assert(tid() == executor_thread);
 			let request = [0u8; 4u];
-			assert(await async::read(requests, request&) == 4u);
+			assert(await requests.read(request&) == 4u);
 			assert(request == "ping");
 			assert(tid() == executor_thread);
 			context.spawn(coroutine {
 				gc::collect_gc();
-				assert(await async::write(send_reply, "pong"&) == 4u);
+				assert(await send_reply.write_partial("pong"&) == 4u);
 				true
 			});
 			99
 		});
 
 		coroutine {
-			assert(await async::write(send_request, "ping"&) == 4u);
+			assert(await send_request.write_partial("ping"&) == 4u);
 			let reply = [0u8; 4u];
-			assert(await async::read(replies, reply&) == 4u);
+			assert(await replies.read(reply&) == 4u);
 			assert(reply == "pong");
 			assert(tid() == executor_thread);
 			(42, "main"&)
@@ -49,10 +132,10 @@ fn main() {
 	assert(created == 1);
 	assert(result.0 == 42);
 	assert(result.1@ == "main");
-	requests.close();
-	send_request.close();
-	replies.close();
-	send_reply.close();
+	async::run(\context: &async::Context requests.close());
+	async::run(\context: &async::Context send_request.close());
+	async::run(\context: &async::Context replies.close());
+	async::run(\context: &async::Context send_reply.close());
 
 	// An externally enqueued coroutine wakes a loop waiting for I/O.
 	let contexts = sync::Channel#[&async::Context]();
@@ -60,14 +143,14 @@ fn main() {
 	let enqueuer = thread::spawn(\ {
 		let context = contexts&.recv();
 		gc::collect_gc();
-		context.spawn(async::write(external_write, "wake"&));
+		context.spawn(external_write.write_partial("wake"&));
 	});
 	assert(
 		async::run(\context: &async::Context {
 			coroutine {
 				contexts&.send(context);
 				let bytes = [0u8; 4u];
-				let count = await async::read(external_read, bytes&);
+				let count = await external_read.read(bytes&);
 				assert(bytes == "wake");
 				count
 			}
@@ -75,8 +158,8 @@ fn main() {
 			4u,
 	);
 	enqueuer.join();
-	external_read.close();
-	external_write.close();
+	async::run(\context: &async::Context external_read.close());
+	async::run(\context: &async::Context external_write.close());
 
 	// Every reader waits for a separate writer, with multiple requests in flight.
 	let pipes = [192u; \index: Uint pipe()];
@@ -88,13 +171,12 @@ fn main() {
 				context.spawn(reader(pair@.0, signal_done, completed&));
 			}
 
-			for pair in pipes& { context.spawn(async::write(pair@.1, "x"&)); }
+			for pair in pipes& { context.spawn(pair@.1.write_partial("x"&)); }
 			let buf = [0u8; 192u];
 			let received = 0u;
 
 			while received < 192u {
-				received = received +
-					await async::read(done, buf[received..192u]&);
+				received = received + await done.read(buf[received..192u]&);
 			}
 
 			assert(buf == [Uint8('x'); 192u]);
@@ -102,9 +184,13 @@ fn main() {
 		}
 	});
 	assert(total == 192);
-	for pair in pipes& { pair@.0.close(); pair@.1.close(); }
-	done.close();
-	signal_done.close();
+	async::run(\context: &async::Context {
+		coroutine {
+			for pair in pipes& { await pair@.0.close(); await pair@.1.close(); }
+		}
+	});
+	async::run(\context: &async::Context done.close());
+	async::run(\context: &async::Context signal_done.close());
 
 	// The child is blocked before the main coroutine is allowed to finish.
 	let (blocked, unblock) = pipe();
@@ -118,11 +204,11 @@ fn main() {
 				saved = Option#[&async::Context]::Some(context);
 				context.spawn(coroutine {
 					started = true;
-					context.spawn(async::write(signal_ready, "r"&));
-					await async::read(blocked, [0u8; 1u]&);
+					context.spawn(signal_ready.write_partial("r"&));
+					await blocked.read([0u8; 1u]&);
 					resumed = true;
 				});
-				assert(await async::read(ready, [0u8; 1u]&) == 1u);
+				assert(await ready.read([0u8; 1u]&) == 1u);
 				assert(started);
 				7
 			}
@@ -132,38 +218,40 @@ fn main() {
 	assert(!resumed);
 	// Cancellation finishes before run returns: the abandoned read cannot consume
 	// a byte written afterward. Retaining the context cannot restart the executor.
-	unblock.write("x"&);
-	unblock.close();
+	unblock.0.write("x"&);
+	async::run(\context: &async::Context unblock.close());
 	let untouched = [0u8; 1u];
-	assert(blocked.read(untouched&) == 1u);
+	assert(blocked.0.read(untouched&) == 1u);
 	assert(untouched == "x");
-	blocked.close();
+	async::run(\context: &async::Context blocked.close());
 	saved.unwrap().spawn(coroutine {
 		resumed = true;
-		await async::write(signal_ready, "unexpected"&);
+		await signal_ready.write_partial("unexpected"&);
 	});
 	gc::collect_gc();
 	assert(
-		async::run(\context: &async::Context async::write(
-			signal_ready,
+		async::run(\context: &async::Context signal_ready.write_partial(
 			"new"&,
 		)) == 3u,
 	);
 	assert(!resumed);
 
-	ready.close();
-	signal_ready.close();
+	async::run(\context: &async::Context ready.close());
+	async::run(\context: &async::Context signal_ready.close());
 
 	// No queued task runs when the main coroutine completes without suspending.
 	let ran = false;
-	let output = file::open("/dev/null"&, read = false);
+	let output = async::run(\context: &async::Context async::open(
+		"/dev/null"&,
+		read = false,
+	));
 	assert(
 		async::run(\context: &async::Context {
 			context.spawn(coroutine {
 				ran = true;
-				await async::write(output, "x"&);
+				await output.write_partial("x"&);
 			});
-			coroutine { if false { await async::write(output, ""&); } 23 }
+			coroutine { if false { await output.write_partial(""&); } 23 }
 		}) ==
 			23,
 	);
@@ -177,27 +265,31 @@ fn main() {
 		async::run(\context: &async::Context {
 			coroutine {
 				context.spawn(coroutine {
-					if false { await async::write(output, ""&); }
+					if false { await output.write_partial(""&); }
 					throw("child failed"&);
 				});
-				await async::read(never, [0u8; 1u]&)
+				await never.read([0u8; 1u]&)
 			}
 		});
 	} catch (error) { assert(error.message@ == "child failed"); caught = true; }
 
 	assert(caught);
-	release.close();
-	never.close();
-	output.close();
+	async::run(\context: &async::Context release.close());
+	async::run(\context: &async::Context never.close());
+	async::run(\context: &async::Context output.close());
 	println("passed"&);
 }
 
-fn reader(input: FileDesc, output: FileDesc, completed: &Int) {
+fn reader(
+	input: async::AsyncFileDesc,
+	output: async::AsyncFileDesc,
+	completed: &Int,
+) {
 	coroutine {
 		let buf = [0u8; 1u];
-		assert(await async::read(input, buf&) == 1u);
+		assert(await input.read(buf&) == 1u);
 		completed@ = completed@ + 1;
 		if completed@ % 16 == 0 { gc::collect_gc(); }
-		await async::write(output, buf&)
+		await output.write_partial(buf&)
 	}
 }
