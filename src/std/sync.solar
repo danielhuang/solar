@@ -146,29 +146,29 @@ pub method futex_wake(self: &Uint32) {
 }
 
 /// A futex-backed mutual exclusion lock.
-pub struct Mutex {
+pub struct RawMutex {
 	/// Internal lock state.
 	pub futex: Uint32,
 }
 
 /// Creates an unlocked mutex.
-pub fn Mutex::() -> Mutex {
-	Mutex { futex: 0u32 }
+pub fn RawMutex::() -> RawMutex {
+	RawMutex { futex: 0u32 }
 }
 
 /// Attempts to acquire the mutex without blocking.
-pub method try_lock(self: &Mutex) -> Bool {
+pub method try_lock(self: &RawMutex) -> Bool {
 	self@.futex&.atomic_compare_exchange(0u32, 1u32) == 0u32
 }
 
 /// Acquires the mutex.
-pub method lock(self: &Mutex) {
+pub method lock(self: &RawMutex) {
 	if self@.futex&.atomic_compare_exchange(0u32, 1u32) != 0u32 {
 		self.lock_contended();
 	}
 }
 
-method spin(self: &Mutex) -> Uint32 {
+method spin(self: &RawMutex) -> Uint32 {
 	let spin = 100u32;
 
 	loop {
@@ -182,7 +182,7 @@ method spin(self: &Mutex) -> Uint32 {
 	}
 }
 
-method lock_contended(self: &Mutex) {
+method lock_contended(self: &RawMutex) {
 	let state = self.spin();
 
 	if state == 0u32 {
@@ -202,7 +202,7 @@ method lock_contended(self: &Mutex) {
 }
 
 /// Releases the mutex.
-pub method unlock(self: &Mutex) {
+pub method unlock(self: &RawMutex) {
 	if self@.futex&.atomic_exchange(0u32) == 2u32 {
 		self@.futex&.futex_wake(1u32);
 	}
@@ -212,8 +212,8 @@ enum ChannelSlot#[T] { Empty, Full(T) }
 
 /// A synchronous multi-producer, multi-consumer channel.
 pub struct Channel#[T] {
-	send_lock: Mutex,
-	recv_lock: Mutex,
+	send_lock: RawMutex,
+	recv_lock: RawMutex,
 	state: Uint32,
 	data: ChannelSlot#[T],
 }
@@ -221,8 +221,8 @@ pub struct Channel#[T] {
 /// Creates an empty channel.
 pub fn Channel::#[out T]() -> Channel#[T] {
 	Channel#[T] {
-		send_lock: Mutex(),
-		recv_lock: Mutex(),
+		send_lock: RawMutex(),
+		recv_lock: RawMutex(),
 		state: 0u32,
 		data: ChannelSlot#[T]::Empty,
 	}

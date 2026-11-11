@@ -1,5 +1,5 @@
 fn main() {
-	let m = sync::Mutex();
+	let m = sync::RawMutex();
 	let counter = 0;
 	thread::spawn(\ {
 		m&.lock();

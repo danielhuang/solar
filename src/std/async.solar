@@ -1,5 +1,5 @@
 import {Option, Result, throw, gc_keepalive, assert, min, max, size_of} from "lib.solar";
-import {Mutex} from "sync.solar";
+import {RawMutex} from "sync.solar";
 import {Vec} from "vec.solar";
 import intrinsics from "@intrinsics";
 import linux from "linux.solar";
@@ -323,7 +323,7 @@ fn with_shutdown#[R](execute: fn() -> R, stop: fn()) -> R {
 pub fn run#[C](create: fn(&Context) -> C, wait_for_all = false) {
 	let ready = Vec([]#[Option#[Task]]&);
 	let head = 0u;
-	let lock = Mutex();
+	let lock = RawMutex();
 	let wake = 0i64;
 	let pending = Vec([]#[Option#[Pending]]&);
 	let running = true;
