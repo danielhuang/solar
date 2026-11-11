@@ -14,11 +14,7 @@ fn main() {
 				});
 			}
 
-			let fd = await async::open("/dev/zero"&);
-
-			loop {
-				await fd.read([0u8]&);
-			}
+			await async::yield();
 		}
 	});
 }
