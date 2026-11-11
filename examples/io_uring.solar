@@ -1,20 +1,25 @@
 fn main() {
-	async::run(\ctx {
-		coroutine {
-			for _ in 0..1000 {
-				let fd = await async::open("/dev/zero"&);
+	async::run(
+		\ctx {
+			coroutine {
+				for _ in 0..1000 {
+					let fd = await async::open("/dev/zero"&);
 
-				ctx.spawn(coroutine {
-					let buf = [0u8; 81920u];
+					ctx.spawn(coroutine {
+						let buf = [0u8; 81920u];
 
-					loop {
-						await fd.read(buf&);
-						await async::AsyncFileDesc(file::stdout()).write(buf&);
-					}
-				});
+						loop {
+							await fd.read(buf&);
+							await async::AsyncFileDesc(file::stdout()).write(
+								buf&,
+							);
+						}
+					});
+				}
+
+				await async::yield();
 			}
-
-			await async::yield();
-		}
-	});
+		},
+		wait_for_all = true,
+	);
 }
