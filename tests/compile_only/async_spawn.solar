@@ -256,6 +256,7 @@ fn main() {
 			23,
 	);
 	assert(!ran);
+	wait_for_all(output);
 
 	// An uncaught child exception exits run while the main coroutine is suspended.
 	let (never, release) = pipe();
@@ -278,6 +279,117 @@ fn main() {
 	async::run(\context: &async::Context never.close());
 	async::run(\context: &async::Context output.close());
 	println("passed"&);
+}
+
+fn wait_for_all(output: async::AsyncFileDesc) {
+	let main_done = false;
+	let child_done = false;
+	let grandchild_done = false;
+	let immediate_done = false;
+	let saved = Option#[&async::Context]::None;
+	let result = async::run(
+		\context: &async::Context {
+			saved = Option#[&async::Context]::Some(context);
+			context.spawn(coroutine {
+				assert(main_done);
+				for index in 0..3 { await output.write("child"&); }
+				context.spawn(coroutine {
+					gc::collect_gc();
+					await output.write("grandchild"&);
+					grandchild_done = true;
+				});
+				child_done = true;
+			});
+			context.spawn(coroutine {
+				if false { await output.write(""&); }
+				assert(main_done);
+				immediate_done = true;
+			});
+
+			coroutine {
+				if false { await output.write(""&); }
+				main_done = true;
+				// Retain a GC-allocated main result while background tasks collect.
+				(42, ("main " + "result")&)
+			}
+		},
+		wait_for_all = true,
+	);
+	assert(result.0 == 42);
+	assert(result.1@ == "main result");
+	assert(child_done && grandchild_done && immediate_done);
+	let late = false;
+	saved.unwrap().spawn(coroutine { late = true; await output.write("late"&); });
+	assert(!late);
+
+	// Waiting for an empty executor must return without blocking for a completion.
+	assert(
+		async::run(
+			\context: &async::Context {
+				coroutine { if false { await output.write(""&); } 17 }
+			},
+			wait_for_all = true,
+		) ==
+			17,
+	);
+
+	// After the main coroutine completes, a blocked child can still be woken by
+	// work enqueued from another thread through the retained context.
+	let contexts = sync::Channel#[&async::Context]();
+	let (input, writer) = pipe();
+	let received = false;
+	let peer = thread::spawn(\ {
+		let context = contexts&.recv();
+		context.spawn(coroutine {
+			await writer.write("wake"&);
+			await writer.close();
+		});
+	});
+	let result = async::run(
+		\context: &async::Context {
+			context.spawn(coroutine {
+				contexts&.send(context);
+				let bytes = await input.read(4u);
+				assert(bytes@ == "wake");
+				received = true;
+				await input.close();
+			});
+			coroutine { if false { await output.write(""&); } 99 }
+		},
+		wait_for_all = true,
+	);
+	peer.join();
+	assert(result == 99 && received);
+
+	// A failure during the final wait still cancels other tasks and propagates.
+	let (blocked, unblock) = pipe();
+	let resumed = false;
+	let caught = false;
+
+	try {
+		async::run(
+			\context: &async::Context {
+				context.spawn(coroutine {
+					await blocked.read([0u8; 1u]&);
+					resumed = true;
+				});
+				context.spawn(coroutine {
+					await output.write("x"&);
+					throw("wait failed"&);
+				});
+				coroutine { if false { await output.write(""&); } 23 }
+			},
+			wait_for_all = true,
+		);
+	} catch (error) { assert(error.message@ == "wait failed"); caught = true; }
+
+	assert(caught && !resumed);
+	unblock.0.write("x"&);
+	unblock.0.close();
+	let untouched = [0u8; 1u];
+	assert(blocked.0.read(untouched&) == 1u);
+	assert(untouched == "x");
+	blocked.0.close();
 }
 
 fn reader(

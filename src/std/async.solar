@@ -301,11 +301,14 @@ fn with_shutdown#[R](execute: fn() -> R, stop: fn()) -> R {
 /// Creates the main coroutine with a context, runs it, and returns its completion
 /// value. Coroutines yield `Suspend`; I/O is submitted through io_uring.
 /// Ready coroutines run on the calling thread while other requests are in flight.
-/// When the main coroutine finishes, queued tasks are discarded immediately.
+/// By default, finishing the main coroutine discards queued tasks immediately.
+/// With wait_for_all = true, run background tasks and any tasks they spawn to
+/// completion before returning the main result. An uncaught exception still
+/// exits immediately. Once no tasks remain, further submissions are discarded.
 /// Outstanding I/O is cancelled and drained before its buffers are released;
 /// closes finish and unused opens are released. Those coroutines are never
 /// resumed. Requires kernel io_uring support.
-pub fn run#[C](create: fn(&Context) -> C) {
+pub fn run#[C](create: fn(&Context) -> C, wait_for_all = false) {
 	let ready = Vec([]#[Option#[Task]]&);
 	let head = 0u;
 	let lock = Mutex();
@@ -582,9 +585,70 @@ pub fn run#[C](create: fn(&Context) -> C) {
 		pending = Vec([]#[Option#[Pending]]&);
 	};
 
+	let step = \ {
+		poll(enqueue, completions, pending&, context&, false);
+		lock&.lock();
+		let next = Option#[Task]::None;
+
+		if head < ready&.len() {
+			next = ready&.at(head)@;
+			ready&.at(head)@ = Option#[Task]::None;
+			head = head + 1u;
+		}
+
+		if head == ready&.len() {
+			ready = Vec([]#[Option#[Task]]&);
+			head = 0u;
+		} else if head >= ready&.len() / 2u {
+			// Reclaim consumed slots even when new work keeps arriving.
+			ready = Vec(ready&.as_slice()@[head..ready&.len()]&);
+			head = 0u;
+		}
+
+		if next.is_none() {
+			let waiting = false;
+
+			for index in 0u..pending&.len() {
+				if pending&.at(index)@.is_some() { waiting = true; break; }
+			}
+
+			if !waiting {
+				// Close submissions atomically with observing an empty executor.
+				running = false;
+				lock&.unlock();
+				return false;
+			}
+		}
+
+		lock&.unlock();
+
+		match next {
+			Option#[Task]::Some(task) => {
+				match task() {
+					Option#[Suspend]::Some(request) => dispatch(
+						enqueue,
+						pending&,
+						context&,
+						request,
+						task,
+					),
+					Option#[Suspend]::None => (),
+				}
+			},
+			Option#[Task]::None => poll(
+				enqueue,
+				completions,
+				pending&,
+				context&,
+				true,
+			),
+		};
+		true
+	};
+
 	with_shutdown(
 		\ {
-			for request in create(context&) {
+			let result = for request in create(context&) {
 				let resumed = false;
 				dispatch(
 					enqueue,
@@ -598,50 +662,11 @@ pub fn run#[C](create: fn(&Context) -> C) {
 				);
 
 				while !resumed {
-					poll(enqueue, completions, pending&, context&, false);
-					lock&.lock();
-					let next = Option#[Task]::None;
-
-					if head < ready&.len() {
-						next = ready&.at(head)@;
-						ready&.at(head)@ = Option#[Task]::None;
-						head = head + 1u;
-					}
-
-					if head == ready&.len() {
-						ready = Vec([]#[Option#[Task]]&);
-						head = 0u;
-					} else if head >= ready&.len() / 2u {
-						// Reclaim consumed slots even when new work keeps arriving.
-						ready = Vec(ready&.as_slice()@[head..ready&.len()]&);
-						head = 0u;
-					}
-
-					lock&.unlock();
-
-					match next {
-						Option#[Task]::Some(task) => {
-							match task() {
-								Option#[Suspend]::Some(request) => dispatch(
-									enqueue,
-									pending&,
-									context&,
-									request,
-									task,
-								),
-								Option#[Suspend]::None => (),
-							}
-						},
-						Option#[Task]::None => poll(
-							enqueue,
-							completions,
-							pending&,
-							context&,
-							true,
-						),
-					}
+					step();
 				}
-			}
+			};
+			if wait_for_all { while step() {} }
+			result
 		},
 		stop,
 	)
