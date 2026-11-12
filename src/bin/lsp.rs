@@ -6611,6 +6611,44 @@ fn main() {
     }
 
     #[test]
+    fn diagnostics_locate_imported_generic_owner_errors() {
+        let directory = tempdir::TempDir::new("solar-lsp-diagnostic-locations").unwrap();
+        let main = directory.path().join("main.solar");
+        let imported = directory.path().join("bad.solar");
+        let source = "import bad from \"bad.solar\";\nfn main() {}\n";
+        std::fs::write(
+            &imported,
+            "struct Box#[T] { value: T }\nfn Box#[T]::(value: T) -> Box#[T] { Box#[T] { value: value } }\n",
+        )
+        .unwrap();
+        let root_uri = path_to_file_uri(main.to_str().unwrap());
+        let imported_uri = path_to_file_uri(imported.to_str().unwrap());
+        let diagnostics = check_document(&root_uri, source);
+
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        let errors = &diagnostics[&imported_uri];
+        assert_eq!(errors.len(), 2);
+        assert!(
+            errors[0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("undefined type: T")
+        );
+        assert_eq!(errors[0]["severity"], 3);
+        assert_eq!(errors[1]["severity"], 1);
+        for error in errors {
+            assert_eq!(
+                error["range"]["start"],
+                json!({ "line": 1, "character": 0 })
+            );
+            for related in error["relatedInformation"].as_array().unwrap() {
+                assert_eq!(related["location"]["uri"], imported_uri);
+                assert_eq!(related["location"]["range"]["start"]["line"], 1);
+            }
+        }
+    }
+
+    #[test]
     fn definition_resolves_imported_function_type_and_field() {
         let (_, source, document) = fixture_document("tests/multi_file/module_import/main.solar");
 

@@ -2576,7 +2576,7 @@ impl<'a> Lowerer<'a> {
     fn lower_const_value(&mut self, cdef: &ast::ConstDef) -> Result<Expr, CompileError> {
         let value = self.lower_expr(&cdef.value)?;
         if let Some(ann) = &cdef.ty {
-            let resolved = self.resolve_ast_type(ann)?;
+            let resolved = self.resolve_ast_type_at(ann, cdef.span)?;
             let coerced = self.try_coerce(value, &resolved);
             if coerced.ty != resolved {
                 return Err(CompileError::new(
@@ -2943,13 +2943,28 @@ impl<'a> Lowerer<'a> {
     /// attach the containing declaration's span when the diagnostic still has
     /// the synthetic default location.
     fn locate_unspanned_error(mut error: CompileError, span: ast::SourceSpan) -> CompileError {
-        if error.span.file_id == ast::STDLIB_FILE {
+        if error.span.file_id == ast::STDLIB_FILE
+            && error.span.start.line == 0
+            && error.span.start.col == 0
+            && error.span.end.line == 0
+            && error.span.end.col == 0
+        {
             error.span = span;
         }
         if let Some(cause) = error.caused_by.take() {
             error.caused_by = Some(Box::new(Self::locate_unspanned_error(*cause, span)));
         }
         error
+    }
+
+    /// Resolve a source type and locate internal diagnostics at its declaration or use.
+    fn resolve_ast_type_at(
+        &mut self,
+        ty: &ast::Type,
+        span: ast::SourceSpan,
+    ) -> Result<Type, CompileError> {
+        self.resolve_ast_type(ty)
+            .map_err(|error| Self::locate_unspanned_error(error, span))
     }
 
     /// Resolve an AST type to a typed_ast Type, triggering monomorphization for generics.
@@ -3422,7 +3437,7 @@ impl<'a> Lowerer<'a> {
                             format!("failed to resolve field `{}` of `{id}`", f.name),
                             f.span,
                         )
-                        .with_cause(cause)
+                        .with_cause(Self::locate_unspanned_error(cause, f.span))
                     })?;
                 Ok(FieldDef {
                     name: f.name.clone(),
@@ -3520,7 +3535,10 @@ impl<'a> Lowerer<'a> {
             .enumerate()
             .map(|(i, v)| {
                 let inner_type = match &v.inner_type {
-                    Some(t) => Some(self.resolve_ast_type_with_subst(t, &subst)?),
+                    Some(t) => Some(
+                        self.resolve_ast_type_with_subst(t, &subst)
+                            .map_err(|error| Self::locate_unspanned_error(error, v.span))?,
+                    ),
                     None => None,
                 };
                 Ok(EnumVariantDef {
@@ -3841,7 +3859,7 @@ impl<'a> Lowerer<'a> {
             .map(|t| self.resolve_ast_type(t))
             .collect::<Result<Vec<_>, _>>()?;
         if let Some(owner) = &ast_def_clone.associated_type {
-            concrete_args.insert(0, self.resolve_ast_type(owner)?);
+            concrete_args.insert(0, self.resolve_ast_type_at(owner, ast_def_clone.span)?);
         }
         let mangled = FuncId {
             def: def_id_of_function(&ast_def_clone),
@@ -3919,7 +3937,8 @@ impl<'a> Lowerer<'a> {
         // lowered def below. Only possible with an explicit return type — the
         // in-progress check above rejects the inferred-return recursive case.
         if let Some(rt) = &ast_def.return_type {
-            let stub_return = self.resolve_ast_type(rt)?;
+            let stub_return =
+                self.resolve_ast_type_at(rt, ast_def.return_type_span.unwrap_or(ast_def.span))?;
             let stub_params = ast_def
                 .parameters
                 .iter()
@@ -3927,7 +3946,7 @@ impl<'a> Lowerer<'a> {
                 .map(|(index, p)| {
                     Ok(Parameter {
                         name: pattern_ident_or_placeholder(&p.pattern, index),
-                        ty: self.resolve_ast_type(&p.ty)?,
+                        ty: self.resolve_ast_type_at(&p.ty, p.span)?,
                         span: p.span,
                     })
                 })
@@ -4038,7 +4057,7 @@ impl<'a> Lowerer<'a> {
                 .enumerate()
                 .map(|(i, v)| {
                     let inner_type = match &v.inner_type {
-                        Some(t) => Some(self.resolve_ast_type(t)?),
+                        Some(t) => Some(self.resolve_ast_type_at(t, v.span)?),
                         None => None,
                     };
                     Ok(EnumVariantDef {
@@ -4069,7 +4088,7 @@ impl<'a> Lowerer<'a> {
             }
             let init = self.lower_expr(&st.value)?;
             let init = if let Some(ann) = &st.ty {
-                let resolved = self.resolve_ast_type(ann)?;
+                let resolved = self.resolve_ast_type_at(ann, st.span)?;
                 let coerced = self.try_coerce(init, &resolved);
                 if coerced.ty != resolved {
                     return Err(CompileError::new(
@@ -4129,18 +4148,14 @@ impl<'a> Lowerer<'a> {
         // Register all concrete (non-generic) functions and lower them. Each
         // concrete overload's identity is a `FuncId` whose args are its
         // parameter types (which disambiguate overloads).
-        let mut concrete_funcs: Vec<(DefId, Vec<ast::Type>, Rc<ast::FunctionDef>)> = self
+        let mut concrete_funcs: Vec<(DefId, Rc<ast::FunctionDef>)> = self
             .function_defs
             .iter()
             .flat_map(|(def, entries)| {
                 entries
                     .iter()
                     .filter(|e| e.type_params.is_empty() && !e.ast_def.is_overlap)
-                    .map(|e| {
-                        let ast_param_types: Vec<ast::Type> =
-                            e.ast_def.parameters.iter().map(|p| p.ty.clone()).collect();
-                        (def.clone(), ast_param_types, e.ast_def.clone())
-                    })
+                    .map(|e| (def.clone(), e.ast_def.clone()))
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
@@ -4154,20 +4169,20 @@ impl<'a> Lowerer<'a> {
                 })
                 .map(|entry| {
                     let ast_def = entry.ast_def.clone();
-                    let params = ast_def.parameters.iter().map(|p| p.ty.clone()).collect();
-                    (def_id_of_function(&ast_def), params, ast_def)
+                    (def_id_of_function(&ast_def), ast_def)
                 })
                 .collect::<Vec<_>>()
         }));
         let mut func_to_lower: Vec<(FuncId, Rc<ast::FunctionDef>)> = Vec::new();
-        for (def, ast_param_types, ast_def) in concrete_funcs {
-            let param_types: Vec<Type> = ast_param_types
+        for (def, ast_def) in concrete_funcs {
+            let param_types: Vec<Type> = ast_def
+                .parameters
                 .iter()
-                .map(|t| self.resolve_ast_type(t))
+                .map(|p| self.resolve_ast_type_at(&p.ty, p.span))
                 .collect::<Result<Vec<_>, _>>()?;
             let mut identity_args = param_types;
             if let Some(owner) = &ast_def.associated_type {
-                identity_args.insert(0, self.resolve_ast_type(owner)?);
+                identity_args.insert(0, self.resolve_ast_type_at(owner, ast_def.span)?);
             }
             let fid = FuncId::free(def, identity_args);
             self.concrete_ast_defs.insert(fid.clone(), ast_def.clone());
@@ -4441,7 +4456,8 @@ impl<'a> Lowerer<'a> {
             && let Some(rt) = &func_def.return_type
         {
             let rt = rt.clone();
-            return self.resolve_ast_type(&rt);
+            let span = func_def.return_type_span.unwrap_or(func_def.span);
+            return self.resolve_ast_type_at(&rt, span);
         }
         // Already resolved
         if let Some(ty) = self.resolved_return_types.get(name) {
@@ -5365,6 +5381,14 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_statement(&mut self, stmt: &ast::Statement) -> Result<Vec<Statement>, CompileError> {
+        self.lower_statement_inner(stmt)
+            .map_err(|error| Self::locate_unspanned_error(error, stmt.span))
+    }
+
+    fn lower_statement_inner(
+        &mut self,
+        stmt: &ast::Statement,
+    ) -> Result<Vec<Statement>, CompileError> {
         match &stmt.kind {
             ast::StatementKind::Let { pattern, ty, value } => {
                 let (resolved_ty, lowered) = if let Some(ty) = ty {
@@ -6127,6 +6151,11 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_expr(&mut self, expr: &ast::Expr) -> Result<Expr, CompileError> {
+        self.lower_expr_inner(expr)
+            .map_err(|error| Self::locate_unspanned_error(error, expr.span))
+    }
+
+    fn lower_expr_inner(&mut self, expr: &ast::Expr) -> Result<Expr, CompileError> {
         match &expr.kind {
             ast::ExprKind::Identifier(name) => {
                 let source_name = match name {
@@ -8734,7 +8763,7 @@ impl<'a> Lowerer<'a> {
                         )
                     })?
             } else {
-                self.resolve_ast_type(&p.ty)?
+                self.resolve_ast_type_at(&p.ty, p.span)?
             };
             if !ty.is_sized(&self.lowered_structs) {
                 return Err(CompileError::new(
@@ -8751,7 +8780,7 @@ impl<'a> Lowerer<'a> {
         }
 
         let explicit_return_type = match return_type {
-            Some(t) => Some(self.resolve_ast_type(t)?),
+            Some(t) => Some(self.resolve_ast_type_at(t, span)?),
             None => None,
         };
 

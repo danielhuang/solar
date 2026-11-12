@@ -403,6 +403,110 @@ fn generic_parameter_is_inferred_through_a_type_alias() {
 }
 
 #[test]
+fn type_resolution_errors_keep_source_locations() {
+    for (source, location) in [
+        (
+            "struct Box#[T] { value: T }\nfn Box#[T]::(value: T) -> Box#[T] { Box#[T] { value: value } }",
+            "fn Box#[T]::",
+        ),
+        (
+            "struct Box#[T] { value: T }\nfn take(value: Box#[Missing]) {}",
+            "value: Box#[Missing]",
+        ),
+        ("\nfn take(value: &Missing) {}", "value: &Missing"),
+        ("\nfn make() -> Missing#[Int] { loop {} }", "Missing#[Int]"),
+        ("\nenum Holder { Some(Missing#[Int]) }", "Some("),
+        ("\nstatic VALUE: Missing#[Int] = 1;", "static VALUE"),
+        (
+            "fn main() {\n    const VALUE: Missing#[Int] = 1;\n    VALUE;\n}",
+            "const VALUE",
+        ),
+        ("\nfn main() { let value: Missing#[Int] = 1; }", "let value"),
+        (
+            "\nfn main() { let value = Missing#[Int] { value: 1 }; }",
+            "Missing#[Int]",
+        ),
+        (
+            "struct Box#[T] {\n    value: Missing#[T],\n}\nfn take(value: Box#[Int]) {}",
+            "value: Missing#[T]",
+        ),
+        (
+            "enum Box#[T] {\n    Some(Missing#[T]),\n}\nfn take(value: Box#[Int]) {}",
+            "Some(",
+        ),
+        (
+            "\nfn make#[T](value: T) -> Missing#[T] { loop {} }\nfn main() { make(1); }",
+            "Missing#[T]",
+        ),
+    ] {
+        let parsed =
+            solar::parser::parse(source).unwrap_or_else(|errors| panic!("{source}\n{errors:?}"));
+        let desugared = solar::desugared_ast::lower(&parsed);
+        let resolved = solar::resolved_ast::SourceFile {
+            items: desugared.items,
+            extension_scopes: Default::default(),
+        };
+        let error = solar::typed_ast::lower(&resolved).err().unwrap();
+        let prefix = &source[..source.find(location).unwrap()];
+        let line = prefix.bytes().filter(|&byte| byte == b'\n').count() as u32;
+        let col = prefix.len() - prefix.rfind('\n').map_or(0, |index| index + 1);
+        let mut cause = Some(&error);
+        while let Some(error) = cause {
+            if error.caused_by.is_none() {
+                assert_eq!(
+                    (error.span.start.line, error.span.start.col),
+                    (line, col as u32),
+                    "{source}\n{error:?}",
+                );
+            }
+            assert!(
+                (error.span.end.line, error.span.end.col)
+                    > (error.span.start.line, error.span.start.col),
+                "empty diagnostic span: {error:?}",
+            );
+            cause = error.caused_by.as_deref();
+        }
+    }
+}
+
+#[test]
+fn imported_type_errors_print_declaration_locations() {
+    let directory = tempdir::TempDir::new("solar-diagnostic-locations").unwrap();
+    let main = directory.path().join("main.solar");
+    let imported = directory.path().join("bad.solar");
+    std::fs::write(&main, "import bad from \"bad.solar\";\nfn main() {}\n").unwrap();
+    std::fs::write(
+        &imported,
+        "struct Box#[T] { value: T }\nfn Box#[T]::(value: T) -> Box#[T] { Box#[T] { value: value } }\n",
+    )
+    .unwrap();
+    let (errors, source_map) = solar::pipeline::compile(&main).err().unwrap();
+    assert!(error_chain(&errors[0]).contains("undefined type: T"));
+    let mut cause = Some(&errors[0]);
+    while let Some(error) = cause {
+        assert_eq!(
+            source_map.get(error.span.file_id).unwrap().0,
+            imported.to_str().unwrap(),
+        );
+        assert_eq!((error.span.start.line, error.span.start.col), (1, 0));
+        cause = error.caused_by.as_deref();
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_solar"))
+        .arg("check")
+        .arg(&main)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains(&format!("{}:2:1", imported.display())),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("/src/std/lib.solar:1:1"), "{stderr}");
+}
+
+#[test]
 fn root_main_requires_unit_return_type() {
     for name in ["main_returns_value.solar", "main_infers_value.solar"] {
         let path = fixture(name);
