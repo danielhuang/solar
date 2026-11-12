@@ -13,6 +13,7 @@ use std::{
     collections::{HashMap, HashSet},
     io::{self, BufRead, Write},
     path::PathBuf,
+    sync::Arc,
 };
 use tree_sitter::{Node, Parser};
 
@@ -79,10 +80,14 @@ fn main() {
             Some("exit") => break,
             Some("textDocument/didOpen") => {
                 if let Some((uri, text)) = document_and_text(&params) {
-                    let (document, diagnostics) = compute_with_diagnostics(&uri, &text);
-                    update_cached_document(&mut cache, &uri, document);
-                    documents.insert(uri.clone(), text.clone());
-                    publish_check_diagnostics(&mut output, &uri, diagnostics, &mut diagnostic_uris);
+                    documents.insert(uri.clone(), text);
+                    refresh_documents(
+                        &mut output,
+                        &uri,
+                        &documents,
+                        &mut cache,
+                        &mut diagnostic_uris,
+                    );
                 }
             }
             Some("textDocument/didChange") => {
@@ -91,17 +96,26 @@ fn main() {
                     .pointer("/contentChanges/0/text")
                     .and_then(Value::as_str);
                 if let (Some(uri), Some(text)) = (uri, text) {
-                    let (document, diagnostics) = compute_with_diagnostics(uri, text);
-                    update_cached_document(&mut cache, uri, document);
                     documents.insert(uri.to_owned(), text.to_owned());
-                    publish_check_diagnostics(&mut output, uri, diagnostics, &mut diagnostic_uris);
+                    refresh_documents(
+                        &mut output,
+                        uri,
+                        &documents,
+                        &mut cache,
+                        &mut diagnostic_uris,
+                    );
                 }
             }
             Some("textDocument/didClose") => {
                 if let Some(uri) = params.pointer("/textDocument/uri").and_then(Value::as_str) {
                     documents.remove(uri);
-                    cache.remove(uri);
-                    clear_check_diagnostics(&mut output, uri, &mut diagnostic_uris);
+                    refresh_documents(
+                        &mut output,
+                        uri,
+                        &documents,
+                        &mut cache,
+                        &mut diagnostic_uris,
+                    );
                 }
             }
             Some("textDocument/formatting") => {
@@ -291,7 +305,7 @@ fn signature_help(
         Vec::new()
     } else {
         let probe_source = signature_argument_probe_source(source, &context);
-        completion_probe_documents(uri, &probe_source, context.open_byte + 2)
+        completion_probe_documents(uri, &probe_source, context.open_byte + 2, document)
     };
     let probe_document = probe_documents
         .iter()
@@ -337,7 +351,7 @@ fn signature_help(
             prefix_start_character: 0,
         };
         let receiver_probe = completion_probe_source(source, &member_context);
-        completion_probe_documents(uri, &receiver_probe, receiver_end_byte)
+        completion_probe_documents(uri, &receiver_probe, receiver_end_byte, document)
             .iter()
             .find_map(|probe| {
                 let analysis = probe.analysis.as_ref()?;
@@ -933,7 +947,8 @@ fn completions(
     let probe_documents;
     let (receiver_types, tooling_document) = if current_types.is_empty() {
         let probe_source = completion_probe_source(source, &context);
-        probe_documents = completion_probe_documents(uri, &probe_source, context.dot_byte);
+        probe_documents =
+            completion_probe_documents(uri, &probe_source, context.dot_byte, document);
         if let Some((types, probe)) = probe_documents.iter().find_map(|probe| {
             let types = probe.analysis.as_ref().map_or_else(Vec::new, |analysis| {
                 expression_types_at(&analysis.typed, analysis.file_id, context.receiver_span)
@@ -1199,7 +1214,7 @@ fn namespace_completions(
             let cursor_byte = position_to_byte(source, line, character).unwrap();
             let mut probe_source = source.to_owned();
             probe_source.replace_range(context.path_start_byte..cursor_byte, "Int");
-            probe = compute(uri, &probe_source);
+            probe = compute_probe(uri, &probe_source, document);
             if let Some(file_id) = namespace_file(&probe, &context.segments) {
                 (file_id, &probe)
             } else {
@@ -1211,7 +1226,7 @@ fn namespace_completions(
                     context.path_start_byte..context.path_start_byte + "Int".len(),
                     "Int;",
                 );
-                statement_probe = compute(uri, &probe_source);
+                statement_probe = compute_probe(uri, &probe_source, document);
                 let Some(file_id) = namespace_file(&statement_probe, &context.segments) else {
                     return Vec::new();
                 };
@@ -1403,13 +1418,18 @@ fn completion_probe_source(source: &str, context: &MemberCompletionContext) -> S
     probe
 }
 
-fn completion_probe_documents(uri: &str, source: &str, cursor_byte: usize) -> Vec<Document> {
-    let mut documents = vec![compute(uri, source)];
+fn completion_probe_documents(
+    uri: &str,
+    source: &str,
+    cursor_byte: usize,
+    context: &Document,
+) -> Vec<Document> {
+    let mut documents = vec![compute_probe(uri, source, context)];
     if documents[0].analysis.is_some() {
         return documents;
     }
     for probe in completion_scope_probe_sources(source, cursor_byte) {
-        let document = compute(uri, &probe);
+        let document = compute_probe(uri, &probe, context);
         let succeeded = document.analysis.is_some();
         documents.push(document);
         if succeeded {
@@ -1533,7 +1553,7 @@ fn ordinary_completions(
             };
         let mut probe_source = source.to_owned();
         probe_source.replace_range(prefix_start..cursor_byte, replacement);
-        probe = compute(uri, &probe_source);
+        probe = compute_probe(uri, &probe_source, document);
         &probe
     } else {
         document
@@ -2569,37 +2589,53 @@ fn first_named_code_child(node: Node<'_>) -> Option<Node<'_>> {
         .find(|child| !matches!(child.kind(), "comment" | "doc_comment"))
 }
 
-fn publish_check_diagnostics(
+/// Rechecks the changed buffer and open programs that imported its previous revision.
+fn refresh_documents(
     output: &mut impl Write,
-    root_uri: &str,
-    diagnostics: HashMap<String, Vec<Value>>,
+    changed_uri: &str,
+    documents: &HashMap<String, String>,
+    cache: &mut HashMap<String, Document>,
     published: &mut HashMap<String, HashMap<String, Vec<Value>>>,
 ) {
-    let mut affected: HashSet<String> = published
-        .get(root_uri)
-        .into_iter()
-        .flat_map(|old| old.keys().cloned())
-        .chain(diagnostics.keys().cloned())
+    let changed_path = file_uri_to_path(changed_uri);
+    let mut roots: Vec<_> = documents
+        .keys()
+        .filter(|uri| {
+            uri.as_str() == changed_uri
+                || cache.get(*uri).is_none_or(|document| {
+                    changed_path
+                        .as_ref()
+                        .is_some_and(|path| document.source_map.file_id_for_path(path).is_some())
+                })
+        })
+        .cloned()
         .collect();
-    affected.insert(root_uri.to_owned());
-    published.insert(root_uri.to_owned(), diagnostics);
-
-    for uri in affected {
-        publish_aggregate_diagnostics(output, &uri, published);
+    roots.sort();
+    let sources = Arc::new(
+        documents
+            .iter()
+            .filter_map(|(uri, source)| file_uri_to_path(uri).map(|path| (path, source.clone())))
+            .collect(),
+    );
+    let mut affected = HashSet::from([changed_uri.to_owned()]);
+    if !documents.contains_key(changed_uri) {
+        cache.remove(changed_uri);
+        if let Some(old) = published.remove(changed_uri) {
+            affected.extend(old.into_keys());
+        }
     }
-}
-
-fn clear_check_diagnostics(
-    output: &mut impl Write,
-    root_uri: &str,
-    published: &mut HashMap<String, HashMap<String, Vec<Value>>>,
-) {
-    let mut affected: HashSet<String> = published
-        .remove(root_uri)
-        .into_iter()
-        .flat_map(|old| old.into_keys())
-        .collect();
-    affected.insert(root_uri.to_owned());
+    for uri in roots {
+        let (document, diagnostics) =
+            compute_with_sources(&uri, &documents[&uri], Arc::clone(&sources));
+        update_cached_document(cache, &uri, document);
+        affected.insert(uri.clone());
+        affected.extend(diagnostics.keys().cloned());
+        if let Some(old) = published.insert(uri, diagnostics) {
+            affected.extend(old.into_keys());
+        }
+    }
+    // Publish only after every affected root has replaced its old contributions.
+    // Otherwise a corrected import can retain errors from an earlier root check.
     for uri in affected {
         publish_aggregate_diagnostics(output, &uri, published);
     }
@@ -4123,6 +4159,8 @@ struct Document {
     /// `file_id` → path + source, to turn a definition's span into an LSP
     /// `Location` (URI + UTF-16 range) in whatever file it lives in.
     source_map: SourceMap,
+    /// Open buffers shared by analyses and speculative completion probes.
+    open_sources: Arc<HashMap<PathBuf, String>>,
     /// Type-check-derived facts for semantic highlighting. `None` when the
     /// buffer resolves but does not type-check — hover's docs survive either way.
     analysis: Option<Analysis>,
@@ -4259,14 +4297,35 @@ fn compute(uri: &str, source: &str) -> Document {
 
 /// Analyzes an in-memory document once for diagnostics and language features.
 fn compute_with_diagnostics(uri: &str, source: &str) -> (Document, HashMap<String, Vec<Value>>) {
+    compute_with_sources(uri, source, Arc::default())
+}
+
+fn compute_probe(uri: &str, source: &str, document: &Document) -> Document {
+    compute_with_sources(uri, source, Arc::clone(&document.open_sources)).0
+}
+
+fn compute_with_sources(
+    uri: &str,
+    source: &str,
+    open_sources: Arc<HashMap<PathBuf, String>>,
+) -> (Document, HashMap<String, Vec<Value>>) {
     let Some(path) = file_uri_to_path(uri) else {
         return (Document::default(), HashMap::new());
     };
-    let (ast, source_map) = match resolve::resolve_source(&path, source.to_owned()) {
+    let mut sources = (*open_sources).clone();
+    sources.insert(path.clone(), source.to_owned());
+    let (ast, source_map) = match resolve::resolve_sources(&path, &sources) {
         Ok(resolved) => resolved,
         Err((errors, source_map)) => {
             let diagnostics = diagnostics_from_errors(uri, source, &errors, &source_map);
-            return (Document::default(), diagnostics);
+            return (
+                Document {
+                    source_map,
+                    open_sources,
+                    ..Document::default()
+                },
+                diagnostics,
+            );
         }
     };
     let definition_catalog = collect_definition_catalog(&ast, source_map.root_file_id());
@@ -4358,6 +4417,7 @@ fn compute_with_diagnostics(uri: &str, source: &str) -> (Document, HashMap<Strin
         analysis,
         last_successful_types: None,
         source_map,
+        open_sources,
     };
     (document, diagnostics)
 }
@@ -6369,6 +6429,141 @@ fn main() {
             assert!(diagnostics.is_empty(), "{relative}: {diagnostics:?}");
             assert!(document.analysis.is_some(), "{relative}");
         }
+    }
+
+    #[test]
+    fn diagnostics_use_unsaved_standard_library_buffers() {
+        for relative in ["src/std/lib.solar", "src/std/sync.solar"] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+            let uri = path_to_file_uri(path.to_str().unwrap());
+            let saved = std::fs::read_to_string(&path).unwrap();
+            let source = format!("{saved}\npub fn unsaved_probe() -> Int {{ false }}\n");
+            let (document, diagnostics) = compute_with_diagnostics(&uri, &source);
+            let errors = &diagnostics[&uri];
+            assert!(
+                errors.iter().any(|error| {
+                    error["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("should return Int, but last expression is Bool")
+                }),
+                "{diagnostics:?}"
+            );
+            let file = document.source_map.file_id_for_path(&path).unwrap();
+            assert_eq!(document.source_map.get(file).unwrap().1, source);
+
+            let repaired = format!("{saved}\npub fn unsaved_probe() -> Int {{ 1 }}\n");
+            let (_, diagnostics) = compute_with_diagnostics(&uri, &repaired);
+            assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        }
+    }
+
+    #[test]
+    fn editing_and_closing_imports_refreshes_every_dependent_document() {
+        let directory = tempdir::TempDir::new("solar-lsp-open-imports").unwrap();
+        let imported = directory.path().join("imported.solar");
+        let imported_uri = path_to_file_uri(imported.to_str().unwrap());
+        let saved = "pub fn value() -> Int { 1 }\n";
+        std::fs::write(&imported, saved).unwrap();
+        let roots: Vec<_> = ["first.solar", "second.solar"]
+            .into_iter()
+            .map(|name| path_to_file_uri(directory.path().join(name).to_str().unwrap()))
+            .collect();
+        let mut documents = HashMap::new();
+        let mut cache = HashMap::new();
+        let mut published = HashMap::new();
+        let mut output = Vec::new();
+        for uri in &roots {
+            documents.insert(uri.clone(), "import imported from \"imported.solar\";\nfn main() { let n: Int = imported::value(); }\n".to_owned());
+            refresh_documents(&mut output, uri, &documents, &mut cache, &mut published);
+        }
+
+        // Each root contributes the imported error. Fixing the import must clear all of them.
+        for invalid in ["pub fn value() -> Int { false }\n", "pub fn value("] {
+            documents.insert(imported_uri.clone(), invalid.to_owned());
+            refresh_documents(
+                &mut output,
+                &imported_uri,
+                &documents,
+                &mut cache,
+                &mut published,
+            );
+            for uri in roots.iter().chain(std::iter::once(&imported_uri)) {
+                assert!(!published[uri][&imported_uri].is_empty());
+            }
+            documents.insert(imported_uri.clone(), saved.to_owned());
+            output.clear();
+            refresh_documents(
+                &mut output,
+                &imported_uri,
+                &documents,
+                &mut cache,
+                &mut published,
+            );
+            assert!(published.values().all(HashMap::is_empty), "{published:?}");
+            let mut messages = std::io::Cursor::new(&output);
+            let mut cleared_import = false;
+            while let Some(message) = read_message(&mut messages) {
+                if message["params"]["uri"] == imported_uri {
+                    assert_eq!(message["params"]["diagnostics"], json!([]));
+                    cleared_import = true;
+                }
+            }
+            assert!(cleared_import);
+        }
+
+        // A valid edit can introduce errors in callers; closing the buffer restores disk contents.
+        documents.insert(
+            imported_uri.clone(),
+            "pub fn value() -> Bool { true }\n".to_owned(),
+        );
+        refresh_documents(
+            &mut output,
+            &imported_uri,
+            &documents,
+            &mut cache,
+            &mut published,
+        );
+        for uri in &roots {
+            assert!(published[uri][uri].iter().any(|error| {
+                error["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("expected Int, got Bool")
+            }));
+        }
+        documents.remove(&imported_uri);
+        refresh_documents(
+            &mut output,
+            &imported_uri,
+            &documents,
+            &mut cache,
+            &mut published,
+        );
+        assert!(published.values().all(HashMap::is_empty), "{published:?}");
+        assert!(!cache.contains_key(&imported_uri));
+    }
+
+    #[test]
+    fn completion_probes_use_unsaved_imports() {
+        let directory = tempdir::TempDir::new("solar-lsp-completion-imports").unwrap();
+        let path = directory.path().join("main.solar");
+        let imported = directory.path().join("imported.solar");
+        std::fs::write(&imported, "pub struct Item { pub old: Int }\n").unwrap();
+        let sources = Arc::new(HashMap::from([(
+            imported,
+            "pub struct Item { pub fresh: Int }\n".to_owned(),
+        )]));
+        let source = "import {Item} from \"imported.solar\";\nfn main() { let item = Item { fresh: 1 }; item.fr; }\n";
+        let uri = path_to_file_uri(path.to_str().unwrap());
+        let (document, _) = compute_with_sources(&uri, source, sources);
+        let (line, character) = occurrence_position(source, "item.fr", 0);
+        let items = completions(source, line, character + 7, &uri, &document);
+        assert!(
+            items.iter().any(|item| item["label"] == "fresh"),
+            "{items:?}"
+        );
+        assert!(!items.iter().any(|item| item["label"] == "old"));
     }
 
     #[test]

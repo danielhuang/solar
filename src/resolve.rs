@@ -43,6 +43,7 @@ struct Export {
 struct Resolver {
     files: Vec<ParsedFile>,
     path_to_id: HashMap<PathBuf, FileId>,
+    source_overrides: HashMap<PathBuf, String>,
     source_map: SourceMap,
     /// FileId of the stdlib root (lib.solar), if parsed.
     std_root_id: Option<FileId>,
@@ -57,6 +58,7 @@ impl Resolver {
         Self {
             files: Vec::new(),
             path_to_id: HashMap::new(),
+            source_overrides: HashMap::new(),
             source_map: SourceMap::new(),
             std_root_id: None,
             c_headers: HashMap::new(),
@@ -72,12 +74,16 @@ impl Resolver {
             return Ok(id);
         }
 
-        let source = std::fs::read_to_string(path).map_err(|e| {
-            vec![CompileError::new(
-                format!("cannot read file `{}`: {e}", path.display()),
-                SourceSpan::default(),
-            )]
-        })?;
+        let source = if let Some(source) = self.source_overrides.get(&canonical) {
+            source.clone()
+        } else {
+            std::fs::read_to_string(path).map_err(|e| {
+                vec![CompileError::new(
+                    format!("cannot read file `{}`: {e}", path.display()),
+                    SourceSpan::default(),
+                )]
+            })?
+        };
 
         self.parse_source(path, canonical, source)
     }
@@ -183,15 +189,15 @@ impl Resolver {
                 continue;
             }
             let resolved_path = base_dir.join(&import_path);
-            if !resolved_path.exists() {
+            let canonical = resolved_path
+                .canonicalize()
+                .unwrap_or_else(|_| resolved_path.clone());
+            if !resolved_path.exists() && !self.source_overrides.contains_key(&canonical) {
                 return Err(vec![CompileError::new(
                     format!("cannot find imported file: `{import_path}`"),
                     span,
                 )]);
             }
-            let canonical = resolved_path
-                .canonicalize()
-                .unwrap_or_else(|_| resolved_path.clone());
             let already_seen = self.path_to_id.contains_key(&canonical);
             let imported_id = self.parse_file(&resolved_path)?;
             if !already_seen {
@@ -1731,7 +1737,7 @@ fn rewrite_pattern(
 pub fn resolve(
     file_path: &Path,
 ) -> Result<(resolved_ast::SourceFile, SourceMap), (Vec<CompileError>, SourceMap)> {
-    resolve_with_root_source(file_path, None)
+    resolve_sources(file_path, &HashMap::new())
 }
 
 /// Resolves a program whose root source is supplied in memory.
@@ -1739,15 +1745,30 @@ pub fn resolve_source(
     file_path: &Path,
     source: String,
 ) -> Result<(resolved_ast::SourceFile, SourceMap), (Vec<CompileError>, SourceMap)> {
-    resolve_with_root_source(file_path, Some(source))
+    resolve_sources(
+        file_path,
+        &HashMap::from([(file_path.to_path_buf(), source)]),
+    )
 }
 
-fn resolve_with_root_source(
+/// Resolves a program using in-memory contents for the supplied file paths.
+/// Overrides apply on first load, including imports and standard-library files.
+/// Files without an override are read from disk.
+pub fn resolve_sources(
     file_path: &Path,
-    root_source: Option<String>,
+    sources: &HashMap<PathBuf, String>,
 ) -> Result<(resolved_ast::SourceFile, SourceMap), (Vec<CompileError>, SourceMap)> {
     let mut resolver = Resolver::new();
-    let result = resolve_impl(&mut resolver, file_path, root_source);
+    resolver.source_overrides = sources
+        .iter()
+        .map(|(path, source)| {
+            (
+                path.canonicalize().unwrap_or_else(|_| path.clone()),
+                source.clone(),
+            )
+        })
+        .collect();
+    let result = resolve_impl(&mut resolver, file_path);
     let source_map = resolver.source_map;
     match result {
         Ok(source) => Ok((source, source_map)),
@@ -1758,7 +1779,6 @@ fn resolve_with_root_source(
 fn resolve_impl(
     resolver: &mut Resolver,
     file_path: &Path,
-    root_source: Option<String>,
 ) -> Result<resolved_ast::SourceFile, Vec<CompileError>> {
     let std_lib = Path::new(STDLIB_DIR).join("lib.solar");
     let std_root_id = resolver.parse_file(&std_lib)?;
@@ -1767,14 +1787,7 @@ fn resolve_impl(
     resolver.std_root_id = Some(std_root_id);
     let std_file_count = resolver.files.len();
 
-    let root_id = if let Some(source) = root_source {
-        let canonical = file_path
-            .canonicalize()
-            .unwrap_or_else(|_| file_path.to_path_buf());
-        resolver.parse_source(file_path, canonical, source)?
-    } else {
-        resolver.parse_file(file_path)?
-    };
+    let root_id = resolver.parse_file(file_path)?;
     resolver.source_map.set_root_file_id(root_id);
 
     // A standard-library root already had its imports processed above. C import

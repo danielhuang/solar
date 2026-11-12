@@ -8,6 +8,28 @@ fn fixture(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn resolve_sources_accepts_unsaved_imported_files() {
+    let directory = tempdir::TempDir::new("solar-memory-imports").unwrap();
+    let root = directory.path().join("main.solar");
+    let imported = directory.path().join("memory.solar");
+    let sources = std::collections::HashMap::from([
+        (
+            root.clone(),
+            "import memory from \"memory.solar\";\nfn main() { let n: Int = memory::value(); }\n"
+                .to_owned(),
+        ),
+        (imported.clone(), "pub fn value() -> Int { 7 }\n".to_owned()),
+    ]);
+    let (resolved, source_map) = solar::resolve::resolve_sources(&root, &sources).unwrap();
+    solar::typed_ast::lower(&resolved).unwrap();
+    for (path, source) in &sources {
+        let file = source_map.file_id_for_path(path).unwrap();
+        assert_eq!(source_map.get(file).unwrap().1, source);
+        assert!(!path.exists());
+    }
+}
+
+#[test]
 fn nested_generic_method_receiver_infers_inner_type() {
     let output = run(
         &fixture("nested_generic_method/main.solar"),
