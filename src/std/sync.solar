@@ -1,5 +1,5 @@
 import linux from "linux.solar";
-import {throw} from "lib.solar";
+import {Option, throw} from "lib.solar";
 import {
 	atomic_load,
 	atomic_store,
@@ -212,8 +212,8 @@ enum ChannelSlot#[T] { Empty, Full(T) }
 
 /// A synchronous multi-producer, multi-consumer channel.
 pub struct Channel#[T] {
-	send_lock: RawMutex,
-	recv_lock: RawMutex,
+	send_lock: Mutex#[()],
+	recv_lock: Mutex#[()],
 	state: Uint32,
 	data: ChannelSlot#[T],
 }
@@ -221,8 +221,8 @@ pub struct Channel#[T] {
 /// Creates an empty channel.
 pub fn Channel::#[out T]() -> Channel#[T] {
 	Channel#[T] {
-		send_lock: RawMutex(),
-		recv_lock: RawMutex(),
+		send_lock: Mutex(()),
+		recv_lock: Mutex(()),
 		state: 0u32,
 		data: ChannelSlot#[T]::Empty,
 	}
@@ -230,34 +230,63 @@ pub fn Channel::#[out T]() -> Channel#[T] {
 
 /// Sends a value, blocking until it is received.
 pub method send#[T](self: &Channel#[T], value: T) {
-	self@.send_lock&.lock();
-	self@.data = ChannelSlot#[T]::Full(value);
-	self@.state&.atomic_store(1u32);
-	self@.state&.futex_wake(1u32);
+	self@.send_lock&.with_lock(\_ {
+		self@.data = ChannelSlot#[T]::Full(value);
+		self@.state&.atomic_store(1u32);
+		self@.state&.futex_wake(1u32);
 
-	while self@.state&.atomic_load() != 0u32 {
-		self@.state&.futex_wait(1u32);
-	}
-
-	self@.send_lock&.unlock();
+		while self@.state&.atomic_load() != 0u32 {
+			self@.state&.futex_wait(1u32);
+		}
+	});
 }
 
 /// Receives a value, blocking until one is available.
 pub method recv#[T](self: &Channel#[T]) -> T {
-	self@.recv_lock&.lock();
+	let slot = self@.recv_lock&.with_lock(\_ {
+		while self@.state&.atomic_load() == 0u32 {
+			self@.state&.futex_wait(0u32);
+		}
 
-	while self@.state&.atomic_load() == 0u32 {
-		self@.state&.futex_wait(0u32);
-	}
-
-	let slot = self@.data;
-	self@.data = ChannelSlot#[T]::Empty;
-	self@.state&.atomic_store(0u32);
-	self@.state&.futex_wake(1u32);
-	self@.recv_lock&.unlock();
+		let slot = self@.data;
+		self@.data = ChannelSlot#[T]::Empty;
+		self@.state&.atomic_store(0u32);
+		self@.state&.futex_wake(1u32);
+		slot
+	});
 
 	match slot {
 		ChannelSlot#[T]::Full(v) => v,
 		ChannelSlot#[T]::Empty => throw("recv on empty channel"&),
 	}
+}
+
+/// A value protected by a mutual exclusion lock.
+pub struct Mutex#[T] { mutex: RawMutex, inner: T }
+
+/// Creates an unlocked mutex containing value.
+pub fn Mutex::#[T](value: T) -> Mutex#[T] {
+	Mutex#[T] { mutex: RawMutex(), inner: value }
+}
+
+/// Calls f with a reference to the protected value and returns its result.
+/// Releases the lock on both normal return and an exception.
+pub method with_lock#[T, U](self: &Mutex#[T], f: fn(&T) -> U) -> U {
+	self@.mutex&.lock();
+	let result = Option#[U]::None;
+
+	try { result = Option#[U]::Some(f(self@.inner&)); } catch (error) {
+		self@.mutex&.unlock();
+		throw(error);
+	}
+
+	self@.mutex&.unlock();
+	result.unwrap()
+}
+
+/// Copies the protected value while holding the original mutex's lock.
+/// The copy has its own unlocked mutex.
+pub fn Mutex::#[T](other: &Mutex#[T]) -> Mutex#[T] {
+	let value = other.with_lock(\x x@);
+	Mutex#[T] { mutex: RawMutex(), inner: value }
 }

@@ -1,14 +1,53 @@
+static copies: Int = 0;
+struct Counted { value: Int }
+
+fn Counted::(original: &Counted) -> Counted {
+	copies = copies + 1;
+	Counted { value: original@.value }
+}
+
 fn main() {
-	let m = sync::RawMutex();
-	let counter = 0;
-	thread::spawn(\ {
-		m&.lock();
-		counter = counter + 1;
-		m&.unlock();
+	let counter = sync::Mutex(0);
+	let worker = thread::spawn(\ {
+		counter&.with_lock(\value { value@ = value@ + 1; });
 	});
-	m&.lock();
-	counter = counter + 1;
-	m&.unlock();
-	while counter&.atomic_load() < 2 {}
-	println(counter);
+	counter&.with_lock(\value { value@ = value@ + 1; });
+	worker.join();
+	println(counter&.with_lock(\value value@));
+
+	// Throwing releases the lock and preserves the callback's exception.
+	let caught = false;
+
+	try {
+		counter&.with_lock(\value {
+			value@ = 3;
+			throw("mutex callback failed"&);
+		});
+	} catch (error) {
+		assert(error.message == "mutex callback failed"&);
+		caught = true;
+	}
+
+	assert(caught);
+	assert(counter&.with_lock(\value value@) == 3);
+
+	// Copying a mutex copies its value and creates an independent lock.
+	let original = sync::Mutex(Counted { value: 7 });
+	let before = copies;
+	let copied = sync::Mutex(original&);
+	assert(copies > before);
+	original&.with_lock(\left {
+		copied&.with_lock(\right { right@.value = left@.value + 2; });
+	});
+	assert(original&.with_lock(\value value@.value) == 7);
+	assert(copied&.with_lock(\value value@.value) == 9);
+
+	let assigned = original;
+	assert(original&.with_lock(\value value@.value) == 7);
+	assigned&.with_lock(\value { value@.value = 11; });
+	assert(original&.with_lock(\value value@.value) == 7);
+	assert(assigned&.with_lock(\value value@.value) == 11);
+
+	let returned = counter&.with_lock(\_ sync::Mutex(42));
+	assert(returned&.with_lock(\value value@) == 42);
 }

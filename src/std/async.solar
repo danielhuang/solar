@@ -1,5 +1,5 @@
 import {Option, Result, throw, gc_keepalive, assert, min, max, size_of} from "lib.solar";
-import {RawMutex} from "sync.solar";
+import {Mutex} from "sync.solar";
 import {Vec} from "vec.solar";
 import intrinsics from "@intrinsics";
 import linux from "linux.solar";
@@ -321,12 +321,10 @@ fn with_shutdown#[R](execute: fn() -> R, stop: fn()) -> R {
 /// closes finish and unused opens are released. Those coroutines are never
 /// resumed. Requires kernel io_uring support.
 pub fn run#[C](create: fn(&Context) -> C, wait_for_all = false) {
-	let ready = Vec([]#[Option#[Task]]&);
-	let head = 0u;
-	let lock = RawMutex();
+	// Shared queue, read cursor, and whether submissions are accepted.
+	let ready = Mutex((Vec([]#[Option#[Task]]&), 0u, true));
 	let wake = 0i64;
 	let pending = Vec([]#[Option#[Pending]]&);
-	let running = true;
 	assert(size_of#[Sqe]() == 64u);
 	assert(size_of#[Cqe]() == 16u);
 	let params = unsafe { intrinsics::zeroed#[io_uring_params]() };
@@ -509,41 +507,38 @@ pub fn run#[C](create: fn(&Context) -> C, wait_for_all = false) {
 	};
 	let context = Context {
 		enqueue: \task: Task {
-			lock&.lock();
+			ready&.with_lock(\state {
+				if state@.2 {
+					state@.0&.push(Option#[Task]::Some(task));
+					let notification = 1u64;
+					let status = 0i64;
 
-			if running {
-				ready&.push(Option#[Task]::Some(task));
-				let notification = 1u64;
-				let status = 0i64;
-
-				loop {
-					status = unsafe {
-						intrinsics::syscall(
-							Int64(SYS_write),
-							Int64(wake),
-							notification&,
-							8u64,
-						)
+					loop {
+						status = unsafe {
+							intrinsics::syscall(
+								Int64(SYS_write),
+								Int64(wake),
+								notification&,
+								8u64,
+							)
+						};
+						if status != 0i64 - Int64(linux::EINTR) { break; }
 					};
-					if status != 0i64 - Int64(linux::EINTR) { break; }
-				};
 
-				// EAGAIN means a wakeup is already pending on this eventfd.
-				if status < 0i64 && status != 0i64 - Int64(linux::EAGAIN) {
-					lock&.unlock();
-					linux::check_syscall(status, "io_uring wake failed"&);
-					return;
+					// EAGAIN means a wakeup is already pending on this eventfd.
+					if status < 0i64 && status != 0i64 - Int64(linux::EAGAIN) {
+						linux::check_syscall(status, "io_uring wake failed"&);
+					}
 				}
-			}
-
-			lock&.unlock();
+			});
 		},
 	};
 	let stop = \ {
-		lock&.lock();
-		running = false;
-		ready = Vec([]#[Option#[Task]]&);
-		lock&.unlock();
+		ready&.with_lock(\state {
+			state@.2 = false;
+			state@.0 = Vec([]#[Option#[Task]]&);
+			state@.1 = 0u;
+		});
 		flush();
 
 		for index in 0u..pending&.len() {
@@ -599,40 +594,42 @@ pub fn run#[C](create: fn(&Context) -> C, wait_for_all = false) {
 
 	let step = \ {
 		poll(enqueue, completions, pending&, context&, false);
-		lock&.lock();
-		let next = Option#[Task]::None;
+		let (next, running) = ready&.with_lock(\state {
+			let queue = state@.0&;
+			let head = state@.1&;
+			let next = Option#[Task]::None;
 
-		if head < ready&.len() {
-			next = ready&.at(head)@;
-			ready&.at(head)@ = Option#[Task]::None;
-			head = head + 1u;
-		}
-
-		if head == ready&.len() {
-			ready = Vec([]#[Option#[Task]]&);
-			head = 0u;
-		} else if head >= ready&.len() / 2u {
-			// Reclaim consumed slots even when new work keeps arriving.
-			ready = Vec(ready&.as_slice()@[head..ready&.len()]&);
-			head = 0u;
-		}
-
-		if next.is_none() {
-			let waiting = false;
-
-			for index in 0u..pending&.len() {
-				if pending&.at(index)@.is_some() { waiting = true; break; }
+			if head@ < queue.len() {
+				next = queue.at(head@)@;
+				queue.at(head@)@ = Option#[Task]::None;
+				head@ = head@ + 1u;
 			}
 
-			if !waiting {
-				// Close submissions atomically with observing an empty executor.
-				running = false;
-				lock&.unlock();
-				return false;
+			if head@ == queue.len() {
+				queue@ = Vec([]#[Option#[Task]]&);
+				head@ = 0u;
+			} else if head@ >= queue.len() / 2u {
+				// Reclaim consumed slots even when new work keeps arriving.
+				queue@ = Vec(queue.as_slice()@[head@..queue.len()]&);
+				head@ = 0u;
 			}
-		}
 
-		lock&.unlock();
+			if next.is_none() {
+				let waiting = false;
+
+				for index in 0u..pending&.len() {
+					if pending&.at(index)@.is_some() { waiting = true; break; }
+				}
+
+				if !waiting {
+					// Close submissions atomically with observing an empty executor.
+					state@.2 = false;
+				}
+			}
+
+			(next, state@.2)
+		});
+		if !running { return false; }
 
 		match next {
 			Option#[Task]::Some(task) => {

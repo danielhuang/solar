@@ -61,6 +61,10 @@ fn futex() {
 fn mutex() {
     let output = run_codegen_file(&fixture("mutex.solar"), "compile_only_mutex");
     assert_eq!(output, "2\n");
+    assert_eq!(
+        test_utils::run_release_file(&fixture("mutex.solar"), "mutex_release"),
+        output
+    );
 }
 
 #[test]
@@ -70,6 +74,10 @@ fn mutex_contended() {
         "compile_only_mutex_contended",
     );
     assert_eq!(output, "160000\n1\n");
+    assert_eq!(
+        test_utils::run_release_file(&fixture("mutex_contended.solar"), "mutex_contended_release"),
+        output
+    );
 }
 
 #[test]

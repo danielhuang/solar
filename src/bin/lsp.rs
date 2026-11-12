@@ -6372,7 +6372,7 @@ fn main() {
     }
 
     #[test]
-    fn diagnostics_analysis_resolves_mutex_unlock() {
+    fn diagnostics_analysis_resolves_mutex_with_lock() {
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/compile_only/mutex.solar");
         let uri = format!("file://{}", path.display());
@@ -6381,7 +6381,7 @@ fn main() {
         let (document, diagnostics) = compute_with_diagnostics(&uri, &source);
 
         assert!(diagnostics.is_empty());
-        let (line, character) = occurrence_position(&source, "unlock", 0);
+        let (line, character) = occurrence_position(&source, "with_lock", 0);
         let location = definition(&source, line, character, &document)
             .expect("definition from diagnostics analysis");
         assert!(
@@ -6394,7 +6394,7 @@ fn main() {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/std/sync.solar"),
         )
         .unwrap();
-        let (expected_line, _) = occurrence_position(&sync_source, "pub method unlock", 0);
+        let (expected_line, _) = occurrence_position(&sync_source, "pub method with_lock", 0);
         assert_eq!(location["range"]["start"]["line"], expected_line);
     }
 

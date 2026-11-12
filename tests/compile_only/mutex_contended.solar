@@ -1,10 +1,9 @@
-// Exercises the three-state RawMutex's contended slow path: many threads hammer a
+// Exercises Mutex's contended slow path: many threads hammer a
 // shared counter under the lock. A correct lock yields exactly threads*iters;
 // any lost update (broken mutual exclusion or a dropped wakeup) shows up as a
-// smaller number. Also checks that `try_lock` succeeds once the lock is free.
+// smaller number. Also checks that the lock can be acquired again afterward.
 fn main() {
-	let m = sync::RawMutex();
-	let counter = 0;
+	let counter = sync::Mutex(0);
 	let threads = 8u;
 	let iters = 20000;
 
@@ -16,9 +15,7 @@ fn main() {
 			let i = 0;
 
 			while i < iters {
-				m&.lock();
-				counter = counter + 1;
-				m&.unlock();
+				counter&.with_lock(\value { value@ = value@ + 1; });
 				i = i + 1;
 			}
 		});
@@ -33,7 +30,6 @@ fn main() {
 		j = j + 1u;
 	}
 
-	let got = m&.try_lock();
-	println(counter); // 160000
-	println(if got { 1 } else { 0 }); // 1
+	println(counter&.with_lock(\value value@)); // 160000
+	println(counter&.with_lock(\_ 1)); // 1
 }

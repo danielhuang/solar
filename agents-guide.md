@@ -255,7 +255,8 @@ The standard prelude is implicit. Common tested APIs:
   Standard streams: `file::stdin()`, `stdout()`, `stderr()`.
 - `process::args()` and `process::env()` return `&[&[Uint8]]`.
   `math::sqrt(2f)`, `math::PI`; `thread::spawn(\ { ... })`, `handle.join()`,
-  `thread::sleep(nanoseconds)` (`Uint64`). `sync::RawMutex()` has `lock`/`unlock`;
+  `thread::sleep(nanoseconds)` (`Uint64`). `sync::Mutex(value)` has
+  `with_lock(\value { ... })`, which borrows the protected value;
   `sync::Channel#[Int]()` has `send`/`recv` on references.
 - `try { work(); } catch (e) { println(e.message); }` catches an `Exception`;
   optional annotation: `catch (e: Exception)`. Throw with `throw("message"&)`,
