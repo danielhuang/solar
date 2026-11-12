@@ -1,7 +1,9 @@
 fn bump(value: &Int) -> Int { value@ = value@ + 1; value@ }
 
 fn collect() {
-	try { gc::collect_gc(); } catch (e) {
+	try {
+		gc::collect_gc();
+	} catch (e) {
 		assert(e.message@ == "collect_gc: GC is disabled");
 	}
 }
@@ -67,13 +69,9 @@ fn control_flow() {
 		yield match 3 { 2 => 0, n => { yield n; n + 1 } };
 	};
 
-	for expected in [
-		10,
-		21,
-		20,
-		3,
-		4,
-	] { assert(g.next().unwrap() == expected@); }
+	for expected in [10, 21, 20, 3, 4] {
+		assert(g.next().unwrap() == expected@);
+	}
 
 	assert(g.next().is_none());
 }
@@ -103,7 +101,9 @@ fn local_dispatch() {
 	callback = \ {
 		let caught = false;
 
-		try { reentrant.next(); } catch (e) {
+		try {
+			reentrant.next();
+		} catch (e) {
 			assert(
 				e.message@ == "cannot resume a completed or running coroutine",
 			);
@@ -203,7 +203,9 @@ fn failures() {
 	assert(g.next().unwrap() == 1);
 	let caught = false;
 
-	try { g.next(); } catch (e) {
+	try {
+		g.next();
+	} catch (e) {
 		assert(e.message@ == "coroutine failed");
 		caught = true;
 	}
@@ -211,7 +213,9 @@ fn failures() {
 	assert(caught);
 	caught = false;
 
-	try { g.next(); } catch (e) {
+	try {
+		g.next();
+	} catch (e) {
 		assert(e.message@ == "cannot resume a completed or running coroutine");
 		caught = true;
 	}
@@ -244,25 +248,25 @@ fn failures() {
 				if i == 0 { continue; }
 				yield i;
 				if i == 2 { break; }
-			} catch (e) { throw(e); }
+			} catch (e) {
+				throw(e);
+			}
 		}
 
 		try {
 			try { yield 3; throw("nested"&); } catch (e) { yield 4; throw(e); }
-		} catch (e) { assert(e.message@ == "nested"); yield 5; }
+		} catch (e) {
+			assert(e.message@ == "nested");
+			yield 5;
+		}
 
 		try { yield 6; return; } catch (e) { throw(e); }
 		yield 999;
 	};
 
-	for expected in [
-		1,
-		2,
-		3,
-		4,
-		5,
-		6,
-	] { assert(g.next().unwrap() == expected@); }
+	for expected in [1, 2, 3, 4, 5, 6] {
+		assert(g.next().unwrap() == expected@);
+	}
 
 	assert(g.next().is_none());
 }

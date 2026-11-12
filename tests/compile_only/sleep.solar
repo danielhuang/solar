@@ -5,6 +5,9 @@ fn main() {
 	thread::sleep(50000000u64);
 	let elapsed = monotonic_time() - start;
 
-	if elapsed >=
-		50000000u64 { println("slept"&); } else { println("too fast"&); }
+	if elapsed >= 50000000u64 {
+		println("slept"&);
+	} else {
+		println("too fast"&);
+	}
 }

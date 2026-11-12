@@ -37,7 +37,9 @@ pub method push#[T](self: &Vec#[T], value: T) {
 		self@.inner = [new_cap; \i: Uint {
 			if i < self@.len {
 				MaybeZeroed(unsafe { self@.inner@[i]&.assume_valid()@ })
-			} else { MaybeZeroed#[T]() }
+			} else {
+				MaybeZeroed#[T]()
+			}
 		}]^;
 	}
 

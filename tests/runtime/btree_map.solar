@@ -2,7 +2,11 @@ fn build(order: Int) -> BTreeMap#[Int, Int] {
 	let map = BTreeMap#[Int, Int]();
 
 	for i in 0..512 {
-		let index = if order == 0 { i } else if order == 1 { 511 - i } else {
+		let index = if order == 0 {
+			i
+		} else if order == 1 {
+			511 - i
+		} else {
 			(i * 137) % 512
 		};
 		let key = index * 2;
@@ -152,10 +156,8 @@ fn main() {
 		assert(map&.len() == 512u);
 		assert(map&.iter()&.len() == 512u);
 		assert(
-			map&.range(
-				Option#[Int]::Some(127),
-				Option#[Int]::Some(260),
-			)&.len() == 66u,
+			map&.range(Option#[Int]::Some(127), Option#[Int]::Some(260))&.len() ==
+				66u,
 		);
 		assert(map&.values().copied().sum() == 130816);
 	}

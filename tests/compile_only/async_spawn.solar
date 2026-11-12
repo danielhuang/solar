@@ -231,9 +231,8 @@ fn main() {
 	});
 	gc::collect_gc();
 	assert(
-		async::run(\context: &async::Context signal_ready.write_partial(
-			"new"&,
-		)) == 3u,
+		async::run(\context: &async::Context signal_ready.write_partial("new"&)) ==
+			3u,
 	);
 	assert(!resumed);
 
@@ -273,7 +272,10 @@ fn main() {
 				await never.read([0u8; 1u]&)
 			}
 		});
-	} catch (error) { assert(error.message@ == "child failed"); caught = true; }
+	} catch (error) {
+		assert(error.message@ == "child failed");
+		caught = true;
+	}
 
 	assert(caught);
 	async::run(\context: &async::Context release.close());
@@ -357,7 +359,10 @@ fn cooperative_yield() {
 			});
 			coroutine { for index in 0..8 { await async::yield(); } }
 		});
-	} catch (error) { assert(error.message@ == "yield failed"); caught = true; }
+	} catch (error) {
+		assert(error.message@ == "yield failed");
+		caught = true;
+	}
 
 	assert(caught);
 }
@@ -462,7 +467,10 @@ fn wait_for_all(output: async::AsyncFileDesc) {
 			},
 			wait_for_all = true,
 		);
-	} catch (error) { assert(error.message@ == "wait failed"); caught = true; }
+	} catch (error) {
+		assert(error.message@ == "wait failed");
+		caught = true;
+	}
 
 	assert(caught && !resumed);
 	unblock.0.write("x"&);

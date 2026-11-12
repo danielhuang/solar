@@ -27,7 +27,9 @@ struct NextOnly { current: Int }
 method next(self: &NextOnly) -> Option#[Int] {
 	self@.current = self@.current + 1;
 
-	if self@.current < 3 { Option#[Int]::Some(self@.current) } else {
+	if self@.current < 3 {
+		Option#[Int]::Some(self@.current)
+	} else {
 		Option#[Int]::None
 	}
 }
@@ -113,7 +115,9 @@ fn main() {
 	assert(finish(cursor&) == 80);
 	let caught = false;
 
-	try { cursor.resume(); } catch (error) {
+	try {
+		cursor.resume();
+	} catch (error) {
 		assert(
 			error.message@ == "cannot resume a completed or running coroutine",
 		);

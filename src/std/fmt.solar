@@ -66,19 +66,27 @@ pub fn debug_string(value: &[Uint8]) -> &[Uint8] {
 	for item in value {
 		let c = item@;
 
-		if c == '"' || c == '\\' { output&.push('\\'); output&.push(c); } else if c ==
-			'\n' { output&.push('\\'); output&.push('n'); } else if c == '\r' {
+		if c == '"' || c == '\\' {
+			output&.push('\\');
+			output&.push(c);
+		} else if c == '\n' {
+			output&.push('\\');
+			output&.push('n');
+		} else if c == '\r' {
 			output&.push('\\');
 			output&.push('r');
-		} else if c == '\t' { output&.push('\\'); output&.push('t'); } else if c <
-			32u8 ||
-			c == 127u8 {
+		} else if c == '\t' {
+			output&.push('\\');
+			output&.push('t');
+		} else if c < 32u8 || c == 127u8 {
 			let digits = "0123456789abcdef"&;
 			output&.push('\\');
 			output&.push('x');
 			output&.push(digits@[Uint(c / 16u8)]);
 			output&.push(digits@[Uint(c % 16u8)]);
-		} else { output&.push(c); }
+		} else {
+			output&.push(c);
+		}
 	}
 
 	output&.push('"');
@@ -93,17 +101,25 @@ fn padding(text: &[Uint8], spec: Spec, numeric: Bool) -> &[Uint8] {
 	if numeric && spec.zero {
 		let zeros = "0"&.repeat(count);
 
-		if text.starts_with(
-			'-',
-		) { return ("-" + zeros@ + text@[1u..text.len()])&; }
+		if text.starts_with('-') {
+			return ("-" + zeros@ + text@[1u..text.len()])&;
+		}
 
 		return (zeros@ + text@)&;
 	}
 
-	let align = if spec.align != 0u8 { spec.align } else if numeric { '>' } else {
+	let align = if spec.align != 0u8 {
+		spec.align
+	} else if numeric {
+		'>'
+	} else {
 		'<'
 	};
-	let left = if align == '>' { count } else if align == '^' { count / 2u } else {
+	let left = if align == '>' {
+		count
+	} else if align == '^' {
+		count / 2u
+	} else {
 		0u
 	};
 	let fill = spec.fill.to_utf8();
@@ -166,7 +182,9 @@ fn render_signed(value: Int64, bits: Uint, spec: Spec) -> &[Uint8] {
 	if radix(spec) == 10u { return padding(value.to_string(), spec, true); }
 	let magnitude = if value < 0i64 {
 		18446744073709551615u64 - Uint64(0i64 - (value + 1i64))
-	} else { Uint64(value) };
+	} else {
+		Uint64(value)
+	};
 	if bits < 64u { magnitude = magnitude % (1u64 << bits); }
 	render_unsigned(magnitude, spec)
 }
@@ -226,12 +244,12 @@ fn parse_spec(text: &[Uint8], dynamic_width: Uint) -> Spec {
 	if text.len() > 0u {
 		let (first, size) = decode_first(text);
 
-		if alignment(first) { spec.align = Uint8(first); at = size; } else {
+		if alignment(first) {
+			spec.align = Uint8(first);
+			at = size;
+		} else {
 			if size < text.len() {
-				let (
-					second,
-					next_size,
-				) = decode_first(text@[size..text.len()]&);
+				let (second, next_size) = decode_first(text@[size..text.len()]&);
 
 				if alignment(second) {
 					spec.fill = first;
@@ -294,7 +312,9 @@ pub fn format(template: &[Uint8], arguments: &[FormatArg], width = 0u) -> &[Uint
 			let key = template@[key_start..at]&;
 			let index = next;
 
-			if key.len() == 0u { next = next + 1u; } else {
+			if key.len() == 0u {
+				next = next + 1u;
+			} else {
 				if key.iter().all(\c: &Uint8 c@.is_ascii_digit()) {
 					index = key.parse#[Uint]();
 				} else {
@@ -312,16 +332,18 @@ pub fn format(template: &[Uint8], arguments: &[FormatArg], width = 0u) -> &[Uint
 				at = at + 1u;
 				let spec_start = at;
 
-				while at < template.len() &&
-					template@[at] != '}' { at = at + 1u; }
+				while at < template.len() && template@[at] != '}' {
+					at = at + 1u;
+				}
 
 				spec_text = template@[spec_start..at]&;
 			}
 
 			if at == template.len() { throw("format: unclosed placeholder"&); }
 
-			if index >=
-				arguments.len() { throw("format: argument not found"&); }
+			if index >= arguments.len() {
+				throw("format: argument not found"&);
+			}
 
 			parts&.push(
 				(arguments@[index].render)(parse_spec(spec_text, width)),

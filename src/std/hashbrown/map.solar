@@ -134,7 +134,9 @@ pub struct Iter#[K, V] {
 /// Iterates over key/value references in unspecified order without allocating.
 pub method iter#[K, V](self: &HashMap#[K, V]) -> Iter#[K, V] {
 	let table = self@.table&;
-	let buckets = if table@.bucket_mask == 0u { 0u } else {
+	let buckets = if table@.bucket_mask == 0u {
+		0u
+	} else {
 		table@.bucket_mask + 1u
 	};
 	Iter#[K, V] {

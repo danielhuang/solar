@@ -193,7 +193,11 @@ pub fn parse_ipv4(addr: &[Uint8], out: &[Uint8]) {
 fn hex_digit(c: Uint8) -> Uint {
 	if c >= '0' && c <= '9' {
 		Uint(c - '0')
-	} else if c >= 'a' { Uint(c - 'a') + 10u } else { Uint(c - 'A') + 10u }
+	} else if c >= 'a' {
+		Uint(c - 'a') + 10u
+	} else {
+		Uint(c - 'A') + 10u
+	}
 }
 
 /// Parses the colon-separated IPv6 groups in addr[from..to) — hex groups (2
@@ -224,7 +228,9 @@ fn parse_groups(addr: &[Uint8], from: Uint, to: Uint, out: &[Uint8], at: Uint) -
 
 			val = 0u;
 			group_start = i + 1u;
-		} else if c != '.' { val = val * 16u + hex_digit(c); }
+		} else if c != '.' {
+			val = val * 16u + hex_digit(c);
+		}
 
 		i = i + 1u;
 	}

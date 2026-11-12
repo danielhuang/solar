@@ -276,15 +276,17 @@ pub fn error_message(code: Int) -> &[Uint8] {
 	if code == Int(EDOTDOT) { return "RFS specific error"&; }
 	if code == Int(EBADMSG) { return "Bad message"&; }
 
-	if code ==
-		Int(EOVERFLOW) { return "Value too large for defined data type"&; }
+	if code == Int(EOVERFLOW) {
+		return "Value too large for defined data type"&;
+	}
 
 	if code == Int(ENOTUNIQ) { return "Name not unique on network"&; }
 	if code == Int(EBADFD) { return "File descriptor in bad state"&; }
 	if code == Int(EREMCHG) { return "Remote address changed"&; }
 
-	if code ==
-		Int(ELIBACC) { return "Can not access a needed shared library"&; }
+	if code == Int(ELIBACC) {
+		return "Can not access a needed shared library"&;
+	}
 
 	if code == Int(ELIBBAD) { return "Accessing a corrupted shared library"&; }
 	if code == Int(ELIBSCN) { return ".lib section in a.out corrupted"&; }
@@ -293,8 +295,9 @@ pub fn error_message(code: Int) -> &[Uint8] {
 		return "Attempting to link in too many shared libraries"&;
 	}
 
-	if code ==
-		Int(ELIBEXEC) { return "Cannot exec a shared library directly"&; }
+	if code == Int(ELIBEXEC) {
+		return "Cannot exec a shared library directly"&;
+	}
 
 	if code == Int(EILSEQ) {
 		return "Invalid or incomplete multibyte or wide character"&;
@@ -329,8 +332,9 @@ pub fn error_message(code: Int) -> &[Uint8] {
 	if code == Int(ECONNRESET) { return "Connection reset by peer"&; }
 	if code == Int(ENOBUFS) { return "No buffer space available"&; }
 
-	if code ==
-		Int(EISCONN) { return "Transport endpoint is already connected"&; }
+	if code == Int(EISCONN) {
+		return "Transport endpoint is already connected"&;
+	}
 
 	if code == Int(ENOTCONN) { return "Transport endpoint is not connected"&; }
 
@@ -338,8 +342,9 @@ pub fn error_message(code: Int) -> &[Uint8] {
 		return "Cannot send after transport endpoint shutdown"&;
 	}
 
-	if code ==
-		Int(ETOOMANYREFS) { return "Too many references: cannot splice"&; }
+	if code == Int(ETOOMANYREFS) {
+		return "Too many references: cannot splice"&;
+	}
 
 	if code == Int(ETIMEDOUT) { return "Connection timed out"&; }
 	if code == Int(ECONNREFUSED) { return "Connection refused"&; }

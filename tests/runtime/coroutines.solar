@@ -85,22 +85,16 @@ fn main() {
 	assert(empty.next().is_none());
 	let recursive = countdown(3);
 
-	for expected in [
-		3,
-		2,
-		1,
-		0,
-	] { assert(recursive.next().unwrap() == expected@); }
+	for expected in [3, 2, 1, 0] {
+		assert(recursive.next().unwrap() == expected@);
+	}
 
 	assert(recursive.next().is_none());
 	let recursive = countdown_ref(3);
 
-	for expected in [
-		3,
-		2,
-		1,
-		0,
-	] { assert(recursive.next().unwrap() == expected@); }
+	for expected in [3, 2, 1, 0] {
+		assert(recursive.next().unwrap() == expected@);
+	}
 
 	assert(recursive.next().is_none());
 	println("passed"&);

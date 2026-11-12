@@ -15,7 +15,9 @@ fn completed#[T, R](state: CoroutineState#[T, R]) -> R {
 fn closed(call: fn()) {
 	let caught = false;
 
-	try { call(); } catch (e) {
+	try {
+		call();
+	} catch (e) {
 		assert(e.message@ == "cannot resume a completed or running coroutine");
 		caught = true;
 	}
@@ -24,7 +26,9 @@ fn closed(call: fn()) {
 }
 
 fn collect() {
-	try { gc::collect_gc(); } catch (e) {
+	try {
+		gc::collect_gc();
+	} catch (e) {
 		assert(e.message@ == "collect_gc: GC is disabled");
 	}
 }
@@ -132,7 +136,10 @@ fn exceptions() {
 	assert(caught == 0);
 
 	let g = coroutine {
-		try { yield 1; throw("caught"&); } catch (e) {
+		try {
+			yield 1;
+			throw("caught"&);
+		} catch (e) {
 			assert(e.message@ == "caught");
 			yield 2;
 			return 17;
@@ -146,7 +153,9 @@ fn exceptions() {
 	let g = coroutine { throw("uncaught"&); };
 	let failed = false;
 
-	try { g.resume(); } catch (e) {
+	try {
+		g.resume();
+	} catch (e) {
 		assert(e.message@ == "uncaught");
 		failed = true;
 	}
@@ -178,7 +187,9 @@ fn retained_results() {
 		try {
 			yield 1;
 			return \ { local = local + 1; local };
-		} catch (e) { throw(e); }
+		} catch (e) {
+			throw(e);
+		}
 	};
 	assert(yielded(g.resume()) == 1);
 	let callback = completed(g.resume());

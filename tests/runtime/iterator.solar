@@ -23,11 +23,8 @@ fn main() {
 	assert(iterator&.next() == Option#[Int]::None);
 
 	let source = Counter { value: 0 };
-	let mapped: iter::Map#[
-		Counter,
-		Int,
-		Int,
-	] = source.map(\value: Int value * 10);
+	let mapped: iter::Map#[Counter, Int, Int] = source.map(\value: Int value *
+		10);
 	assert(mapped.filter(\value: Int value > 10).sum() == 50);
 	assert(source.collect#[vec::Vec#[Int]]()&.as_slice() == [1, 2, 3]&);
 	let total = 0;

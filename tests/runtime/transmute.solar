@@ -5,9 +5,9 @@ struct Bytes4 { a: Uint8, b: Uint8, c: Uint8, d: Uint8 }
 enum Flag { Off, On }
 
 fn main() {
-	let word = mem::transmute#[
-		Uint32,
-	](Bytes4 { a: 1u8, b: 2u8, c: 3u8, d: 4u8 });
+	let word = mem::transmute#[Uint32](
+		Bytes4 { a: 1u8, b: 2u8, c: 3u8, d: 4u8 },
+	);
 	println(Int(word));
 
 	let bytes = mem::transmute#[[Uint8; 4]](word);

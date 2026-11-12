@@ -275,11 +275,7 @@ pub method write(self: &Hasher, bytes: &[Uint8]) {
 			seeds_ref,
 		);
 	} else {
-		self@.accumulator = hash_bytes_long(
-			bytes,
-			self@.accumulator,
-			seeds_ref,
-		);
+		self@.accumulator = hash_bytes_long(bytes, self@.accumulator, seeds_ref);
 	}
 }
 

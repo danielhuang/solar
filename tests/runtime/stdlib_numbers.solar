@@ -63,19 +63,31 @@ fn main() {
 	assert(default#[Int8]() == 0i8);
 	assert(Uint(4u) == 4u);
 
-	try { "256"&.parse#[Uint8](); assert(false); } catch (e) {
+	try {
+		"256"&.parse#[Uint8]();
+		assert(false);
+	} catch (e) {
 		assert(e.message == "parse: integer overflow"&);
 	}
 
-	try { "-129"&.parse#[Int8](); assert(false); } catch (e) {
+	try {
+		"-129"&.parse#[Int8]();
+		assert(false);
+	} catch (e) {
 		assert(e.message == "parse: integer overflow"&);
 	}
 
-	try { ""&.parse#[Int](); assert(false); } catch (e) {
+	try {
+		""&.parse#[Int]();
+		assert(false);
+	} catch (e) {
 		assert(e.message == "parse: empty integer"&);
 	}
 
-	try { "12x"&.parse#[Int](); assert(false); } catch (e) {
+	try {
+		"12x"&.parse#[Int]();
+		assert(false);
+	} catch (e) {
 		assert(e.message == "parse: invalid digit"&);
 	}
 

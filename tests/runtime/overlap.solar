@@ -112,7 +112,9 @@ fn(overlap) main() {
 	assert(invalid_concrete() == 4);
 	let caught = false;
 
-	try { runtime_failure(0); } catch (error) {
+	try {
+		runtime_failure(0);
+	} catch (error) {
 		assert(error.message@ == "selected body");
 		caught = true;
 	}

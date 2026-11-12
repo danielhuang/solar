@@ -62,9 +62,8 @@ pub method intersection#[T](self: &HashSet#[T], other: &HashSet#[T]) {
 
 /// Returns whether every value is present in the other set.
 pub method is_subset#[T](self: &HashSet#[T], other: &HashSet#[T]) -> Bool {
-	self.len() <= other.len() && self.iter().all(\value: &T other.contains(
-			value,
-		))
+	self.len() <= other.len() &&
+		self.iter().all(\value: &T other.contains(value))
 }
 
 /// Returns whether every value of the other set is present here.

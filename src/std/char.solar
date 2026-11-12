@@ -7,9 +7,13 @@ pub fn decode_first(text: &[Uint8]) -> (Uint32, Uint) {
 	if text.len() == 0u { throw("UTF-8: unexpected end of input"&); }
 	let first = text@[0u];
 	if first < 128u8 { return (Uint32(first), 1u); }
-	let width = if first >= 194u8 && first <= 223u8 { 2u } else if first >=
-		224u8 &&
-		first <= 239u8 { 3u } else if first >= 240u8 && first <= 244u8 { 4u } else {
+	let width = if first >= 194u8 && first <= 223u8 {
+		2u
+	} else if first >= 224u8 && first <= 239u8 {
+		3u
+	} else if first >= 240u8 && first <= 244u8 {
+		4u
+	} else {
 		0u
 	};
 	if width == 0u || text.len() < width { throw("UTF-8: invalid encoding"&); }
@@ -21,7 +25,11 @@ pub fn decode_first(text: &[Uint8]) -> (Uint32, Uint) {
 		code = (code << 6u32) | Uint32(byte & 63u8);
 	}
 
-	let minimum = if width == 2u { 128u32 } else if width == 3u { 2048u32 } else {
+	let minimum = if width == 2u {
+		128u32
+	} else if width == 3u {
+		2048u32
+	} else {
 		65536u32
 	};
 
@@ -132,8 +140,11 @@ pub method is_ascii_lowercase(self: Uint32) -> Bool {
 pub method to_digit(self: Uint32, radix: Uint) -> Option#[Uint] {
 	if radix < 2u || radix > 36u { throw("radix must be between 2 and 36"&); }
 
-	if self >
-		127u32 { Option#[Uint]::None } else { num::digit(Uint8(self), radix) }
+	if self > 127u32 {
+		Option#[Uint]::None
+	} else {
+		num::digit(Uint8(self), radix)
+	}
 }
 
 /// Returns whether a byte is an ASCII decimal digit.

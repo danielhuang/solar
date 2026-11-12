@@ -33,19 +33,20 @@ pub method cmp#[T](self: T, other: T) -> Ordering {
 			if a_index != b_index { return a_index.cmp(b_index); }
 			let order = Ordering::Equal;
 
-			match.reflect_variant_pair (
-				_,
-				_,
-				a,
-				b,
-			) in (self&, other&) { order = a.cmp(b); }
+			match.reflect_variant_pair (_, _, a, b) in (self&, other&) {
+				order = a.cmp(b);
+			}
 
 			order
 		},
 		_ => {
-			if self < other { Ordering::Less } else if self > other {
+			if self < other {
+				Ordering::Less
+			} else if self > other {
 				Ordering::Greater
-			} else { Ordering::Equal }
+			} else {
+				Ordering::Equal
+			}
 		},
 	}
 }
@@ -85,7 +86,11 @@ pub method max#[T](self: T, other: T) -> T { max(self, other) }
 
 /// Compares booleans with false preceding true.
 pub method cmp(self: Bool, other: Bool) -> Ordering {
-	if self == other { Ordering::Equal } else if self { Ordering::Greater } else {
+	if self == other {
+		Ordering::Equal
+	} else if self {
+		Ordering::Greater
+	} else {
 		Ordering::Less
 	}
 }

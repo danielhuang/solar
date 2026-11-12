@@ -264,7 +264,9 @@ fn read_phase() -> Int {
 		if c >= '0' && c <= '9' {
 			val = val * 10 + Int(c - '0');
 			any = true;
-		} else if any { i = n; }
+		} else if any {
+			i = n;
+		}
 
 		i = i + 1u;
 	}

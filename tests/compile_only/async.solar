@@ -30,7 +30,9 @@ fn main() {
 		coroutine {
 			let caught = false;
 
-			try { await deferred; } catch (error) {
+			try {
+				await deferred;
+			} catch (error) {
 				assert(error.message@ == open_error@);
 				caught = true;
 			}
@@ -79,10 +81,8 @@ fn main() {
 	});
 	let written = [0u8; 11u];
 	assert(
-		async::run(\context: &async::Context memory.read_at(
-			written&,
-			0u,
-		)) == 11u,
+		async::run(\context: &async::Context memory.read_at(written&, 0u)) ==
+			11u,
 	);
 	assert(written == "hello world");
 	async::run(\context: &async::Context {
@@ -108,11 +108,15 @@ fn main() {
 	let invalid_read = ""&;
 	let invalid_write = ""&;
 
-	try { memory.0.read_at(written&, !0u); } catch (error) {
+	try {
+		memory.0.read_at(written&, !0u);
+	} catch (error) {
 		invalid_read = error.message;
 	}
 
-	try { memory.0.write_at_partial("x"&, !0u); } catch (error) {
+	try {
+		memory.0.write_at_partial("x"&, !0u);
+	} catch (error) {
 		invalid_write = error.message;
 	}
 
@@ -120,12 +124,16 @@ fn main() {
 		coroutine {
 			let caught = 0;
 
-			try { await memory.read_at(written&, !0u); } catch (error) {
+			try {
+				await memory.read_at(written&, !0u);
+			} catch (error) {
 				assert(error.message@ == invalid_read@);
 				caught = caught + 1;
 			}
 
-			try { await memory.write_at_partial("x"&, !0u); } catch (error) {
+			try {
+				await memory.write_at_partial("x"&, !0u);
+			} catch (error) {
 				assert(error.message@ == invalid_write@);
 				caught = caught + 1;
 			}
@@ -164,9 +172,8 @@ fn main() {
 	let (reader, writer) = pipe();
 	let buf = [0u8; 32u];
 	assert(
-		async::run(\context: &async::Context writer.write_partial(
-			"hello"&,
-		)) == 5u,
+		async::run(\context: &async::Context writer.write_partial("hello"&)) ==
+			5u,
 	);
 	assert(async::run(\context: &async::Context reader.read(buf&)) == 5u);
 	assert(buf[0u..5u] == "hello");
@@ -231,15 +238,21 @@ fn main() {
 	let sync_error = ""&;
 	try { output.0.read(buf&); } catch (error) { read_error = error.message; }
 
-	try { input.0.write_partial("x"&); } catch (error) {
+	try {
+		input.0.write_partial("x"&);
+	} catch (error) {
 		write_error = error.message;
 	}
 
-	try { output.0.read_at(buf&, 0u); } catch (error) {
+	try {
+		output.0.read_at(buf&, 0u);
+	} catch (error) {
 		read_at_error = error.message;
 	}
 
-	try { input.0.write_at_partial("x"&, 0u); } catch (error) {
+	try {
+		input.0.write_at_partial("x"&, 0u);
+	} catch (error) {
 		write_at_error = error.message;
 	}
 
@@ -251,33 +264,45 @@ fn main() {
 		coroutine {
 			let caught = 0;
 
-			try { await output.read(buf&); } catch (error) {
+			try {
+				await output.read(buf&);
+			} catch (error) {
 				gc::collect_gc();
 				assert(error.message@ == read_error@);
 				caught = caught + 1;
 			}
 
-			try { await input.write_partial("x"&); } catch (error) {
+			try {
+				await input.write_partial("x"&);
+			} catch (error) {
 				assert(error.message@ == write_error@);
 				caught = caught + 1;
 			}
 
-			try { await output.read_at(buf&, 0u); } catch (error) {
+			try {
+				await output.read_at(buf&, 0u);
+			} catch (error) {
 				assert(error.message@ == read_at_error@);
 				caught = caught + 1;
 			}
 
-			try { await input.write_at("x"&, 0u); } catch (error) {
+			try {
+				await input.write_at("x"&, 0u);
+			} catch (error) {
 				assert(error.message@ == write_at_error@);
 				caught = caught + 1;
 			}
 
-			try { await output.sync(); } catch (error) {
+			try {
+				await output.sync();
+			} catch (error) {
 				assert(error.message@ == sync_error@);
 				caught = caught + 1;
 			}
 
-			try { await input.write("x"&); } catch (error) {
+			try {
+				await input.write("x"&);
+			} catch (error) {
 				assert(error.message@ == write_error@);
 				caught = caught + 1;
 			}
@@ -293,7 +318,9 @@ fn main() {
 
 	let caught = false;
 
-	try { async::run(\context: &async::Context output.read(buf&)); } catch (error) {
+	try {
+		async::run(\context: &async::Context output.read(buf&));
+	} catch (error) {
 		assert(error.message@ == read_error@);
 		caught = true;
 	}

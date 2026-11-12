@@ -20,10 +20,7 @@ fn main() {
 	print_bool(a == shorter);
 
 	// Element comparison uses the element type's equality implementation.
-	let digits: [LastDigit] = [
-		LastDigit { value: 12 },
-		LastDigit { value: 25 },
-	];
+	let digits: [LastDigit] = [LastDigit { value: 12 }, LastDigit { value: 25 }];
 	let equal_digits: [LastDigit] = [
 		LastDigit { value: 2 },
 		LastDigit { value: 15 },

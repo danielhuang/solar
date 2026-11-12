@@ -2,11 +2,8 @@ fn main() {
 	assert(""&.lines().count() == 0u);
 	assert("\n"&.lines().collect_vec()&.as_slice() == [""&]&);
 	assert(
-		"a\r\nb\nc\r"&.lines().collect_vec()&.as_slice() == [
-				"a"&,
-				"b"&,
-				"c\r"&,
-			]&,
+		"a\r\nb\nc\r"&.lines().collect_vec()&.as_slice() ==
+			["a"&, "b"&, "c\r"&]&,
 	);
 	assert("a\r\nb\n"&.lines().rev().collect_vec()&.as_slice() == ["b"&, "a"&]&);
 	let lines = "a\nb\nc\n"&.lines();
@@ -15,9 +12,8 @@ fn main() {
 	assert(lines&.next_back().unwrap() == "b"&);
 	assert(lines&.next().is_none());
 	assert(
-		"a::b::::"&.split(
-			"::"&,
-		).collect_vec()&.as_slice() == ["a"&, "b"&, ""&, ""&]&,
+		"a::b::::"&.split("::"&).collect_vec()&.as_slice() ==
+			["a"&, "b"&, ""&, ""&]&,
 	);
 	assert(
 		"a:b:c"&.splitn(2u, ':').collect_vec()&.as_slice() == ["a"&, "b:c"&]&,
@@ -29,9 +25,8 @@ fn main() {
 		"ab"&.split(""&).collect_vec()&.as_slice() == [""&, "a"&, "b"&, ""&]&,
 	);
 	assert(
-		"é😀"&.split(
-			""&,
-		).rev().collect_vec()&.as_slice() == [""&, "😀"&, "é"&, ""&]&,
+		"é😀"&.split(""&).rev().collect_vec()&.as_slice() ==
+			[""&, "😀"&, "é"&, ""&]&,
 	);
 	assert(""&.split(""&).count() == 2u);
 	assert("é😀"&.splitn(2u, ""&).collect_vec()&.as_slice() == [""&, "é😀"&]&);
@@ -76,20 +71,28 @@ fn main() {
 	let matches = "é-é"&.match_indices("é"&).collect_vec();
 	assert(matches&.as_slice() == [(0u, "é"&), (3u, "é"&)]&);
 	assert(
-		"é"&.match_indices(
-			""&,
-		).collect_vec()&.as_slice() == [(0u, ""&), (2u, ""&)]&,
+		"é"&.match_indices(""&).collect_vec()&.as_slice() ==
+			[(0u, ""&), (2u, ""&)]&,
 	);
 
-	try { [192u8, 128u8]&.chars()&.next(); assert(false); } catch (e) {
+	try {
+		[192u8, 128u8]&.chars()&.next();
+		assert(false);
+	} catch (e) {
 		assert(e.message == "UTF-8: invalid encoding"&);
 	}
 
-	try { [237u8, 160u8, 128u8]&.chars()&.next(); assert(false); } catch (e) {
+	try {
+		[237u8, 160u8, 128u8]&.chars()&.next();
+		assert(false);
+	} catch (e) {
 		assert(e.message == "UTF-8: invalid encoding"&);
 	}
 
-	try { [244u8, 144u8, 128u8, 128u8]&.chars()&.next(); assert(false); } catch (e) {
+	try {
+		[244u8, 144u8, 128u8, 128u8]&.chars()&.next();
+		assert(false);
+	} catch (e) {
 		assert(e.message == "UTF-8: invalid encoding"&);
 	}
 

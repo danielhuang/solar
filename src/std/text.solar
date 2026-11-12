@@ -26,8 +26,9 @@ fn search(
 ) -> Option#[(Uint, Uint)] {
 	match separator {
 		Pattern::Literal(needle) => {
-			if needle.len() >
-				back - front { return Option#[(Uint, Uint)]::None; }
+			if needle.len() > back - front {
+				return Option#[(Uint, Uint)]::None;
+			}
 
 			if !reverse {
 				return text@[front..back]&.find(needle).map(\at: Uint {
@@ -52,7 +53,9 @@ fn search(
 			while (reverse && at > front) || (!reverse && at < back) {
 				let (code, width) = if reverse {
 					char::decode_last(text@[front..at]&)
-				} else { char::decode_first(text@[at..back]&) };
+				} else {
+					char::decode_first(text@[at..back]&)
+				};
 				let begin = if reverse { at - width } else { at };
 
 				if test(code) {
@@ -256,14 +259,18 @@ pub method ends_with(self: &[Uint8], suffix: Uint8) -> Bool {
 pub method strip_prefix(self: &[Uint8], prefix: Uint8) -> Option#[&[Uint8]] {
 	if self.starts_with(prefix) {
 		Option#[&[Uint8]]::Some(self@[1u..self.len()]&)
-	} else { Option#[&[Uint8]]::None }
+	} else {
+		Option#[&[Uint8]]::None
+	}
 }
 
 /// Removes a matching final byte.
 pub method strip_suffix(self: &[Uint8], suffix: Uint8) -> Option#[&[Uint8]] {
 	if self.ends_with(suffix) {
 		Option#[&[Uint8]]::Some(self@[0u..self.len() - 1u]&)
-	} else { Option#[&[Uint8]]::None }
+	} else {
+		Option#[&[Uint8]]::None
+	}
 }
 
 /// Splits once on a byte.
@@ -295,7 +302,9 @@ pub method lines(self: &[Uint8]) -> Lines {
 fn line_piece(text: &[Uint8], begin: Uint, end: Uint, terminated: Bool) -> &[Uint8] {
 	let end = if terminated && end > begin && text@[end - 1u] == '\r' {
 		end - 1u
-	} else { end };
+	} else {
+		end
+	};
 	text@[begin..end]&
 }
 
@@ -371,7 +380,9 @@ pub method next(self: &MatchIndices) -> Option#[(Uint, &[Uint8])] {
 	if empty_pattern(s@.separator) {
 		let at = s@.at;
 
-		if at == s@.text.len() { s@.done = true; } else {
+		if at == s@.text.len() {
+			s@.done = true;
+		} else {
 			s@.at = at + char::decode_first(s@.text@[at..s@.text.len()]&).1;
 		}
 

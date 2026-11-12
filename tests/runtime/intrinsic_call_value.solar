@@ -9,8 +9,11 @@ fn main() {
 	// The clock is not deterministic, so assert a property instead of a value:
 	// any plausible wall-clock reading is well past 2020 and before 2200.
 	println(
-		if millis > 1577836800000i64 &&
-			millis < 7258118400000i64 { 1 } else { 0 },
+		if millis > 1577836800000i64 && millis < 7258118400000i64 {
+			1
+		} else {
+			0
+		},
 	);
 
 	// Same shape through a comparison and a nested call argument.

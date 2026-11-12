@@ -3,25 +3,19 @@ enum Shape { Empty, Circle(Int) }
 
 fn main() {
 	assert(
-		format(
-			"{} {}"&,
-			[format_arg("answer"&), format_arg(42)]&,
-		) == "answer 42"&,
+		format("{} {}"&, [format_arg("answer"&), format_arg(42)]&) ==
+			"answer 42"&,
 	);
 	assert(
-		format(
-			"{1} {0} {}"&,
-			[format_arg(true), format_arg(7)]&,
-		) == "7 true true"&,
+		format("{1} {0} {}"&, [format_arg(true), format_arg(7)]&) ==
+			"7 true true"&,
 	);
 	assert(
 		format("{{{name}}}"&, [format_arg("ok"&, name = "name"&)]&) == "{ok}"&,
 	);
 	assert(
-		format(
-			"{:036b}"&,
-			[format_arg(5u)]&,
-		) == "000000000000000000000000000000000101"&,
+		format("{:036b}"&, [format_arg(5u)]&) ==
+			"000000000000000000000000000000000101"&,
 	);
 	assert(
 		format("{:0>width$}"&, [format_arg("101"&)]&, width = 6u) == "000101"&,
@@ -42,10 +36,8 @@ fn main() {
 	assert(format("{:b}"&, [format_arg(0i64 - 1i64)]&) == "1"&.repeat(64u));
 	assert(format("{:😀^5}"&, [format_arg("é"&)]&) == "😀😀é😀😀"&);
 	assert(
-		format(
-			"{:<4}:{:>4}"&,
-			[format_arg(7), format_arg("a"&)]&,
-		) == "7   :   a"&,
+		format("{:<4}:{:>4}"&, [format_arg(7), format_arg("a"&)]&) ==
+			"7   :   a"&,
 	);
 	assert(format("{:?}"&, [format_arg("a\n\"\\"&)]&) == "\"a\\n\\\"\\\\\""&);
 	assert(debug_string(Point { x: 1, y: 2 }) == "{x: 1, y: 2}"&);
@@ -61,7 +53,9 @@ fn main() {
 				bad@,
 				if bad@ == "{}"& { []#[FormatArg]& } else { [format_arg(1)]& },
 			);
-		} catch (e) { errors = errors + 1; }
+		} catch (e) {
+			errors = errors + 1;
+		}
 	}
 
 	assert(errors == 5);

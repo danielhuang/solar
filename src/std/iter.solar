@@ -277,13 +277,17 @@ pub method zip#[I, J](self: I, other: J) -> Zip#[I, J] {
 }
 
 fn zip_options#[T, U](a: Option#[T], b: Option#[U]) -> Option#[(T, U)] {
-	if a.is_none() || b.is_none() { Option#[(T, U)]::None } else {
+	if a.is_none() || b.is_none() {
+		Option#[(T, U)]::None
+	} else {
 		Option#[(T, U)]::Some((a.unwrap(), b.unwrap()))
 	}
 }
 
 fn zip_next#[T, J](first: Option#[T], second: &J) {
-	let other = if first.is_some() { second.next() } else {
+	let other = if first.is_some() {
+		second.next()
+	} else {
 		absent(\ second.next())
 	};
 	zip_options(first, other)
@@ -397,7 +401,9 @@ pub method next#[I, T](self: &TakeWhile#[I, T]) -> Option#[T] {
 	let item = self@.source&.next();
 	if item.is_none() { return item; }
 
-	if (self@.predicate)(item.unwrap()) { item } else {
+	if (self@.predicate)(item.unwrap()) {
+		item
+	} else {
 		self@.done = true;
 		Option#[T]::None
 	}
@@ -423,7 +429,9 @@ pub method next#[I](self: &StepBy#[I]) {
 pub method next_back#[I](self: &StepBy#[I]) {
 	let length = self@.source&.len();
 	if length == 0u { return absent(\ self@.source&.next()); }
-	let skipped = if self@.first { (length - 1u) % self@.step } else {
+	let skipped = if self@.first {
+		(length - 1u) % self@.step
+	} else {
 		length % self@.step
 	};
 	for i in 0u..skipped { self@.source&.next_back(); }
@@ -596,8 +604,9 @@ pub method min#[I](self: I) {
 	let item = self&.next();
 
 	while item.is_some() {
-		if item.unwrap().cmp(result.unwrap()) ==
-			Ordering::Less { result = item; }
+		if item.unwrap().cmp(result.unwrap()) == Ordering::Less {
+			result = item;
+		}
 
 		item = self&.next();
 	}
@@ -612,8 +621,9 @@ pub method max#[I](self: I) {
 	let item = self&.next();
 
 	while item.is_some() {
-		if item.unwrap().cmp(result.unwrap()) !=
-			Ordering::Less { result = item; }
+		if item.unwrap().cmp(result.unwrap()) != Ordering::Less {
+			result = item;
+		}
 
 		item = self&.next();
 	}
@@ -631,8 +641,10 @@ pub method min_by_key#[I, T, K](self: I, key: fn(T) -> K) -> Option#[T] {
 	while item.is_some() {
 		let current = key(item.unwrap());
 
-		if current.cmp(best) ==
-			Ordering::Less { result = item; best = current; }
+		if current.cmp(best) == Ordering::Less {
+			result = item;
+			best = current;
+		}
 
 		item = self&.next();
 	}
@@ -650,8 +662,10 @@ pub method max_by_key#[I, T, K](self: I, key: fn(T) -> K) -> Option#[T] {
 	while item.is_some() {
 		let current = key(item.unwrap());
 
-		if current.cmp(best) !=
-			Ordering::Less { result = item; best = current; }
+		if current.cmp(best) != Ordering::Less {
+			result = item;
+			best = current;
+		}
 
 		item = self&.next();
 	}
@@ -680,8 +694,9 @@ pub method is_sorted#[I](self: I) -> Bool {
 	let item = self&.next();
 
 	while item.is_some() {
-		if previous.unwrap().cmp(item.unwrap()) ==
-			Ordering::Greater { return false; }
+		if previous.unwrap().cmp(item.unwrap()) == Ordering::Greater {
+			return false;
+		}
 
 		previous = item;
 		item = self&.next();
@@ -916,7 +931,9 @@ pub method next#[I, T](self: &ArrayChunks#[I, T]) -> Option#[&[T]] {
 
 /// Returns the remaining number of complete groups for an exact-size source.
 pub method len#[I, T](self: &ArrayChunks#[I, T]) -> Uint {
-	if self@.done { 0u } else {
+	if self@.done {
+		0u
+	} else {
 		self@.source&.len() / self@.width
 	}
 }

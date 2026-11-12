@@ -314,7 +314,9 @@ fn failed_field_copy() {
 	};
 	let caught = false;
 
-	try { target = source; } catch (error) {
+	try {
+		target = source;
+	} catch (error) {
 		caught = error.message == "copy failed"&;
 	}
 
@@ -349,10 +351,7 @@ struct Reordered { small: Small, large: Sequence }
 
 fn field_copy_order() {
 	sequence = 0;
-	let source = Reordered {
-		small: Small { n: 0u8 },
-		large: Sequence { n: 0 },
-	};
+	let source = Reordered { small: Small { n: 0u8 }, large: Sequence { n: 0 } };
 	let copied = source;
 	let moved = source;
 	assert(copied.small.n == 1u8 && copied.large.n == 2);

@@ -68,9 +68,9 @@ fn main() {
 		"target/solar_test_file_ops/c.txt"&,
 	);
 
-	if file::exists(
-		"target/solar_test_file_ops/c.txt"&,
-	) { println("renamed"&); }
+	if file::exists("target/solar_test_file_ops/c.txt"&) {
+		println("renamed"&);
+	}
 
 	file::remove("target/solar_test_file_ops/a.txt"&);
 	file::remove("target/solar_test_file_ops/c.txt"&);

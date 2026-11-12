@@ -275,7 +275,9 @@ pub method with_lock#[T, U](self: &Mutex#[T], f: fn(&T) -> U) -> U {
 	self@.mutex&.lock();
 	let result = Option#[U]::None;
 
-	try { result = Option#[U]::Some(f(self@.inner&)); } catch (error) {
+	try {
+		result = Option#[U]::Some(f(self@.inner&));
+	} catch (error) {
 		self@.mutex&.unlock();
 		throw(error);
 	}

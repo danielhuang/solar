@@ -17,8 +17,8 @@ fn main() {
 	let payload = MaybeZeroed#[Payload]();
 	let words = unsafe { mem::transmute_unchecked#[[Uint64; 4]](payload) };
 	assert(
-		words[0u] == 0u64 && words[1u] ==
-				0u64 && words[2u] == 0u64 && words[3u] == 0u64,
+		words[0u] == 0u64 && words[1u] == 0u64 && words[2u] == 0u64 &&
+			words[3u] == 0u64,
 	);
 	let choice = MaybeZeroed#[Choice]();
 	let function = MaybeZeroed#[fn() -> Int]();

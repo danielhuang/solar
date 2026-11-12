@@ -20,7 +20,9 @@ fn main() {
 	let b = if choose() {
 		let inner = tick();
 		{ let ignored = inner; "b" + "c" }
-	} else { "unused" };
+	} else {
+		"unused"
+	};
 	assert(b == "bc");
 	assert(calls == 3u);
 	let c = "-" + match tick() { 4u => "four", _ => "wrong" };
@@ -39,7 +41,9 @@ fn main() {
 	assert(calls == 7u);
 	let tail = if choose() {
 		Tail { tag: tick(), bytes: "data" + "!" }
-	} else { Tail { tag: 0u, bytes: "x" } };
+	} else {
+		Tail { tag: 0u, bytes: "x" }
+	};
 	assert(tail.tag == 9u);
 	assert(tail.bytes == "data!");
 	let repeated = [tick(); tick()];
@@ -74,7 +78,9 @@ fn main() {
 	let from_scope = if true {
 		let local = "local";
 		local
-	} else { "unused" };
+	} else {
+		"unused"
+	};
 	assert(from_scope == "local");
 	let source = [1u];
 	let saved = source + (if true { source[0u] = 9u; [2u] } else { [3u] });

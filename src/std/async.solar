@@ -301,7 +301,9 @@ fn poll(
 fn with_shutdown#[R](execute: fn() -> R, stop: fn()) -> R {
 	let result = Option#[R]::None;
 
-	try { result = Option#[R]::Some(execute()); } catch (error) {
+	try {
+		result = Option#[R]::Some(execute());
+	} catch (error) {
 		stop();
 		throw(error);
 	}
@@ -369,7 +371,10 @@ pub fn run#[C](create: fn(&Context) -> C, wait_for_all = false) {
 			)
 		};
 		linux::check_syscall(wake, "io_uring eventfd failed"&);
-	} catch (error) { release(mappings&, fd, wake); throw(error); }
+	} catch (error) {
+		release(mappings&, fd, wake);
+		throw(error);
+	}
 
 	let sq = mappings&.at(0u)@;
 	let cq = mappings&.at(if mappings&.len() == 2u { 0u } else { 1u })@;
@@ -705,7 +710,11 @@ pub fn open(
 	coroutine {
 		let flags = if read {
 			if write { linux::O_RDWR } else { linux::O_RDONLY }
-		} else if write { linux::O_WRONLY } else { linux::O_RDONLY };
+		} else if write {
+			linux::O_WRONLY
+		} else {
+			linux::O_RDONLY
+		};
 		flags = flags | linux::O_CLOEXEC;
 		if create { flags = flags | linux::O_CREAT; }
 		if new { flags = flags | linux::O_EXCL; }

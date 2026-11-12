@@ -8,7 +8,9 @@ fn completed#[T, R](state: CoroutineState#[T, R]) -> R {
 fn closed(call: fn()) {
 	let caught = false;
 
-	try { call(); } catch (error) {
+	try {
+		call();
+	} catch (error) {
 		assert(
 			error.message@ == "cannot resume a completed or running coroutine",
 		);
@@ -163,7 +165,9 @@ fn main() {
 	assert(failing.next().unwrap() == 14);
 	let caught = false;
 
-	try { failing.resume(); } catch (error) {
+	try {
+		failing.resume();
+	} catch (error) {
 		assert(error.message@ == "await failure");
 		caught = true;
 	}

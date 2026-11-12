@@ -56,7 +56,11 @@ pub fn open(
 	// runtime always adds O_CLOEXEC. Combined by addition since they're disjoint.
 	let flags = if read {
 		if write { linux::O_RDWR } else { linux::O_RDONLY }
-	} else if write { linux::O_WRONLY } else { linux::O_RDONLY };
+	} else if write {
+		linux::O_WRONLY
+	} else {
+		linux::O_RDONLY
+	};
 	if create { flags = flags + linux::O_CREAT; }
 	if new { flags = flags + linux::O_EXCL; }
 	if truncate { flags = flags + linux::O_TRUNC; }
@@ -369,14 +373,17 @@ pub fn stat(path: &[Uint8]) -> FileInfo {
 	let file_type = raw.st_mode & Uint32(linux::S_IFMT);
 	let kind = if file_type == Uint32(linux::S_IFREG) {
 		0u
-	} else if file_type == Uint32(linux::S_IFDIR) { 1u } else { 2u };
+	} else if file_type == Uint32(linux::S_IFDIR) {
+		1u
+	} else {
+		2u
+	};
 	FileInfo {
 		found: true,
 		size: Uint(raw.st_size),
 		mtime_nanos: Uint(
-			Uint64(
-				raw.st_mtim.tv_sec,
-			) * linux::NSEC_PER_SEC + Uint64(raw.st_mtim.tv_nsec),
+			Uint64(raw.st_mtim.tv_sec) * linux::NSEC_PER_SEC +
+				Uint64(raw.st_mtim.tv_nsec),
 		),
 		kind: kind,
 	}
@@ -436,7 +443,11 @@ pub method read_entries(self: FileDesc) -> &[DirEntry] {
 				let raw_kind = batch[pos + type_offset];
 				let kind = if Int32(raw_kind) == linux::DT_REG {
 					0u
-				} else if Int32(raw_kind) == linux::DT_DIR { 1u } else { 2u };
+				} else if Int32(raw_kind) == linux::DT_DIR {
+					1u
+				} else {
+					2u
+				};
 				out = (out@ + [DirEntry { kind: kind, name: name& }])^;
 			}
 

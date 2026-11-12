@@ -28,21 +28,27 @@ fn main() {
 	resolved@[0u] = 'X';
 	assert(resolved@ == "Xx0 <unknown>");
 
-	try { throw("default"&); } catch (e: Exception) {
+	try {
+		throw("default"&);
+	} catch (e: Exception) {
 		assert(e.payload.downcast#[()]() != null#[()]);
 		assert(e.to_string().contains("Payload type: ()"&));
 		assert(e.trace.len() > 0u);
 	}
 
 	try {
-		try { make_failure(); } catch (e) {
+		try {
+			make_failure();
+		} catch (e) {
 			let original_trace = e.trace;
 			let payload = e.payload.downcast#[Details]();
 			assert(payload@.code == 42);
 			payload@.code = 43;
 			assert(e.to_string().contains("Payload type: Details"&));
 
-			try { throw(e); } catch (again) {
+			try {
+				throw(e);
+			} catch (again) {
 				assert(ref_eq(original_trace, again.trace));
 				assert(ref_eq(payload@&, again.payload.downcast#[Details]()@&));
 				throw(again);
@@ -76,7 +82,10 @@ fn main() {
 	check_payload(Choice::Number(7), "Payload type: Choice"&);
 	check_payload(Choice::Empty, "Payload type: Choice"&);
 
-	try { let zero = black_box(0); println(1 / zero); } catch (e) {
+	try {
+		let zero = black_box(0);
+		println(1 / zero);
+	} catch (e) {
 		assert(e.payload.downcast#[()]() != null#[()]);
 		assert(e.trace.len() > 0u);
 		assert(e.to_string().contains("division by zero"&));

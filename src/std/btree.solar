@@ -105,7 +105,9 @@ fn leaf_bound#[K, V](leaf: &Leaf#[K, V], key: &K, after_equal: Bool) -> Uint {
 
 		if order == Ordering::Less || (after_equal && order == Ordering::Equal) {
 			low = mid + 1u;
-		} else { high = mid; }
+		} else {
+			high = mid;
+		}
 	}
 
 	low
@@ -118,7 +120,9 @@ fn child_index#[K, V](branch: &Branch#[K, V], key: &K) -> Uint {
 	while low < high {
 		let mid = low + (high - low) / 2u;
 
-		if key@.cmp(branch@.keys&.at(mid)@) == Ordering::Less { high = mid; } else {
+		if key@.cmp(branch@.keys&.at(mid)@) == Ordering::Less {
+			high = mid;
+		} else {
 			low = mid + 1u;
 		}
 	}
@@ -155,8 +159,9 @@ fn insert_node#[K, V](
 
 			insert_at(leaf@.entries&, at, (key, value));
 
-			if leaf@.entries&.len() <=
-				CAPACITY { return Option#[(K, Node#[K, V])]::None; }
+			if leaf@.entries&.len() <= CAPACITY {
+				return Option#[(K, Node#[K, V])]::None;
+			}
 
 			let entries = leaf@.entries&.as_slice();
 			let middle = entries.len() / 2u;
@@ -167,8 +172,9 @@ fn insert_node#[K, V](
 			})&;
 			leaf@.entries = Vec(entries@[0u..middle]&);
 
-			if right@.next !=
-				null#[Leaf#[K, V]] { right@.next@.previous = right; }
+			if right@.next != null#[Leaf#[K, V]] {
+				right@.next@.previous = right;
+			}
 
 			leaf@.next = right;
 			Option#[(K, Node#[K, V])]::Some((
@@ -262,7 +268,9 @@ pub method get#[K, V](self: &BTreeMap#[K, V], key: &K) -> Option#[&V] {
 	if at < leaf@.entries&.len() &&
 		leaf@.entries&.at(at)@.0.cmp(key@) == Ordering::Equal {
 		Option#[&V]::Some(leaf@.entries&.at(at)@.1&)
-	} else { Option#[&V]::None }
+	} else {
+		Option#[&V]::None
+	}
 }
 
 /// Returns whether a key exists.
@@ -296,11 +304,11 @@ fn seek#[K, V](node: Node#[K, V], key: &K, after_equal: Bool) -> (
 		},
 		Node#[K, V]::Branch(branch) => {
 			let at = child_index(branch, key);
-			let (
-				leaf,
-				index,
-				rank,
-			) = seek(branch@.children&.at(at)@, key, after_equal);
+			let (leaf, index, rank) = seek(
+				branch@.children&.at(at)@,
+				key,
+				after_equal,
+			);
 			let before = count_children(branch@.children&.as_slice()@[0u..at]&);
 			(leaf, index, before + rank)
 		},

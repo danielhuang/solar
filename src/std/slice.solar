@@ -213,7 +213,9 @@ pub method is_empty#[T](self: &[T]) -> Bool { self.len() == 0u }
 
 /// Returns an element reference, or None when the index is out of bounds.
 pub method get#[T](self: &[T], index: Uint) -> Option#[&T] {
-	if index < self.len() { Option#[&T]::Some(self@[index]&) } else {
+	if index < self.len() {
+		Option#[&T]::Some(self@[index]&)
+	} else {
 		Option#[&T]::None
 	}
 }
@@ -248,7 +250,9 @@ pub method binary_search#[T](self: &[T], value: &T) -> Option#[Uint] {
 
 	if at < self.len() && self@[at].cmp(value@) == Ordering::Equal {
 		Option#[Uint]::Some(at)
-	} else { Option#[Uint]::None }
+	} else {
+		Option#[Uint]::None
+	}
 }
 
 /// Returns the first position whose value is not less than the target.
@@ -259,7 +263,9 @@ pub method lower_bound#[T](self: &[T], value: &T) -> Uint {
 	while low < high {
 		let mid = low + (high - low) / 2u;
 
-		if self@[mid].cmp(value@) == Ordering::Less { low = mid + 1u; } else {
+		if self@[mid].cmp(value@) == Ordering::Less {
+			low = mid + 1u;
+		} else {
 			high = mid;
 		}
 	}
@@ -282,14 +288,18 @@ pub method ends_with#[T](self: &[T], suffix: &[T]) -> Bool {
 pub method strip_prefix#[T](self: &[T], prefix: &[T]) -> Option#[&[T]] {
 	if self.starts_with(prefix) {
 		Option#[&[T]]::Some(self@[prefix.len()..self.len()]&)
-	} else { Option#[&[T]]::None }
+	} else {
+		Option#[&[T]]::None
+	}
 }
 
 /// Removes a matching suffix, or returns None.
 pub method strip_suffix#[T](self: &[T], suffix: &[T]) -> Option#[&[T]] {
 	if self.ends_with(suffix) {
 		Option#[&[T]]::Some(self@[0u..self.len() - suffix.len()]&)
-	} else { Option#[&[T]]::None }
+	} else {
+		Option#[&[T]]::None
+	}
 }
 
 /// Returns the pieces before and after the first matching subsequence.

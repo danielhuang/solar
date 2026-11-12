@@ -49,7 +49,9 @@ fn main() {
 	assert(i == 10);
 	let caught = false;
 
-	try { g.next(); } catch (e) {
+	try {
+		g.next();
+	} catch (e) {
 		assert(e.message@ == "cannot resume a completed or running coroutine");
 		caught = true;
 	}

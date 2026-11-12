@@ -38,7 +38,10 @@ fn main() {
 			[1, 2, 3]&,
 	);
 
-	try { values&.windows(0u); assert(false); } catch (e) {
+	try {
+		values&.windows(0u);
+		assert(false);
+	} catch (e) {
 		assert(e.message == "windows: width must be positive"&);
 	}
 

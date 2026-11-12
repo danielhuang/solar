@@ -243,6 +243,16 @@ fn format_spanned_items(
 }
 
 fn delimited(open: &str, content: Doc, close: &str, padding: bool, force_break: bool) -> Doc {
+    ungrouped_delimited(open, content, close, padding, force_break).group()
+}
+
+fn ungrouped_delimited(
+    open: &str,
+    content: Doc,
+    close: &str,
+    padding: bool,
+    force_break: bool,
+) -> Doc {
     if matches!(content, Doc::Nil) {
         return Doc::text(format!("{open}{close}"));
     }
@@ -258,7 +268,6 @@ fn delimited(open: &str, content: Doc, close: &str, padding: bool, force_break: 
             Doc::Nil
         },
     ])
-    .group()
 }
 
 fn list(docs: impl IntoIterator<Item = Doc>, open: &str, close: &str) -> Doc {
@@ -616,6 +625,16 @@ fn implicit_unit(expression: &Expr) -> bool {
 }
 
 fn block_doc(statements: &[Statement], boundary: SourceSpan, context: &SourceContext<'_>) -> Doc {
+    chained_block_doc(statements, boundary, context).group()
+}
+
+// Chained blocks inherit the chain's group mode instead of deciding independently.
+// Empty blocks remain compact in either mode.
+fn chained_block_doc(
+    statements: &[Statement],
+    boundary: SourceSpan,
+    context: &SourceContext<'_>,
+) -> Doc {
     let statements = if statements.last().is_some_and(|statement| {
         matches!(&statement.kind, StatementKind::Expression(expression) if implicit_unit(expression))
     }) {
@@ -635,7 +654,7 @@ fn block_doc(statements: &[Statement], boundary: SourceSpan, context: &SourceCon
         if comments.is_empty() {
             return Doc::text("{}");
         }
-        return delimited("{", Doc::concat(comments), "}", true, true);
+        return ungrouped_delimited("{", Doc::concat(comments), "}", true, true);
     }
     let items = statements
         .iter()
@@ -647,13 +666,93 @@ fn block_doc(statements: &[Statement], boundary: SourceSpan, context: &SourceCon
         })
         .collect::<Vec<_>>();
     let body = format_spanned_items(&items, boundary, context, false, false);
-    delimited(
+    ungrouped_delimited(
         "{",
         body,
         "}",
         true,
         boundary.start.line != boundary.end.line,
     )
+}
+
+// Surface blocks are in source order. Restrict the search to the current arm
+// so an empty arm cannot accidentally use a sibling's span or comments.
+fn first_block_span(parent: SourceSpan, context: &SourceContext<'_>) -> SourceSpan {
+    context
+        .blocks
+        .iter()
+        .find(|block| {
+            position(block.span.start) >= position(parent.start)
+                && position(block.span.end) <= position(parent.end)
+        })
+        .map_or(parent, |block| block.span)
+}
+
+fn if_chain_doc(
+    condition: &Expr,
+    body: &[Statement],
+    else_body: &[Statement],
+    span: SourceSpan,
+    context: &SourceContext<'_>,
+) -> Doc {
+    let body_span = first_block_span(
+        SourceSpan {
+            start: condition.span.end,
+            ..span
+        },
+        context,
+    );
+    let mut docs = vec![
+        Doc::text("if "),
+        expr_doc(condition, context),
+        Doc::text(" "),
+        chained_block_doc(body, body_span, context),
+    ];
+    if position(body_span.end) < position(span.end) {
+        docs.push(Doc::text(" else "));
+        let else_span = first_block_span(
+            SourceSpan {
+                start: body_span.end,
+                ..span
+            },
+            context,
+        );
+        let otherwise = match else_body {
+            [
+                Statement {
+                    kind:
+                        StatementKind::If {
+                            condition,
+                            body,
+                            else_body,
+                        },
+                    span,
+                },
+            ] if position(span.start) < position(else_span.start) => {
+                if_chain_doc(condition, body, else_body, *span, context)
+            }
+            [
+                Statement {
+                    kind:
+                        StatementKind::Expression(Expr {
+                            kind:
+                                ExprKind::If {
+                                    condition,
+                                    then_body,
+                                    else_body,
+                                },
+                            span,
+                        }),
+                    ..
+                },
+            ] if position(span.start) < position(else_span.start) => {
+                if_chain_doc(condition, then_body, else_body, *span, context)
+            }
+            _ => chained_block_doc(else_body, else_span, context),
+        };
+        docs.push(otherwise);
+    }
+    Doc::concat(docs)
 }
 
 fn block_span(
@@ -725,27 +824,7 @@ fn statement_doc(statement: &Statement, context: &SourceContext<'_>) -> Doc {
             condition,
             body,
             else_body,
-        } => {
-            let mut doc = Doc::concat([
-                Doc::text("if "),
-                expr_doc(condition, context),
-                Doc::text(" "),
-                block_doc(body, statement.span, context),
-            ]);
-            if !else_body.is_empty() {
-                doc = Doc::concat([
-                    doc,
-                    Doc::text(" else "),
-                    if else_body.len() == 1 && matches!(else_body[0].kind, StatementKind::If { .. })
-                    {
-                        statement_doc(&else_body[0], context)
-                    } else {
-                        block_doc(else_body, statement.span, context)
-                    },
-                ]);
-            }
-            doc.group()
-        }
+        } => if_chain_doc(condition, body, else_body, statement.span, context).group(),
         StatementKind::While { condition, body } => Doc::concat([
             Doc::text("while "),
             expr_doc(condition, context),
@@ -758,18 +837,28 @@ fn statement_doc(statement: &Statement, context: &SourceContext<'_>) -> Doc {
             binding,
             binding_type,
             handler,
-        } => Doc::concat([
-            Doc::text("try "),
-            block_doc(body, statement.span, context),
-            Doc::text(" catch ("),
-            ident_doc(binding),
-            binding_type
-                .as_ref()
-                .map_or(Doc::Nil, |ty| Doc::concat([Doc::text(": "), type_doc(ty)])),
-            Doc::text(") "),
-            block_doc(handler, statement.span, context),
-        ])
-        .group(),
+        } => {
+            let body_span = first_block_span(statement.span, context);
+            let handler_span = first_block_span(
+                SourceSpan {
+                    start: body_span.end,
+                    ..statement.span
+                },
+                context,
+            );
+            Doc::concat([
+                Doc::text("try "),
+                chained_block_doc(body, body_span, context),
+                Doc::text(" catch ("),
+                ident_doc(binding),
+                binding_type
+                    .as_ref()
+                    .map_or(Doc::Nil, |ty| Doc::concat([Doc::text(": "), type_doc(ty)])),
+                Doc::text(") "),
+                chained_block_doc(handler, handler_span, context),
+            ])
+            .group()
+        }
         StatementKind::ForReflectFields {
             pattern,
             object,
@@ -993,27 +1082,7 @@ fn expr_doc(expression: &Expr, context: &SourceContext<'_>) -> Doc {
             condition,
             then_body,
             else_body,
-        } => Doc::concat([
-            Doc::text("if "),
-            expr_doc(condition, context),
-            Doc::text(" "),
-            block_doc(then_body, expression.span, context),
-            Doc::text(" else "),
-            if else_body.len() == 1
-                && matches!(
-                    else_body[0].kind,
-                    StatementKind::Expression(Expr {
-                        kind: ExprKind::If { .. },
-                        ..
-                    })
-                )
-            {
-                statement_doc(&else_body[0], context)
-            } else {
-                block_doc(else_body, expression.span, context)
-            },
-        ])
-        .group(),
+        } => if_chain_doc(condition, then_body, else_body, expression.span, context).group(),
         ExprKind::Block(body) => block_doc(body, expression.span, context),
         ExprKind::UnsafeBlock(body) => Doc::concat([
             Doc::text("unsafe "),
@@ -1513,7 +1582,12 @@ fn render_with_indent(doc: Doc, indent: usize) -> String {
                     strict_flat: true,
                     doc: (*doc).clone(),
                 });
-                let mode = if fits(MAX_WIDTH.saturating_sub(column), trial) {
+                let start_column = if line_start {
+                    command.indent * TAB_WIDTH
+                } else {
+                    column
+                };
+                let mode = if fits(MAX_WIDTH.saturating_sub(start_column), trial) {
                     Mode::Flat
                 } else {
                     Mode::Break
@@ -1704,6 +1778,110 @@ mod tests {
             formatted("fn f(){let x=1;x}\n"),
             "fn f() { let x = 1; x }\n"
         );
+    }
+
+    #[test]
+    fn conditional_chains_share_block_layout() {
+        for source in [
+            "fn f() {\nif a {\none();\n} else if b {two();} else {three();}\ndone();\n}",
+            "fn f() {\nif a {one();} else if b {\ntwo();\n} else {three();}\ndone();\n}",
+            "fn f() {\nif a {one();} else if b {two();} else {\nthree();\n}\ndone();\n}",
+        ] {
+            let expected = "fn f() {\n\tif a {\n\t\tone();\n\t} else if b {\n\t\ttwo();\n\t} else {\n\t\tthree();\n\t}\n\n\tdone();\n}\n";
+            assert_eq!(formatted(source), expected);
+            assert_eq!(formatted(expected), expected);
+        }
+        let source = "fn f() {\nlet x = if a {1} else if b {2} else {\n3\n};\nx\n}";
+        let expected = "fn f() {\n\tlet x = if a {\n\t\t1\n\t} else if b {\n\t\t2\n\t} else {\n\t\t3\n\t};\n\tx\n}\n";
+        assert_eq!(formatted(source), expected);
+        assert_eq!(formatted(expected), expected);
+    }
+
+    #[test]
+    fn try_catch_blocks_share_layout() {
+        for source in [
+            "fn f() {\ntry {\none();\n} catch (error: Exception) {two();}\n}",
+            "fn f() {\ntry {one();} catch (error: Exception) {\ntwo();\n}\n}",
+        ] {
+            let expected = "fn f() {\n\ttry {\n\t\tone();\n\t} catch (error: Exception) {\n\t\ttwo();\n\t}\n}\n";
+            assert_eq!(formatted(source), expected);
+            assert_eq!(formatted(expected), expected);
+        }
+    }
+
+    #[test]
+    fn empty_chain_blocks_stay_inline_but_comments_break() {
+        for (source, expected) in [
+            (
+                "fn f() {\nif a {} else {\none();\n}\ndone();\n}",
+                "fn f() {\n\tif a {} else {\n\t\tone();\n\t}\n\n\tdone();\n}\n",
+            ),
+            (
+                "fn f() {\nif a {\none();\n} else {}\ndone();\n}",
+                "fn f() {\n\tif a {\n\t\tone();\n\t} else {}\n\n\tdone();\n}\n",
+            ),
+            (
+                "fn f() {\ntry {} catch (error) {\n// handled\n}\n}",
+                "fn f() {\n\ttry {} catch (error) {\n\t\t// handled\n\t}\n}\n",
+            ),
+            (
+                "fn f() {\ntry {\n// work\n} catch (error) {}\n}",
+                "fn f() {\n\ttry {\n\t\t// work\n\t} catch (error) {}\n}\n",
+            ),
+            (
+                "fn f() {\nif a {\n1\n} else if b {} else {3}\n}",
+                "fn f() {\n\tif a {\n\t\t1\n\t} else if b {} else {\n\t\t3\n\t}\n}\n",
+            ),
+        ] {
+            assert_eq!(formatted(source), expected);
+            assert_eq!(formatted(expected), expected);
+        }
+    }
+
+    #[test]
+    fn width_breaks_the_whole_block_chain() {
+        for (source, expected) in [
+            (
+                "fn f() { if a { consume(the_first_argument, another_second_argument); } else { done(); } }",
+                "fn f() {\n\tif a {\n\t\tconsume(the_first_argument, another_second_argument);\n\t} else {\n\t\tdone();\n\t}\n}\n",
+            ),
+            (
+                "fn f() { try { one(); } catch (error) { consume(the_first_argument, another_second_argument); } }",
+                "fn f() {\n\ttry {\n\t\tone();\n\t} catch (error) {\n\t\tconsume(the_first_argument, another_second_argument);\n\t}\n}\n",
+            ),
+        ] {
+            assert_eq!(formatted(source), expected);
+            assert_eq!(formatted(expected), expected);
+        }
+    }
+
+    #[test]
+    fn nested_conditionals_keep_their_own_block_layout() {
+        for (source, expected) in [
+            (
+                "fn f() {\nif a {\nif b {1} else {2}\n} else {3}\n}",
+                "fn f() {\n\tif a {\n\t\tif b { 1 } else { 2 }\n\t} else {\n\t\t3\n\t}\n}\n",
+            ),
+            (
+                "fn f() {\nif a {1} else {\nif b {2} else {3}\n}\n}",
+                "fn f() {\n\tif a {\n\t\t1\n\t} else {\n\t\tif b { 2 } else { 3 }\n\t}\n}\n",
+            ),
+        ] {
+            assert_eq!(formatted(source), expected);
+            assert_eq!(formatted(expected), expected);
+        }
+    }
+
+    #[test]
+    fn short_block_chains_stay_inline() {
+        for source in [
+            "fn f() { if a { 1 } else if b { 2 } else { 3 } }\n",
+            "fn f() { try { one(); } catch (error) { two(); } }\n",
+            "fn f() { try {} catch (error) {} }\n",
+            "fn f() { if a {} else {} done(); }\n",
+        ] {
+            assert_eq!(formatted(source), source);
+        }
     }
 
     #[test]

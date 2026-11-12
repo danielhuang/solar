@@ -31,7 +31,9 @@ pub method rem_euclid#[T](self: T, divisor: T) -> T {
 
 	if r < T(0) {
 		if divisor < T(0) { r - divisor } else { r + divisor }
-	} else { r }
+	} else {
+		r
+	}
 }
 
 /// Returns floor(log10(self)); throws for zero or negative values.
@@ -46,10 +48,15 @@ pub method ilog10#[T](self: T) -> Uint {
 /// Interprets an ASCII digit in radix 2 through 36.
 pub fn digit(byte: Uint8, radix: Uint) -> Option#[Uint] {
 	if radix < 2u || radix > 36u { throw("radix must be between 2 and 36"&); }
-	let value = if byte >= '0' && byte <= '9' { Uint(byte - '0') } else if byte >=
-		'a' &&
-		byte <= 'z' { Uint(byte - 'a') + 10u } else if byte >= 'A' &&
-		byte <= 'Z' { Uint(byte - 'A') + 10u } else { 36u };
+	let value = if byte >= '0' && byte <= '9' {
+		Uint(byte - '0')
+	} else if byte >= 'a' && byte <= 'z' {
+		Uint(byte - 'a') + 10u
+	} else if byte >= 'A' && byte <= 'Z' {
+		Uint(byte - 'A') + 10u
+	} else {
+		36u
+	};
 	if value < radix { Option#[Uint]::Some(value) } else { Option#[Uint]::None }
 }
 
@@ -86,8 +93,9 @@ pub fn Int8::default() -> Int8 { 0i8 }
 
 /// Subtracts, saturating at the bounds of Int8.
 pub method saturating_sub(self: Int8, rhs: Int8) -> Int8 {
-	if rhs > 0i8 &&
-		self < (0i8 - 127i8 - 1i8) + rhs { return (0i8 - 127i8 - 1i8); }
+	if rhs > 0i8 && self < (0i8 - 127i8 - 1i8) + rhs {
+		return (0i8 - 127i8 - 1i8);
+	}
 
 	if rhs < 0i8 && self > 127i8 + rhs { return 127i8; }
 	self - rhs
@@ -96,7 +104,9 @@ pub method saturating_sub(self: Int8, rhs: Int8) -> Int8 {
 /// Formats Int8 in radix 2 through 36.
 pub method to_radix(self: Int8, radix: Uint) -> &[Uint8] {
 	let negative = self < 0i8;
-	let magnitude = if negative { Uint64(0i8 - (self + 1i8)) + 1u64 } else {
+	let magnitude = if negative {
+		Uint64(0i8 - (self + 1i8)) + 1u64
+	} else {
 		Uint64(self)
 	};
 	format_magnitude(magnitude, radix, negative)
@@ -114,7 +124,9 @@ pub fn Int8::from_str_radix(text: &[Uint8], radix: Uint) -> Int8 {
 	if at == text.len() { throw("parse: empty integer"&); }
 	let base = Int8(radix);
 	let result = 0i8;
-	let limit = if negative { (0i8 - 127i8 - 1i8) } else {
+	let limit = if negative {
+		(0i8 - 127i8 - 1i8)
+	} else {
 		(0i8 - 126i8 - 1i8)
 	};
 
@@ -146,7 +158,9 @@ pub method saturating_sub(self: Int16, rhs: Int16) -> Int16 {
 /// Formats Int16 in radix 2 through 36.
 pub method to_radix(self: Int16, radix: Uint) -> &[Uint8] {
 	let negative = self < 0i16;
-	let magnitude = if negative { Uint64(0i16 - (self + 1i16)) + 1u64 } else {
+	let magnitude = if negative {
+		Uint64(0i16 - (self + 1i16)) + 1u64
+	} else {
 		Uint64(self)
 	};
 	format_magnitude(magnitude, radix, negative)
@@ -164,7 +178,9 @@ pub fn Int16::from_str_radix(text: &[Uint8], radix: Uint) -> Int16 {
 	if at == text.len() { throw("parse: empty integer"&); }
 	let base = Int16(radix);
 	let result = 0i16;
-	let limit = if negative { (0i16 - 32767i16 - 1i16) } else {
+	let limit = if negative {
+		(0i16 - 32767i16 - 1i16)
+	} else {
 		(0i16 - 32766i16 - 1i16)
 	};
 
@@ -196,7 +212,9 @@ pub method saturating_sub(self: Int32, rhs: Int32) -> Int32 {
 /// Formats Int32 in radix 2 through 36.
 pub method to_radix(self: Int32, radix: Uint) -> &[Uint8] {
 	let negative = self < 0i32;
-	let magnitude = if negative { Uint64(0i32 - (self + 1i32)) + 1u64 } else {
+	let magnitude = if negative {
+		Uint64(0i32 - (self + 1i32)) + 1u64
+	} else {
 		Uint64(self)
 	};
 	format_magnitude(magnitude, radix, negative)
@@ -214,7 +232,9 @@ pub fn Int32::from_str_radix(text: &[Uint8], radix: Uint) -> Int32 {
 	if at == text.len() { throw("parse: empty integer"&); }
 	let base = Int32(radix);
 	let result = 0i32;
-	let limit = if negative { (0i32 - 2147483647i32 - 1i32) } else {
+	let limit = if negative {
+		(0i32 - 2147483647i32 - 1i32)
+	} else {
 		(0i32 - 2147483646i32 - 1i32)
 	};
 
@@ -249,7 +269,9 @@ pub method saturating_sub(self: Int64, rhs: Int64) -> Int64 {
 /// Formats Int64 in radix 2 through 36.
 pub method to_radix(self: Int64, radix: Uint) -> &[Uint8] {
 	let negative = self < 0i64;
-	let magnitude = if negative { Uint64(0i64 - (self + 1i64)) + 1u64 } else {
+	let magnitude = if negative {
+		Uint64(0i64 - (self + 1i64)) + 1u64
+	} else {
 		Uint64(self)
 	};
 	format_magnitude(magnitude, radix, negative)
@@ -267,7 +289,9 @@ pub fn Int64::from_str_radix(text: &[Uint8], radix: Uint) -> Int64 {
 	if at == text.len() { throw("parse: empty integer"&); }
 	let base = Int64(radix);
 	let result = 0i64;
-	let limit = if negative { (0i64 - 9223372036854775807i64 - 1i64) } else {
+	let limit = if negative {
+		(0i64 - 9223372036854775807i64 - 1i64)
+	} else {
 		(0i64 - 9223372036854775806i64 - 1i64)
 	};
 
@@ -292,8 +316,9 @@ pub method saturating_sub(self: Int, rhs: Int) -> Int {
 		return (0 - 9223372036854775807 - 1);
 	}
 
-	if rhs < 0 &&
-		self > 9223372036854775807 + rhs { return 9223372036854775807; }
+	if rhs < 0 && self > 9223372036854775807 + rhs {
+		return 9223372036854775807;
+	}
 
 	self - rhs
 }
@@ -301,7 +326,9 @@ pub method saturating_sub(self: Int, rhs: Int) -> Int {
 /// Formats Int in radix 2 through 36.
 pub method to_radix(self: Int, radix: Uint) -> &[Uint8] {
 	let negative = self < 0;
-	let magnitude = if negative { Uint64(0 - (self + 1)) + 1u64 } else {
+	let magnitude = if negative {
+		Uint64(0 - (self + 1)) + 1u64
+	} else {
 		Uint64(self)
 	};
 	format_magnitude(magnitude, radix, negative)
@@ -316,7 +343,9 @@ pub fn Int::from_str_radix(text: &[Uint8], radix: Uint) -> Int {
 	if at == text.len() { throw("parse: empty integer"&); }
 	let base = Int(radix);
 	let result = 0;
-	let limit = if negative { (0 - 9223372036854775807 - 1) } else {
+	let limit = if negative {
+		(0 - 9223372036854775807 - 1)
+	} else {
 		(0 - 9223372036854775806 - 1)
 	};
 
@@ -436,8 +465,9 @@ pub fn Uint32::from_str_radix(text: &[Uint8], radix: Uint) -> Uint32 {
 	while at < text.len() {
 		let d = Uint32(digit(text@[at], radix).expect("parse: invalid digit"&));
 
-		if result >
-			(4294967295u32 - d) / base { throw("parse: integer overflow"&); }
+		if result > (4294967295u32 - d) / base {
+			throw("parse: integer overflow"&);
+		}
 
 		result = result * base + d;
 		at = at + 1u;

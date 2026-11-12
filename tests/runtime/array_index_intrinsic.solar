@@ -33,7 +33,9 @@ fn main() {
 
 	try {
 		let invalid = intrinsics::array_index(slice, 18446744073709551615u);
-	} catch (e) { println(e.message); }
+	} catch (e) {
+		println(e.message);
+	}
 
 	let empty: [Int; 0] = []#[Int];
 	try { let invalid = empty[0u]&; } catch (e) { println(e.message); }
