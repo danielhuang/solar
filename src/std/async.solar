@@ -697,6 +697,7 @@ pub struct AsyncFileDesc(pub FileDesc);
 /// Options and defaults match `file::open`: read/write select access, append
 /// writes at EOF, truncate empties the file, create creates it if absent, new
 /// with create rejects an existing file, and mode sets new-file permissions.
+/// Paths containing NUL bytes assert when the coroutine runs.
 pub fn open(
 	path: &[Uint8],
 	read = true,
@@ -720,10 +721,10 @@ pub fn open(
 		if new { flags = flags | linux::O_EXCL; }
 		if truncate { flags = flags | linux::O_TRUNC; }
 		if append { flags = flags | linux::O_APPEND; }
-		let nul_path: [Uint8] = path@ + [0u8];
+		let nul_path = file::nul_terminated(path);
 		let result = Result#[Uint]::Ok(0u);
 		let opened = Option#[FileDesc]::None;
-		yield Suspend::Open((nul_path&, flags, mode, result&, opened&));
+		yield Suspend::Open((nul_path, flags, mode, result&, opened&));
 		result.unwrap();
 		AsyncFileDesc(opened.unwrap())
 	}

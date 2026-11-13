@@ -1,5 +1,6 @@
 import intrinsics from "@intrinsics";
 import linux from "linux.solar";
+import {assert} from "lib.solar";
 
 // The fixed inode/offset prefix of Linux getdents64 records. The remaining
 // fields are a Uint16 record length, a Uint8 type, and a NUL-terminated name.
@@ -14,7 +15,10 @@ fn syscall_result(result: Int64, message: &[Uint8]) -> Uint {
 	Uint(result)
 }
 
-fn nul_terminated(path: &[Uint8]) -> &[Uint8] {
+/// Copies a byte string and appends a NUL terminator for C-string APIs.
+/// Asserts that the input contains no NUL bytes, including a trailing terminator.
+pub fn nul_terminated(path: &[Uint8]) -> &[Uint8] {
+	assert(!path.contains(0u8&));
 	let result: [Uint8] = path@ + [0u8];
 	result&
 }
@@ -41,7 +45,8 @@ fn open_raw(path: &[Uint8], flags: Int32, mode: Int32) -> FileDesc {
 /// the open mode: `read`/`write` set the access mode, `append` opens at the end,
 /// `truncate` empties an existing file, `create` creates it if absent, and `new`
 /// (O_EXCL, combine with `create`) fails if it already exists. `mode` is the
-/// permission bits applied when a file is created.
+/// permission bits applied when a file is created. The path must not contain
+/// NUL bytes.
 pub fn open(
 	path: &[Uint8],
 	read = true,

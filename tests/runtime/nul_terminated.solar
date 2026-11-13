@@ -1,0 +1,49 @@
+fn rejected(call: fn()) {
+	let caught = false;
+
+	try {
+		call();
+	} catch (error) {
+		assert(error.message@ == "assertion failed");
+		caught = true;
+	}
+
+	assert(caught);
+}
+
+fn main() {
+	assert(file::nul_terminated(""&)@ == "\0");
+	assert(file::nul_terminated("path"&)@ == "path\0");
+	assert(file::nul_terminated([255u8, 128u8]&)@ == [255u8, 128u8, 0u8]);
+	let original = "path";
+	let copied = file::nul_terminated(original&);
+	copied@[0u] = 'P';
+	assert(original == "path");
+
+	for path in ["\0"&, "\0tail"&, "a\0b"&, "a\0"&, "a\0\0b"&] {
+		rejected(\ { file::nul_terminated(path@); });
+		// Invalid async paths are rejected on resume, before yielding any I/O.
+		let opening = async::open(path@);
+		rejected(\ { opening&.resume(); });
+	}
+
+	// Every synchronous path API must reject before making a syscall. A leading
+	// NUL would otherwise give the kernel an empty path, avoiding filesystem effects.
+	rejected(\ { file::open("\0invalid"&); });
+	rejected(\ { file::open_dir("\0invalid"&); });
+	rejected(\ { file::stat("\0invalid"&); });
+	rejected(\ { file::exists("\0invalid"&); });
+	rejected(\ { file::create_dir("\0invalid"&); });
+	rejected(\ { file::remove("\0invalid"&); });
+	rejected(\ { file::remove_dir("\0invalid"&); });
+	rejected(\ { file::rename("\0invalid"&, ""&); });
+	rejected(\ { file::rename(""&, "\0invalid"&); });
+
+	// Valid async paths carry exactly one terminator in the yielded request.
+	let opening = async::open("path"&);
+	match opening.next().unwrap() {
+		async::Suspend::Open(io) => assert(io.0@ == "path\0"),
+		_ => assert(false),
+	};
+	println("passed"&);
+}

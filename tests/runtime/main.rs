@@ -8,6 +8,22 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 #[test]
+fn nul_terminated() {
+    assert_eq!(
+        run(&fixture("nul_terminated.solar"), "nul_terminated"),
+        "passed\n"
+    );
+}
+
+#[test]
+fn nul_terminated_release() {
+    assert_eq!(
+        test_utils::run_release_file(&fixture("nul_terminated.solar"), "nul_terminated"),
+        "passed\n"
+    );
+}
+
+#[test]
 fn coroutines() {
     assert_eq!(run(&fixture("coroutines.solar"), "coroutines"), "passed\n");
 }
