@@ -79,3 +79,48 @@ fn angle_header_lookup_does_not_search_the_solar_file_directory() {
         panic!("{}", errors[0].message);
     }
 }
+
+#[test]
+fn checking_headers_needs_no_c_compiler_on_path() {
+    let directory = tempdir::TempDir::new("solar-c-no-compiler").unwrap();
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/c_import/main.solar");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_solar"))
+        .args(["check", path.to_str().unwrap()])
+        .env("PATH", directory.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn header_search_uses_include_environment_and_cwd_for_dot_paths() {
+    let directory = tempdir::TempDir::new("solar-c-include-path").unwrap();
+    let includes = directory.path().join("includes");
+    let sources = directory.path().join("sources");
+    std::fs::create_dir(&includes).unwrap();
+    std::fs::create_dir(&sources).unwrap();
+    std::fs::write(includes.join("custom.h"), "#define CUSTOM 7\n").unwrap();
+    std::fs::write(directory.path().join("local.h"), "#define LOCAL 9\n").unwrap();
+    std::fs::write(sources.join("local.h"), "#error wrong relative directory\n").unwrap();
+    let source = sources.join("main.solar");
+    std::fs::write(&source, "import(C) {CUSTOM} from \"custom.h\"; import(C) {LOCAL} from \"./local.h\"; fn main() { assert(CUSTOM + LOCAL == 16i32); }").unwrap();
+    for variable in ["CPATH", "C_INCLUDE_PATH"] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_solar"))
+            .args(["check", source.to_str().unwrap()])
+            .current_dir(directory.path())
+            .env_remove("CPATH")
+            .env_remove("C_INCLUDE_PATH")
+            .env(variable, &includes)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
