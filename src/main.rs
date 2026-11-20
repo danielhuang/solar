@@ -102,6 +102,10 @@ enum DumpStage {
 }
 
 fn main() -> ExitCode {
+    solar::pipeline::with_compiler_stack(run)
+}
+
+fn run() -> ExitCode {
     match Cli::parse().command {
         SolarCommand::Dump {
             source,

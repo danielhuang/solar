@@ -31,6 +31,10 @@ const TOKEN_TYPES: &[&str] = &[
 ];
 
 fn main() {
+    solar::pipeline::with_compiler_stack(serve);
+}
+
+fn serve() {
     let stdin = io::stdin();
     let mut input = stdin.lock();
     let stdout = io::stdout();

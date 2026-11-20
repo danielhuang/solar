@@ -4,21 +4,22 @@ use std::process::Command;
 use crate::error::{CompileError, SourceMap};
 use crate::{codegen, mangled_ast, resolve, tree_ir, tree_ir_opt, typed_ast};
 
-const COMPILE_STACK_SIZE: usize = 64 << 20;
-
-/// Resolves and type-checks a Solar program.
-pub fn compile(file_path: &Path) -> Result<Typed, (Vec<CompileError>, SourceMap)> {
-    let file_path = file_path.to_owned();
+/// Runs a compiler entry point on a stack sized for recursive type checking.
+/// A long-lived caller can run its entire request loop here.
+pub fn with_compiler_stack<T: Send + 'static>(entry: impl FnOnce() -> T + Send + 'static) -> T {
     std::thread::Builder::new()
-        .name("solar-compile".to_string())
-        .stack_size(COMPILE_STACK_SIZE)
-        .spawn(move || compile_inner(&file_path))
+        .name("solar-compiler".into())
+        // Deep generic instantiations must reach the monomorphization limit.
+        .stack_size(512 << 20)
+        .spawn(entry)
         .expect("failed to spawn compiler thread")
         .join()
         .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
-fn compile_inner(file_path: &Path) -> Result<Typed, (Vec<CompileError>, SourceMap)> {
+/// Resolves and type-checks a Solar program on the calling thread.
+/// See [`with_compiler_stack`] for sizing the stack at an application's entry point.
+pub fn compile(file_path: &Path) -> Result<Typed, (Vec<CompileError>, SourceMap)> {
     let (resolved, source_map) = resolve::resolve(file_path)?;
     let typed = typed_ast::lower(&resolved).map_err(|e| (vec![e], source_map.clone()))?;
     typed

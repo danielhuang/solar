@@ -11171,20 +11171,7 @@ fn atomic_type_align(ty: &Type, structs: &HashMap<TypeId, StructDef>) -> Option<
 
 /// Type-checks and monomorphizes a resolved AST.
 pub fn lower(source: &resolved_ast::SourceFile) -> Result<SourceFile, CompileError> {
-    // A larger stack lets MONO_DEPTH_LIMIT report runaway polymorphic recursion.
-    const LOWER_STACK_SIZE: usize = 512 << 20;
-    std::thread::scope(|s| {
-        std::thread::Builder::new()
-            .name("solar-lower".to_string())
-            .stack_size(LOWER_STACK_SIZE)
-            .spawn_scoped(s, || {
-                let mut lowerer = Lowerer::new(source)?;
-                lowerer.lower_all()
-            })
-            .expect("failed to spawn lowering thread")
-            .join()
-            .unwrap_or_else(|p| std::panic::resume_unwind(p))
-    })
+    Lowerer::new(source)?.lower_all()
 }
 
 /// A generic method specialization requested by type-aware tooling.
@@ -11207,63 +11194,52 @@ pub fn method_monomorphizations_typecheck(
     source: &resolved_ast::SourceFile,
     requests: &[MethodMonomorphization],
 ) -> Result<Vec<bool>, CompileError> {
-    const LOWER_STACK_SIZE: usize = 512 << 20;
-    std::thread::scope(|s| {
-        std::thread::Builder::new()
-            .name("solar-tooling-monomorphization".to_string())
-            .stack_size(LOWER_STACK_SIZE)
-            .spawn_scoped(s, || {
-                let mut base = Lowerer::new(source)?;
-                base.lower_all()?;
-                Ok(requests
+    let mut base = Lowerer::new(source)?;
+    base.lower_all()?;
+    Ok(requests
+        .iter()
+        .map(|request| {
+            let entry = base.method_defs.iter().find_map(|(name, entries)| {
+                entries
                     .iter()
-                    .map(|request| {
-                        let entry = base.method_defs.iter().find_map(|(name, entries)| {
-                            entries
-                                .iter()
-                                .find(|entry| {
-                                    let actual = entry.ast_def.span;
-                                    let expected = request.definition_span;
-                                    actual.file_id == expected.file_id
-                                        && actual.start.line == expected.start.line
-                                        && actual.start.col == expected.start.col
-                                        && actual.end.line == expected.end.line
-                                        && actual.end.col == expected.end.col
-                                })
-                                .map(|entry| {
-                                    let generic_count = entries
-                                        .iter()
-                                        .filter(|entry| !entry.type_params.is_empty())
-                                        .count();
-                                    (name.clone(), entry.clone(), generic_count)
-                                })
-                        });
-                        let Some((name, entry, generic_count)) = entry else {
-                            return false;
-                        };
-                        if entry.type_params.len() != request.type_arguments.len() {
-                            return false;
-                        }
-                        let mut trial = base.clone();
-                        let type_arguments = request
-                            .type_arguments
-                            .iter()
-                            .map(|ty| trial.concrete_type_to_ast_type(ty))
-                            .collect::<Vec<_>>();
-                        trial
-                            .ensure_function_monomorphized_with_def(
-                                &name,
-                                &entry,
-                                &type_arguments,
-                                generic_count,
-                                true,
-                            )
-                            .is_ok()
+                    .find(|entry| {
+                        let actual = entry.ast_def.span;
+                        let expected = request.definition_span;
+                        actual.file_id == expected.file_id
+                            && actual.start.line == expected.start.line
+                            && actual.start.col == expected.start.col
+                            && actual.end.line == expected.end.line
+                            && actual.end.col == expected.end.col
                     })
-                    .collect())
-            })
-            .expect("failed to spawn tooling lowering thread")
-            .join()
-            .unwrap_or_else(|p| std::panic::resume_unwind(p))
-    })
+                    .map(|entry| {
+                        let generic_count = entries
+                            .iter()
+                            .filter(|entry| !entry.type_params.is_empty())
+                            .count();
+                        (name.clone(), entry.clone(), generic_count)
+                    })
+            });
+            let Some((name, entry, generic_count)) = entry else {
+                return false;
+            };
+            if entry.type_params.len() != request.type_arguments.len() {
+                return false;
+            }
+            let mut trial = base.clone();
+            let type_arguments = request
+                .type_arguments
+                .iter()
+                .map(|ty| trial.concrete_type_to_ast_type(ty))
+                .collect::<Vec<_>>();
+            trial
+                .ensure_function_monomorphized_with_def(
+                    &name,
+                    &entry,
+                    &type_arguments,
+                    generic_count,
+                    true,
+                )
+                .is_ok()
+        })
+        .collect())
 }

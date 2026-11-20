@@ -1,0 +1,11 @@
+experimental = ["wrapper-scripts"]
+
+# libtest owns the entry thread for tests that call compiler stages directly.
+# Match the 512 MiB stack used by with_compiler_stack.
+[scripts.wrapper.compiler-stack]
+command = ["env", "RUST_MIN_STACK=536870912"]
+target-runner = "within-wrapper"
+
+[[profile.default.scripts]]
+filter = "package(=solar)"
+run-wrapper = "compiler-stack"
