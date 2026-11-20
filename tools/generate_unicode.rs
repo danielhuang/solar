@@ -24,11 +24,9 @@ fn emit(out: &mut String, ranges: &[(u32, u32)], depth: usize) {
     let (low, high) = ranges[middle];
     writeln!(out, "{indent}if code < {low}u32 {{").unwrap();
     emit(out, &ranges[..middle], depth + 1);
-    writeln!(out, "{indent}}} else {{").unwrap();
-    writeln!(out, "{indent}\tif code > {high}u32 {{").unwrap();
-    emit(out, &ranges[middle + 1..], depth + 2);
-    writeln!(out, "{indent}\t}} else {{ true }}").unwrap();
-    writeln!(out, "{indent}}}").unwrap();
+    writeln!(out, "{indent}}} else if code > {high}u32 {{").unwrap();
+    emit(out, &ranges[middle + 1..], depth + 1);
+    writeln!(out, "{indent}}} else {{ true }}").unwrap();
 }
 
 fn main() {
