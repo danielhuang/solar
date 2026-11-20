@@ -49,13 +49,15 @@ pub fn run_tree_ir(tree_ir: &TreeIr) -> String {
 
 /// Compile a file and run the AST interpreter.
 pub fn run_ast_file(file_path: &Path) -> String {
-    let mangled = solar::pipeline::compile(file_path).unwrap().to_mangled();
+    let mangled = solar::pipeline::compile_file(file_path)
+        .unwrap()
+        .to_mangled();
     run_ast(&mangled)
 }
 
 /// Compile a file and run the tree IR interpreter.
 pub fn run_tree_ir_file(file_path: &Path) -> String {
-    let typed = solar::pipeline::compile(file_path).unwrap();
+    let typed = solar::pipeline::compile_file(file_path).unwrap();
     let tree_ir = typed.to_mangled().to_tree_ir();
     run_tree_ir(&tree_ir)
 }
@@ -64,7 +66,7 @@ pub fn run_tree_ir_file(file_path: &Path) -> String {
 pub fn run_codegen_file(file_path: &Path, test_name: &str) -> String {
     ensure_runtime_built();
     let directory = tempdir::TempDir::new("solar-test").unwrap();
-    let typed = solar::pipeline::compile(file_path).unwrap();
+    let typed = solar::pipeline::compile_file(file_path).unwrap();
     typed
         .to_mangled()
         .to_tree_ir()
@@ -77,7 +79,9 @@ pub fn run_codegen_file(file_path: &Path, test_name: &str) -> String {
 pub fn run(file_path: &Path, test_name: &str) -> String {
     ensure_runtime_built();
     let directory = tempdir::TempDir::new("solar-test").unwrap();
-    let mangled = solar::pipeline::compile(file_path).unwrap().to_mangled();
+    let mangled = solar::pipeline::compile_file(file_path)
+        .unwrap()
+        .to_mangled();
     let ast_out = run_ast(&mangled);
     // Exercise optimized stack placement under ASAN.
     let tree_ir = mangled.to_tree_ir().optimized();
@@ -101,7 +105,7 @@ pub fn run(file_path: &Path, test_name: &str) -> String {
 pub fn run_release_file(file_path: &Path, test_name: &str) -> String {
     ensure_release_runtime_built();
     let directory = tempdir::TempDir::new("solar-test").unwrap();
-    solar::pipeline::compile(file_path)
+    solar::pipeline::compile_file(file_path)
         .unwrap()
         .to_mangled()
         .to_tree_ir()

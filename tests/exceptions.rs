@@ -60,7 +60,7 @@ fn main() {
 "#,
     )
     .unwrap();
-    let tree_ir = solar::pipeline::compile(&source)
+    let tree_ir = solar::pipeline::compile_file(&source)
         .unwrap()
         .to_mangled()
         .to_tree_ir()
@@ -101,7 +101,7 @@ fn main() {
 "#,
     )
     .unwrap();
-    let binary = solar::pipeline::compile(&source)
+    let binary = solar::pipeline::compile_file(&source)
         .unwrap()
         .to_mangled()
         .to_tree_ir()
@@ -128,7 +128,7 @@ fn production_exception_behavior_matches_interpreters() {
     test_utils::ensure_release_runtime_built();
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/runtime/exception.solar");
     let directory = tempdir::TempDir::new("solar-exceptions").unwrap();
-    let binary = solar::pipeline::compile(&source)
+    let binary = solar::pipeline::compile_file(&source)
         .unwrap()
         .to_mangled()
         .to_tree_ir()
@@ -159,7 +159,7 @@ fn main() {
 "#,
     )
     .unwrap();
-    let typed = solar::pipeline::compile(&source).unwrap();
+    let typed = solar::pipeline::compile_file(&source).unwrap();
     let mangled = typed.to_mangled();
     let expected = "passed\n";
 

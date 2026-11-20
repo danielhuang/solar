@@ -44,7 +44,7 @@ fn release_branch_merge_preserves_gc_allocation_provenance() {
     let src_path = dir.join("release_alloc_metadata.solar");
     std::fs::write(&src_path, SRC).unwrap();
 
-    let bin = solar::pipeline::compile(&src_path)
+    let bin = solar::pipeline::compile_file(&src_path)
         .unwrap()
         .to_mangled()
         .to_tree_ir()

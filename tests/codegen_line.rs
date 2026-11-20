@@ -16,7 +16,7 @@ fn std_code_gets_std_line_directives() {
     )
     .unwrap();
 
-    let typed = pipeline::compile(&path).unwrap();
+    let typed = pipeline::compile_file(&path).unwrap();
     let c = typed
         .to_mangled()
         .to_tree_ir()

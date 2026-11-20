@@ -26,7 +26,7 @@ fn all_examples_lower_to_tree_ir() {
     for path in &example_files() {
         let name = path.file_name().unwrap().to_str().unwrap();
         eprintln!("lowering {name}");
-        let typed = solar::pipeline::compile(path).unwrap();
+        let typed = solar::pipeline::compile_file(path).unwrap();
         typed.to_mangled().to_tree_ir();
     }
 }
@@ -40,7 +40,7 @@ fn all_examples_compile_debug() {
         eprintln!("compiling {name}");
         let test_name = format!("example_compile_{}", name.replace(".solar", ""));
         let directory = tempdir::TempDir::new("solar-example").unwrap();
-        solar::pipeline::compile(path)
+        solar::pipeline::compile_file(path)
             .unwrap()
             .to_mangled()
             .to_tree_ir()

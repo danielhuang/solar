@@ -295,7 +295,7 @@ fn any() {
     let output = run(&path, "any");
     assert_eq!(output, "42\n1\n16\n1\n77\n");
 
-    let c = solar::pipeline::compile(&path)
+    let c = solar::pipeline::compile_file(&path)
         .unwrap()
         .to_mangled()
         .to_tree_ir()
@@ -376,7 +376,7 @@ fn out_generics_and_size_of() {
     let output = run(&path, "out_generics_and_size_of");
     assert_eq!(output, "1\n2\n8\n16\n6\n16\n32\n4\n3\n42\n17\n3\n");
 
-    let typed = solar::pipeline::compile(&path).unwrap().typed;
+    let typed = solar::pipeline::compile_file(&path).unwrap().typed;
     let instances: Vec<_> = typed
         .functions
         .iter()
@@ -648,7 +648,7 @@ fn unsized_expression_staging() {
     assert_eq!(run(&path, "unsized_expression_staging"), "staged\n");
     test_utils::ensure_release_runtime_built();
     let directory = tempdir::TempDir::new("solar-unsized-staging").unwrap();
-    let tree_ir = solar::pipeline::compile(&path)
+    let tree_ir = solar::pipeline::compile_file(&path)
         .unwrap()
         .to_mangled()
         .to_tree_ir()
@@ -701,7 +701,7 @@ fn conditional_unsized_metadata_release() {
         solar::pipeline::CompileOptions::RELEASE,
         solar::pipeline::CompileOptions::GC_SAN,
     ] {
-        let tree_ir = solar::pipeline::compile(&path)
+        let tree_ir = solar::pipeline::compile_file(&path)
             .unwrap()
             .to_mangled()
             .to_tree_ir()
@@ -1589,7 +1589,7 @@ fn maybe_zeroed_gc() {
             ..solar::pipeline::CompileOptions::DEBUG
         },
     ] {
-        let tree_ir = solar::pipeline::compile(&path)
+        let tree_ir = solar::pipeline::compile_file(&path)
             .unwrap()
             .to_mangled()
             .to_tree_ir();

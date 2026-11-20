@@ -22,7 +22,7 @@ fn live_nodes_remain_distinct_during_concurrent_reuse() {
     .into_iter()
     .enumerate()
     {
-        let binary = solar::pipeline::compile(&source)
+        let binary = solar::pipeline::compile_file(&source)
             .unwrap()
             .to_mangled()
             .to_tree_ir()

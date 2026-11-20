@@ -20,8 +20,8 @@ fn resolve_sources_accepts_unsaved_imported_files() {
         ),
         (imported.clone(), "pub fn value() -> Int { 7 }\n".to_owned()),
     ]);
-    let (resolved, source_map) = solar::resolve::resolve_sources(&root, &sources).unwrap();
-    solar::typed_ast::lower(&resolved).unwrap();
+    let resolved = solar::resolve::resolve_sources(&root, &sources).unwrap();
+    let source_map = solar::pipeline::compile(resolved).unwrap().source_map;
     for (path, source) in &sources {
         let file = source_map.file_id_for_path(path).unwrap();
         assert_eq!(source_map.get(file).unwrap().1, source);
@@ -51,7 +51,7 @@ fn imported_main_may_return_a_value() {
     assert_eq!(output, "42\n");
 
     let imported_main = fixture("imported_main_return/helper.solar");
-    let (errors, _) = match solar::pipeline::compile(&imported_main) {
+    let (errors, _) = match solar::pipeline::compile_file(&imported_main) {
         Ok(_) => panic!("imported module main is an ordinary function when used as root"),
         Err(error) => error,
     };
@@ -78,7 +78,7 @@ fn const_import() {
 fn imported_const_initializer_diagnostic_points_to_defining_expression() {
     let path = fixture("const_initializer_span/main.solar");
     let helper = fixture("const_initializer_span/helper.solar");
-    let (errors, source_map) = match solar::pipeline::compile(&path) {
+    let (errors, source_map) = match solar::pipeline::compile_file(&path) {
         Ok(_) => panic!("nonliteral imported constant must be rejected"),
         Err(error) => error,
     };
@@ -485,7 +485,7 @@ fn extension_method_errors() {
         std::fs::write(&left, left_source).unwrap();
         std::fs::write(&right, right_source).unwrap();
         std::fs::write(&root, root_source).unwrap();
-        let (errors, _) = match solar::pipeline::compile(&root) {
+        let (errors, _) = match solar::pipeline::compile_file(&root) {
             Ok(_) => panic!("{label} should fail"),
             Err(error) => error,
         };

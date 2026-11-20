@@ -29,7 +29,7 @@ fn release_array_size_overflow_throws_before_initialization() {
     assert_eq!(test_utils::run_ast_file(&source), expected);
     assert_eq!(test_utils::run_tree_ir_file(&source), expected);
 
-    let binary = solar::pipeline::compile(&source)
+    let binary = solar::pipeline::compile_file(&source)
         .unwrap()
         .to_mangled()
         .to_tree_ir()

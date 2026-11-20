@@ -13,7 +13,7 @@ fn run_fixture(fixture: &str, name: &str, options: CompileOptions, disabled: boo
     }
     let directory = tempdir::TempDir::new("solar-test").unwrap();
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join(fixture);
-    let binary = solar::pipeline::compile(&source)
+    let binary = solar::pipeline::compile_file(&source)
         .map_err(|(errors, _)| errors)
         .unwrap()
         .to_mangled()

@@ -21,7 +21,7 @@ fn hot_helpers_preserve_runtime_results_and_exceptions() {
             .join("tests/runtime")
             .join(format!("{name}.solar"));
         let expected = test_utils::run(&source, name);
-        let actual = solar::pipeline::compile(&source)
+        let actual = solar::pipeline::compile_file(&source)
             .unwrap()
             .to_mangled()
             .to_tree_ir()

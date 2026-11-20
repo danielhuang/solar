@@ -37,7 +37,7 @@ fn compile(file_path: &Path) {
 
 /// Compile a file through the full pipeline (with stdlib).
 fn compile_with_pipeline(file_path: &Path) {
-    match solar::pipeline::compile(file_path) {
+    match solar::pipeline::compile_file(file_path) {
         Ok(_) => {}
         Err((errors, _)) => panic!("{}", error_chain(&errors[0])),
     }
@@ -114,7 +114,7 @@ fn overlap_requires_opt_in_and_preserves_errors() {
         ),
     ] {
         std::fs::write(&path, source).unwrap();
-        let (errors, _) = solar::pipeline::compile(&path).err().unwrap();
+        let (errors, _) = solar::pipeline::compile_file(&path).err().unwrap();
         let messages = errors
             .iter()
             .map(error_chain)
@@ -200,7 +200,7 @@ fn coroutine_type_errors() {
         ),
     ] {
         std::fs::write(&path, format!("fn main() {{ {body} }}")).unwrap();
-        let Err((errors, _)) = solar::pipeline::compile(&path) else {
+        let Err((errors, _)) = solar::pipeline::compile_file(&path) else {
             panic!("accepted invalid coroutine: {body}");
         };
         let messages = errors
@@ -234,7 +234,7 @@ fn recursive_coroutine_requires_a_consistent_completion_type() {
             format!("fn recur(flag: Bool) {{ coroutine {{ yield 0; {tail} }} }} fn main() {{}}"),
         )
         .unwrap();
-        let (errors, _) = solar::pipeline::compile(&path).err().unwrap();
+        let (errors, _) = solar::pipeline::compile_file(&path).err().unwrap();
         assert!(
             errors.iter().any(|e| error_chain(e).contains(expected)),
             "{errors:?}"
@@ -281,7 +281,7 @@ fn await_type_errors() {
         ),
     ] {
         std::fs::write(&path, format!("fn main() {{ {body} }}")).unwrap();
-        let errors = solar::pipeline::compile(&path).err().unwrap().0;
+        let errors = solar::pipeline::compile_file(&path).err().unwrap().0;
         let messages = errors
             .iter()
             .map(error_chain)
@@ -323,7 +323,7 @@ fn for_completion_type_errors() {
         ),
     ] {
         std::fs::write(&path, source).unwrap();
-        let errors = solar::pipeline::compile(&path).err().unwrap().0;
+        let errors = solar::pipeline::compile_file(&path).err().unwrap().0;
         let messages = errors
             .iter()
             .map(error_chain)
@@ -346,7 +346,7 @@ fn discarded_tails_do_not_supply_values() {
         "match_tail_discarded.solar",
     ] {
         assert!(
-            solar::pipeline::compile(&fixture(name)).is_err(),
+            solar::pipeline::compile_file(&fixture(name)).is_err(),
             "accepted a discarded tail as a value in {name}",
         );
     }
@@ -361,7 +361,7 @@ fn example_typechecks() {
 #[test]
 fn monomorphization_error_retains_and_prints_the_call_chain() {
     let path = fixture("monomorphization_error_chain.solar");
-    let (errors, _) = match solar::pipeline::compile(&path) {
+    let (errors, _) = match solar::pipeline::compile_file(&path) {
         Ok(_) => panic!("expected type-check failure"),
         Err(error) => error,
     };
@@ -393,7 +393,7 @@ fn monomorphization_error_retains_and_prints_the_call_chain() {
 #[test]
 fn undefined_imported_nominal_type_is_reported_without_panicking() {
     let path = fixture("undefined_imported_nominal/main.solar");
-    let (errors, source_map) = match solar::pipeline::compile(&path) {
+    let (errors, source_map) = match solar::pipeline::compile_file(&path) {
         Ok(_) => panic!("expected unknown type error"),
         Err(error) => error,
     };
@@ -408,7 +408,7 @@ fn undefined_imported_nominal_type_is_reported_without_panicking() {
 #[test]
 fn unbound_method_type_parameter_is_a_compile_error() {
     let path = fixture("method_owner_type_param_requires_quantification.solar");
-    let (errors, source_map) = match solar::pipeline::compile(&path) {
+    let (errors, source_map) = match solar::pipeline::compile_file(&path) {
         Ok(_) => panic!("expected type-check failure"),
         Err(error) => error,
     };
@@ -507,7 +507,7 @@ fn imported_type_errors_print_declaration_locations() {
         "struct Box#[T] { value: T }\nfn Box#[T]::(value: T) -> Box#[T] { Box#[T] { value: value } }\n",
     )
     .unwrap();
-    let (errors, source_map) = solar::pipeline::compile(&main).err().unwrap();
+    let (errors, source_map) = solar::pipeline::compile_file(&main).err().unwrap();
     assert!(error_chain(&errors[0]).contains("undefined type: T"));
     let mut cause = Some(&errors[0]);
     while let Some(error) = cause {
@@ -537,7 +537,7 @@ fn imported_type_errors_print_declaration_locations() {
 fn root_main_requires_unit_return_type() {
     for name in ["main_returns_value.solar", "main_infers_value.solar"] {
         let path = fixture(name);
-        let (errors, source_map) = match solar::pipeline::compile(&path) {
+        let (errors, source_map) = match solar::pipeline::compile_file(&path) {
             Ok(_) => panic!("accepted non-unit root main"),
             Err(error) => error,
         };
@@ -803,7 +803,7 @@ fn array_index_requires_uint() {
 #[test]
 fn bad_no_return_expr() {
     assert!(
-        solar::pipeline::compile(&fixture("typecheck_bad_no_return_expr.solar")).is_err(),
+        solar::pipeline::compile_file(&fixture("typecheck_bad_no_return_expr.solar")).is_err(),
         "accepted an Int-returning function whose body ends in a let declaration",
     );
 }
@@ -1281,7 +1281,7 @@ fn omitted_struct_arguments_report_missing_or_conflicting_types() {
         ),
     ] {
         std::fs::write(&path, source).unwrap();
-        let Err((errors, map)) = solar::pipeline::compile(&path) else {
+        let Err((errors, map)) = solar::pipeline::compile_file(&path) else {
             panic!("unexpectedly accepted {source}");
         };
         assert!(

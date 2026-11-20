@@ -42,7 +42,7 @@ fn async_tasks_and_completions_survive_collection() {
     let directory = tempdir::TempDir::new("solar-async-gc").unwrap();
     let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/compile_only/async_spawn.solar");
-    let c_source = solar::pipeline::compile(&source)
+    let c_source = solar::pipeline::compile_file(&source)
         .unwrap()
         .to_mangled()
         .to_tree_ir()
@@ -70,7 +70,7 @@ fn coroutine_results_survive_collection() {
     let directory = tempdir::TempDir::new("solar-coroutine-gc").unwrap();
     let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/runtime/coroutine_resume.solar");
-    let c_source = solar::pipeline::compile(&source)
+    let c_source = solar::pipeline::compile_file(&source)
         .unwrap()
         .to_mangled()
         .to_tree_ir()
@@ -101,7 +101,7 @@ fn gc_san_runs_collections_without_rejecting_live_objects() {
     let source = dir.join("gc_san.solar");
     std::fs::write(&source, SRC).unwrap();
 
-    let binary = solar::pipeline::compile(&source)
+    let binary = solar::pipeline::compile_file(&source)
         .unwrap()
         .to_mangled()
         .to_tree_ir()
@@ -139,7 +139,7 @@ fn gc_san_runs_without_lto_or_optimization() {
         gc_san: true,
         optimize: false,
     };
-    let binary = solar::pipeline::compile(&source)
+    let binary = solar::pipeline::compile_file(&source)
         .unwrap()
         .to_mangled()
         .to_tree_ir()
@@ -172,7 +172,7 @@ fn gc_san_rejects_offset_ref_outside_its_source_allocation() {
     let source = dir.join("gc_san_offset_ref.solar");
     std::fs::write(&source, OFFSET_REF_OUT_OF_BOUNDS_SRC).unwrap();
 
-    let c_source = solar::pipeline::compile(&source)
+    let c_source = solar::pipeline::compile_file(&source)
         .unwrap()
         .to_mangled()
         .to_tree_ir()
@@ -219,7 +219,7 @@ fn gc_runs_without_lto_gc_san_or_optimization() {
         gc_san: false,
         optimize: false,
     };
-    let binary = solar::pipeline::compile(&source)
+    let binary = solar::pipeline::compile_file(&source)
         .unwrap()
         .to_mangled()
         .to_tree_ir()
@@ -280,7 +280,7 @@ fn main() {
 "#,
     )
     .unwrap();
-    let c_source = solar::pipeline::compile(&source)
+    let c_source = solar::pipeline::compile_file(&source)
         .unwrap()
         .to_mangled()
         .to_tree_ir()

@@ -40,7 +40,7 @@ fn main() {
     }
     program.push_str("println(\"views live\"&);\n}\n");
     std::fs::write(&source, program).unwrap();
-    let binary = solar::pipeline::compile(&source)
+    let binary = solar::pipeline::compile_file(&source)
         .unwrap()
         .to_mangled()
         .to_tree_ir()
@@ -348,7 +348,7 @@ fn main() {
             .replace("COUNT", &count.to_string()),
         )
         .unwrap();
-        let binary = solar::pipeline::compile(&source)
+        let binary = solar::pipeline::compile_file(&source)
             .unwrap()
             .to_mangled()
             .to_tree_ir()

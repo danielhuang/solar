@@ -16,7 +16,7 @@ fn main() { let g = outer(); g.resume(); }
 "#,
     )
     .unwrap();
-    let typed = solar::pipeline::compile(&path).unwrap().typed;
+    let typed = solar::pipeline::compile_file(&path).unwrap().typed;
     let frame = |name: &str| {
         let function = typed
             .functions
@@ -58,7 +58,7 @@ fn recursive_awaits_are_rejected_before_frame_layout() {
         "fn recursive() { coroutine { await coroutine { await recursive() } } } fn main() {}",
     ] {
         std::fs::write(&path, source).unwrap();
-        let Err((errors, _)) = solar::pipeline::compile(&path) else {
+        let Err((errors, _)) = solar::pipeline::compile_file(&path) else {
             panic!("accepted recursive await: {source}");
         };
         fn recursive_await(error: &solar::error::CompileError) -> bool {
@@ -78,7 +78,7 @@ fn coroutine_loop_keeps_short_lived_temporaries_out_of_the_frame() {
         "fn looper(i: &Int) { coroutine { while i@ < 1000 { if i@ % 10 == 0 { yield i@; } i@ = i@ + 1; } } } fn main() { let i = 0; looper(i&).next(); }",
     )
     .unwrap();
-    let typed = solar::pipeline::compile(&path).unwrap();
+    let typed = solar::pipeline::compile_file(&path).unwrap();
     let prefix = format!("Coroutine_{}_", typed.source_map.root_file_id().unwrap());
     let coroutine = typed
         .typed
@@ -101,7 +101,7 @@ fn coroutine_owns_storage_and_has_concrete_resume_and_next_methods() {
     let directory = tempdir::TempDir::new("solar-coroutine-layout").unwrap();
     let path = directory.path().join("main.solar");
     std::fs::write(&path, "fn main() { let captured = 7; let g = coroutine { let local = captured; yield local; local = local + 1; yield local; }; g.next(); }").unwrap();
-    let typed = solar::pipeline::compile(&path).unwrap();
+    let typed = solar::pipeline::compile_file(&path).unwrap();
     let prefix = format!("Coroutine_{}_", typed.source_map.root_file_id().unwrap());
     let coroutines: Vec<_> = typed
         .typed
@@ -184,7 +184,7 @@ fn recursive_coroutine_storage_must_have_finite_size() {
         "fn recursive#[T](value: T) { coroutine { yield value; let child = recursive(value); } } fn main() { recursive(1); }",
     ] {
         std::fs::write(&path, source).unwrap();
-        let Err((errors, _)) = solar::pipeline::compile(&path) else {
+        let Err((errors, _)) = solar::pipeline::compile_file(&path) else {
             panic!("accepted infinitely sized coroutine: {source}");
         };
         fn messages(error: &solar::error::CompileError) -> String {
@@ -223,7 +223,7 @@ fn coroutine_fields_are_private_and_cannot_be_reflected() {
             format!("fn main() {{ let g = coroutine {{ yield 1; }}; {operation} }}"),
         )
         .unwrap();
-        let Err((errors, _)) = solar::pipeline::compile(&path) else {
+        let Err((errors, _)) = solar::pipeline::compile_file(&path) else {
             panic!("exposed coroutine internals");
         };
         assert!(

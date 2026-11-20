@@ -2677,7 +2677,7 @@ mod tests {
              }\n",
         )
         .unwrap();
-        let result = pipeline::compile(&path);
+        let result = pipeline::compile_file(&path);
         let _ = std::fs::remove_file(&path);
         let typed = result.unwrap_or_else(|(errors, _)| panic!("compile failed: {errors:?}"));
         let module = typed.to_mangled().to_tree_ir().optimized().tree_ir;

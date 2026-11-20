@@ -207,7 +207,7 @@ fn dump(source: &Path, stage: DumpStage, release: bool) -> ExitCode {
 }
 
 fn typecheck(source: &Path) -> Result<Typed, ExitCode> {
-    solar::pipeline::compile(source).map_err(|(errors, source_map)| {
+    solar::pipeline::compile_file(source).map_err(|(errors, source_map)| {
         for error in &errors {
             solar::error::render_error_with_source_map(error, &source_map);
         }

@@ -36,7 +36,7 @@ fn specialized_allocators_retain_allocation_elision() {
     let src_path = dir.join("release_alloc_elision.solar");
     std::fs::write(&src_path, SRC).unwrap();
 
-    let bin = solar::pipeline::compile(&src_path)
+    let bin = solar::pipeline::compile_file(&src_path)
         .unwrap()
         .to_mangled()
         .to_tree_ir()
@@ -69,7 +69,7 @@ fn println_zero_elides_to_string_buffer() {
     let directory = tempdir::TempDir::new("solar-test").unwrap();
     let source = directory.path().join("println_zero.solar");
     std::fs::write(&source, "fn main() { println(0); }\n").unwrap();
-    let binary = solar::pipeline::compile(&source)
+    let binary = solar::pipeline::compile_file(&source)
         .unwrap()
         .to_mangled()
         .to_tree_ir()

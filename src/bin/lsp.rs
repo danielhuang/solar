@@ -4318,7 +4318,7 @@ fn compute_with_sources(
     };
     let mut sources = (*open_sources).clone();
     sources.insert(path.clone(), source.to_owned());
-    let (ast, source_map) = match resolve::resolve_sources(&path, &sources) {
+    let resolve::Resolved { ast, source_map } = match resolve::resolve_sources(&path, &sources) {
         Ok(resolved) => resolved,
         Err((errors, source_map)) => {
             let diagnostics = diagnostics_from_errors(uri, source, &errors, &source_map);

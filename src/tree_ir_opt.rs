@@ -651,7 +651,7 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("tree_ir_opt_{}_{uniq}.solar", std::process::id()));
         std::fs::write(&path, src).unwrap();
-        let result = pipeline::compile(&path);
+        let result = pipeline::compile_file(&path);
         let _ = std::fs::remove_file(&path);
         let typed = result.unwrap_or_else(|(errs, _)| panic!("compile failed: {errs:?}"));
         typed.to_mangled().to_tree_ir().optimized().tree_ir

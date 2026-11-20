@@ -5,10 +5,11 @@ use solar::{ast, desugared_ast::TopLevelItem};
 #[test]
 fn numeric_constructors_are_added_once_to_resolver_output() {
     let source = "fn main() { Int(1u); }".to_string();
-    let (resolved, _) =
+    let resolved =
         solar::resolve::resolve_source(Path::new("numeric_constructor.solar"), source).unwrap();
 
     let constructors = resolved
+        .ast
         .items
         .iter()
         .filter(|item| {

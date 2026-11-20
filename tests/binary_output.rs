@@ -9,7 +9,7 @@ fn check_output(path: PathBuf, options: CompileOptions) {
         test_utils::ensure_runtime_built();
     }
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/runtime/iterator.solar");
-    let binary = solar::pipeline::compile(&source)
+    let binary = solar::pipeline::compile_file(&source)
         .unwrap()
         .to_mangled()
         .to_tree_ir()

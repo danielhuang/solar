@@ -15,7 +15,7 @@ fn build(src: &str, name: &str, options: CompileOptions) -> (tempdir::TempDir, P
     let dir = directory.path();
     let path = dir.join(format!("{name}.solar"));
     std::fs::write(&path, src).unwrap();
-    let typed = solar::pipeline::compile(&path).unwrap();
+    let typed = solar::pipeline::compile_file(&path).unwrap();
     let binary = typed
         .to_mangled()
         .to_tree_ir()

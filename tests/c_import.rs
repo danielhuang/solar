@@ -36,7 +36,7 @@ fn unsupported_c_declarations_are_diagnosed_at_the_import() {
         let text =
             format!("import(C) {{{name}}} from \"./tests/c_import/types.h\";\nfn main() {{}}\n");
         std::fs::write(&source, text).unwrap();
-        let (errors, map) = match solar::pipeline::compile(&source) {
+        let (errors, map) = match solar::pipeline::compile_file(&source) {
             Ok(_) => panic!("{name} should not be importable"),
             Err(errors) => errors,
         };
@@ -75,7 +75,7 @@ fn angle_header_lookup_does_not_search_the_solar_file_directory() {
         "import(C) {INT_MAX} from \"limits.h\"; fn main() { assert(INT_MAX > 0i32); }",
     )
     .unwrap();
-    if let Err((errors, _)) = solar::pipeline::compile(&source) {
+    if let Err((errors, _)) = solar::pipeline::compile_file(&source) {
         panic!("{}", errors[0].message);
     }
 }

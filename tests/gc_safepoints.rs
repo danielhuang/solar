@@ -41,7 +41,7 @@ fn polls_and_syscall_signals_cover_gc_and_thread_lifecycle_races() {
     .into_iter()
     .enumerate()
     {
-        let binary = solar::pipeline::compile(&source)
+        let binary = solar::pipeline::compile_file(&source)
             .unwrap()
             .to_mangled()
             .to_tree_ir()

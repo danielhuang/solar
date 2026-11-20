@@ -39,7 +39,7 @@ fn stdout_syscall_retries_and_reports_errors_through_solar() {
     )
     .unwrap();
     for ast in [true, false] {
-        let mangled = solar::pipeline::compile(&source).unwrap().to_mangled();
+        let mangled = solar::pipeline::compile_file(&source).unwrap().to_mangled();
         let mut output = PartialOutput {
             calls: 0,
             bytes: Vec::new(),
@@ -73,7 +73,7 @@ fn interpreters_reject_other_syscalls_and_descriptors() {
             ),
         )
         .unwrap();
-        let mangled = solar::pipeline::compile(&source).unwrap().to_mangled();
+        let mangled = solar::pipeline::compile_file(&source).unwrap().to_mangled();
         assert!(catch_unwind(AssertUnwindSafe(|| test_utils::run_ast(&mangled))).is_err());
         let tree_ir = mangled.to_tree_ir();
         assert!(catch_unwind(AssertUnwindSafe(|| test_utils::run_tree_ir(&tree_ir))).is_err());

@@ -1733,10 +1733,17 @@ fn rewrite_pattern(
     }
 }
 
+/// A name-resolved program and the sources its spans refer to.
+#[derive(Debug)]
+pub struct Resolved {
+    /// Declarations from the root program and its imports.
+    pub ast: resolved_ast::SourceFile,
+    /// Source text and file identities used during resolution.
+    pub source_map: SourceMap,
+}
+
 /// Resolves a Solar program and its imports.
-pub fn resolve(
-    file_path: &Path,
-) -> Result<(resolved_ast::SourceFile, SourceMap), (Vec<CompileError>, SourceMap)> {
+pub fn resolve(file_path: &Path) -> Result<Resolved, (Vec<CompileError>, SourceMap)> {
     resolve_sources(file_path, &HashMap::new())
 }
 
@@ -1744,7 +1751,7 @@ pub fn resolve(
 pub fn resolve_source(
     file_path: &Path,
     source: String,
-) -> Result<(resolved_ast::SourceFile, SourceMap), (Vec<CompileError>, SourceMap)> {
+) -> Result<Resolved, (Vec<CompileError>, SourceMap)> {
     resolve_sources(
         file_path,
         &HashMap::from([(file_path.to_path_buf(), source)]),
@@ -1757,7 +1764,7 @@ pub fn resolve_source(
 pub fn resolve_sources(
     file_path: &Path,
     sources: &HashMap<PathBuf, String>,
-) -> Result<(resolved_ast::SourceFile, SourceMap), (Vec<CompileError>, SourceMap)> {
+) -> Result<Resolved, (Vec<CompileError>, SourceMap)> {
     let mut resolver = Resolver::new();
     resolver.source_overrides = sources
         .iter()
@@ -1771,7 +1778,7 @@ pub fn resolve_sources(
     let result = resolve_impl(&mut resolver, file_path);
     let source_map = resolver.source_map;
     match result {
-        Ok(source) => Ok((source, source_map)),
+        Ok(ast) => Ok(Resolved { ast, source_map }),
         Err(errors) => Err((errors, source_map)),
     }
 }

@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::error::{CompileError, SourceMap};
-use crate::{codegen, mangled_ast, resolve, tree_ir, tree_ir_opt, typed_ast};
+use crate::resolve::{self, Resolved};
+use crate::{codegen, mangled_ast, tree_ir, tree_ir_opt, typed_ast};
 
 /// Runs a compiler entry point on a stack sized for recursive type checking.
 /// A long-lived caller can run its entire request loop here.
@@ -17,15 +18,24 @@ pub fn with_compiler_stack<T: Send + 'static>(entry: impl FnOnce() -> T + Send +
         .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
-/// Resolves and type-checks a Solar program on the calling thread.
+/// Resolves a program from disk and passes it to [`compile`].
 /// See [`with_compiler_stack`] for sizing the stack at an application's entry point.
-pub fn compile(file_path: &Path) -> Result<Typed, (Vec<CompileError>, SourceMap)> {
-    let (resolved, source_map) = resolve::resolve(file_path)?;
-    let typed = typed_ast::lower(&resolved).map_err(|e| (vec![e], source_map.clone()))?;
-    typed
-        .validate_entry_point(source_map.root_file_id())
-        .map_err(|error| (vec![error], source_map.clone()))?;
-    Ok(Typed { typed, source_map })
+pub fn compile_file(file_path: &Path) -> Result<Typed, (Vec<CompileError>, SourceMap)> {
+    resolve::resolve(file_path).and_then(compile)
+}
+
+/// Type-checks the output of [`resolve::resolve`] and validates the root entry point.
+/// The typed program and any diagnostics use the supplied source map.
+pub fn compile(resolved: Resolved) -> Result<Typed, (Vec<CompileError>, SourceMap)> {
+    let Resolved { ast, source_map } = resolved;
+    let typed = typed_ast::lower(&ast).and_then(|typed| {
+        typed.validate_entry_point(source_map.root_file_id())?;
+        Ok(typed)
+    });
+    match typed {
+        Ok(typed) => Ok(Typed { typed, source_map }),
+        Err(error) => Err((vec![error], source_map)),
+    }
 }
 
 /// A resolved and type-checked program.
