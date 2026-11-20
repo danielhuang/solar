@@ -859,3 +859,20 @@ pub method unlock(self: AsyncFileDesc) { self.0.unlock(); }
 pub method read_entries(self: AsyncFileDesc) -> &[file::DirEntry] {
 	self.0.read_entries()
 }
+
+/// A coroutine handle parameterized by its yield and completion types.
+pub struct Box#[T, R] { resume: fn() -> CoroutineState#[T, R] }
+
+/// Wraps a coroutine without resuming it.
+pub fn Box::#[C](co: C) {
+	Box {
+		resume: \ {
+			co.resume()
+		},
+	}
+}
+
+/// Resumes the wrapped coroutine and returns its yielded or completed value.
+pub method resume#[T, R](self: &Box#[T, R]) {
+	(self@.resume)()
+}

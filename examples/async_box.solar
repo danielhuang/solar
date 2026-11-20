@@ -1,0 +1,7 @@
+fn main() {
+	async::run(\_ {
+		async::Box(coroutine {
+			await AsyncFileDesc(file::stdout()).write("test"&);
+		})
+	});
+}
