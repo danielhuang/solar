@@ -1226,3 +1226,42 @@ fn maybe_zeroed_paired_reflection_cannot_expose_invalid_values() {
 fn maybe_zeroed_value_is_private() {
     compile_with_pipeline(&fixture("maybe_zeroed_private_value.solar"));
 }
+
+#[test]
+fn omitted_struct_arguments_report_missing_or_conflicting_types() {
+    let directory = tempdir::TempDir::new("solar-struct-inference").unwrap();
+    let path = directory.path().join("main.solar");
+    for (source, message) in [
+        (
+            "struct Tag#[T] {} fn main() { let value = Tag {}; }",
+            "could not infer type argument `T` for struct `Tag`",
+        ),
+        (
+            "struct Pair#[T] { first: T, second: T } fn main() { let value = Pair { second: 1, first: true }; }",
+            "conflicting type arguments for struct `Pair`",
+        ),
+        (
+            "struct Pair#[T](T, T); fn main() { Pair(true, 1); }",
+            "conflicting type arguments for struct `Pair`",
+        ),
+        (
+            "struct Pair#[T, U](T, U); fn main() { Pair#[Int](1, 2); }",
+            "expected 2 type arguments, got 1",
+        ),
+        (
+            "struct Holder#[T] { f: fn(T) } fn main() { let value = Holder { f: \\x {} }; }",
+            "could not infer type argument `T` for struct `Holder`",
+        ),
+    ] {
+        std::fs::write(&path, source).unwrap();
+        let Err((errors, map)) = solar::pipeline::compile(&path) else {
+            panic!("unexpectedly accepted {source}");
+        };
+        assert!(
+            error_chain(&errors[0]).contains(message),
+            "{source}: {}",
+            error_chain(&errors[0])
+        );
+        assert_eq!(Some(errors[0].span.file_id), map.root_file_id());
+    }
+}

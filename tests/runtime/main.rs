@@ -1618,3 +1618,13 @@ fn copy_constructors_release() {
         "passed\n"
     );
 }
+
+#[test]
+fn struct_inference() {
+    let path = fixture("struct_inference.solar");
+    assert_eq!(run(&path, "struct_inference"), "passed\n");
+    assert_eq!(
+        test_utils::run_release_file(&path, "struct_inference"),
+        "passed\n"
+    );
+}

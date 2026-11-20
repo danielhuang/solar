@@ -1,0 +1,58 @@
+struct ResumeBox#[Y, R] { resume: fn() -> CoroutineState#[Y, R] }
+
+fn boxed#[C](co: C) { ResumeBox { resume: \ { co.resume() } } }
+
+struct Pair#[T, U](T, U);
+
+struct Mapping#[T, R] { input: T, convert: fn(T) -> R }
+
+type Predicate#[T] = Mapping#[T, Bool];
+
+struct Callback#[T, R] { apply: fn(T, T) -> R }
+
+struct OptionalRef#[T] { value: &?T }
+
+struct Counted#[T](T, Int);
+
+fn#[T] Counted#[T]::(old: &Counted#[T]) -> Counted#[T] {
+	Counted(old@.0, old@.1 + 1)
+}
+
+struct Tag#[T] {}
+
+static calls: Int = 0;
+
+fn tick() -> Int {
+	calls = calls + 1;
+	calls
+}
+
+fn main() {
+	let boxed_co = boxed(coroutine { yield 4; true });
+	let resume: fn() -> CoroutineState#[Int, Bool] = boxed_co.resume;
+	match resume() {
+		CoroutineState#[Int, Bool]::Yield(value) => assert(value == 4),
+		_ => assert(false),
+	};
+	match resume() {
+		CoroutineState#[Int, Bool]::Complete(value) => assert(value),
+		_ => assert(false),
+	};
+
+	let pair = Pair(tick(), Pair(tick(), true));
+	let check: Pair#[Int, Pair#[Int, Bool]] = pair;
+	assert(check.0 == 1 && check.1.0 == 2 && calls == 2);
+	let mapping = Predicate { convert: \x x > 0, input: pair.0 };
+	let convert: fn(Int) -> Bool = mapping.convert;
+	assert(convert(mapping.input));
+	let cb = Callback { apply: \x: Int, y x == y };
+	let equal: fn(Int, Int) -> Bool = cb.apply;
+	assert(equal(3, 3));
+	let reference = OptionalRef { value: pair.0& };
+	assert(reference.value@ == 1);
+	let original = Counted(true, 0);
+	let copied = Counted(original&);
+	assert(copied.0 && copied.1 == 1);
+	let tag: Tag#[Int] = Tag {};
+	println("passed"&);
+}

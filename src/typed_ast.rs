@@ -9,6 +9,7 @@ use std::rc::Rc;
 
 mod coroutine;
 mod overlap;
+mod struct_literal;
 
 /// Source-level definition identity.
 pub use crate::ast::DefId;
@@ -3726,7 +3727,11 @@ impl<'a> Lowerer<'a> {
                 }
             }
             ast::Type::NullableReference(inner) => {
-                if let Type::NullableRef(c_inner) | Type::NullableRefUnsized(c_inner) = concrete
+                // A non-null reference can initialize a nullable reference.
+                if let Type::NullableRef(c_inner)
+                | Type::NullableRefUnsized(c_inner)
+                | Type::Ref(c_inner)
+                | Type::RefUnsized(c_inner) = concrete
                     && !self.try_unify_type(inner, c_inner, type_params, bindings)
                 {
                     return false;
@@ -5393,11 +5398,7 @@ impl<'a> Lowerer<'a> {
             ast::StatementKind::Let { pattern, ty, value } => {
                 let (resolved_ty, lowered) = if let Some(ty) = ty {
                     let expected = self.resolve_ast_type(ty)?;
-                    let lowered = if Self::has_infer_params(value) {
-                        self.lower_expr_with_expected(value, &expected)?
-                    } else {
-                        self.lower_expr(value)?
-                    };
+                    let lowered = self.lower_expr_with_expected(value, &expected)?;
                     let coerced = self.try_coerce(lowered, &expected);
                     if coerced.ty != expected {
                         return Err(CompileError::new(
@@ -6151,11 +6152,15 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_expr(&mut self, expr: &ast::Expr) -> Result<Expr, CompileError> {
-        self.lower_expr_inner(expr)
+        self.lower_expr_inner(expr, None)
             .map_err(|error| Self::locate_unspanned_error(error, expr.span))
     }
 
-    fn lower_expr_inner(&mut self, expr: &ast::Expr) -> Result<Expr, CompileError> {
+    fn lower_expr_inner(
+        &mut self,
+        expr: &ast::Expr,
+        expected: Option<&Type>,
+    ) -> Result<Expr, CompileError> {
         match &expr.kind {
             ast::ExprKind::Identifier(name) => {
                 let source_name = match name {
@@ -6507,65 +6512,16 @@ impl<'a> Lowerer<'a> {
                         _ => None,
                     };
                     if let Some((def, struct_type_args)) = tuple_def {
-                        let tuple_name = &def.name;
                         if !kwargs.is_empty() {
                             return Err(reject_kwargs(expr.span));
                         }
-                        let id = self.resolve_struct_name(&def, &struct_type_args)?;
-                        let struct_def = self.lowered_structs.get(&id).unwrap().clone();
-                        if arguments.len() == 1 {
-                            let ty = Type::Struct(id.clone());
-                            let expected = Type::Ref(Box::new(ty.clone()));
-                            if self.lower_expr(&arguments[0])?.ty == expected {
-                                let owner = self.concrete_type_to_ast_type(&ty);
-                                let entries =
-                                    self.associated_call_entries(&owner, "", expr.span)?;
-                                if !entries.is_empty() {
-                                    return self.resolve_overloaded_call(
-                                        CandidateSource::Entries(entries),
-                                        "copy constructor",
-                                        arguments,
-                                        kwargs,
-                                        &[],
-                                        expr.span,
-                                    );
-                                }
-                            }
-                        }
-                        if arguments.len() != struct_def.fields.len() {
-                            return Err(CompileError::new(
-                                format!(
-                                    "{tuple_name}: expected {} arguments, got {}",
-                                    struct_def.fields.len(),
-                                    arguments.len()
-                                ),
-                                expr.span,
-                            ));
-                        }
-                        let mut fields = Vec::with_capacity(arguments.len());
-                        for (argument, field) in arguments.iter().zip(struct_def.fields.iter()) {
-                            self.check_field_visibility(&id, &field.name, expr.span)?;
-                            let lowered = self.lower_expr(argument)?;
-                            let value = self.try_coerce(lowered, &field.ty);
-                            if value.ty != field.ty {
-                                return Err(CompileError::new(
-                                    format!(
-                                        "type mismatch in field `{}` of {tuple_name}: expected {}, got {}",
-                                        field.name, field.ty, value.ty
-                                    ),
-                                    value.span,
-                                ));
-                            }
-                            fields.push(FieldInit {
-                                name: field.name.clone(),
-                                value,
-                            });
-                        }
-                        return Ok(Expr {
-                            ty: Type::Struct(id.clone()),
-                            kind: ExprKind::StructLiteral { id, fields },
-                            span: expr.span,
-                        });
+                        return self.lower_tuple_constructor(
+                            &def,
+                            &struct_type_args,
+                            arguments,
+                            expected,
+                            expr.span,
+                        );
                     }
                 }
                 // Associated functions use the owner type as their namespace.
@@ -6933,76 +6889,12 @@ impl<'a> Lowerer<'a> {
                 type_args,
                 fields,
             } => {
-                let resolved_name = self.resolve_struct_name(name, type_args)?;
-                let struct_def = self
-                    .lowered_structs
-                    .get(&resolved_name)
-                    .ok_or_else(|| {
-                        CompileError::new(format!("undefined struct: {name}"), expr.span)
-                    })?
-                    .clone();
-
-                let expected_fields: Vec<(String, Type)> = struct_def
-                    .fields
+                let inputs = fields
                     .iter()
-                    .map(|f| (f.name.clone(), f.ty.clone()))
-                    .collect();
-
-                let struct_ast_span = self
-                    .structs
-                    .get(&resolved_name.def)
-                    .map(|s| s.span)
-                    .unwrap_or_default();
-
-                for (ef_name, _) in &expected_fields {
-                    if !fields.iter().any(|f| f.name == *ef_name) {
-                        return Err(CompileError::new(
-                            format!("missing field `{ef_name}` in {name} literal"),
-                            expr.span,
-                        )
-                        .with_label("struct defined here", struct_ast_span));
-                    }
-                }
-                for fi in fields {
-                    if !expected_fields.iter().any(|(n, _)| *n == fi.name) {
-                        return Err(CompileError::new(
-                            format!("unknown field `{}` in {name} literal", fi.name),
-                            fi.value.span,
-                        )
-                        .with_label("struct defined here", struct_ast_span));
-                    }
-                }
-
-                let mut lowered_fields: Vec<FieldInit> = Vec::new();
-                for fi in fields {
-                    self.check_field_visibility(&resolved_name, &fi.name, expr.span)?;
-                    let lowered = self.lower_expr(&fi.value)?;
-                    let (_, expected_ty) =
-                        expected_fields.iter().find(|(n, _)| *n == fi.name).unwrap();
-                    let coerced = self.try_coerce(lowered, expected_ty);
-                    if coerced.ty != *expected_ty {
-                        return Err(CompileError::new(
-                            format!(
-                                "type mismatch in field `{}` of {name}: expected {expected_ty}, got {}",
-                                fi.name, coerced.ty
-                            ),
-                            coerced.span,
-                        ).with_label("struct defined here", struct_ast_span));
-                    }
-                    lowered_fields.push(FieldInit {
-                        name: fi.name.clone(),
-                        value: coerced,
-                    });
-                }
-
-                Ok(Expr {
-                    ty: Type::Struct(resolved_name.clone()),
-                    kind: ExprKind::StructLiteral {
-                        id: resolved_name.clone(),
-                        fields: lowered_fields,
-                    },
-                    span: expr.span,
-                })
+                    .map(|f| (f.name.as_str(), &f.value))
+                    .collect::<Vec<_>>();
+                let args = self.struct_construction_args(name, type_args, expected);
+                self.lower_struct_literal(name, &args, &inputs, expr.span, None)
             }
             ast::ExprKind::Slice { object, start, end } => {
                 let obj = self.lower_expr(object)?;
@@ -7519,28 +7411,31 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Lower an expression with an expected type hint. This is used to propagate
-    /// expected types into closures for parameter type inference.
+    /// Use a known destination type when checking a closure or struct constructor.
     fn lower_expr_with_expected(
         &mut self,
         expr: &ast::Expr,
         expected: &Type,
     ) -> Result<Expr, CompileError> {
-        if let ast::ExprKind::Closure {
-            parameters,
-            return_type,
-            body,
-        } = &expr.kind
+        if let (
+            ast::ExprKind::Closure {
+                parameters,
+                return_type,
+                body,
+            },
+            Type::Function { params, .. },
+        ) = (&expr.kind, expected)
         {
-            self.lower_closure_with_expected(
+            self.lower_closure_with_params(
                 expr.span,
                 parameters,
                 return_type.as_ref(),
                 body,
-                Some(expected),
+                Some(params),
             )
         } else {
-            self.lower_expr(expr)
+            self.lower_expr_inner(expr, Some(expected))
+                .map_err(|error| Self::locate_unspanned_error(error, expr.span))
         }
     }
 
@@ -8700,24 +8595,18 @@ impl<'a> Lowerer<'a> {
         return_type: Option<&ast::Type>,
         body: &[ast::Statement],
     ) -> Result<Expr, CompileError> {
-        self.lower_closure_with_expected(span, parameters, return_type, body, None)
+        self.lower_closure_with_params(span, parameters, return_type, body, None)
     }
 
-    fn lower_closure_with_expected(
+    fn lower_closure_with_params(
         &mut self,
         span: ast::SourceSpan,
         parameters: &[ast::Parameter],
         return_type: Option<&ast::Type>,
         body: &[ast::Statement],
-        expected_type: Option<&Type>,
+        expected_params: Option<&[Type]>,
     ) -> Result<Expr, CompileError> {
         let saved_coroutine = self.coroutine_context.take();
-        // Extract expected param types from expected function type
-        let expected_params: Option<&Vec<Type>> = expected_type.and_then(|t| match t {
-            Type::Function { params, .. } => Some(params),
-            _ => None,
-        });
-
         let synthetic_name = format!("__closure_{}", self.closure_counter);
         self.closure_counter += 1;
 
