@@ -216,6 +216,33 @@ fn coroutine_type_errors() {
 }
 
 #[test]
+fn recursive_coroutine_requires_a_consistent_completion_type() {
+    let directory = tempdir::TempDir::new("solar-recursive-return").unwrap();
+    let path = directory.path().join("main.solar");
+    for (tail, expected) in [
+        (
+            "let local = if flag { 1 } else { 2 }; await async::Box(recur(flag))",
+            "cannot infer a recursive coroutine's return type",
+        ),
+        (
+            "if flag { 1 } else { let local = await async::Box(recur(flag)); true }",
+            "if expression branch type mismatch",
+        ),
+    ] {
+        std::fs::write(
+            &path,
+            format!("fn recur(flag: Bool) {{ coroutine {{ yield 0; {tail} }} }} fn main() {{}}"),
+        )
+        .unwrap();
+        let (errors, _) = solar::pipeline::compile(&path).err().unwrap();
+        assert!(
+            errors.iter().any(|e| error_chain(e).contains(expected)),
+            "{errors:?}"
+        );
+    }
+}
+
+#[test]
 fn await_type_errors() {
     let directory = tempdir::TempDir::new("solar-await-types").unwrap();
     let path = directory.path().join("main.solar");

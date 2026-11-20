@@ -4261,7 +4261,12 @@ impl<'a> Lowerer<'a> {
             .collect();
         for (id, entries) in overlapping_mains {
             let span = entries[0].ast_def.span;
-            let call = self.resolve_call_with_parameter_types(entries, "main", &[], span)?;
+            let call = self.resolve_call_with_parameter_types(
+                CandidateSource::Entries(entries),
+                "main",
+                &[],
+                span,
+            )?;
             let ExprKind::Call { function, .. } = call.kind else {
                 unreachable!()
             };
@@ -4346,7 +4351,7 @@ impl<'a> Lowerer<'a> {
                 }
                 if !eligible.is_empty() {
                     let call = self.resolve_call_with_parameter_types(
-                        eligible,
+                        CandidateSource::Entries(eligible),
                         "copy constructor",
                         &[expected],
                         span,
@@ -5385,6 +5390,45 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// In coroutine return position, each reachable tail can establish the
+    /// completion type before a later branch resumes the same coroutine.
+    fn lower_body(
+        &mut self,
+        body: &[ast::Statement],
+        coroutine_return: bool,
+    ) -> Result<Vec<Statement>, CompileError> {
+        let mut lowered = Vec::new();
+        for (i, stmt) in body.iter().enumerate() {
+            if coroutine_return
+                && i + 1 == body.len()
+                && !lowered.iter().any(statement_diverges)
+                && let ast::StatementKind::Expression(expr) = &stmt.kind
+            {
+                lowered.push(Statement {
+                    kind: StatementKind::Expression(self.lower_expr_in_position(expr, true)?),
+                    span: stmt.span,
+                });
+            } else {
+                lowered.extend(self.lower_statement(stmt)?);
+            }
+        }
+        if coroutine_return {
+            self.record_coroutine_return(&body_type(&lowered));
+        }
+        Ok(lowered)
+    }
+
+    fn lower_scoped_body(
+        &mut self,
+        body: &[ast::Statement],
+        coroutine_return: bool,
+    ) -> Result<Vec<Statement>, CompileError> {
+        self.push_scope();
+        let lowered = self.lower_body(body, coroutine_return);
+        self.pop_scope();
+        lowered
+    }
+
     fn lower_statement(&mut self, stmt: &ast::Statement) -> Result<Vec<Statement>, CompileError> {
         self.lower_statement_inner(stmt)
             .map_err(|error| Self::locate_unspanned_error(error, stmt.span))
@@ -5712,12 +5756,12 @@ impl<'a> Lowerer<'a> {
                 if self.in_try_block.is_some() {
                     return self.lower_try_return(expr, stmt.span);
                 }
-                let lowered = self.lower_expr(expr)?;
+                let lowered =
+                    self.lower_expr_in_position(expr, self.coroutine_context.is_some())?;
                 if self.current_return_type.is_none() {
                     // Inferred-return-type context: record for validation against
                     // the inferred type once the whole body is lowered.
                     self.inference_returns.push((lowered.ty.clone(), stmt.span));
-                    self.record_coroutine_return(&lowered.ty);
                 }
                 let lowered = if let Some(ref expected) = self.current_return_type {
                     let coerced = self.try_coerce(lowered, expected);
@@ -6028,7 +6072,7 @@ impl<'a> Lowerer<'a> {
                 if signatures.iter().all(|params| params == &signatures[0]) {
                     let params = signatures[0].clone();
                     let selected = self.resolve_call_with_parameter_types(
-                        entries,
+                        CandidateSource::Entries(entries),
                         def.name.as_str(),
                         &params,
                         span,
@@ -6152,14 +6196,28 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_expr(&mut self, expr: &ast::Expr) -> Result<Expr, CompileError> {
-        self.lower_expr_inner(expr, None)
-            .map_err(|error| Self::locate_unspanned_error(error, expr.span))
+        self.lower_expr_in_position(expr, false)
+    }
+
+    fn lower_expr_in_position(
+        &mut self,
+        expr: &ast::Expr,
+        coroutine_return: bool,
+    ) -> Result<Expr, CompileError> {
+        let value = self
+            .lower_expr_inner(expr, None, coroutine_return)
+            .map_err(|error| Self::locate_unspanned_error(error, expr.span))?;
+        if coroutine_return {
+            self.record_coroutine_return(&value.ty);
+        }
+        Ok(value)
     }
 
     fn lower_expr_inner(
         &mut self,
         expr: &ast::Expr,
         expected: Option<&Type>,
+        coroutine_return: bool,
     ) -> Result<Expr, CompileError> {
         match &expr.kind {
             ast::ExprKind::Identifier(name) => {
@@ -6433,10 +6491,10 @@ impl<'a> Lowerer<'a> {
                 })
             }
             ast::ExprKind::Match { scrutinee, arms } => {
-                self.lower_match(expr.span, scrutinee, arms)
+                self.lower_match(expr.span, scrutinee, arms, coroutine_return)
             }
             ast::ExprKind::MatchReflect { ty, arms } => {
-                self.lower_match_reflect(expr.span, ty, arms)
+                self.lower_match_reflect(expr.span, ty, arms, coroutine_return)
             }
             ast::ExprKind::Call {
                 function,
@@ -7274,24 +7332,8 @@ impl<'a> Lowerer<'a> {
                         expr.span,
                     ));
                 }
-                self.push_scope();
-                let lowered_then: Vec<Statement> = then_body
-                    .iter()
-                    .map(|s| self.lower_statement(s))
-                    .collect::<Result<Vec<Vec<Statement>>, CompileError>>()?
-                    .into_iter()
-                    .flatten()
-                    .collect();
-                self.pop_scope();
-                self.push_scope();
-                let lowered_else: Vec<Statement> = else_body
-                    .iter()
-                    .map(|s| self.lower_statement(s))
-                    .collect::<Result<Vec<Vec<Statement>>, CompileError>>()?
-                    .into_iter()
-                    .flatten()
-                    .collect();
-                self.pop_scope();
+                let lowered_then = self.lower_scoped_body(then_body, coroutine_return)?;
+                let lowered_else = self.lower_scoped_body(else_body, coroutine_return)?;
 
                 let then_ty = body_type(&lowered_then);
                 let else_ty = body_type(&lowered_else);
@@ -7320,15 +7362,7 @@ impl<'a> Lowerer<'a> {
                 })
             }
             ast::ExprKind::Block(stmts) => {
-                self.push_scope();
-                let lowered: Vec<Statement> = stmts
-                    .iter()
-                    .map(|s| self.lower_statement(s))
-                    .collect::<Result<Vec<Vec<Statement>>, CompileError>>()?
-                    .into_iter()
-                    .flatten()
-                    .collect();
-                self.pop_scope();
+                let lowered = self.lower_scoped_body(stmts, coroutine_return)?;
                 let ty = body_type(&lowered);
                 Ok(Expr {
                     ty,
@@ -7337,16 +7371,11 @@ impl<'a> Lowerer<'a> {
                 })
             }
             ast::ExprKind::UnsafeBlock(stmts) => {
-                self.push_scope();
                 let previous_unsafe_depth = self.unsafe_depth;
                 self.unsafe_depth = previous_unsafe_depth + 1;
-                let lowered = stmts
-                    .iter()
-                    .map(|statement| self.lower_statement(statement))
-                    .collect::<Result<Vec<Vec<Statement>>, CompileError>>();
+                let lowered = self.lower_scoped_body(stmts, coroutine_return);
                 self.unsafe_depth = previous_unsafe_depth;
-                let lowered: Vec<Statement> = lowered?.into_iter().flatten().collect();
-                self.pop_scope();
+                let lowered = lowered?;
                 let ty = body_type(&lowered);
                 Ok(Expr {
                     ty,
@@ -7434,7 +7463,7 @@ impl<'a> Lowerer<'a> {
                 Some(params),
             )
         } else {
-            self.lower_expr_inner(expr, Some(expected))
+            self.lower_expr_inner(expr, Some(expected), false)
                 .map_err(|error| Self::locate_unspanned_error(error, expr.span))
         }
     }
@@ -7444,10 +7473,11 @@ impl<'a> Lowerer<'a> {
         span: ast::SourceSpan,
         scrutinee: &ast::Expr,
         arms: &[ast::MatchArm],
+        coroutine_return: bool,
     ) -> Result<Expr, CompileError> {
         let lowered_scrutinee = self.lower_expr(scrutinee)?;
         if lowered_scrutinee.ty.is_integer() {
-            return self.lower_integer_match(span, lowered_scrutinee, arms);
+            return self.lower_integer_match(span, lowered_scrutinee, arms, coroutine_return);
         }
         let enum_name = match &lowered_scrutinee.ty {
             Type::Enum(name) => name.clone(),
@@ -7569,7 +7599,7 @@ impl<'a> Lowerer<'a> {
                 }
                 _ => {}
             }
-            let lowered_body_expr = self.lower_expr(&arm.body)?;
+            let lowered_body_expr = self.lower_expr_in_position(&arm.body, coroutine_return)?;
             let body_stmts = vec![Statement {
                 kind: StatementKind::Expression(lowered_body_expr),
                 span: arm.body.span,
@@ -7632,6 +7662,7 @@ impl<'a> Lowerer<'a> {
         span: ast::SourceSpan,
         scrutinee: Expr,
         arms: &[ast::MatchArm],
+        coroutine_return: bool,
     ) -> Result<Expr, CompileError> {
         let scrutinee_ty = scrutinee.ty.clone();
         let mut seen_literals = HashSet::new();
@@ -7691,7 +7722,7 @@ impl<'a> Lowerer<'a> {
                 }
             };
 
-            let lowered_body_expr = self.lower_expr(&arm.body)?;
+            let lowered_body_expr = self.lower_expr_in_position(&arm.body, coroutine_return)?;
             let arm_ty = lowered_body_expr.ty.clone();
             let body = vec![Statement {
                 kind: StatementKind::Expression(lowered_body_expr),
@@ -7744,6 +7775,7 @@ impl<'a> Lowerer<'a> {
         span: ast::SourceSpan,
         ty: &ast::Type,
         arms: &[ast::ReflectArm],
+        coroutine_return: bool,
     ) -> Result<Expr, CompileError> {
         let resolved = self.resolve_ast_type(ty).map_err(|error| {
             if let ast::Type::Named(name) = ty
@@ -7817,7 +7849,7 @@ impl<'a> Lowerer<'a> {
                 span,
             ));
         };
-        let result = self.lower_expr(&arm.body)?;
+        let result = self.lower_expr_in_position(&arm.body, coroutine_return)?;
         Ok(result)
     }
 

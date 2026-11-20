@@ -860,7 +860,8 @@ pub method read_entries(self: AsyncFileDesc) -> &[file::DirEntry] {
 	self.0.read_entries()
 }
 
-/// A coroutine handle parameterized by its yield and completion types.
+/// An owned, awaitable coroutine handle with fixed size for each yield and
+/// completion type. Use it to await a recursive coroutine.
 pub struct Box#[T, R] { resume: fn() -> CoroutineState#[T, R] }
 
 /// Wraps a coroutine without resuming it.

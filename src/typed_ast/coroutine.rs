@@ -396,49 +396,71 @@ impl Lowerer<'_> {
         if value.ty == Type::Never {
             return Ok(value);
         }
-        let info = match &value.ty {
-            Type::Struct(id) => self
-                .coroutine_types
-                .get(id)
-                .map(|info| (id.clone(), info.clone())),
-            _ => None,
-        };
-        let Some((id, info)) = info else {
+        let Type::Struct(id) = &value.ty else {
             return Err(CompileError::new(
                 format!("await requires an owned coroutine value, got {}", value.ty),
                 span,
             ));
         };
-        // An unfinished factory is on the current lowering stack. Awaiting its
-        // result would close an inline frame cycle, including mutual recursion.
-        // Reject it before asking for inferred types or constructing its layout.
-        if info.initial.is_none() {
+        if !value.ty.is_sized(&self.lowered_structs) {
             return Err(CompileError::new(
-                "recursive await is not allowed: the coroutine would contain itself inline".into(),
+                format!("await cannot store unsized type {}", value.ty),
                 span,
             ));
         }
-        if info.resume.is_some() {
-            return Err(CompileError::new(
-                "await requires a coroutine without a resume parameter".into(),
-                span,
-            ));
+        if let Some(info) = self.coroutine_types.get(id) {
+            // Awaiting an unfinished factory closes an inline frame cycle.
+            if info.initial.is_none() {
+                return Err(CompileError::new(
+                    "recursive await is not allowed: the coroutine would contain itself inline"
+                        .into(),
+                    span,
+                ));
+            }
+            if info.resume.is_some() {
+                return Err(CompileError::new(
+                    "await requires a coroutine without a resume parameter".into(),
+                    span,
+                ));
+            }
         }
-        let yielded = info.yielded.unwrap();
-        let returned = info.returned.unwrap();
-        self.record_coroutine_yield(&yielded, span)?;
-        let outcome = self.ensure_enum_monomorphized(
-            &DefId::new(ast::STDLIB_FILE, "CoroutineState"),
-            &[
-                self.concrete_type_to_ast_type(&yielded),
-                self.concrete_type_to_ast_type(&returned),
-            ],
+
+        // The state machine calls resume with the address of its owned child slot.
+        let receiver = Type::Ref(Box::new(value.ty.clone()));
+        let call = self.resolve_call_with_parameter_types(
+            CandidateSource::Methods,
+            "resume",
+            std::slice::from_ref(&receiver),
+            span,
         )?;
+        let ExprKind::Call {
+            function,
+            arguments,
+        } = call.kind
+        else {
+            unreachable!()
+        };
+        if !matches!(arguments.as_slice(), [arg] if arg.ty == receiver) {
+            return Err(CompileError::new(
+                "await requires resume to take only a reference to the awaited value".into(),
+                span,
+            ));
+        }
+        let outcome = match call.ty {
+            Type::Enum(id) if id.def == DefId::new(ast::STDLIB_FILE, "CoroutineState") => id,
+            ty => {
+                return Err(CompileError::new(
+                    format!("await requires resume to return CoroutineState, got {ty}"),
+                    span,
+                ));
+            }
+        };
+        self.record_coroutine_yield(&outcome.args[0], span)?;
         Ok(Expr {
-            ty: returned,
+            ty: outcome.args[1].clone(),
             kind: ExprKind::Await {
                 coroutine: Box::new(value),
-                resume: self.coroutine_method_id(&id, "resume"),
+                resume: function,
                 outcome,
             },
             span,
@@ -501,10 +523,7 @@ impl Lowerer<'_> {
         if let Some(p) = parameter {
             self.define_var(pattern_name(&p.pattern).clone(), resume.clone());
         }
-        let lowered = body
-            .iter()
-            .map(|s| self.lower_statement(s))
-            .collect::<Result<Vec<_>, _>>();
+        let lowered = self.lower_body(body, true);
         self.nested_function_defs.pop();
         self.pop_scope();
         let captures = self.capture_contexts.pop().unwrap().captures;
@@ -515,7 +534,7 @@ impl Lowerer<'_> {
         let returns = std::mem::replace(&mut self.inference_returns, saved_inference_returns);
         self.current_return_type_span = saved_return_span;
         self.unsafe_depth = saved_unsafe;
-        let body: Vec<_> = lowered?.into_iter().flatten().collect();
+        let body = lowered?;
         let returned = inferred_return_type(&body, &returns);
         if !returned.is_sized(&self.lowered_structs) {
             return Err(CompileError::new(

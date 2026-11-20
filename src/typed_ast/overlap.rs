@@ -24,7 +24,7 @@ impl Lowerer<'_> {
     /// Select an implicitly invoked function without manufacturing a runtime value.
     pub(super) fn resolve_call_with_parameter_types(
         &mut self,
-        entries: Vec<FunctionEntry>,
+        source: CandidateSource,
         name: &str,
         parameters: &[Type],
         span: ast::SourceSpan,
@@ -42,14 +42,7 @@ impl Lowerer<'_> {
                 }
             })
             .collect();
-        let result = self.resolve_overloaded_call(
-            CandidateSource::Entries(entries),
-            name,
-            &arguments,
-            &[],
-            &[],
-            span,
-        );
+        let result = self.resolve_overloaded_call(source, name, &arguments, &[], &[], span);
         self.pop_scope();
         result
     }

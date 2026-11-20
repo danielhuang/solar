@@ -1,0 +1,15 @@
+fn main() {
+	println(async::run(\_ factorial(10u)))
+}
+
+fn factorial(n: Uint) {
+	coroutine {
+		await async::yield();
+
+		if n == 0u {
+			1u
+		} else {
+			n * await async::Box(factorial(n - 1u))
+		}
+	}
+}

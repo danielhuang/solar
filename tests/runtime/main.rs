@@ -85,6 +85,14 @@ fn coroutine_await_release() {
 }
 
 #[test]
+fn async_box_recursion() {
+    assert_eq!(
+        test_utils::run_release_file(&fixture("async_box_recursion.solar"), "async_box_recursion"),
+        "3628800\n"
+    );
+}
+
+#[test]
 fn coroutine_control() {
     assert_eq!(
         run(&fixture("coroutine_control.solar"), "coroutine_control"),
