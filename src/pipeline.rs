@@ -21,7 +21,7 @@ pub fn with_compiler_stack<T: Send + 'static>(entry: impl FnOnce() -> T + Send +
 /// Resolves a program from disk and passes it to [`compile`].
 /// See [`with_compiler_stack`] for sizing the stack at an application's entry point.
 pub fn compile_file(file_path: &Path) -> Result<Typed, (Vec<CompileError>, SourceMap)> {
-    resolve::resolve(file_path).and_then(compile)
+    resolve::resolve(file_path, crate::parser::parse_file).and_then(compile)
 }
 
 /// Type-checks the output of [`resolve::resolve`] and validates the root entry point.

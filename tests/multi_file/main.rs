@@ -110,6 +110,23 @@ fn diamond_dependency() {
 }
 
 #[test]
+fn resolve_uses_the_supplied_ast_for_a_shared_import() {
+    let shared = fixture("diamond/shared.solar").canonicalize().unwrap();
+    let mut loads = 0;
+    let (errors, _) = solar::resolve::resolve(&fixture("diamond/main.solar"), |path| {
+        let mut parsed = solar::parser::parse_file(path)?;
+        if path == shared {
+            loads += 1;
+            parsed.ast.as_mut().unwrap().items.clear();
+        }
+        Ok(parsed)
+    })
+    .expect_err("the supplied AST exports no declarations");
+    assert_eq!(loads, 1);
+    assert!(errors[0].message.contains("is not exported"));
+}
+
+#[test]
 #[should_panic(expected = "field `hidden` is private")]
 fn private_field_access() {
     run(&fixture("private_field/main.solar"), "private_field");
@@ -217,7 +234,8 @@ fn imported_default_argument_resolves_its_type_alias() {
 #[test]
 fn missing_import_diagnostic_points_to_importing_module() {
     let path = fixture("missing_import_span/main.solar");
-    let (errors, source_map) = solar::resolve::resolve(&path).expect_err("missing import");
+    let (errors, source_map) =
+        solar::resolve::resolve(&path, solar::parser::parse_file).expect_err("missing import");
     let error = &errors[0];
     let (filename, _) = source_map
         .get(error.span.file_id)

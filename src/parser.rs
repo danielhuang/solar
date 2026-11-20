@@ -1,5 +1,7 @@
 use crate::ast::*;
 use std::fmt;
+use std::io;
+use std::path::Path;
 
 /// A syntax error reported by the parser.
 #[derive(Debug)]
@@ -41,6 +43,28 @@ impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}: {}", self.line + 1, self.column + 1, self.message)
     }
+}
+
+/// A Solar file's source text and the result of parsing it.
+#[derive(Debug)]
+pub struct ParsedSource {
+    /// Source text used for diagnostics.
+    pub source: String,
+    /// Syntax tree or syntax errors with positions in `source`.
+    pub ast: Result<SourceFile, Vec<ParseError>>,
+}
+
+impl ParsedSource {
+    /// Parses a source buffer and retains its text for diagnostics.
+    pub fn parse(source: String) -> Self {
+        let ast = parse(&source);
+        Self { source, ast }
+    }
+}
+
+/// Reads and parses a Solar file from disk.
+pub fn parse_file(path: &Path) -> io::Result<ParsedSource> {
+    std::fs::read_to_string(path).map(ParsedSource::parse)
 }
 
 /// Parses a Solar source file, returning located syntax and AST-conversion errors.
