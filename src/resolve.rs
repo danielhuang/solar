@@ -3,6 +3,7 @@ use crate::error::{CompileError, SourceMap};
 use crate::intrinsics::Intrinsic;
 use crate::parser;
 use crate::{desugared_ast, resolved_ast};
+use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -41,10 +42,10 @@ struct Export {
     def: DefId,
 }
 
-struct Resolver<'a> {
+struct Resolver<'a, S> {
     files: Vec<ParsedFile>,
     path_to_id: HashMap<PathBuf, FileId>,
-    load_ast: &'a mut dyn FnMut(&Path) -> io::Result<parser::ParsedSource>,
+    load_ast: &'a mut dyn FnMut(&Path) -> io::Result<S>,
     source_map: SourceMap,
     /// FileId of the stdlib root (lib.solar), if parsed.
     std_root_id: Option<FileId>,
@@ -54,8 +55,8 @@ struct Resolver<'a> {
     c_declarations: HashMap<FileId, crate::ast::SourceFile>,
 }
 
-impl<'a> Resolver<'a> {
-    fn new(load_ast: &'a mut dyn FnMut(&Path) -> io::Result<parser::ParsedSource>) -> Self {
+impl<'a, S: Borrow<parser::ParsedSource>> Resolver<'a, S> {
+    fn new(load_ast: &'a mut dyn FnMut(&Path) -> io::Result<S>) -> Self {
         Self {
             files: Vec::new(),
             path_to_id: HashMap::new(),
@@ -97,15 +98,17 @@ impl<'a> Resolver<'a> {
         let file_id = self.files.len() as FileId;
         self.path_to_id.insert(canonical.clone(), file_id);
 
+        let parsed = parsed.borrow();
         let filename = path.display().to_string();
-        self.source_map.add_file(file_id, filename, parsed.source);
+        self.source_map
+            .add_file(file_id, filename, parsed.source.clone());
 
-        let ast = parsed.ast.map_err(|errors| {
+        let ast = parsed.ast.as_ref().map_err(|errors| {
             errors
-                .into_iter()
+                .iter()
                 .map(|e| {
                     CompileError::new(
-                        e.message,
+                        e.message.clone(),
                         SourceSpan {
                             start: SourcePos {
                                 line: e.line as u32,
@@ -121,7 +124,7 @@ impl<'a> Resolver<'a> {
                 })
                 .collect::<Vec<_>>()
         })?;
-        let ast = desugared_ast::lower(&ast);
+        let ast = desugared_ast::lower(ast);
 
         self.files.push(ParsedFile {
             file_id,
@@ -1732,10 +1735,11 @@ pub struct Resolved {
 
 /// Resolves a Solar program using `load_ast` for each distinct Solar file,
 /// including standard-library files. Paths are canonicalized when possible.
+/// The loader may return an owned or shared [`parser::ParsedSource`].
 /// Pass [`parser::parse_file`] to read and parse files from disk.
-pub fn resolve(
+pub fn resolve<S: Borrow<parser::ParsedSource>>(
     file_path: &Path,
-    mut load_ast: impl FnMut(&Path) -> io::Result<parser::ParsedSource>,
+    mut load_ast: impl FnMut(&Path) -> io::Result<S>,
 ) -> Result<Resolved, (Vec<CompileError>, SourceMap)> {
     let mut resolver = Resolver::new(&mut load_ast);
     let result = resolve_impl(&mut resolver, file_path);
@@ -1775,7 +1779,7 @@ pub fn resolve_sources(
 }
 
 fn resolve_impl(
-    resolver: &mut Resolver,
+    resolver: &mut Resolver<impl Borrow<parser::ParsedSource>>,
     file_path: &Path,
 ) -> Result<resolved_ast::SourceFile, Vec<CompileError>> {
     let std_lib = Path::new(STDLIB_DIR).join("lib.solar");
@@ -1839,7 +1843,7 @@ fn resolve_impl(
 }
 
 /// Check for circular pub import re-export chains.
-fn check_circular_reexports(resolver: &Resolver) -> Result<(), Vec<CompileError>> {
+fn check_circular_reexports<S>(resolver: &Resolver<S>) -> Result<(), Vec<CompileError>> {
     let mut pub_import_edges: HashMap<FileId, Vec<(FileId, SourceSpan)>> = HashMap::new();
 
     for file in &resolver.files {

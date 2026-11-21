@@ -7,13 +7,15 @@ use solar::{
     error::{CompileError, SourceMap},
     fmt::format_source,
     intrinsics::Intrinsic,
+    parser::ParsedSource,
     resolve, typed_ast,
 };
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
     io::{self, BufRead, Write},
-    path::PathBuf,
-    sync::Arc,
+    path::{Path, PathBuf},
+    rc::Rc,
 };
 use tree_sitter::{Node, Parser};
 
@@ -40,12 +42,7 @@ fn serve() {
     let stdout = io::stdout();
     let mut output = stdout.lock();
     let mut documents = HashMap::<String, String>::new();
-    // Per-document analysis, replaced whenever the buffer changes. Resolving
-    // reparses the stdlib, so diagnostics, navigation, hover, and semantic
-    // tokens share one resolve and type-check per document revision. Type facts
-    // from the last successful revision survive failed edits for completion and
-    // inlay hints.
-    let mut cache = HashMap::<String, Document>::new();
+    let mut cache = DocumentCache::default();
     // Root document URI → every URI to which its last check published
     // diagnostics. Used to clear errors that disappear after an edit.
     let mut diagnostic_uris = HashMap::<String, HashMap<String, Vec<Value>>>::new();
@@ -138,7 +135,7 @@ fn serve() {
                 let target = uri.and_then(|uri| documents.get(uri).map(|text| (uri, text)));
                 let items = match (target, line, character) {
                     (Some((uri, text)), Some(line), Some(character)) => {
-                        let document = cached(&mut cache, uri, text);
+                        let document = cache.document(uri, text);
                         completions(text, line as u32, character as u32, uri, document)
                     }
                     _ => Vec::new(),
@@ -154,7 +151,7 @@ fn serve() {
                 let target = uri.and_then(|uri| documents.get(uri).map(|text| (uri, text)));
                 let result = match (target, line, character) {
                     (Some((uri, text)), Some(line), Some(character)) => {
-                        let document = cached(&mut cache, uri, text);
+                        let document = cache.document(uri, text);
                         signature_help(text, line as u32, character as u32, uri, document)
                     }
                     _ => None,
@@ -165,7 +162,7 @@ fn serve() {
                 let uri = params.pointer("/textDocument/uri").and_then(Value::as_str);
                 let data = match uri.and_then(|uri| documents.get(uri).map(|text| (uri, text))) {
                     Some((uri, text)) => {
-                        let document = cached(&mut cache, uri, text);
+                        let document = cache.document(uri, text);
                         semantic_tokens(text, document.analysis.as_ref())
                     }
                     None => Vec::new(),
@@ -181,7 +178,7 @@ fn serve() {
                 let target = uri.and_then(|uri| documents.get(uri).map(|text| (uri, text)));
                 let result = match (target, line, character) {
                     (Some((uri, text)), Some(line), Some(character)) => {
-                        let document = cached(&mut cache, uri, text);
+                        let document = cache.document(uri, text);
                         hover(text, line as u32, character as u32, document)
                     }
                     _ => None,
@@ -197,7 +194,7 @@ fn serve() {
                 let target = uri.and_then(|uri| documents.get(uri).map(|text| (uri, text)));
                 let result = match (target, line, character) {
                     (Some((uri, text)), Some(line), Some(character)) => {
-                        let document = cached(&mut cache, uri, text);
+                        let document = cache.document(uri, text);
                         definition(text, line as u32, character as u32, document)
                     }
                     _ => None,
@@ -210,7 +207,7 @@ fn serve() {
                 let target = uri.and_then(|uri| documents.get(uri).map(|text| (uri, text)));
                 let result = match target {
                     Some((uri, text)) => {
-                        let document = cached(&mut cache, uri, text);
+                        let document = cache.document(uri, text);
                         inlay_hints(text, document, range)
                     }
                     None => Vec::new(),
@@ -2598,40 +2595,39 @@ fn refresh_documents(
     output: &mut impl Write,
     changed_uri: &str,
     documents: &HashMap<String, String>,
-    cache: &mut HashMap<String, Document>,
+    cache: &mut DocumentCache,
     published: &mut HashMap<String, HashMap<String, Vec<Value>>>,
 ) {
-    let changed_path = file_uri_to_path(changed_uri);
+    let changed_path =
+        file_uri_to_path(changed_uri).map(|path| path.canonicalize().unwrap_or(path));
     let mut roots: Vec<_> = documents
         .keys()
         .filter(|uri| {
             uri.as_str() == changed_uri
-                || cache.get(*uri).is_none_or(|document| {
+                || cache.documents.get(*uri).is_none_or(|document| {
                     changed_path
                         .as_ref()
-                        .is_some_and(|path| document.source_map.file_id_for_path(path).is_some())
+                        .is_some_and(|path| document.input_paths.contains(path))
                 })
         })
         .cloned()
         .collect();
     roots.sort();
-    let sources = Arc::new(
-        documents
-            .iter()
-            .filter_map(|(uri, source)| file_uri_to_path(uri).map(|path| (path, source.clone())))
-            .collect(),
-    );
+    cache
+        .sources
+        .borrow_mut()
+        .update_buffers(documents, changed_uri);
     let mut affected = HashSet::from([changed_uri.to_owned()]);
     if !documents.contains_key(changed_uri) {
-        cache.remove(changed_uri);
+        cache.documents.remove(changed_uri);
         if let Some(old) = published.remove(changed_uri) {
             affected.extend(old.into_keys());
         }
     }
     for uri in roots {
         let (document, diagnostics) =
-            compute_with_sources(&uri, &documents[&uri], Arc::clone(&sources));
-        update_cached_document(cache, &uri, document);
+            compute_with_sources(&uri, &documents[&uri], Rc::clone(&cache.sources));
+        cache.update_document(&uri, document);
         affected.insert(uri.clone());
         affected.extend(diagnostics.keys().cloned());
         if let Some(old) = published.insert(uri, diagnostics) {
@@ -4163,8 +4159,10 @@ struct Document {
     /// `file_id` → path + source, to turn a definition's span into an LSP
     /// `Location` (URI + UTF-16 range) in whatever file it lives in.
     source_map: SourceMap,
-    /// Open buffers shared by analyses and speculative completion probes.
-    open_sources: Arc<HashMap<PathBuf, String>>,
+    /// Paths requested by the resolver, including imports that could not be loaded.
+    input_paths: HashSet<PathBuf>,
+    /// Parsed files and open buffers shared with completion probes.
+    sources: Rc<RefCell<SourceCache>>,
     /// Type-check-derived facts for semantic highlighting. `None` when the
     /// buffer resolves but does not type-check — hover's docs survive either way.
     analysis: Option<Analysis>,
@@ -4274,58 +4272,126 @@ struct ModuleImport {
     is_pub: bool,
 }
 
-/// Returns cached analysis for a document.
-fn cached<'a>(cache: &'a mut HashMap<String, Document>, uri: &str, source: &str) -> &'a Document {
-    if !cache.contains_key(uri) {
-        let document = compute(uri, source);
-        update_cached_document(cache, uri, document);
-    }
-    &cache[uri]
+/// Parsed Solar files shared by every document in one LSP session.
+#[derive(Default)]
+struct SourceCache {
+    open: HashMap<PathBuf, Rc<ParsedSource>>,
+    disk: HashMap<PathBuf, Rc<ParsedSource>>,
 }
 
-fn update_cached_document(
-    cache: &mut HashMap<String, Document>,
-    uri: &str,
-    mut document: Document,
-) {
-    if document.analysis.is_none() {
-        document.last_successful_types = cache.get_mut(uri).and_then(Document::take_resolved_types);
+impl SourceCache {
+    fn update_buffers(&mut self, documents: &HashMap<String, String>, changed_uri: &str) {
+        let mut open = HashMap::with_capacity(documents.len());
+        for (uri, text) in documents {
+            let Some(path) = file_uri_to_path(uri) else {
+                continue;
+            };
+            let path = path.canonicalize().unwrap_or(path);
+            // Several URIs can refer to the same file through symlinks.
+            if uri != changed_uri && open.contains_key(&path) {
+                continue;
+            }
+            let parsed = self
+                .open
+                .get(&path)
+                .filter(|p| p.source == *text)
+                .or_else(|| self.disk.get(&path).filter(|p| p.source == *text))
+                .cloned()
+                .unwrap_or_else(|| Rc::new(ParsedSource::parse(text.clone())));
+            open.insert(path, parsed);
+        }
+        self.open = open;
     }
-    cache.insert(uri.to_owned(), document);
+
+    fn load(&mut self, path: &Path, root_source: Option<&str>) -> io::Result<Rc<ParsedSource>> {
+        if let Some(buffer) = self.open.get(path)
+            && root_source.is_none_or(|source| source == buffer.source)
+        {
+            return Ok(Rc::clone(buffer));
+        }
+        // Completion probes temporarily substitute text for the root buffer.
+        if let Some(source) = root_source {
+            return Ok(Rc::new(ParsedSource::parse(source.to_owned())));
+        }
+        let source = std::fs::read_to_string(path)?;
+        if let Some(cached) = self.disk.get(path)
+            && cached.source == source
+        {
+            return Ok(Rc::clone(cached));
+        }
+        let parsed = Rc::new(ParsedSource::parse(source));
+        self.disk.insert(path.to_owned(), Rc::clone(&parsed));
+        Ok(parsed)
+    }
 }
 
+#[derive(Default)]
+struct DocumentCache {
+    documents: HashMap<String, Document>,
+    sources: Rc<RefCell<SourceCache>>,
+}
+
+impl DocumentCache {
+    fn document(&mut self, uri: &str, source: &str) -> &Document {
+        if !self.documents.contains_key(uri) {
+            let (document, _) = compute_with_sources(uri, source, Rc::clone(&self.sources));
+            self.update_document(uri, document);
+        }
+        &self.documents[uri]
+    }
+
+    fn update_document(&mut self, uri: &str, mut document: Document) {
+        if document.analysis.is_none() {
+            document.last_successful_types = self
+                .documents
+                .get_mut(uri)
+                .and_then(Document::take_resolved_types);
+        }
+        self.documents.insert(uri.to_owned(), document);
+    }
+}
+
+#[cfg(test)]
 /// Analyzes an in-memory document.
 fn compute(uri: &str, source: &str) -> Document {
     compute_with_diagnostics(uri, source).0
 }
 
+#[cfg(test)]
 /// Analyzes an in-memory document once for diagnostics and language features.
 fn compute_with_diagnostics(uri: &str, source: &str) -> (Document, HashMap<String, Vec<Value>>) {
-    compute_with_sources(uri, source, Arc::default())
+    compute_with_sources(uri, source, Rc::default())
 }
 
 fn compute_probe(uri: &str, source: &str, document: &Document) -> Document {
-    compute_with_sources(uri, source, Arc::clone(&document.open_sources)).0
+    compute_with_sources(uri, source, Rc::clone(&document.sources)).0
 }
 
 fn compute_with_sources(
     uri: &str,
     source: &str,
-    open_sources: Arc<HashMap<PathBuf, String>>,
+    sources: Rc<RefCell<SourceCache>>,
 ) -> (Document, HashMap<String, Vec<Value>>) {
     let Some(path) = file_uri_to_path(uri) else {
         return (Document::default(), HashMap::new());
     };
-    let mut sources = (*open_sources).clone();
-    sources.insert(path.clone(), source.to_owned());
-    let resolve::Resolved { ast, source_map } = match resolve::resolve_sources(&path, &sources) {
+    let root = path.canonicalize().unwrap_or_else(|_| path.clone());
+    let mut input_paths = HashSet::new();
+    let resolved = resolve::resolve(&path, |path| {
+        input_paths.insert(path.to_owned());
+        sources
+            .borrow_mut()
+            .load(path, (path == root).then_some(source))
+    });
+    let resolve::Resolved { ast, source_map } = match resolved {
         Ok(resolved) => resolved,
         Err((errors, source_map)) => {
             let diagnostics = diagnostics_from_errors(uri, source, &errors, &source_map);
             return (
                 Document {
                     source_map,
-                    open_sources,
+                    input_paths,
+                    sources,
                     ..Document::default()
                 },
                 diagnostics,
@@ -4421,7 +4487,8 @@ fn compute_with_sources(
         analysis,
         last_successful_types: None,
         source_map,
-        open_sources,
+        input_paths,
+        sources,
     };
     (document, diagnostics)
 }
@@ -6172,11 +6239,11 @@ fn main() {
             "point.read();",
             "point.re;\n    poi;\n    let broken: Int = true;",
         );
-        let mut cache = HashMap::new();
-        update_cached_document(&mut cache, &uri, compute(&uri, successful_source));
-        update_cached_document(&mut cache, &uri, compute(&uri, &failed_source));
+        let mut cache = DocumentCache::default();
+        cache.update_document(&uri, compute(&uri, successful_source));
+        cache.update_document(&uri, compute(&uri, &failed_source));
 
-        let document = cached(&mut cache, &uri, &failed_source);
+        let document = cache.document(&uri, &failed_source);
         assert!(document.analysis.is_none());
         assert!(document.last_successful_types.is_some());
 
@@ -6463,23 +6530,61 @@ fn main() {
     }
 
     #[test]
+    fn source_cache_reuses_parses_until_the_effective_source_changes() {
+        let directory = tempdir::TempDir::new("solar-lsp-source-cache").unwrap();
+        let path = directory.path().join("module.solar");
+        let saved = "pub fn value() -> Int { 1 }";
+        std::fs::write(&path, saved).unwrap();
+
+        let mut cache = SourceCache::default();
+        let disk = cache.load(&path, None).unwrap();
+        assert!(Rc::ptr_eq(&disk, &cache.load(&path, None).unwrap()));
+
+        let incomplete = "pub fn value(";
+        let uri = path_to_file_uri(path.to_str().unwrap());
+        cache.update_buffers(&HashMap::from([(uri.clone(), incomplete.to_owned())]), &uri);
+        let buffer = cache.load(&path, None).unwrap();
+        assert_eq!(buffer.source, incomplete);
+        assert!(buffer.ast.is_err());
+        assert!(Rc::ptr_eq(
+            &buffer,
+            &cache.load(&path, Some(incomplete)).unwrap()
+        ));
+        let probe = cache.load(&path, Some(saved)).unwrap();
+        assert!(probe.ast.is_ok());
+        assert!(Rc::ptr_eq(&buffer, &cache.load(&path, None).unwrap()));
+
+        let edited = saved.replace('1', "@");
+        std::fs::write(&path, &edited).unwrap();
+        cache.update_buffers(&HashMap::new(), &uri);
+        let disk = cache.load(&path, None).unwrap();
+        assert_eq!(disk.source, edited);
+        assert!(disk.ast.is_err());
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            cache.load(&path, None).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+    }
+
+    #[test]
     fn editing_and_closing_imports_refreshes_every_dependent_document() {
         let directory = tempdir::TempDir::new("solar-lsp-open-imports").unwrap();
         let imported = directory.path().join("imported.solar");
         let imported_uri = path_to_file_uri(imported.to_str().unwrap());
         let saved = "pub fn value() -> Int { 1 }\n";
-        std::fs::write(&imported, saved).unwrap();
         let roots: Vec<_> = ["first.solar", "second.solar"]
             .into_iter()
             .map(|name| path_to_file_uri(directory.path().join(name).to_str().unwrap()))
             .collect();
         let mut documents = HashMap::new();
-        let mut cache = HashMap::new();
+        let mut cache = DocumentCache::default();
         let mut published = HashMap::new();
         let mut output = Vec::new();
         for uri in &roots {
             documents.insert(uri.clone(), "import imported from \"imported.solar\";\nfn main() { let n: Int = imported::value(); }\n".to_owned());
             refresh_documents(&mut output, uri, &documents, &mut cache, &mut published);
+            assert!(!published[uri][uri].is_empty());
         }
 
         // Each root contributes the imported error. Fixing the import must clear all of them.
@@ -6517,6 +6622,7 @@ fn main() {
         }
 
         // A valid edit can introduce errors in callers; closing the buffer restores disk contents.
+        std::fs::write(&imported, saved).unwrap();
         documents.insert(
             imported_uri.clone(),
             "pub fn value() -> Bool { true }\n".to_owned(),
@@ -6545,7 +6651,7 @@ fn main() {
             &mut published,
         );
         assert!(published.values().all(HashMap::is_empty), "{published:?}");
-        assert!(!cache.contains_key(&imported_uri));
+        assert!(!cache.documents.contains_key(&imported_uri));
     }
 
     #[test]
@@ -6554,10 +6660,15 @@ fn main() {
         let path = directory.path().join("main.solar");
         let imported = directory.path().join("imported.solar");
         std::fs::write(&imported, "pub struct Item { pub old: Int }\n").unwrap();
-        let sources = Arc::new(HashMap::from([(
-            imported,
-            "pub struct Item { pub fresh: Int }\n".to_owned(),
-        )]));
+        let sources = Rc::new(RefCell::new(SourceCache::default()));
+        let imported_uri = path_to_file_uri(imported.to_str().unwrap());
+        sources.borrow_mut().update_buffers(
+            &HashMap::from([(
+                imported_uri.clone(),
+                "pub struct Item { pub fresh: Int }\n".to_owned(),
+            )]),
+            &imported_uri,
+        );
         let source = "import {Item} from \"imported.solar\";\nfn main() { let item = Item { fresh: 1 }; item.fr; }\n";
         let uri = path_to_file_uri(path.to_str().unwrap());
         let (document, _) = compute_with_sources(&uri, source, sources);
