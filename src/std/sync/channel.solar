@@ -1,0 +1,55 @@
+import {throw} from "../lib.solar";
+import {Mutex} from "mutex.solar";
+
+enum ChannelSlot#[T] { Empty, Full(T) }
+
+/// A synchronous multi-producer, multi-consumer channel.
+pub struct Channel#[T] {
+	send_lock: Mutex#[()],
+	recv_lock: Mutex#[()],
+	state: Uint32,
+	data: ChannelSlot#[T],
+}
+
+/// Creates an empty channel.
+pub fn Channel::#[out T]() -> Channel#[T] {
+	Channel#[T] {
+		send_lock: Mutex(()),
+		recv_lock: Mutex(()),
+		state: 0u32,
+		data: ChannelSlot#[T]::Empty,
+	}
+}
+
+/// Sends a value, blocking until it is received.
+pub method send#[T](self: &Channel#[T], value: T) {
+	self@.send_lock&.with_lock(\_ {
+		self@.data = ChannelSlot#[T]::Full(value);
+		self@.state&.atomic_store(1u32);
+		self@.state&.futex_wake(1u32);
+
+		while self@.state&.atomic_load() != 0u32 {
+			self@.state&.futex_wait(1u32);
+		}
+	});
+}
+
+/// Receives a value, blocking until one is available.
+pub method recv#[T](self: &Channel#[T]) -> T {
+	let slot = self@.recv_lock&.with_lock(\_ {
+		while self@.state&.atomic_load() == 0u32 {
+			self@.state&.futex_wait(0u32);
+		}
+
+		let slot = self@.data;
+		self@.data = ChannelSlot#[T]::Empty;
+		self@.state&.atomic_store(0u32);
+		self@.state&.futex_wake(1u32);
+		slot
+	});
+
+	match slot {
+		ChannelSlot#[T]::Full(v) => v,
+		ChannelSlot#[T]::Empty => throw("recv on empty channel"&),
+	}
+}

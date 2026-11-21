@@ -1,0 +1,57 @@
+import linux from "../linux.solar";
+import {syscall} from "@intrinsics";
+import(C) {timespec} from "time.h";
+
+/// Waits while the value equals `expected`; spurious wakes are allowed.
+pub method futex_wait(
+	self: &Uint32,
+	expected: Uint32,
+	timeout: Uint64 = linux::FUTEX_NO_TIMEOUT,
+) {
+	if timeout == linux::FUTEX_NO_TIMEOUT {
+		futex_wait_raw(self, expected, null#[timespec]);
+	} else {
+		futex_wait_raw(self, expected, relative_timespec(timeout)&);
+	}
+}
+
+/// Converts a relative timeout in nanoseconds to a Linux timespec.
+pub fn relative_timespec(nanoseconds: Uint64) -> timespec {
+	timespec {
+		tv_sec: Int(nanoseconds / linux::NSEC_PER_SEC),
+		tv_nsec: Int(nanoseconds % linux::NSEC_PER_SEC),
+	}
+}
+
+/// Waits on the futex word and returns false if the timeout expires.
+pub fn futex_wait_raw(word: &Uint32, expected: Uint32, timeout: &?timespec) -> Bool {
+	let result = unsafe {
+		syscall(
+			Int64(linux::SYS_futex),
+			word,
+			Int64(linux::FUTEX_WAIT_PRIVATE),
+			Uint64(expected),
+			timeout,
+		)
+	};
+	result != 0i64 - Int64(linux::ETIMEDOUT)
+}
+
+/// Wakes at most `count` waiters.
+pub method futex_wake(self: &Uint32, count: Uint32) {
+	// FUTEX_WAKE | FUTEX_PRIVATE_FLAG.
+	unsafe {
+		syscall(
+			Int64(linux::SYS_futex),
+			self,
+			Int64(linux::FUTEX_WAKE_PRIVATE),
+			Uint64(count),
+		);
+	}
+	return;
+}
+
+/// Wakes all waiters.
+pub method futex_wake(self: &Uint32) {
+	self.futex_wake(Uint32(linux::INT_MAX));
+}

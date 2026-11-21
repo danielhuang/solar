@@ -1,0 +1,58 @@
+import linux from "../linux.solar";
+import {futex_wait_raw, relative_timespec} from "futex.solar";
+import {RawMutex} from "raw_mutex.solar";
+import(C) {timespec} from "time.h";
+
+/// A futex-backed condition variable used with a RawMutex.
+pub struct RawCondvar { sequence: Uint32, waiters: Uint32 }
+
+/// Creates a condition variable with no waiters.
+pub fn RawCondvar::() -> RawCondvar {
+	RawCondvar { sequence: 0u32, waiters: 0u32 }
+}
+
+/// Wakes one thread blocked on this condition variable.
+pub method notify_one(self: &RawCondvar) {
+	self.notify(1u32);
+}
+
+/// Wakes all threads blocked on this condition variable.
+pub method notify_all(self: &RawCondvar) {
+	self.notify(Uint32(linux::INT_MAX));
+}
+
+method notify(self: &RawCondvar, count: Uint32) {
+	if self@.waiters&.atomic_load() == 0u32 { return; }
+	self@.sequence&.atomic_fetch_add(1u32);
+	self@.sequence&.futex_wake(count);
+}
+
+/// Releases the caller's locked mutex while waiting and reacquires it before
+/// returning. Recheck the protected condition in a loop after each wake.
+pub method wait(self: &RawCondvar, mutex: &RawMutex) {
+	self.wait_with_timeout(mutex, null#[timespec]);
+}
+
+/// Waits with the caller's locked mutex for up to `timeout` nanoseconds.
+/// Returns with the mutex held. False means the wait timed out. A true result
+/// may be a spurious wake, so recheck the protected condition.
+pub method wait_timeout(self: &RawCondvar, mutex: &RawMutex, timeout: Uint64) -> Bool {
+	self.wait_with_timeout(mutex, relative_timespec(timeout)&)
+}
+
+// Adapted from Rust's std/sys/sync/condvar/futex.rs.
+method wait_with_timeout(
+	self: &RawCondvar,
+	mutex: &RawMutex,
+	timeout: &?timespec,
+) -> Bool {
+	// Register under the mutex so a notifier can see this waiter as soon as
+	// we unlock. The sequence covers the gap between unlocking and sleeping.
+	self@.waiters&.atomic_fetch_add(1u32);
+	let expected = self@.sequence&.atomic_load();
+	mutex.unlock();
+	let woke = futex_wait_raw(self@.sequence&, expected, timeout);
+	self@.waiters&.atomic_fetch_sub(1u32);
+	mutex.lock();
+	woke
+}

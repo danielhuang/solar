@@ -1,0 +1,62 @@
+/// A futex-backed mutual exclusion lock.
+pub struct RawMutex {
+	/// Internal lock state.
+	pub futex: Uint32,
+}
+
+/// Creates an unlocked mutex.
+pub fn RawMutex::() -> RawMutex {
+	RawMutex { futex: 0u32 }
+}
+
+/// Attempts to acquire the mutex without blocking.
+pub method try_lock(self: &RawMutex) -> Bool {
+	self@.futex&.atomic_compare_exchange(0u32, 1u32) == 0u32
+}
+
+/// Acquires the mutex.
+pub method lock(self: &RawMutex) {
+	if self@.futex&.atomic_compare_exchange(0u32, 1u32) != 0u32 {
+		self.lock_contended();
+	}
+}
+
+method spin(self: &RawMutex) -> Uint32 {
+	let spin = 100u32;
+
+	loop {
+		let state = self@.futex&.atomic_load();
+
+		if state != 1u32 || spin == 0u32 {
+			return state;
+		}
+
+		spin = spin - 1u32;
+	}
+}
+
+method lock_contended(self: &RawMutex) {
+	let state = self.spin();
+
+	if state == 0u32 {
+		state = self@.futex&.atomic_compare_exchange(0u32, 1u32);
+	}
+
+	if state != 0u32 {
+		loop {
+			if state != 2u32 && self@.futex&.atomic_exchange(2u32) == 0u32 {
+				break;
+			}
+
+			self@.futex&.futex_wait(2u32);
+			state = self.spin();
+		}
+	}
+}
+
+/// Releases the mutex.
+pub method unlock(self: &RawMutex) {
+	if self@.futex&.atomic_exchange(0u32) == 2u32 {
+		self@.futex&.futex_wake(1u32);
+	}
+}

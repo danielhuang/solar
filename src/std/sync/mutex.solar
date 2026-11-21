@@ -1,0 +1,34 @@
+import {Option, throw} from "../lib.solar";
+import {RawMutex} from "raw_mutex.solar";
+
+/// A value protected by a mutual exclusion lock.
+pub struct Mutex#[T] { mutex: RawMutex, inner: T }
+
+/// Creates an unlocked mutex containing value.
+pub fn Mutex::#[T](value: T) -> Mutex#[T] {
+	Mutex#[T] { mutex: RawMutex(), inner: value }
+}
+
+/// Calls f with a reference to the protected value and returns its result.
+/// Releases the lock on both normal return and an exception.
+pub method with_lock#[T, U](self: &Mutex#[T], f: fn(&T) -> U) -> U {
+	self@.mutex&.lock();
+	let result = Option#[U]::None;
+
+	try {
+		result = Option#[U]::Some(f(self@.inner&));
+	} catch (error) {
+		self@.mutex&.unlock();
+		throw(error);
+	}
+
+	self@.mutex&.unlock();
+	result.unwrap()
+}
+
+/// Copies the protected value while holding the original mutex's lock.
+/// The copy has its own unlocked mutex.
+pub fn Mutex::#[T](other: &Mutex#[T]) -> Mutex#[T] {
+	let value = other.with_lock(\x x@);
+	Mutex#[T] { mutex: RawMutex(), inner: value }
+}

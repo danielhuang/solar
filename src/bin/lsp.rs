@@ -6488,7 +6488,7 @@ fn main() {
     fn diagnostics_accept_std_documents_with_c_imports() {
         for relative in [
             "src/std/async.solar",
-            "src/std/sync.solar",
+            "src/std/sync/futex.solar",
             "src/std/net.solar",
         ] {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
@@ -6698,13 +6698,13 @@ fn main() {
             location["uri"]
                 .as_str()
                 .unwrap()
-                .ends_with("/src/std/sync.solar")
+                .ends_with("/src/std/sync/mutex.solar")
         );
-        let sync_source = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/std/sync.solar"),
+        let mutex_source = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/std/sync/mutex.solar"),
         )
         .unwrap();
-        let (expected_line, _) = occurrence_position(&sync_source, "pub method with_lock", 0);
+        let (expected_line, _) = occurrence_position(&mutex_source, "pub method with_lock", 0);
         assert_eq!(location["range"]["start"]["line"], expected_line);
     }
 
