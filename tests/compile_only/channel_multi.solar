@@ -1,15 +1,43 @@
+fn producer(
+	ch: &sync::UnbufferedChannel#[Int],
+	sent: &sync::Condvar#[Int],
+	value: Int,
+) -> thread::Thread {
+	thread::spawn(\ {
+		for _ in 0..32 {
+			ch.send(value);
+			sent.with_lock(\reported, _ {
+				reported@ = value;
+				sent.notify_one();
+			});
+		}
+	})
+}
+
 fn main() {
-	let ch = sync::Channel#[Int]();
+	let ch = sync::UnbufferedChannel#[Int]();
+	let sent = sync::Condvar(0);
+	let first = producer(ch&, sent&, 10);
+	let second = producer(ch&, sent&, 20);
+	let third = producer(ch&, sent&, 30);
 	let sum = 0;
 
-	thread::spawn(\ {
-		ch&.send(10);
-		ch&.send(20);
-		ch&.send(30);
-	});
+	for _ in 0..96 {
+		let received = ch&.recv();
+		// The matching sender must finish even if another has filled the slot.
+		sent&.with_lock(\reported, waiter {
+			while reported@ == 0 {
+				assert(waiter.wait_timeout(10000000000u64));
+			}
 
-	sum = sum + ch&.recv();
-	sum = sum + ch&.recv();
-	sum = sum + ch&.recv();
+			assert(reported@ == received);
+			reported@ = 0;
+		});
+		sum = sum + received;
+	}
+
+	first.join();
+	second.join();
+	third.join();
 	println(sum);
 }

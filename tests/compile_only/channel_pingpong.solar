@@ -1,6 +1,6 @@
 fn main() {
-	let ch1 = sync::Channel#[Int]();
-	let ch2 = sync::Channel#[Int]();
+	let ch1 = sync::UnbufferedChannel#[Int]();
+	let ch2 = sync::UnbufferedChannel#[Int]();
 
 	thread::spawn(\ {
 		let val = ch1&.recv();

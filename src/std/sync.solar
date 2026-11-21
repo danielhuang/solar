@@ -4,4 +4,4 @@ pub import {futex_wait, futex_wake} from "sync/futex.solar";
 pub import * from "sync/raw_mutex.solar";
 pub import * from "sync/raw_condvar.solar";
 pub import * from "sync/mutex.solar";
-pub import * from "sync/channel.solar";
+pub import * from "sync/unbuffered_channel.solar";

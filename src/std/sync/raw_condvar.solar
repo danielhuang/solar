@@ -27,8 +27,8 @@ method notify(self: &RawCondvar, count: Uint32) {
 	self@.sequence&.futex_wake(count);
 }
 
-/// Releases the caller's locked mutex while waiting and reacquires it before
-/// returning. Recheck the protected condition in a loop after each wake.
+/// Releases the caller's locked mutex and reacquires it after a notification.
+/// Recheck the protected condition under the mutex after each wake.
 pub method wait(self: &RawCondvar, mutex: &RawMutex) {
 	self.wait_with_timeout(mutex, null#[timespec]);
 }
@@ -52,6 +52,12 @@ method wait_with_timeout(
 	let expected = self@.sequence&.atomic_load();
 	mutex.unlock();
 	let woke = futex_wait_raw(self@.sequence&, expected, timeout);
+
+	while timeout == null#[timespec] &&
+		self@.sequence&.atomic_load() == expected {
+		futex_wait_raw(self@.sequence&, expected, timeout);
+	}
+
 	self@.waiters&.atomic_fetch_sub(1u32);
 	mutex.lock();
 	woke

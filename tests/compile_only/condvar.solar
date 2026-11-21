@@ -1,6 +1,6 @@
 fn main() {
 	let condition = sync::Condvar(0);
-	let ready = sync::Channel#[()]();
+	let ready = sync::UnbufferedChannel#[()]();
 	let worker = thread::spawn(\ {
 		condition&.with_lock(\value, waiter {
 			ready&.send(());

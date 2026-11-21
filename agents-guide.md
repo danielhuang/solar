@@ -257,7 +257,7 @@ The standard prelude is implicit. Common tested APIs:
   `math::sqrt(2f)`, `math::PI`; `thread::spawn(\ { ... })`, `handle.join()`,
   `thread::sleep(nanoseconds)` (`Uint64`). `sync::Mutex(value)` has
   `with_lock(\value { ... })`, which borrows the protected value;
-  `sync::Channel#[Int]()` has `send`/`recv` on references.
+  `sync::UnbufferedChannel#[Int]()` has `send`/`recv` on references.
 - `try { work(); } catch (e) { println(e.message); }` catches an `Exception`;
   optional annotation: `catch (e: Exception)`. Throw with `throw("message"&)`,
   rethrow with `throw(e)`. Runtime arithmetic, bounds, and null failures are

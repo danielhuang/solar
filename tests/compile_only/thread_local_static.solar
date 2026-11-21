@@ -22,8 +22,8 @@ fn main() {
 	println(TEXT);
 
 	// A reference names the owner's stable TLS cell, not the reader's cell.
-	let refs = sync::Channel#[&Int]();
-	let release_owner = sync::Channel#[Int]();
+	let refs = sync::UnbufferedChannel#[&Int]();
+	let release_owner = sync::UnbufferedChannel#[Int]();
 	let owner = thread::spawn(\ {
 		SHARED = 40;
 		refs&.send(SHARED&);
@@ -42,7 +42,7 @@ fn main() {
 	owner.join();
 
 	// The cell remains alive after the thread that created it exits.
-	let refs_after_exit = sync::Channel#[&Int]();
+	let refs_after_exit = sync::UnbufferedChannel#[&Int]();
 	let departed = thread::spawn(\ {
 		SHARED = 50;
 		refs_after_exit&.send(SHARED&);

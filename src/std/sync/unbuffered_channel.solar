@@ -1,0 +1,43 @@
+import {Option} from "../lib.solar";
+import {Condvar} from "condvar.solar";
+
+/// A synchronous multi-producer, multi-consumer channel.
+pub struct UnbufferedChannel#[T] { slot: Condvar#[Option#[T]] }
+
+/// Creates an empty unbuffered channel.
+pub fn UnbufferedChannel::#[out T]() -> UnbufferedChannel#[T] {
+	UnbufferedChannel#[T] { slot: Condvar(Option#[T]::None) }
+}
+
+/// Sends a value, blocking until a receiver takes it.
+pub method send#[T](self: &UnbufferedChannel#[T], value: T) {
+	let condition = self@.slot&;
+	condition.with_lock(\slot, waiter {
+		while slot@.is_some() { waiter.wait(); }
+		slot@ = Option#[T]::Some(value);
+
+		// recv wakes every sender when it empties the slot. Only receivers
+		// can still be asleep when the next value is published.
+		condition.notify_one();
+
+		// Only a receiver can change a full slot. Its notification acknowledges
+		// this send even if another sender refills the slot before we relock.
+		waiter.wait();
+	});
+}
+
+/// Receives a value, blocking until a sender offers one.
+pub method recv#[T](self: &UnbufferedChannel#[T]) -> T {
+	let condition = self@.slot&;
+	condition.with_lock(\slot, waiter {
+		while slot@.is_none() { waiter.wait(); }
+		let value = slot@.unwrap();
+
+		slot@ = Option#[T]::None;
+
+		// Wake the sender of this value and any senders waiting for the slot.
+		condition.notify_all();
+
+		value
+	})
+}

@@ -1145,7 +1145,7 @@ fn convert_expr(node: tree_sitter::Node, source: &str) -> Result<Expr, ParseErro
                     kwargs,
                 }
             } else if func_node.kind() == "path_expr" {
-                // path_expr as call: sync::Channel#[Int]() — extract type_args from last segment
+                // path_expr as call: sync::UnbufferedChannel#[Int]() — extract type_args from last segment
                 let mut segments: Vec<(String, Vec<Type>)> = Vec::new();
                 for child in code_children(func_node) {
                     if child.kind() == "path_segment" {

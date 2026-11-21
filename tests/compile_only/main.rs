@@ -126,11 +126,15 @@ fn channel() {
 
 #[test]
 fn channel_multi() {
-    let output = run_codegen_file(
-        &fixture("channel_multi.solar"),
-        "compile_only_channel_multi",
+    let path = fixture("channel_multi.solar");
+    assert_eq!(
+        run_codegen_file(&path, "compile_only_channel_multi"),
+        "1920\n"
     );
-    assert_eq!(output, "60\n");
+    assert_eq!(
+        test_utils::run_release_file(&path, "channel_multi_release"),
+        "1920\n"
+    );
 }
 
 #[test]

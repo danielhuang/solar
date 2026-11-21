@@ -1,5 +1,5 @@
 fn main() {
-	let ch = sync::Channel#[Int]();
+	let ch = sync::UnbufferedChannel#[Int]();
 
 	thread::spawn(\ {
 		ch&.send(42);
