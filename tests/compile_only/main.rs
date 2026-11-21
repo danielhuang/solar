@@ -81,6 +81,16 @@ fn mutex_contended() {
 }
 
 #[test]
+fn raw_condvar() {
+    let path = fixture("raw_condvar.solar");
+    assert_eq!(run_codegen_file(&path, "raw_condvar"), "passed\n");
+    assert_eq!(
+        test_utils::run_release_file(&path, "raw_condvar_release"),
+        "passed\n"
+    );
+}
+
+#[test]
 fn thread_join() {
     let output = run_codegen_file(&fixture("thread_join.solar"), "compile_only_thread_join");
     assert_eq!(output, "42\n");

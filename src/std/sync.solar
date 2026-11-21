@@ -94,36 +94,31 @@ pub method futex_wait(
 	expected: Uint32,
 	timeout: Uint64 = linux::FUTEX_NO_TIMEOUT,
 ) {
-	// FUTEX_WAIT | FUTEX_PRIVATE_FLAG. A null timeout waits indefinitely.
-	// Signals, timeout expiry, and value mismatches may return early; callers
-	// recheck their condition, so the raw syscall result is intentionally ignored.
 	if timeout == linux::FUTEX_NO_TIMEOUT {
-		unsafe {
-			syscall(
-				Int64(linux::SYS_futex),
-				self,
-				Int64(linux::FUTEX_WAIT_PRIVATE),
-				Uint64(expected),
-				0u64,
-			);
-		}
+		futex_wait_raw(self, expected, null#[timespec]);
 	} else {
-		let ts = timespec {
-			tv_sec: Int(timeout / linux::NSEC_PER_SEC),
-			tv_nsec: Int(timeout % linux::NSEC_PER_SEC),
-		};
-		unsafe {
-			syscall(
-				Int64(linux::SYS_futex),
-				self,
-				Int64(linux::FUTEX_WAIT_PRIVATE),
-				Uint64(expected),
-				ts&,
-			);
-		}
+		futex_wait_raw(self, expected, relative_timespec(timeout)&);
 	}
+}
 
-	return;
+fn relative_timespec(nanoseconds: Uint64) -> timespec {
+	timespec {
+		tv_sec: Int(nanoseconds / linux::NSEC_PER_SEC),
+		tv_nsec: Int(nanoseconds % linux::NSEC_PER_SEC),
+	}
+}
+
+fn futex_wait_raw(word: &Uint32, expected: Uint32, timeout: &?timespec) -> Bool {
+	let result = unsafe {
+		syscall(
+			Int64(linux::SYS_futex),
+			word,
+			Int64(linux::FUTEX_WAIT_PRIVATE),
+			Uint64(expected),
+			timeout,
+		)
+	};
+	result != 0i64 - Int64(linux::ETIMEDOUT)
 }
 
 /// Wakes at most `count` waiters.
@@ -206,6 +201,52 @@ pub method unlock(self: &RawMutex) {
 	if self@.futex&.atomic_exchange(0u32) == 2u32 {
 		self@.futex&.futex_wake(1u32);
 	}
+}
+
+/// A futex-backed condition variable used with a RawMutex.
+pub struct RawCondvar { sequence: Uint32 }
+
+/// Creates a condition variable with no waiters.
+pub fn RawCondvar::() -> RawCondvar { RawCondvar { sequence: 0u32 } }
+
+/// Wakes one thread blocked on this condition variable.
+pub method notify_one(self: &RawCondvar) {
+	self@.sequence&.atomic_fetch_add(1u32);
+	self@.sequence&.futex_wake(1u32);
+}
+
+/// Wakes all threads blocked on this condition variable.
+pub method notify_all(self: &RawCondvar) {
+	self@.sequence&.atomic_fetch_add(1u32);
+	self@.sequence&.futex_wake();
+}
+
+/// Releases the caller's locked mutex while waiting and reacquires it before
+/// returning. Recheck the protected condition in a loop after each wake.
+pub method wait(self: &RawCondvar, mutex: &RawMutex) {
+	self.wait_with_timeout(mutex, null#[timespec]);
+}
+
+/// Waits with the caller's locked mutex for up to `timeout` nanoseconds.
+/// Returns with the mutex held. False means the wait timed out. A true result
+/// may be a spurious wake, so recheck the protected condition.
+pub method wait_timeout(self: &RawCondvar, mutex: &RawMutex, timeout: Uint64) -> Bool {
+	self.wait_with_timeout(mutex, relative_timespec(timeout)&)
+}
+
+// Adapted from Rust's std/sys/sync/condvar/futex.rs.
+method wait_with_timeout(
+	self: &RawCondvar,
+	mutex: &RawMutex,
+	timeout: &?timespec,
+) -> Bool {
+	// Taking the snapshot under the lock covers a notification between unlock
+	// and the kernel's comparison of the futex word.
+	let expected = self@.sequence&.atomic_load();
+	mutex.unlock();
+	let woke = futex_wait_raw(self@.sequence&, expected, timeout);
+	mutex.lock();
+	woke
 }
 
 enum ChannelSlot#[T] { Empty, Full(T) }

@@ -1,0 +1,52 @@
+fn main() {
+	let mutex = sync::RawMutex()&;
+	let work = sync::RawCondvar()&;
+	let progress = sync::RawCondvar()&;
+	let ready = 0&;
+	let permits = 0&;
+	let finished = 0&;
+
+	// A notification sent before a wait leaves no stored permit.
+	work.notify_one();
+	mutex.lock();
+	assert(!work.wait_timeout(mutex, 0u64));
+	assert(!mutex.try_lock());
+
+	let worker = \ {
+		mutex.lock();
+		ready@ = ready@ + 1;
+		progress.notify_one();
+		while permits@ == 0 { work.wait(mutex); }
+		permits@ = permits@ - 1;
+		finished@ = finished@ + 1;
+		progress.notify_one();
+		mutex.unlock();
+	};
+	let first = thread::spawn(worker);
+	let second = thread::spawn(worker);
+	let third = thread::spawn(worker);
+
+	while ready@ < 3 { assert(progress.wait_timeout(mutex, 10000000000u64)); }
+	permits@ = 1;
+	work.notify_one();
+
+	while finished@ == 0 {
+		assert(progress.wait_timeout(mutex, 10000000000u64));
+	}
+
+	assert(finished@ == 1);
+
+	permits@ = 2;
+	work.notify_all();
+
+	while finished@ < 3 {
+		assert(progress.wait_timeout(mutex, 10000000000u64));
+	}
+
+	assert(!mutex.try_lock());
+	mutex.unlock();
+	first.join();
+	second.join();
+	third.join();
+	println("passed"&);
+}
