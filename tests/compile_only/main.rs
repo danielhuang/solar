@@ -81,6 +81,16 @@ fn mutex_contended() {
 }
 
 #[test]
+fn condvar() {
+    let path = fixture("condvar.solar");
+    assert_eq!(run_codegen_file(&path, "condvar"), "passed\n");
+    assert_eq!(
+        test_utils::run_release_file(&path, "condvar_release"),
+        "passed\n"
+    );
+}
+
+#[test]
 fn raw_condvar() {
     let path = fixture("raw_condvar.solar");
     assert_eq!(run_codegen_file(&path, "raw_condvar"), "passed\n");

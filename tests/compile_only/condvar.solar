@@ -1,0 +1,51 @@
+fn main() {
+	let condition = sync::Condvar(0);
+	let ready = sync::Channel#[()]();
+	let worker = thread::spawn(\ {
+		condition&.with_lock(\value, waiter {
+			ready&.send(());
+			while value@ == 0 { waiter.wait(); }
+			value@ = value@ + 1;
+			condition&.notify_all();
+		});
+	});
+
+	ready&.recv();
+	let observed = condition&.with_lock(\value, waiter {
+		value@ = 1;
+		condition&.notify_one();
+		while value@ == 1 { assert(waiter.wait_timeout(10000000000u64)); }
+		value@
+	});
+	worker.join();
+	assert(observed == 2);
+
+	condition&.notify_one();
+	condition&.notify_all();
+	assert(!condition&.with_lock(\_, waiter waiter.wait_timeout(0u64)));
+
+	let caught = false;
+
+	try {
+		condition&.with_lock(\value, _ {
+			value@ = 3;
+			throw("condvar callback failed"&);
+		});
+	} catch (error) {
+		assert(error.message == "condvar callback failed"&);
+		caught = true;
+	}
+
+	assert(caught);
+
+	let copy = condition;
+	condition&.with_lock(\value, _ {
+		copy&.with_lock(\copied, _ {
+			assert(copied@ == 3);
+			copied@ = 4;
+		});
+		assert(value@ == 3);
+	});
+	assert(copy&.with_lock(\value, _ value@) == 4);
+	println("passed"&);
+}

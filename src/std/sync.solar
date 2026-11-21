@@ -1,4 +1,5 @@
 pub import * from "sync/atomic.solar";
+pub import * from "sync/condvar.solar";
 pub import {futex_wait, futex_wake} from "sync/futex.solar";
 pub import * from "sync/raw_mutex.solar";
 pub import * from "sync/raw_condvar.solar";

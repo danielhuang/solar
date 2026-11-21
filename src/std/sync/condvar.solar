@@ -1,0 +1,64 @@
+import {Option, throw} from "../lib.solar";
+import {RawMutex} from "raw_mutex.solar";
+import {RawCondvar} from "raw_condvar.solar";
+
+/// A value protected by a mutex with a condition variable for waiting on changes.
+pub struct Condvar#[T] { mutex: RawMutex, condvar: RawCondvar, inner: T }
+
+/// Creates an unlocked condition variable containing `inner`.
+pub fn Condvar::#[T](inner: T) -> Condvar#[T] {
+	Condvar#[T] { mutex: RawMutex(), condvar: RawCondvar(), inner: inner }
+}
+
+/// Copies the protected value under its lock into a fresh condition variable.
+pub fn Condvar::#[T](other: &Condvar#[T]) -> Condvar#[T] {
+	let value = other.with_lock(\value, _ value@);
+	Condvar#[T] { mutex: RawMutex(), condvar: RawCondvar(), inner: value }
+}
+
+/// Calls `f` with the protected value and a waiter for this condition variable.
+/// Releases the mutex when `f` returns or throws.
+pub method with_lock#[T, U](
+	self: &Condvar#[T],
+	f: fn(&T, CondvarWaiter#[T]) -> U,
+) -> U {
+	self@.mutex&.lock();
+	let result = Option#[U]::None;
+
+	try {
+		result = Option#[U]::Some(
+			f(self@.inner&, CondvarWaiter#[T] { inner: self }),
+		);
+	} catch (error) {
+		self@.mutex&.unlock();
+		throw(error);
+	}
+
+	self@.mutex&.unlock();
+	result.unwrap()
+}
+
+/// Wakes one thread waiting on this condition variable.
+pub method notify_one#[T](self: &Condvar#[T]) {
+	self@.condvar&.notify_one();
+}
+
+/// Wakes all threads waiting on this condition variable.
+pub method notify_all#[T](self: &Condvar#[T]) {
+	self@.condvar&.notify_all();
+}
+
+/// A waiter for use by the thread running the condition variable's `with_lock` callback.
+pub struct CondvarWaiter#[T] { inner: &Condvar#[T] }
+
+/// Releases the mutex while waiting and reacquires it before returning.
+/// Call inside `with_lock` and recheck the protected condition after each wake.
+pub method wait#[T](self: CondvarWaiter#[T]) {
+	self.inner@.condvar&.wait(self.inner@.mutex&);
+}
+
+/// Waits inside `with_lock` for up to `timeout` nanoseconds, returning with the
+/// mutex held. False means the timeout expired. Wakes can be spurious.
+pub method wait_timeout#[T](self: CondvarWaiter#[T], timeout: Uint64) -> Bool {
+	self.inner@.condvar&.wait_timeout(self.inner@.mutex&, timeout)
+}
