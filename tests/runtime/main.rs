@@ -1107,6 +1107,13 @@ fn vec() {
 }
 
 #[test]
+fn vec_deque() {
+    let path = fixture("vec_deque.solar");
+    assert_eq!(run(&path, "vec_deque"), "passed\n");
+    assert_eq!(test_utils::run_release_file(&path, "vec_deque"), "passed\n");
+}
+
+#[test]
 fn vec_iter() {
     let output = run(&fixture("vec_iter.solar"), "vec_iter");
     assert_eq!(output, "3\n10\n20\n30\n60\n3\n999\n0\n2\n");

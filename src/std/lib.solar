@@ -12,6 +12,12 @@ pub import iter from "iter.solar";
 /// Growable vectors.
 pub import vec from "vec.solar";
 
+/// Growable double-ended queues and their iterators.
+pub import vec_deque from "vec_deque.solar";
+
+/// A growable double-ended queue.
+pub import {VecDeque} from "vec_deque.solar";
+
 /// Synchronization primitives.
 pub import sync from "sync.solar";
 

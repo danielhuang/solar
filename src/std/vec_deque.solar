@@ -1,0 +1,195 @@
+import {Option, max} from "lib.solar";
+import {MaybeZeroed} from "mem.solar";
+
+/// A growable double-ended queue with amortized O(1) pushes and O(1) pops.
+/// Elements live inline. The behavior of references held across a resize is unspecified.
+/// Popped slots retain their values until reuse, clear, or growth.
+pub struct VecDeque#[T] { slots: ^[MaybeZeroed#[T]], head: Uint, len: Uint }
+
+/// Constructs an empty deque.
+pub fn VecDeque::#[out T]() -> VecDeque#[T] {
+	VecDeque#[T]::with_capacity(0u)
+}
+
+/// Constructs a deque from a slice in front-to-back order.
+pub fn VecDeque::#[T](src: &[T]) -> VecDeque#[T] {
+	VecDeque#[T] {
+		slots: [src.len(); \i: Uint MaybeZeroed(src@[i])]^,
+		head: 0u,
+		len: src.len(),
+	}
+}
+
+/// Copies the elements into independent storage using their usual copy semantics.
+pub fn VecDeque::#[T](other: &VecDeque#[T]) -> VecDeque#[T] {
+	VecDeque#[T] {
+		slots: [other.len(); \i: Uint MaybeZeroed(other.element(i)@)]^,
+		head: 0u,
+		len: other.len(),
+	}
+}
+
+/// Constructs an empty deque with room for at least capacity elements.
+pub fn#[T] VecDeque#[T]::with_capacity(capacity: Uint) -> VecDeque#[T] {
+	VecDeque#[T] {
+		slots: [capacity; \_: Uint MaybeZeroed#[T]()]^,
+		head: 0u,
+		len: 0u,
+	}
+}
+
+/// Constructs an empty default deque.
+pub fn#[T] VecDeque#[T]::default() -> VecDeque#[T] { VecDeque#[T]() }
+
+/// Collects an iterator's values in front-to-back order.
+pub fn#[T] VecDeque#[T]::from_iter#[I](source: I) -> VecDeque#[T] {
+	let deque = VecDeque#[T]();
+	let item: Option#[T] = source&.next();
+
+	while item.is_some() {
+		deque&.push_back(item.unwrap());
+		item = source&.next();
+	}
+
+	deque
+}
+
+/// Returns the number of elements.
+pub method len#[T](self: &VecDeque#[T]) -> Uint { self@.len }
+
+/// Returns whether the deque contains no elements.
+pub method is_empty#[T](self: &VecDeque#[T]) -> Bool { self@.len == 0u }
+
+/// Returns the number of elements the deque can hold without growing.
+pub method capacity#[T](self: &VecDeque#[T]) -> Uint { self@.slots@&.len() }
+
+method slot_index#[T](self: &VecDeque#[T], index: Uint) -> Uint {
+	let tail_len = self.capacity() - self@.head;
+	if index < tail_len { self@.head + index } else { index - tail_len }
+}
+
+// The caller has checked that this logical index is initialized.
+method element#[T](self: &VecDeque#[T], index: Uint) -> &T {
+	unsafe { self@.slots@[self.slot_index(index)]&.assume_valid() }
+}
+
+/// Reserves space for at least `additional` more elements.
+pub method reserve#[T](self: &VecDeque#[T], additional: Uint) {
+	let needed = self@.len + additional;
+	let capacity = self.capacity();
+	if needed <= capacity { return; }
+
+	self@.slots = [max(needed, capacity * 2u); \i: Uint {
+		if i < self@.len {
+			MaybeZeroed(self.element(i)@)
+		} else {
+			MaybeZeroed#[T]()
+		}
+	}]^;
+	self@.head = 0u;
+}
+
+/// Adds a value at the back.
+pub method push_back#[T](self: &VecDeque#[T], value: T) {
+	self.reserve(1u);
+	self@.slots@[self.slot_index(self@.len)]&.write(value);
+	self@.len = self@.len + 1u;
+}
+
+/// Adds a value at the front.
+pub method push_front#[T](self: &VecDeque#[T], value: T) {
+	self.reserve(1u);
+	let head = if self@.head == 0u {
+		self.capacity() - 1u
+	} else {
+		self@.head - 1u
+	};
+	self@.slots@[head]&.write(value);
+	self@.head = head;
+	self@.len = self@.len + 1u;
+}
+
+/// Returns a reference to the element at index, or None if out of bounds.
+pub method get#[T](self: &VecDeque#[T], index: Uint) -> Option#[&T] {
+	if index >= self@.len { return Option#[&T]::None; }
+	Option#[&T]::Some(self.element(index))
+}
+
+/// Borrows the element at index, throwing if it is out of bounds.
+pub method at#[T](self: &VecDeque#[T], index: Uint) -> &T {
+	self.get(index).expect("VecDeque.at: index out of bounds"&)
+}
+
+/// Indexes the deque in front-to-back order.
+pub method operator_index#[T](self: &VecDeque#[T], index: Uint) -> &T {
+	self.at(index)
+}
+
+/// Borrows the first element, or returns None when empty.
+pub method front#[T](self: &VecDeque#[T]) -> Option#[&T] { self.get(0u) }
+
+/// Borrows the last element, or returns None when empty.
+pub method back#[T](self: &VecDeque#[T]) -> Option#[&T] {
+	if self.is_empty() { return Option#[&T]::None; }
+	self.get(self@.len - 1u)
+}
+
+// The deque must be nonempty and index must be the physical slot of its front
+// or back element. When taking the front, the caller must also advance head.
+unsafe method take_slot#[T](self: &VecDeque#[T], index: Uint) -> T {
+	let slot = self@.slots@[index]&;
+	// Leave the slot initialized because an element reference may still point to it.
+	let item = unsafe { slot.assume_valid()@ };
+	self@.len = self@.len - 1u;
+	item
+}
+
+/// Removes and returns the first element, or None when empty.
+pub method pop_front#[T](self: &VecDeque#[T]) -> Option#[T] {
+	if self.is_empty() { return Option#[T]::None; }
+	let item = unsafe { self.take_slot(self@.head) };
+	self@.head = self.slot_index(1u);
+	Option#[T]::Some(item)
+}
+
+/// Removes and returns the last element, or None when empty.
+pub method pop_back#[T](self: &VecDeque#[T]) -> Option#[T] {
+	if self.is_empty() { return Option#[T]::None; }
+	Option#[T]::Some(unsafe { self.take_slot(self.slot_index(self@.len - 1u)) })
+}
+
+/// Removes all elements while retaining capacity.
+pub method clear#[T](self: &VecDeque#[T]) {
+	self@ = VecDeque#[T]::with_capacity(self.capacity());
+}
+
+/// A double-ended iterator over references to deque elements.
+pub struct Iter#[T] { deque: &VecDeque#[T], front: Uint, back: Uint }
+
+/// Iterates from front to back. Finish iterating before changing the deque's length.
+pub method iter#[T](self: &VecDeque#[T]) -> Iter#[T] {
+	Iter#[T] { deque: self, front: 0u, back: self@.len }
+}
+
+/// Borrows the next remaining element from the front.
+pub method next#[T](self: &Iter#[T]) -> Option#[&T] {
+	if self@.front == self@.back { return Option#[&T]::None; }
+	let item = self@.deque.get(self@.front);
+	self@.front = self@.front + 1u;
+	item
+}
+
+/// Borrows the next remaining element from the back.
+pub method next_back#[T](self: &Iter#[T]) -> Option#[&T] {
+	if self@.front == self@.back { return Option#[&T]::None; }
+	self@.back = self@.back - 1u;
+	self@.deque.get(self@.back)
+}
+
+/// Returns the exact number of elements remaining in the iterator.
+pub method len#[T](self: &Iter#[T]) -> Uint { self@.back - self@.front }
+
+/// Compares deques in logical order.
+pub method operator_eq#[T](self: &VecDeque#[T], other: &VecDeque#[T]) -> Bool {
+	self.len() == other.len() && self.iter().eq(other.iter())
+}

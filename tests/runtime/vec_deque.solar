@@ -1,0 +1,95 @@
+struct Nonzero(Int);
+
+fn Nonzero::(other: &Nonzero) -> Nonzero {
+	assert(other@.0 != 0);
+	Nonzero(other@.0)
+}
+
+fn main() {
+	let q = VecDeque#[Int]::with_capacity(3u);
+	assert(q&.is_empty() && q&.len() == 0u);
+	assert(q&.front().is_none() && q&.back().is_none());
+	assert(q&.pop_front().is_none() && q&.pop_back().is_none());
+
+	for n in 1..4 { q&.push_back(n); }
+	assert(q&.pop_front().unwrap() == 1);
+	q&.push_back(4);
+	assert(q&.capacity() == 3u);
+	q&.at(1u)@ = 30;
+	let copy = q;
+	assert(copy == q);
+	copy&.at(1u)@ = 99;
+	assert(copy != q);
+	assert(q&.at(1u)@ == 30);
+	assert(copy&.iter().copied().eq([2, 99, 4]&.iter().copied()));
+
+	// Grow a full, wrapped ring from the front.
+	q&.push_front(1);
+	assert(q&.front().unwrap()@ == 1 && q&.back().unwrap()@ == 4);
+	assert(q&.len() == 4u);
+	assert(q&.get(4u).is_none());
+	let cursor = q&.iter();
+	assert(cursor&.next_back().unwrap()@ == 4);
+	assert(cursor&.next().unwrap()@ == 1);
+	assert(cursor&.len() == 2u);
+	assert(cursor&.next_back().unwrap()@ == 30);
+	assert(cursor&.next().unwrap()@ == 2);
+	assert(cursor&.next().is_none() && cursor&.next_back().is_none());
+	assert(q&.pop_back().unwrap() == 4);
+	assert(q&.pop_back().unwrap() == 30);
+	q&.push_back(7);
+	let capacity = q&.capacity();
+	q&.clear();
+	assert(q&.is_empty() && q&.capacity() == capacity);
+	q&.push_front(8);
+	assert(q&.pop_back().unwrap() == 8);
+
+	let from_slice = VecDeque([1, 2, 3]&);
+	let collected = [3, 2, 1]&.iter().rev().copied().collect#[VecDeque#[Int]]();
+	assert(collected == from_slice);
+	collected[1u] = 20;
+	let sum = 0;
+	for value in collected { sum = sum + value@; }
+	assert(sum == 24);
+
+	let shared = 5;
+	let references = VecDeque([shared&]&);
+	let copied_refs = references;
+	copied_refs&.pop_front().unwrap()@ = 6;
+	assert(references&.front().unwrap()@@ == 6);
+	assert(references&.len() == 1u);
+	let vacant = default#[vec_deque::VecDeque#[()]]();
+	vacant&.push_front(());
+	assert(vacant&.pop_front().is_some());
+	assert(vacant&.pop_back().is_none());
+
+	// A copy constructor must only see live elements, including when growing
+	// or copying a partially occupied ring.
+	let numbers = VecDeque#[Nonzero]::with_capacity(4u);
+	numbers&.push_back(Nonzero(1));
+	numbers&.push_front(Nonzero(2));
+	numbers&.reserve(8u);
+	let numbers_copy = numbers;
+	assert(numbers&.pop_back().unwrap().0 == 1);
+	numbers&.clear();
+	assert(numbers_copy&.pop_front().unwrap().0 == 2);
+	assert(numbers_copy&.pop_back().unwrap().0 == 1);
+
+	let other = VecDeque#[Int]();
+	for n in 0..64 { other&.push_front(n); }
+	for n in 0..64 { assert(other&.pop_back().unwrap() == n); }
+	for n in 0..64 { other&.push_back(n); }
+	for n in 0..64 { assert(other&.pop_front().unwrap() == n); }
+
+	let caught = false;
+
+	try {
+		other&.at(0u);
+	} catch (error) {
+		assert(error.message == "VecDeque.at: index out of bounds"&);
+		caught = true;
+	}
+
+	assert(caught);
+	println("passed"&);
+}
