@@ -119,6 +119,16 @@ fn thread_local_static() {
 }
 
 #[test]
+fn bounded_channel() {
+    let path = fixture("bounded_channel.solar");
+    assert_eq!(run_codegen_file(&path, "bounded_channel"), "passed\n");
+    assert_eq!(
+        test_utils::run_release_file(&path, "bounded_channel_release"),
+        "passed\n"
+    );
+}
+
+#[test]
 fn channel() {
     let output = run_codegen_file(&fixture("channel.solar"), "compile_only_channel");
     assert_eq!(output, "42\n");

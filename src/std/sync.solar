@@ -5,3 +5,4 @@ pub import * from "sync/raw_mutex.solar";
 pub import * from "sync/raw_condvar.solar";
 pub import * from "sync/mutex.solar";
 pub import * from "sync/unbuffered_channel.solar";
+pub import * from "sync/bounded_channel.solar";

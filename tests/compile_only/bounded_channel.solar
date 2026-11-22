@@ -1,0 +1,64 @@
+fn backpressure() {
+	let channel = sync::BoundedChannel#[Int](3u);
+	channel&.send(1);
+	channel&.send(2);
+	let copy = channel;
+	copy&.send(3);
+
+	let ready = sync::UnbufferedChannel#[()]();
+	let sent = sync::Condvar(false);
+	let sender = thread::spawn(\ {
+		ready&.send(());
+		copy&.send(4);
+		sent&.with_lock(\done, _ { done@ = true; sent&.notify_one(); });
+	});
+	ready&.recv();
+	sent&.with_lock(\done, waiter {
+		while !done@ { if !waiter.wait_timeout(20000000u64) { break; } }
+		assert(!done@);
+	});
+
+	assert(copy&.recv() == 1);
+	sender.join();
+	for expected in 2..5 { assert(copy&.recv() == expected); }
+	assert(channel&.recv() == 1);
+	assert(channel&.recv() == 2);
+}
+
+fn consume(channel: &sync::BoundedChannel#[Uint], output: &[Uint]) -> thread::Thread {
+	thread::spawn(\ {
+		for i in 0u..output.len() { output@[i] = channel.recv(); }
+	})
+}
+
+fn contended(capacity: Uint) {
+	let channel = sync::BoundedChannel#[Uint](capacity);
+	let received = [0u; 128u];
+	let first = consume(channel&, received[0u..64u]&);
+	let second = consume(channel&, received[64u..128u]&);
+	let sender = thread::spawn(\ { for i in 0u..64u { channel&.send(i); } });
+	for i in 64u..128u { channel&.send(i); }
+	sender.join();
+	first.join();
+	second.join();
+
+	let seen = [false; 128u];
+	for value in received& { assert(!seen[value@]); seen[value@] = true; }
+}
+
+fn main() {
+	let rejected = false;
+
+	try {
+		sync::BoundedChannel#[Int](0u);
+	} catch (error) {
+		assert(error.message == "BoundedChannel: capacity must be positive"&);
+		rejected = true;
+	}
+
+	assert(rejected);
+	backpressure();
+	contended(1u);
+	contended(3u);
+	println("passed"&);
+}
