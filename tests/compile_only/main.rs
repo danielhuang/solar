@@ -129,6 +129,16 @@ fn bounded_channel() {
 }
 
 #[test]
+fn unbounded_spsc() {
+    let path = fixture("unbounded_spsc.solar");
+    assert_eq!(run_codegen_file(&path, "unbounded_spsc"), "passed\n");
+    assert_eq!(
+        test_utils::run_release_file(&path, "unbounded_spsc_release"),
+        "passed\n"
+    );
+}
+
+#[test]
 fn channel() {
     let output = run_codegen_file(&fixture("channel.solar"), "compile_only_channel");
     assert_eq!(output, "42\n");

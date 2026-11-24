@@ -1,0 +1,55 @@
+import {Option} from "../lib.solar";
+
+const EMPTY = 0u32;
+const WAITING = 1u32;
+const READY = 2u32;
+
+// The tail is an empty node. Sending fills it with a value and a link to
+// the next empty node. Only the producer writes the entry.
+struct Node#[T] { state: Uint32, entry: Option#[(T, &Node#[T])] }
+
+fn empty_node#[out T]() -> &Node#[T] {
+	(Node#[T] { state: EMPTY, entry: Option#[(T, &Node#[T])]::None })&
+}
+
+struct Queue#[T] { head: &Node#[T], tail: &Node#[T] }
+
+/// An unbounded FIFO channel for a single producer and a single consumer.
+/// Copies share the queue. Only one sender and one receiver may operate at a time.
+pub struct UnboundedSpsc#[T] { queue: &Queue#[T] }
+
+/// Creates an empty channel.
+pub fn UnboundedSpsc::#[out T]() -> UnboundedSpsc#[T] {
+	let node = empty_node#[T]();
+	UnboundedSpsc#[T] { queue: (Queue#[T] { head: node, tail: node })& }
+}
+
+/// Appends a value without waiting for the consumer. Each send allocates one list node.
+pub method send#[T](self: &UnboundedSpsc#[T], value: T) {
+	let queue = self@.queue;
+	let tail = queue@.tail;
+	let next = empty_node#[T]();
+	tail@.entry = Option#[(T, &Node#[T])]::Some((value, next));
+	queue@.tail = next;
+
+	if tail@.state&.atomic_exchange(READY) == WAITING {
+		tail@.state&.futex_wake(1u32);
+	}
+}
+
+/// Removes the oldest value, waiting while the channel is empty.
+pub method recv#[T](self: &UnboundedSpsc#[T]) -> T {
+	let queue = self@.queue;
+	let head = queue@.head;
+	let state = head@.state&;
+
+	if state.atomic_load() != READY {
+		// Register only while empty so a send racing this wait cannot be missed.
+		state.atomic_compare_exchange(EMPTY, WAITING);
+		while state.atomic_load() == WAITING { state.futex_wait(WAITING); }
+	}
+
+	let (value, next) = head@.entry.unwrap();
+	queue@.head = next;
+	value
+}

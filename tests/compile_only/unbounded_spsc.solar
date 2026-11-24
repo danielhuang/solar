@@ -1,0 +1,24 @@
+fn main() {
+	let channel = sync::UnboundedSpsc#[&Int]();
+	let receiver = channel;
+	for i in 0..1024 { channel&.send((i + 1)&); }
+	gc::collect_gc();
+	for i in 0..1024 { assert(receiver&.recv()@ == i + 1); }
+
+	// Return acknowledgements over a second queue to repeatedly drain and refill both.
+	let ack = sync::UnboundedSpsc#[Int]();
+	let consumer = thread::spawn(\ {
+		for i in 0..4096 {
+			assert(receiver&.recv()@ == i + 1);
+			if i % 16 == 15 { ack&.send(i); }
+		}
+	});
+
+	for i in 0..4096 {
+		channel&.send((i + 1)&);
+		if i % 16 == 15 { assert(ack&.recv() == i); }
+	}
+
+	consumer.join();
+	println("passed"&);
+}
