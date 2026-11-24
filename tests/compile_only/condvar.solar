@@ -1,3 +1,5 @@
+import {assert_locked_after_throw} from "lock_exception.solar";
+
 fn main() {
 	let condition = sync::Condvar(0);
 	let ready = sync::UnbufferedChannel#[()]();
@@ -24,28 +26,15 @@ fn main() {
 	condition&.notify_all();
 	assert(!condition&.with_lock(\_, waiter waiter.wait_timeout(0u64)));
 
-	let caught = false;
-
-	try {
-		condition&.with_lock(\value, _ {
-			value@ = 3;
-			throw("condvar callback failed"&);
-		});
-	} catch (error) {
-		assert(error.message == "condvar callback failed"&);
-		caught = true;
-	}
-
-	assert(caught);
-
 	let copy = condition;
 	condition&.with_lock(\value, _ {
 		copy&.with_lock(\copied, _ {
-			assert(copied@ == 3);
+			assert(copied@ == 2);
 			copied@ = 4;
 		});
-		assert(value@ == 3);
+		assert(value@ == 2);
 	});
 	assert(copy&.with_lock(\value, _ value@) == 4);
+	assert_locked_after_throw(\f condition&.with_lock(\_, _ f()));
 	println("passed"&);
 }

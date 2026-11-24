@@ -1,4 +1,3 @@
-import {Option, throw} from "../lib.solar";
 import {RawMutex} from "raw_mutex.solar";
 import {RawCondvar} from "raw_condvar.solar";
 
@@ -17,25 +16,15 @@ pub fn Condvar::#[T](other: &Condvar#[T]) -> Condvar#[T] {
 }
 
 /// Calls `f` with the protected value and a waiter for this condition variable.
-/// Releases the mutex when `f` returns or throws.
+/// If `f` throws, the exception propagates and subsequent lock attempts block forever.
 pub method with_lock#[T, U](
 	self: &Condvar#[T],
 	f: fn(&T, CondvarWaiter#[T]) -> U,
 ) -> U {
 	self@.mutex&.lock();
-	let result = Option#[U]::None;
-
-	try {
-		result = Option#[U]::Some(
-			f(self@.inner&, CondvarWaiter#[T] { inner: self }),
-		);
-	} catch (error) {
-		self@.mutex&.unlock();
-		throw(error);
-	}
-
+	let result = f(self@.inner&, CondvarWaiter#[T] { inner: self });
 	self@.mutex&.unlock();
-	result.unwrap()
+	result
 }
 
 /// Wakes one thread waiting on this condition variable.

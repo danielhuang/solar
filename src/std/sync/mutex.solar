@@ -1,4 +1,3 @@
-import {Option, throw} from "../lib.solar";
 import {RawMutex} from "raw_mutex.solar";
 
 /// A value protected by a mutual exclusion lock.
@@ -10,20 +9,12 @@ pub fn Mutex::#[T](value: T) -> Mutex#[T] {
 }
 
 /// Calls f with a reference to the protected value and returns its result.
-/// Releases the lock on both normal return and an exception.
+/// If `f` throws, the exception propagates and subsequent lock attempts block forever.
 pub method with_lock#[T, U](self: &Mutex#[T], f: fn(&T) -> U) -> U {
 	self@.mutex&.lock();
-	let result = Option#[U]::None;
-
-	try {
-		result = Option#[U]::Some(f(self@.inner&));
-	} catch (error) {
-		self@.mutex&.unlock();
-		throw(error);
-	}
-
+	let result = f(self@.inner&);
 	self@.mutex&.unlock();
-	result.unwrap()
+	result
 }
 
 /// Copies the protected value while holding the original mutex's lock.

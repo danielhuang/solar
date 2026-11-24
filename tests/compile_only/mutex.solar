@@ -1,3 +1,5 @@
+import {assert_locked_after_throw} from "lock_exception.solar";
+
 static copies: Int = 0;
 struct Counted { value: Int }
 
@@ -14,22 +16,6 @@ fn main() {
 	counter&.with_lock(\value { value@ = value@ + 1; });
 	worker.join();
 	println(counter&.with_lock(\value value@));
-
-	// Throwing releases the lock and preserves the callback's exception.
-	let caught = false;
-
-	try {
-		counter&.with_lock(\value {
-			value@ = 3;
-			throw("mutex callback failed"&);
-		});
-	} catch (error) {
-		assert(error.message == "mutex callback failed"&);
-		caught = true;
-	}
-
-	assert(caught);
-	assert(counter&.with_lock(\value value@) == 3);
 
 	// Copying a mutex copies its value and creates an independent lock.
 	let original = sync::Mutex(Counted { value: 7 });
@@ -50,4 +36,5 @@ fn main() {
 
 	let returned = counter&.with_lock(\_ sync::Mutex(42));
 	assert(returned&.with_lock(\value value@) == 42);
+	assert_locked_after_throw(\f counter&.with_lock(\_ f()));
 }

@@ -1,0 +1,23 @@
+/// Checks exception propagation and tries to reacquire the lock on a separate thread.
+pub fn assert_locked_after_throw(with_lock: fn(fn())) {
+	let caught = false;
+
+	try {
+		with_lock(\ { throw("callback failed"&); });
+	} catch (error) {
+		assert(error.message == "callback failed"&);
+		caught = true;
+	}
+
+	assert(caught);
+
+	let ready = sync::UnbufferedChannel#[()]();
+	let acquired = 0u32;
+	thread::spawn(\ {
+		ready&.recv();
+		with_lock(\ { acquired&.atomic_store(1u32); });
+	});
+	ready&.send(());
+	thread::sleep(50000000u64);
+	assert(acquired&.atomic_load() == 0u32);
+}
